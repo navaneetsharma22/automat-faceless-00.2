@@ -72,7 +72,7 @@ export function JsonEditor({
         </Field>
       ) : null}
       <p className={styles.fieldMeta} aria-live="off">
-        Character count: {value.length.toLocaleString()}
+        Character count: {value.length.toLocaleString()} JavaScript code units
       </p>
       {expanded ? (
         <dialog

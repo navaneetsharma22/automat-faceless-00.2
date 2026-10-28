@@ -1,6 +1,6 @@
 # P03 — Lossless large JSON import for both stages
 
-Status: **INCOMPLETE** — P03.1 and P03.2 have offline contract/source-test evidence. Real production sample profiles remain EVIDENCE_PENDING; P03.3–P03.4 are NOT_STARTED.
+Status: **INCOMPLETE** — P03.1–P03.3 have offline evidence. Real production sample profiles remain EVIDENCE_PENDING; P03.4 is NOT_STARTED.
 
 **Outcome:** Large image and video JSON batches become correct, stable, unchanged prompt items.
 
@@ -69,6 +69,12 @@ Start in these files:
 
 Acceptance: Counts/shot IDs/errors are accurate; preview does not rewrite source; oversized input is rejected before partial acceptance. Editing remains responsive.
 
+P03.3 implementation evidence (offline): Image and video panels use separate in-memory sessions and the P03.2 importer. Drafts start empty; synthetic examples are loaded only through an explicit action, with replacement confirmation when the draft is nonempty. JSON file imports check `File.size` before reading, require strict UTF-8, remove only a leading UTF-8 BOM, and preserve the decoded source text. Validation runs after a pending state is published, not on keystrokes. The current draft's errors are shown inline with item/location details; prior successful results remain in memory and are labeled stale after edits/failure. Results show ordered canonical IDs and code-unit/UTF-8 measurements, with only one raw body expanded at once. All actions remain local; provider send, pairing execution, generation, and downloads remain unavailable.
+
+P03.3 tests cover independent drafts, preview count/IDs/provider-safe status, source preservation, stale previous results, late-result rejection, oversized file rejection before read, UTF-8/BOM handling, and the existing JSON editor controls. Five Node test-runner timings per fixture in the full suite (median/max, ms): IMAGE 10k 0.6/5.0, 25k 0.7/1.1, 50k 1.3/1.7, 100k 2.3/2.7; VIDEO 10k 0.3/0.3, 25k 0.7/0.8, 50k 1.2/6.4, 100k 2.4/3.1. These are importer timings in Node, not browser UI responsiveness evidence. Browser/theme/narrow-layout inspection is NOT_RUN because no browser surface was available. P00.2 production samples remain EVIDENCE_PENDING.
+
+Checks on 28 October 2026: focused UI/importer regressions — PASS (3 files / 17 tests); full suite — PASS (11 files / 100 tests); typecheck, lint, changed-file Prettier, production build (Vite 8.3.5 / 154 modules), and `git diff --check` — PASS. Shared build ID: `automat-faceless-0.1.0-mvru6149`. P03.4 remains NOT_STARTED.
+
 ### P03.4 — Verify exact data preservation through storage and messages
 
 Evidence mode: **offline**.
@@ -82,7 +88,7 @@ Acceptance: Import -> schema -> repository -> message retains each complete raw 
 
 ## Phase gate
 
-P03 is INCOMPLETE. P03.1 and P03.2 provide offline contract, fixture, scanner, importer, and source-preservation test evidence only. UI, persistence, real sample, and provider evidence remain incomplete; P03.3–P03.4 are NOT_STARTED.
+P03 is INCOMPLETE. P03.1–P03.3 provide offline contract, fixture, scanner, importer, and UI source/test evidence only. Browser rendering, persistence, real sample, and provider evidence remain incomplete; P03.4 is NOT_STARTED.
 
 ## Notes
 
@@ -92,7 +98,7 @@ P03 is INCOMPLETE. P03.1 and P03.2 provide offline contract, fixture, scanner, i
 
 ## Deferred next subphase (not started)
 
-P03.3 remains NOT_STARTED. Do not begin it until separately requested.
+P03.4 remains NOT_STARTED. Do not begin it until separately requested.
 
 ## Completion report
 

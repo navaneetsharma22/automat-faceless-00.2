@@ -86,6 +86,12 @@ Preservation is relative to the exact string passed to `importPromptBatch`:
 
 The contract begins at the received source string. Browser clipboard, textarea, and platform paste behavior that may normalize newlines before this boundary is **unverified**. P03.1 fixtures test that the source string retains both LF and CRLF; they do not establish clipboard/editor behavior.
 
+### Text and file input in the P03.3 preview
+
+Pasting into the controlled JSON editor supplies its current text value to the in-memory draft; no parser runs while typing. A `.json` file is decoded as strict UTF-8. One leading UTF-8 BOM is removed as a file encoding marker; the remaining decoded text is retained unchanged. UTF-16/invalid UTF-8 files are rejected. The file's byte-size metadata is checked against the centralized total-input byte limit before reading, then the importer checks code-unit, per-prompt, count, and nesting budgets after decoding. A nonempty draft requires explicit replacement confirmation before an example or file is loaded.
+
+File decoding and draft/preview preservation are covered by offline tests. Native browser clipboard newline normalization and rendered large-editor responsiveness remain unverified until browser inspection.
+
 ## Centralized preliminary application budget
 
 `src/domain/batches/inputPolicy.ts` defines the current P03.1 policy values:

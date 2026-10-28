@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "./components/Button";
 import { ConnectionStatus } from "./components/ConnectionStatus";
-import { JsonEditor } from "./components/JsonEditor";
 import { Navigation, type Workspace } from "./components/Navigation";
 import { Notice } from "./components/Notice";
 import { ProgressPanel } from "./components/ProgressPanel";
@@ -9,12 +8,11 @@ import { SettingsConfirmation } from "./components/SettingsConfirmation";
 import { ToastHost, useToast } from "./components/ToastHost";
 import { BUILD_ID } from "../shared/buildInfo";
 import { registerDashboardFocusResponder } from "./dashboardFocus";
+import { ImageImportPanel } from "./features/image-batch/ImportPanel";
+import { VideoImportPanel } from "./features/video-batch/ImportPanel";
+import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import styles from "./Dashboard.module.css";
-import {
-  type DownloadPreviewState,
-  type PromptDrafts,
-  updatePromptDrafts,
-} from "./previewState";
+import type { DownloadPreviewState } from "./previewState";
 
 const demoJson = `{
   "batch": "DEMO ONLY — synthetic image prompts",
@@ -45,10 +43,12 @@ const referenceCards = [
 function Dashboard() {
   const [workspace, setWorkspace] = useState<Workspace>("Images");
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [promptDrafts, setPromptDrafts] = useState<PromptDrafts>({
-    images: demoJson,
-    videos: demoVideoJson,
-  });
+  const [imageImportSession] = useState(
+    () => new ImportPreviewSession("image"),
+  );
+  const [videoImportSession] = useState(
+    () => new ImportPreviewSession("video"),
+  );
   const [videoWrapLines, setVideoWrapLines] = useState(false);
   const [videoEditorExpanded, setVideoEditorExpanded] = useState(false);
   const [downloadPreview, setDownloadPreview] =
@@ -60,6 +60,14 @@ function Dashboard() {
     "SHOT-001",
   ]);
   const toast = useToast();
+
+  useEffect(
+    () => () => {
+      imageImportSession.cancel();
+      videoImportSession.cancel();
+    },
+    [imageImportSession, videoImportSession],
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -90,10 +98,6 @@ function Dashboard() {
       urgent: false,
       actionable: false,
     });
-  };
-
-  const updatePrompt = (workspace: keyof PromptDrafts, value: string) => {
-    setPromptDrafts((current) => updatePromptDrafts(current, workspace, value));
   };
 
   return (
@@ -142,10 +146,7 @@ function Dashboard() {
           </div>
         </header>
 
-        <div
-          className={`${styles.content} motion-screen-enter`}
-          key={workspace}
-        >
+        <div className={`${styles.content} motion-screen-enter`}>
           <div className={styles.pageHeading}>
             <div>
               <p className={styles.kicker}>CREATIVE WORKSPACE</p>
@@ -153,24 +154,22 @@ function Dashboard() {
               <p className={styles.lede}>{workspaceSubtitle(workspace)}</p>
             </div>
           </div>
-          {workspace === "Images" ? (
+          <div hidden={workspace !== "Images"}>
             <ImagesView
-              imageJson={promptDrafts.images}
-              setImageJson={(value) => updatePrompt("images", value)}
+              session={imageImportSession}
               confirmed={imageConfirmed}
               setConfirmed={setImageConfirmed}
             />
-          ) : null}
+          </div>
           {workspace === "References" ? (
             <ReferencesView
               selected={selectedReferences}
               onToggle={toggleReference}
             />
           ) : null}
-          {workspace === "Videos" ? (
+          <div hidden={workspace !== "Videos"}>
             <VideosView
-              videoJson={promptDrafts.videos}
-              setVideoJson={(value) => updatePrompt("videos", value)}
+              session={videoImportSession}
               wrapLines={videoWrapLines}
               setWrapLines={setVideoWrapLines}
               editorExpanded={videoEditorExpanded}
@@ -180,7 +179,7 @@ function Dashboard() {
               confirmed={videoConfirmed}
               setConfirmed={setVideoConfirmed}
             />
-          ) : null}
+          </div>
           {workspace === "Downloads" ? (
             <DownloadsView
               state={downloadPreview}
@@ -217,7 +216,7 @@ function Dashboard() {
 
 function workspaceSubtitle(workspace: Workspace) {
   return {
-    Images: "Prepare an image prompt batch and review its example progress.",
+    Images: "Import an image JSON batch. Example progress stays separate.",
     References: "Review example image selections by their stable shot IDs.",
     Videos: "Inspect example image-to-video pairs and destination choices.",
     Downloads: "Review example delivery states in one calm workspace.",
@@ -225,13 +224,11 @@ function workspaceSubtitle(workspace: Workspace) {
 }
 
 function ImagesView({
-  imageJson,
-  setImageJson,
+  session,
   confirmed,
   setConfirmed,
 }: {
-  imageJson: string;
-  setImageJson: (value: string) => void;
+  session: ImportPreviewSession;
   confirmed: boolean;
   setConfirmed: (value: boolean) => void;
 }) {
@@ -245,20 +242,17 @@ function ImagesView({
         aria-labelledby="image-input-title"
       >
         <PanelHeader
-          kicker="IMAGE BATCH · DEMO"
-          title="Prompt input"
+          kicker="IMAGE IMPORT"
+          title="Image prompt import"
           id="image-input-title"
         />
-        <JsonEditor
-          id="image-demo-json"
-          label="Image prompt JSON"
-          value={imageJson}
-          onChange={setImageJson}
-          rows={6}
+        <ImageImportPanel
+          session={session}
+          exampleSource={demoJson}
           wrapLines={wrapLines}
-          onWrapLinesChange={setWrapLines}
-          expanded={editorExpanded}
-          onExpandedChange={setEditorExpanded}
+          setWrapLines={setWrapLines}
+          editorExpanded={editorExpanded}
+          setEditorExpanded={setEditorExpanded}
         />
         <SettingsConfirmation
           id="image-settings-confirm"
@@ -348,8 +342,7 @@ function ReferencesView({
 }
 
 export function VideosView({
-  videoJson,
-  setVideoJson,
+  session,
   wrapLines,
   setWrapLines,
   editorExpanded,
@@ -359,8 +352,7 @@ export function VideosView({
   confirmed,
   setConfirmed,
 }: {
-  videoJson: string;
-  setVideoJson: (value: string) => void;
+  session: ImportPreviewSession;
   wrapLines: boolean;
   setWrapLines: (wrap: boolean) => void;
   editorExpanded: boolean;
@@ -372,27 +364,23 @@ export function VideosView({
 }) {
   return (
     <div className={styles.workspaceGrid}>
-      <section className={styles.panel} aria-labelledby="video-pair-title">
+      <section
+        className={`${styles.panel} ${styles.editorPanel}`}
+        aria-labelledby="video-input-title"
+      >
         <PanelHeader
-          kicker="VIDEO BATCH · DEMO"
-          title="Video prompt JSON"
+          kicker="VIDEO IMPORT"
+          title="Video prompt import"
           id="video-input-title"
         />
-        <JsonEditor
-          id="video-demo-json"
-          label="Video prompt JSON"
-          value={videoJson}
-          onChange={setVideoJson}
-          rows={6}
+        <VideoImportPanel
+          session={session}
+          exampleSource={demoVideoJson}
           wrapLines={wrapLines}
-          onWrapLinesChange={setWrapLines}
-          expanded={editorExpanded}
-          onExpandedChange={setEditorExpanded}
+          setWrapLines={setWrapLines}
+          editorExpanded={editorExpanded}
+          setEditorExpanded={setEditorExpanded}
         />
-        <Notice kind="info" announce={false}>
-          UI preview only. Editing does not parse, pair, submit, or generate
-          anything.
-        </Notice>
         <section
           className={styles.pairPreview}
           aria-labelledby="video-pairs-demo-title"

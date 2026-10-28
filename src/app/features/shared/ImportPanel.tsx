@@ -163,7 +163,10 @@ export function ImportPanel({
       : snapshot.result?.items[visiblePreviewIndex];
 
   return (
-    <div className={styles.importPanel} aria-busy={snapshot.status === "pending"}>
+    <div
+      className={styles.importPanel}
+      aria-busy={snapshot.status === "pending"}
+    >
       <JsonEditor
         id={`${kind}-import-source`}
         label={`${label} prompt source`}
@@ -183,6 +186,12 @@ export function ImportPanel({
         Validation runs only when you choose Validate &amp; Preview. No draft is
         sent to a provider.
       </p>
+      {snapshot.source === exampleSource ? (
+        <Notice kind="info" announce={false}>
+          Synthetic example loaded. This is test content, not a user production
+          prompt.
+        </Notice>
+      ) : null}
 
       <div className={styles.sourceActions}>
         <Button type="button" onClick={requestExample} variant="secondary">
@@ -217,8 +226,8 @@ export function ImportPanel({
         >
           <p>
             Replace the current {label.toLowerCase()} draft with this{" "}
-            {replacement.type === "example" ? "synthetic example" : "file"}?
-            The existing draft will be replaced in memory.
+            {replacement.type === "example" ? "synthetic example" : "file"}? The
+            existing draft will be replaced in memory.
           </p>
           <div className={styles.sourceActions}>
             <Button type="button" onClick={confirmReplacement}>
@@ -265,33 +274,23 @@ export function ImportPanel({
         </p>
         <ul>
           <li>
-            Per prompt: {INPUT_POLICY.maxPromptCodeUnits.toLocaleString()} JavaScript
-            code units and {INPUT_POLICY.maxPromptUtf8Bytes.toLocaleString()} UTF-8
-            bytes.
+            Per prompt: {INPUT_POLICY.maxPromptCodeUnits.toLocaleString()}{" "}
+            JavaScript code units and{" "}
+            {INPUT_POLICY.maxPromptUtf8Bytes.toLocaleString()} UTF-8 bytes.
           </li>
           <li>
-            Total input: {INPUT_POLICY.maxBatchCodeUnits.toLocaleString()} JavaScript
-            code units and {INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()} UTF-8
-            bytes.
+            Total input: {INPUT_POLICY.maxBatchCodeUnits.toLocaleString()}{" "}
+            JavaScript code units and{" "}
+            {INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()} UTF-8 bytes.
           </li>
           <li>Prompt count: {INPUT_POLICY.maxPromptCount}.</li>
-          <li>
-            JSON nesting depth: {INPUT_POLICY.maxJsonNestingDepth}.
-          </li>
+          <li>JSON nesting depth: {INPUT_POLICY.maxJsonNestingDepth}.</li>
         </ul>
       </details>
 
       {snapshot.status === "error" && snapshot.error ? (
         <Notice kind="error">
-          <span>{snapshot.error.message}</span>
-          <span className={styles.errorLocation}>
-            {snapshot.error.itemIndex === undefined
-              ? ""
-              : ` Item ${snapshot.error.itemIndex + 1}.`}{" "}
-            Line {snapshot.error.location.line}, column{" "}
-            {snapshot.error.location.column} (source offset{" "}
-            {snapshot.error.location.offset}).
-          </span>
+          {`${snapshot.error.message}${snapshot.error.itemIndex === undefined ? "" : ` Item ${snapshot.error.itemIndex + 1}.`} Line ${snapshot.error.location.line}, column ${snapshot.error.location.column} (source offset ${snapshot.error.location.offset}).`}
         </Notice>
       ) : null}
 
@@ -299,7 +298,6 @@ export function ImportPanel({
         <section
           className={styles.importResult}
           aria-labelledby={`${kind}-import-result-title`}
-          aria-live="polite"
         >
           <div className={styles.resultHeading}>
             <div>
@@ -326,8 +324,9 @@ export function ImportPanel({
             </Notice>
           )}
           <p className={styles.totalMeasurement}>
-            Total prompt bodies: {snapshot.result.total.stringCodeUnits.toLocaleString()}{" "}
-            JavaScript code units · {snapshot.result.total.utf8Bytes.toLocaleString()}{" "}
+            Total prompt bodies:{" "}
+            {snapshot.result.total.stringCodeUnits.toLocaleString()} JavaScript
+            code units · {snapshot.result.total.utf8Bytes.toLocaleString()}{" "}
             UTF-8 bytes
             {snapshot.elapsedMs === undefined
               ? ""
@@ -335,7 +334,10 @@ export function ImportPanel({
           </p>
           <ol className={styles.importItems}>
             {snapshot.result.items.map((item, index) => (
-              <li className={styles.importItem} key={`${item.sourceSpan.start}-${index}`}>
+              <li
+                className={styles.importItem}
+                key={`${item.sourceSpan.start}-${index}`}
+              >
                 <div className={styles.itemSummary}>
                   <div>
                     <strong>Prompt {index + 1}</strong>
@@ -345,9 +347,9 @@ export function ImportPanel({
                         : `Shot ID ${item.shotId}`}
                     </span>
                     <small>
-                      {item.measurement.stringCodeUnits.toLocaleString()} JavaScript
-                      code units · {item.measurement.utf8Bytes.toLocaleString()} UTF-8
-                      bytes
+                      {item.measurement.stringCodeUnits.toLocaleString()}{" "}
+                      JavaScript code units ·{" "}
+                      {item.measurement.utf8Bytes.toLocaleString()} UTF-8 bytes
                     </small>
                   </div>
                   <Button
@@ -355,7 +357,11 @@ export function ImportPanel({
                     variant="secondary"
                     size="compact"
                     aria-expanded={visiblePreviewIndex === index}
-                    aria-controls={`${kind}-raw-preview-${index}`}
+                    aria-controls={
+                      visiblePreviewIndex === index
+                        ? `${kind}-raw-preview-${index}`
+                        : undefined
+                    }
                     onClick={() =>
                       setSelectedPreview((current) =>
                         current === index ? null : index,

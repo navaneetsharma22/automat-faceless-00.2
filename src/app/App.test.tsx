@@ -1,29 +1,7 @@
 import React, { isValidElement, type ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { DownloadsView, VideosView } from "./App";
-import { type PromptDrafts, updatePromptDrafts } from "./previewState";
-
-function findElement(
-  node: React.ReactNode,
-  targetType: string,
-): ReactElement<Record<string, unknown>> | undefined {
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const found = findElement(child, targetType);
-      if (found) return found;
-    }
-    return undefined;
-  }
-  if (!isValidElement<Record<string, unknown>>(node)) return undefined;
-  if (node.type === targetType) return node;
-  if (typeof node.type === "function") {
-    const component = node.type as (
-      props: Record<string, unknown>,
-    ) => React.ReactNode;
-    return findElement(component(node.props), targetType);
-  }
-  return findElement(node.props.children as React.ReactNode, targetType);
-}
+import { DownloadsView } from "./App";
+import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 
 function findElements(
   node: React.ReactNode,
@@ -48,41 +26,20 @@ function findElements(
 
 describe("P01.3 workspace previews", () => {
   it("keeps image and video prompt drafts independent", () => {
-    const initial: PromptDrafts = {
-      images: '{\r\n  "kind": "image"\r\n}\n',
-      videos: '{\n  "kind": "video"\n}',
-    };
+    const image = new ImportPreviewSession("image");
+    const video = new ImportPreviewSession("video");
+    image.setSource('{\r\n  "kind": "image"\r\n}\n');
+    video.setSource('{\n  "kind": "video"\n}');
     const changedImage = '{  "image prompt": "edited exactly"  }\r\n';
     const changedVideo = '\n{ "video prompt": "separate edit" }  ';
-    const afterImage = updatePromptDrafts(initial, "images", changedImage);
+    const untouchedVideo = video.getSnapshot().source;
+    image.setSource(changedImage);
+    expect(image.getSnapshot().source).toBe(changedImage);
+    expect(video.getSnapshot().source).toBe(untouchedVideo);
 
-    expect(afterImage.images).toBe(changedImage);
-    expect(afterImage.videos).toBe(initial.videos);
-
-    let current = updatePromptDrafts(afterImage, "videos", changedVideo);
-    const onVideoChange = (value: string) => {
-      current = updatePromptDrafts(current, "videos", value);
-    };
-    const videoTree = VideosView({
-      videoJson: current.videos,
-      setVideoJson: onVideoChange,
-      wrapLines: false,
-      setWrapLines: vi.fn(),
-      editorExpanded: false,
-      setEditorExpanded: vi.fn(),
-      destination: "Flow",
-      setDestination: vi.fn(),
-      confirmed: false,
-      setConfirmed: vi.fn(),
-    });
-    const videoEditor = findElement(videoTree, "textarea");
-
-    expect(videoEditor?.props.value).toBe(changedVideo);
-    (videoEditor?.props.onChange as (event: unknown) => void)({
-      currentTarget: { value: "video only" },
-    });
-    expect(current.videos).toBe("video only");
-    expect(current.images).toBe(changedImage);
+    video.setSource(changedVideo);
+    expect(video.getSnapshot().source).toBe(changedVideo);
+    expect(image.getSnapshot().source).toBe(changedImage);
   });
 
   it("renders only the selected Downloads preview state", () => {

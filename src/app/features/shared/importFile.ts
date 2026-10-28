@@ -1,6 +1,7 @@
 import { INPUT_POLICY } from "../../../domain/batches/inputPolicy";
 
-export type ImportFileErrorCode = "file_too_large" | "invalid_utf8" | "read_failed";
+export type ImportFileErrorCode =
+  "file_too_large" | "invalid_utf8" | "read_failed";
 
 export class ImportFileError extends Error {
   constructor(readonly code: ImportFileErrorCode) {

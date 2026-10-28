@@ -299,6 +299,10 @@
   gap: var(--space-6);
   padding: clamp(var(--space-4), 3vw, 2.5rem) var(--layout-gutter) 4rem;
 }
+
+:global([hidden]) {
+  display: none !important;
+}
 .pageHeading {
   display: flex;
   min-width: 0;

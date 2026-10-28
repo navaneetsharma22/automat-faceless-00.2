@@ -1,4 +1,7 @@
-import { importPromptBatch, type ImportError } from "../../../domain/batches/importBatch";
+import {
+  importPromptBatch,
+  type ImportError,
+} from "../../../domain/batches/importBatch";
 import type { PromptKind } from "../../../domain/batches/types";
 
 export type SuccessfulImport = Extract<
@@ -29,8 +32,7 @@ export class ImportPreviewSession {
   constructor(
     readonly kind: PromptKind,
     private readonly importer: Importer = importPromptBatch,
-    private readonly schedule: Schedule = (callback) =>
-      setTimeout(callback, 0),
+    private readonly schedule: Schedule = (callback) => setTimeout(callback, 0),
     private readonly now: () => number = () => performance.now(),
   ) {
     this.snapshot = {
