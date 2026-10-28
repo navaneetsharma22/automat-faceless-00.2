@@ -4,18 +4,18 @@ Baseline: 28 October 2026.
 
 ## Current state
 
-| Area                                   | Status                                                                         |
-| -------------------------------------- | ------------------------------------------------------------------------------ |
-| Requirements and documentation package | DOCS_READY                                                                     |
-| Legacy source/report review            | SOURCE_REVIEWED                                                                |
-| Parser decimal-array defect            | OFFLINE_REPRODUCED in legacy pure function                                     |
-| Existing hosted OAuth/download         | Legacy implementation + scoped historical user-reported live evidence          |
-| Existing native splitter               | Legacy implementation + recorded two-clip media verification                   |
-| New extension application              | TOOLCHAIN_READY; Phase 01 DONE; Phase 02 DONE for read-only connection scope |
-| Provider connection evidence            | SCREENSHOT_EVIDENCE: Flow/Vids shown Connected; listed checks USER_REPORTED_PASS          |
-| New UI visual sign-off                 | USER_APPROVED; specified interaction/layout confirmations USER_REPORTED_PASS |
-| Vids preservation / lifecycle limits    | Empty-document test shown; generated scenes and worker suspension unverified   |
-| New packaging/release                  | NOT_STARTED                                                                    |
+| Area                                   | Status                                                                           |
+| -------------------------------------- | -------------------------------------------------------------------------------- |
+| Requirements and documentation package | DOCS_READY                                                                       |
+| Legacy source/report review            | SOURCE_REVIEWED                                                                  |
+| Parser decimal-array defect            | OFFLINE_REPRODUCED in legacy pure function                                       |
+| Existing hosted OAuth/download         | Legacy implementation + scoped historical user-reported live evidence            |
+| Existing native splitter               | Legacy implementation + recorded two-clip media verification                     |
+| New extension application              | TOOLCHAIN_READY; Phase 01 DONE; Phase 02 DONE for read-only connection scope     |
+| Provider connection evidence           | SCREENSHOT_EVIDENCE: Flow/Vids shown Connected; listed checks USER_REPORTED_PASS |
+| New UI visual sign-off                 | USER_APPROVED; specified interaction/layout confirmations USER_REPORTED_PASS     |
+| Vids preservation / lifecycle limits   | Empty-document test shown; generated scenes and worker suspension unverified     |
+| New packaging/release                  | NOT_STARTED                                                                      |
 
 The application code includes P01.1 design foundations, P01.2 shared components, the P01.3 dashboard shell and visual-only workspace examples, and the bounded P02 read-only connection scope described below. **SCREENSHOT_EVIDENCE:** User-supplied screenshots show Flow and Vids Connected in the packaged dashboard. **USER_REPORTED_PASS:** The specified reconnect/disconnect/connect, toolbar reuse, and extension reload checks are reported separately below; they were not independently observed or described as automated verification. Vids preservation evidence is limited to the shown empty-document test. No auth, generation, download, provider prompt entry, provider refresh, deployment or storage migration has been performed.
 
@@ -25,8 +25,8 @@ The application code includes P01.1 design foundations, P01.2 shared components,
 | --------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [P00](phases/PHASE_00_BASELINE.md)            | SETUP_COMPLETE; P00.2 EVIDENCE_PENDING | Technology stack installed in the existing root; typecheck, lint, format check and production build pass. No real prompt samples are available in this package.                                                                                                                                                |
 | [P01](phases/PHASE_01_DESIGN.md)              | DONE — UI/design scope                 | P01.1/P01.2/P01.3 implemented; design USER_APPROVED. Narrow layout/navigation, JSON editor wrap/expand/Escape/focus restoration, toast placement, and reduced motion are USER_REPORTED_PASS. Automated checks remain as recorded below; user reports are not described as independently observed or automated. |
-| [P02](phases/PHASE_02_FOUNDATION.md) | DONE — read-only connection scope      | P02.1–P02.3 OFFLINE_VERIFIED; P02.4 OFFLINE_VERIFIED, SCREENSHOT_EVIDENCE, and USER_REPORTED_PASS separately labeled. Vids evidence is the empty-document test; generated-scene preservation and separate worker-suspension test remain unverified. |
-| [P03](phases/PHASE_03_JSON_IMPORT.md)         | NOT_STARTED                            | No new implementation/live evidence                                                                                                                                                                                                                                                                            |
+| [P02](phases/PHASE_02_FOUNDATION.md)          | DONE — read-only connection scope      | P02.1–P02.3 OFFLINE_VERIFIED; P02.4 OFFLINE_VERIFIED, SCREENSHOT_EVIDENCE, and USER_REPORTED_PASS separately labeled. Vids evidence is the empty-document test; generated-scene preservation and separate worker-suspension test remain unverified.                                                            |
+| [P03](phases/PHASE_03_JSON_IMPORT.md)         | INCOMPLETE; P03.1 OFFLINE_VERIFIED     | Synthetic input contract, fixture corpus, and provisional policy recorded; P00.2 real samples pending; P03.2–P03.4 NOT_STARTED.                                                                                                                                                                                |
 | [P04](phases/PHASE_04_FLOW_ONE_IMAGE.md)      | NOT_STARTED                            | No new implementation/live evidence                                                                                                                                                                                                                                                                            |
 | [P05](phases/PHASE_05_FLOW_COMPLETION.md)     | NOT_STARTED                            | No new implementation/live evidence                                                                                                                                                                                                                                                                            |
 | [P06](phases/PHASE_06_IMAGE_QUEUE.md)         | NOT_STARTED                            | No new implementation/live evidence                                                                                                                                                                                                                                                                            |
@@ -170,7 +170,7 @@ Automated/offline checks recorded on 28 October 2026: `npm test` PASS (3 files, 
 
 User review record, 28 October 2026: **Design approval: USER_APPROVED.** The user reported **USER_REPORTED_PASS** for narrow-window layout/navigation, Wrap/Expand/Escape/focus restoration, toast placement, and reduced motion. These are user-reported outcomes only, not automated checks or independent observations. No additional workspace or browser verification is inferred. Phase 01 is **DONE within the UI/design scope**. At the Phase 01 completion boundary, P00.2 representative prompt evidence remained pending and Phase 02 had not started; current Phase 02 progress is tracked in the phase ledger and connection evidence note.
 
-P00.2 representative prompt evidence remains pending. Phase 01 is DONE within its UI/design scope. Phase 02 is DONE for the read-only connection scope; evidence types and limits are recorded in the current P02.4 entry and [connection proof](docs/evidence/connection-proof.md). Phase 03 and later remain NOT_STARTED. Generation, provider prompt entry, OAuth, and downloads remain unimplemented.
+P00.2 representative prompt evidence remains pending. Phase 01 is DONE within its UI/design scope. Phase 02 is DONE for the read-only connection scope. Phase 03 is INCOMPLETE: P03.1 has offline structural/fixture/policy evidence; P03.2–P03.4 remain NOT_STARTED and sample-dependent acceptance is pending real samples. Generation, provider prompt entry, OAuth, and downloads remain unimplemented.
 
 ## P02.4 live verification attempt
 
@@ -222,3 +222,9 @@ P02.4 and Phase 02 are **DONE for the read-only connection scope**. P00.2 repres
 Source review confirmed the prior discovery/parser and connector accepted only `vids.google.com/video/{id}/edit`, while the user's actual document route is `docs.google.com/videos/d/{id}/edit`. Both parser and injected connector now extract the document ID from `/videos/d/{id}/edit` and canonicalize internally without query or fragment. The selected tab record retains the original URL. Discovery recognizes the supported docs.google route and reports malformed `/videos/` routes as unsupported; the selected-origin permission check and optional manifest permissions include `https://docs.google.com/*`. The prior Vids route/permission and Flow routes remain supported. No tab URL mutation or refresh behavior was added.
 
 Verification on 28 October 2026: `npm test -- --reporter=dot` PASS (8 files / 64 tests); typecheck, lint, Prettier, production build (Vite 8.3.5; 146 modules), manifest/build asset check, and `git diff --check` PASS. New shared build ID: **`automat-faceless-0.1.0-mvrrrsd0`**. Discovery, parser, permission, and connector tests include the exact supplied URL with its `pli`, scene query, and fragment; the test confirms the original URL string remains unchanged. At that time, live Chrome/Flow/Vids verification was **NOT_RUN**. The later screenshot and USER_REPORTED_PASS evidence is recorded in the current P02.4 entry above. See [connection-proof.md](docs/evidence/connection-proof.md).
+
+## P03.1 input contract, fixtures, and preliminary budget
+
+P03.1 is **OFFLINE_VERIFIED** for the proposed input contract, stable identity policy, deterministic synthetic fixture corpus, and preliminary application size/count assessment. Checks on 28 October 2026: `npm test -- --reporter=dot` PASS (9 files / 72 tests); focused input-policy suite PASS (1 file / 8 tests); typecheck, lint, Prettier, production build (Vite 8.3.5; 146 modules), and `git diff --check` PASS. Shared build ID: `automat-faceless-0.1.0-mvrswqqb`. The P02.1+ production build was packaged, but Chrome/live verification is **NOT_RUN**. P03.1 does not close real-sample-dependent acceptance. P00.2 remains **EVIDENCE_PENDING** because no representative production image or video prompt is available. The approved structural image example remains synthetic.
+
+The policy and its evidence limits are recorded in [INPUT_FORMAT.md](INPUT_FORMAT.md); exact fixture measurements/provenance and negative-case expectations are in [tests/fixtures/prompts/README.md](tests/fixtures/prompts/README.md). No scanner, importer, import UI, or imported-item persistence pipeline was implemented. P03.2–P03.4 remain **NOT_STARTED** and Phase 03 remains **INCOMPLETE**.
