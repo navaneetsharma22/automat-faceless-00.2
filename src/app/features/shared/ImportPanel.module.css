@@ -13,6 +13,35 @@
   overflow-wrap: anywhere;
 }
 
+.exportDetails {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.exportDetails p {
+  margin: 0;
+}
+
+.exportDetails summary {
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.exportDetails code {
+  display: block;
+  margin-block-start: var(--space-1);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .sourceActions,
 .validateRow {
   display: flex;

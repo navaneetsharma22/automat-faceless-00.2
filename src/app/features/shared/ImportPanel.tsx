@@ -11,6 +11,10 @@ import { Notice } from "../../components/Notice";
 import { useToast } from "../../components/ToastHost";
 import type { ImportPreviewSession } from "./importPreviewSession";
 import { readJsonSourceFile } from "./importFile";
+import {
+  exportSavedPromptSource,
+  type SavedSourceExportDetails,
+} from "./savedSourceExport";
 import styles from "./ImportPanel.module.css";
 
 type ExampleConfirmation =
@@ -61,6 +65,11 @@ export function ImportPanel({
   const [savedSource, setSavedSource] = useState<string | undefined>();
   const [savedAt, setSavedAt] = useState<number | undefined>();
   const [confirmLoad, setConfirmLoad] = useState(false);
+  const [exportingSavedSource, setExportingSavedSource] = useState(false);
+  const [exportError, setExportError] = useState<string | undefined>();
+  const [exportDetails, setExportDetails] = useState<
+    SavedSourceExportDetails | undefined
+  >();
   const fileRequest = useRef(0);
   const lastToastId = useRef(0);
   const label = kind === "image" ? "Image" : "Video";
@@ -319,6 +328,28 @@ export function ImportPanel({
     void loadSavedBatch();
   };
 
+  const exportSavedSource = async () => {
+    setExportingSavedSource(true);
+    setExportError(undefined);
+    setExportDetails(undefined);
+    try {
+      const details = await exportSavedPromptSource(
+        persistenceClient,
+        workspaceId,
+        kind,
+      );
+      setExportDetails(details);
+    } catch (error) {
+      setExportError(
+        error instanceof Error
+          ? error.message
+          : "The saved source could not be exported.",
+      );
+    } finally {
+      setExportingSavedSource(false);
+    }
+  };
+
   return (
     <div
       className={styles.importPanel}
@@ -411,7 +442,9 @@ export function ImportPanel({
           type="button"
           variant="secondary"
           disabled={
-            persistenceStatus === "loading" || persistenceStatus === "saving"
+            persistenceStatus === "loading" ||
+            persistenceStatus === "saving" ||
+            exportingSavedSource
           }
           onClick={requestLoadSavedBatch}
         >
@@ -421,12 +454,31 @@ export function ImportPanel({
         </Button>
         <Button
           type="button"
-          disabled={!currentValidation || persistenceStatus === "saving"}
+          disabled={
+            !currentValidation ||
+            persistenceStatus === "saving" ||
+            persistenceStatus === "loading" ||
+            exportingSavedSource
+          }
           loading={persistenceStatus === "saving"}
           loadingLabel="Saving…"
           onClick={() => void saveValidatedBatch()}
         >
           Save validated batch
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={
+            exportingSavedSource ||
+            persistenceStatus === "saving" ||
+            persistenceStatus === "loading"
+          }
+          loading={exportingSavedSource}
+          loadingLabel="Exporting saved source…"
+          onClick={() => void exportSavedSource()}
+        >
+          Export saved source
         </Button>
       </div>
       <p role="status" aria-live="polite">
@@ -475,6 +527,20 @@ export function ImportPanel({
         >
           {persistenceError}
         </Notice>
+      ) : null}
+      {exportError ? <Notice kind="error">{exportError}</Notice> : null}
+      {exportDetails ? (
+        <div className={styles.exportDetails} role="status" aria-live="polite">
+          <p>Saved source download started: {exportDetails.fileName}</p>
+          <p>
+            {exportDetails.codeUnits.toLocaleString()} JavaScript code units ·{" "}
+            {exportDetails.byteCount.toLocaleString()} UTF-8 bytes
+          </p>
+          <details>
+            <summary>SHA-256</summary>
+            <code>{exportDetails.sha256}</code>
+          </details>
+        </div>
       ) : null}
 
       <div className={styles.validateRow}>

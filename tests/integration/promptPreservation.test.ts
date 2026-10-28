@@ -3,6 +3,7 @@ import { importPromptBatch } from "../../src/domain/batches/importBatch";
 import { INPUT_POLICY } from "../../src/domain/batches/inputPolicy";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
 import { createFoundationClient } from "../../src/shared/messageClient";
+import { exportSavedPromptSource } from "../../src/app/features/shared/savedSourceExport";
 import {
   PromptBatchInputSchema,
   PromptBatchSnapshotSchema,
@@ -232,6 +233,132 @@ describe("P03.4 prompt preservation through schema, repository, and worker messa
       tabId: 42,
       reconnectEnabled: false,
     });
+  });
+
+  it("exports the validated saved source bytes for the requested workspace and kind without mutations", async () => {
+    const { client, transport, repositories } = createHarness();
+    const workspaceId = "source-export-workspace";
+    const specialText = 'quote: "; slash: \\; embedded newline: \n';
+    const source = [
+      "{\r\n",
+      '  "shot_id":"7",\n',
+      `  "locale":${JSON.stringify("हिंदी 🦕")},\r\n`,
+      `  "escaped":${JSON.stringify(specialText)}\n`,
+      "}",
+    ].join("");
+    await putBatch(client, workspaceId, "image", source);
+    await putBatch(
+      client,
+      workspaceId,
+      "video",
+      '{"shot_id":"8","scene":"other kind"}',
+    );
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: 51,
+      canonicalTarget: "https://labs.google/fx/tools/flow/export-image",
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Vids",
+      tabId: 52,
+      canonicalTarget: "https://docs.google.com/videos/d/export-video/edit",
+    });
+
+    const beforeImage = await getBatch(client, workspaceId, "image");
+    const beforeVideo = await getBatch(client, workspaceId, "video");
+    const beforeFlow = await repositories.getSelectedTarget("Flow");
+    const beforeVids = await repositories.getSelectedTarget("Vids");
+    const requests: AppRequest[] = [];
+    const readOnlyClient = createFoundationClient({
+      sendMessage: (request) => {
+        requests.push(request);
+        return transport.sendMessage(request);
+      },
+    });
+    let downloadedBytes: Uint8Array | undefined;
+    let downloadedFileName: string | undefined;
+
+    const details = await exportSavedPromptSource(
+      readOnlyClient,
+      workspaceId,
+      "image",
+      (bytes, fileName) => {
+        downloadedBytes = bytes.slice();
+        downloadedFileName = fileName;
+      },
+    );
+
+    expect(requests.map(({ type }) => type)).toEqual(["promptBatch.get"]);
+    expect(requests[0]).toMatchObject({
+      type: "promptBatch.get",
+      payload: { workspaceId, kind: "image" },
+    });
+    expect(downloadedFileName).toBe(
+      "automat-faceless-source-export-workspace-image-saved-source.json",
+    );
+    expect(
+      new TextDecoder("utf-8", { fatal: true }).decode(downloadedBytes),
+    ).toBe(source);
+    expect(downloadedBytes).toEqual(new TextEncoder().encode(source));
+    expect(details).toMatchObject({
+      fileName: downloadedFileName,
+      codeUnits: source.length,
+      byteCount: new TextEncoder().encode(source).byteLength,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(source),
+    );
+    expect(details.sha256).toBe(
+      Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join(""),
+    );
+    expect(await getBatch(client, workspaceId, "image")).toEqual(beforeImage);
+    expect(await getBatch(client, workspaceId, "video")).toEqual(beforeVideo);
+    expect(await repositories.getSelectedTarget("Flow")).toEqual(beforeFlow);
+    expect(await repositories.getSelectedTarget("Vids")).toEqual(beforeVids);
+  });
+
+  it("reports missing saved data and rejects a response for another workspace without downloading", async () => {
+    const { client, transport } = createHarness();
+    let downloadCount = 0;
+    await expect(
+      exportSavedPromptSource(client, "empty-export-workspace", "video", () => {
+        downloadCount += 1;
+      }),
+    ).rejects.toMatchObject({
+      category: "not_found",
+      message: "No saved prompt batch exists for this workspace and kind.",
+    });
+
+    await putBatch(
+      client,
+      "other-export-workspace",
+      "image",
+      '{"scene":"saved"}',
+    );
+    const wrongScopeClient = createFoundationClient({
+      sendMessage: (request) =>
+        transport.sendMessage({
+          ...request,
+          payload: { workspaceId: "other-export-workspace", kind: "image" },
+        }),
+    });
+    await expect(
+      exportSavedPromptSource(
+        wrongScopeClient,
+        "requested-export-workspace",
+        "image",
+        () => {
+          downloadCount += 1;
+        },
+      ),
+    ).rejects.toThrow(
+      "The saved prompt batch did not match this workspace and kind.",
+    );
+    expect(downloadCount).toBe(0);
   });
 
   it("rejects an invalid complete batch without replacing the previous saved batch", async () => {

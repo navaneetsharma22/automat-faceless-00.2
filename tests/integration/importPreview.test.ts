@@ -110,6 +110,7 @@ describe("P03.3 import preview integration", () => {
     expect(markup).toContain("Nothing has been sent to a provider");
     expect(markup).toContain("Show raw body");
     expect(markup).toContain("Load saved batch");
+    expect(markup).toContain("Export saved source");
     expect(markup).toMatch(/<button[^>]*>Save validated batch<\/button>/);
     expect(markup).not.toContain("<pre");
   });

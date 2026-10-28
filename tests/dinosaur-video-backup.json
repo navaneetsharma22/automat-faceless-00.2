@@ -1,0 +1,276 @@
+{
+  "shot_id": "01",
+  "prompt_type": "video",
+  "scene_title": "The Silent Giant Beyond the Mist — First Movement",
+  "primary_instruction": "Animate the supplied dinosaur reference image into one continuous, photorealistic cinematic documentary shot. Preserve the reference image's animal identity, anatomy, environment, composition, lighting and colour relationships. Introduce restrained, physically believable movement that makes the existing moment feel alive without redesigning the scene.",
+  "reference_image_contract": {
+    "reference_role": "The supplied image establishes the starting composition and the visual identity of this shot.",
+    "starting_frame": "Begin as close as possible to the supplied reference image. Preserve the original subject placement, head orientation, body proportions, forest layout and direction of light.",
+    "subject_identity": "Keep the same dinosaur throughout the clip. Preserve its head shape, eye placement, skin colour, distinctive surface markings, body mass and tail proportions.",
+    "environment_identity": "Maintain the same tree positions, foreground foliage, ground texture, puddles and background depth layers.",
+    "composition_identity": "Keep the low observational viewpoint and the visual relationship between the dinosaur, foreground vegetation and lighter mist behind its head.",
+    "detail_priority": "Retain clear continuity in the eye, jawline, shoulder, planted foot and visible tail connection.",
+    "occluded_regions": "Keep movements conservative where the reference does not reveal anatomy or background detail. Avoid large rotations that require inventing a different animal or rebuilding the environment."
+  },
+  "creative_direction": {
+    "purpose": "Create a premium natural-history documentary clip suitable for a faceless cinematic narrative.",
+    "story_moment": "An enormous animal pauses in a wet forest after detecting a distant disturbance. Its breathing, a small adjustment of its gaze and the movement of mist reveal that this is a living environment.",
+    "emotional_tone": [
+      "mysterious",
+      "majestic",
+      "watchful",
+      "quietly tense",
+      "immersive"
+    ],
+    "performance_style": "Observe the dinosaur as a wild animal rather than a theatrical monster. Movement should feel economical, weight-bearing and motivated by its surroundings.",
+    "visual_style": "Photorealistic wildlife cinematography with restrained cinematic treatment, coherent materials and natural atmospheric depth.",
+    "narrative_focus": "Use small changes in attention and posture to build tension. The viewer should feel that the animal has noticed something beyond the frame."
+  },
+  "shot_structure": {
+    "shot_count": 1,
+    "continuity": "One uninterrupted shot with no cuts, transitions, montage panels or changes of location.",
+    "duration_handling": "Distribute the movement naturally across the generation duration selected manually in the provider interface.",
+    "opening": "Establish the supplied image as a stable, recognizable starting moment.",
+    "development": "Introduce subtle breathing, controlled camera movement, a small head adjustment and gently evolving environmental motion.",
+    "ending": "Settle into a composed final moment in which the dinosaur remains alert and the forest continues to move softly around it.",
+    "editorial_utility": "Keep the opening and ending visually stable enough to support later documentary editing."
+  },
+  "subject_animation": {
+    "primary_subject": "The same single Tyrannosaurus rex visible in the reference image.",
+    "breathing": {
+      "motion": "Show slow, restrained expansion and relaxation around the ribcage, lower neck and shoulder region.",
+      "amplitude": "Small enough to preserve the animal's silhouette and avoid a rubber-like swelling effect.",
+      "coordination": "Skin folds and nearby muscle surfaces should respond coherently to the breathing motion.",
+      "rhythm": "Use an unhurried natural rhythm without making every movement perfectly periodic."
+    },
+    "head_and_neck": {
+      "motion": "The head makes a small, deliberate adjustment toward the right side of the composition, following the direction of an unseen disturbance.",
+      "range": "Keep the movement conservative and close to the original orientation.",
+      "weight": "The head should feel heavy. Begin and end the movement with controlled acceleration and deceleration.",
+      "neck_response": "Allow subtle coordinated changes in the neck and shoulder surfaces rather than rotating the head as a disconnected object.",
+      "restriction": "Do not turn the animal fully toward the camera or expose a dramatically different side of its face."
+    },
+    "eyes": {
+      "gaze": "Shift attention slightly toward the unseen disturbance while preserving the original eye placement and shape.",
+      "blink": "Include one understated, anatomically coherent blink if it fits naturally within the selected duration.",
+      "reflections": "Keep eye reflections consistent with the forest lighting and the small change in head orientation.",
+      "restriction": "No glowing eyes, exaggerated pupil changes or human-like emotional expressions."
+    },
+    "jaw_and_mouth": {
+      "position": "Keep the mouth nearly closed, consistent with the reference.",
+      "motion": "Allow only a subtle natural jaw adjustment associated with breathing or attention.",
+      "teeth": "Maintain stable tooth placement and consistent jaw anatomy.",
+      "restriction": "No roaring, wide-open mouth, additional rows of teeth, saliva strings or sudden aggressive lunges."
+    },
+    "body_and_balance": {
+      "motion": "Introduce a very small weight adjustment through the hips and torso while the animal remains essentially in place.",
+      "mass": "The movement must communicate substantial body weight rather than a light, floating character.",
+      "support": "Keep the center of mass supported by the visible legs.",
+      "surface_response": "Allow restrained skin and muscle movement where the body changes tension.",
+      "restriction": "Do not make the torso expand, shrink, twist or change proportions between frames."
+    },
+    "legs_and_feet": {
+      "contact": "Keep the reference image's planted foot in firm contact with the same area of ground.",
+      "motion": "A slight pressure adjustment may compress the mud locally without creating a full step.",
+      "water_response": "If a visible puddle is close enough to the planted foot, introduce a small corresponding ripple.",
+      "restriction": "No foot sliding, floating toes, duplicated legs, full walking cycle or newly invented footsteps."
+    },
+    "forelimbs": {
+      "motion": "Allow minimal secondary motion driven by the torso's small adjustment.",
+      "continuity": "Preserve their size, attachment points and visible shape.",
+      "restriction": "Do not enlarge the forelimbs or make them perform human-like gestures."
+    },
+    "tail": {
+      "motion": "Use a small counterbalancing movement consistent with the body's weight adjustment.",
+      "continuity": "Maintain one continuous tail connected to the hips.",
+      "depth": "Preserve its relationship with trees and vegetation that partially obscure it.",
+      "restriction": "Avoid a large sweeping movement that intersects tree trunks or changes the composition."
+    }
+  },
+  "camera_direction": {
+    "starting_viewpoint": "Match the supplied image's low camera position near the forest floor.",
+    "primary_move": "A very slow, short forward dolly toward the dinosaur's head and near shoulder.",
+    "secondary_move": "Allow only a faint lateral drift if it strengthens natural foreground parallax without changing the established viewing angle.",
+    "move_extent": "Keep the camera displacement modest. The shot should remain recognizably based on the supplied image from beginning to end.",
+    "perspective": "Maintain coherent perspective and stable body proportions as the camera approaches.",
+    "framing": "Preserve breathing room around the head and keep the planted foot or its ground-contact context readable where the reference composition permits.",
+    "focus": {
+      "primary_target": "The near eye and upper head.",
+      "secondary_detail": "The near shoulder and selected skin texture.",
+      "behavior": "Maintain stable focus with gentle optical depth falloff.",
+      "restriction": "No dramatic rack focus, focus hunting or sudden background sharpening."
+    },
+    "parallax": {
+      "foreground": "Nearby leaves should move slightly more across the frame than the dinosaur.",
+      "subject": "The dinosaur's apparent movement should reflect both its subtle performance and the camera's small displacement.",
+      "background": "Distant trees and mist layers should shift less than foreground elements.",
+      "restriction": "Do not move the whole image as one flat card."
+    },
+    "stabilization": "Smooth, controlled observational movement without handheld jitter.",
+    "restrictions": [
+      "No orbit around the dinosaur",
+      "No whip pan",
+      "No crash zoom",
+      "No sudden focal-length change",
+      "No camera roll",
+      "No aerial movement",
+      "No cut to another angle"
+    ]
+  },
+  "environment_animation": {
+    "mist": {
+      "motion": "Allow thin layers of mist to drift slowly between the trees and around the animal's lower body.",
+      "direction": "Use one coherent prevailing direction with small local variations.",
+      "depth": "Move near and distant mist layers at subtly different apparent speeds.",
+      "density": "Preserve the reference image's overall visibility and contrast.",
+      "restriction": "Do not let the mist suddenly cover the face or erase the animal's silhouette."
+    },
+    "foreground_foliage": {
+      "motion": "Selected leaves move gently under a light breeze and the weight of accumulated water droplets.",
+      "variation": "Different leaves should respond with slightly different timing and amplitude.",
+      "attachment": "Keep stems and leaves connected to their original plants.",
+      "restriction": "Avoid synchronized swaying, melting leaf edges or foliage growing between frames."
+    },
+    "background_vegetation": {
+      "motion": "Use extremely subtle movement in flexible branches and distant foliage.",
+      "stability": "Large tree trunks remain stationary.",
+      "restriction": "Do not rearrange trees, change forest density or introduce new clearings."
+    },
+    "water_droplets": {
+      "motion": "A few visible droplets may release from nearby leaves and fall naturally.",
+      "frequency": "Sparse and irregular.",
+      "scale": "Keep droplet size appropriate to the foreground plants.",
+      "restriction": "No continuous heavy rain or decorative glitter-like particles."
+    },
+    "puddles": {
+      "motion": "Introduce small expanding ripples where droplets land or where ground pressure plausibly disturbs nearby water.",
+      "reflections": "Reflected trees, sky gaps and subject tones should respond coherently to the ripple motion.",
+      "restriction": "Do not turn shallow puddles into flowing streams or large bodies of water."
+    },
+    "ground": {
+      "motion": "Keep most soil and roots stable, with only localized deformation around the weight-bearing foot.",
+      "detail": "Preserve existing footprints, stones, roots and mud patterns.",
+      "restriction": "No ground sliding, growing roots or unexplained changes in terrain."
+    }
+  },
+  "normalized_action_progression": [
+    {
+      "start_fraction": 0.0,
+      "end_fraction": 0.2,
+      "subject_action": "Hold the reference composition with subtle breathing and watchful attention.",
+      "camera_action": "Begin the slow forward movement gently.",
+      "environment_action": "Establish soft mist drift and restrained movement in selected foreground leaves."
+    },
+    {
+      "start_fraction": 0.2,
+      "end_fraction": 0.65,
+      "subject_action": "The dinosaur makes a small deliberate head adjustment and a restrained shift in gaze toward the unseen disturbance.",
+      "camera_action": "Continue the same slow approach without changing direction or introducing a new camera move.",
+      "environment_action": "Allow a small number of droplets to fall, producing delicate localized ripples where visible."
+    },
+    {
+      "start_fraction": 0.65,
+      "end_fraction": 0.9,
+      "subject_action": "The animal settles into its adjusted posture, maintaining grounded weight and consistent anatomy.",
+      "camera_action": "Ease the forward movement gradually.",
+      "environment_action": "Maintain coherent mist drift and gentle vegetation motion without increasing intensity."
+    },
+    {
+      "start_fraction": 0.9,
+      "end_fraction": 1.0,
+      "subject_action": "Finish with a stable, alert pose and quiet breathing.",
+      "camera_action": "Arrive at a composed final framing with no abrupt stop.",
+      "environment_action": "Let the forest remain softly alive while preserving a readable final image."
+    }
+  ],
+  "lighting_continuity": {
+    "reference_match": "Retain the reference image's soft morning daylight and the established relationship between illuminated and shaded surfaces.",
+    "key_direction": "Keep the same apparent direction of the principal daylight throughout the clip.",
+    "ambient_fill": "Preserve the cool, restrained environmental fill from mist and vegetation.",
+    "moving_highlights": "Wet highlights may shift slightly as the animal and camera move, but must remain tied to the same surface and light sources.",
+    "volumetric_light": "Let existing light shafts change only subtly as mist moves through them.",
+    "shadow_behavior": "Ground-contact shadows and body shadows must remain consistent with subject motion.",
+    "exposure": "Maintain stable exposure without brightness pumping.",
+    "restrictions": [
+      "No lightning",
+      "No sunrise time-lapse",
+      "No sudden spotlight",
+      "No flickering highlights",
+      "No new coloured light source"
+    ]
+  },
+  "colour_and_finishing": {
+    "reference_palette": [
+      "Deep forest green",
+      "Muted olive",
+      "Wet earth brown",
+      "Charcoal",
+      "Cool grey mist",
+      "Soft neutral daylight"
+    ],
+    "grade": "Preserve the reference image's restrained natural-history documentary treatment.",
+    "contrast": "Maintain readable shadow detail and gentle highlight rolloff.",
+    "saturation": "Keep colour saturation stable and natural.",
+    "texture": "Preserve fine skin, bark and foliage detail without temporal sharpening shimmer.",
+    "optical_finish": "Use a clean cinematic image with subtle natural softness in out-of-focus regions.",
+    "postproduction_intent": "Any finishing should support coherent natural footage. Do not introduce titles, graphic overlays or software interface elements.",
+    "restrictions": [
+      "No abrupt colour-grade change",
+      "No heavy orange-and-teal treatment",
+      "No oversaturated vegetation",
+      "No crushed black shadows",
+      "No artificial neon glow"
+    ]
+  },
+  "temporal_consistency": {
+    "anatomy": "Head shape, limb count, joint placement, tooth arrangement and tail connection must remain stable across frames.",
+    "surface_identity": "Keep scars, markings, wrinkles and major skin patterns attached to the same regions of the animal.",
+    "object_permanence": "Plants, branches, stones and puddles should persist unless naturally occluded.",
+    "occlusion": "When an object passes behind foliage, it must reappear with the same identity and proportions.",
+    "depth": "Preserve the established ordering of foreground foliage, animal, nearby trees and distant forest.",
+    "motion": "Avoid sudden acceleration, discontinuous movement and unmotivated changes in direction.",
+    "frame_integrity": "Prevent texture crawling, edge flicker, body morphing and ghosted duplicate contours."
+  },
+  "audio_direction": {
+    "dialogue": "None.",
+    "narration": "None. Documentary narration will be handled separately.",
+    "music": "None.",
+    "ambient_sound": "If audio generation is enabled by the user's provider settings, use quiet forest ambience, occasional water droplets and subtle vegetation movement.",
+    "subject_sound": "A restrained low breathing presence may be included if it fits naturally, without exaggerated monster effects.",
+    "sound_perspective": "Keep sounds consistent with the low observational camera position and the animal's apparent distance.",
+    "restriction": "Do not change provider audio settings. If the selected mode is silent, preserve a silent result."
+  },
+  "negative_constraints": [
+    "No scene cuts",
+    "No montage",
+    "No additional dinosaurs",
+    "No humans",
+    "No modern structures",
+    "No vehicles",
+    "No weapons",
+    "No fantasy armour",
+    "No glowing eyes",
+    "No roaring attack",
+    "No blood or gore",
+    "No sudden running",
+    "No full walking cycle",
+    "No duplicate limbs",
+    "No disconnected tail",
+    "No foot sliding",
+    "No floating body",
+    "No melting foliage",
+    "No moving tree trunks",
+    "No camera shake",
+    "No dramatic zoom",
+    "No subtitles",
+    "No logos",
+    "No watermarks",
+    "No interface graphics",
+    "No baked-in typography"
+  ],
+  "language_reference": {
+    "hindi_direction": "वही विशाल जीव, वही जंगल और वही धुंध बनी रहे। केवल उसकी धीमी साँस, हल्का सिर घुमाना, पत्तों की सूक्ष्म गति और कैमरे का शांत आगे बढ़ना दिखाई दे।",
+    "text_rendering": "This Hindi direction is creative context only. Do not display it as text in the video."
+  },
+  "final_instruction": "Produce one coherent image-to-video documentary shot that feels like the supplied still has become a living moment. Prioritize reference fidelity, restrained animal performance, grounded weight, continuous anatomy, subtle camera movement and consistent environmental motion over spectacle."
+}

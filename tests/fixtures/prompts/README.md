@@ -45,3 +45,14 @@ These existing synthetic records established one-body preservation through the m
 | syntheticPromptBodies.long |     1,260,163 |   1,652,165 |     6 |            1 | SYNTHETIC_P02_MOCK_TRANSPORT_FIXTURE |
 
 The three P02 measurements above are retained historical measurements from P02.2's evidence record. P03.1 tests validate the new corpus's content, length, UTF-8 measurement, line count, and provenance. P03.2 importer tests verify exact source spans and atomic rejection for representative input forms. No tests establish storage of these new fixture bodies, provider limits, or generation behavior.
+
+## P03 browser long-CRLF fixtures
+
+These files are one-prompt synthetic JSON inputs prepared for the remaining manual packaged-dashboard save/reopen/load check. Each is valid UTF-8 without a BOM and contains nested objects, decimal arrays, escaped strings, Hindi, emoji, and a clearly labeled synthetic payload. The files use actual CRLF line endings; the CRLF count includes all line breaks in the file. Measurements and SHA-256 values were calculated from the written bytes after strict UTF-8 decoding and JSON parsing.
+
+| Fixture file                         | Kind  | Expected prompts | JS code units | UTF-8 bytes | CRLF | Bare LF | SHA-256                                                            |
+| ------------------------------------ | ----- | ---------------: | ------------: | ----------: | ---: | ------: | ------------------------------------------------------------------ |
+| `p03-image-long-crlf.synthetic.json` | image |                1 |        25,000 |      25,062 |   42 |       0 | `618342596a32b30a3e37ac1fc45b1b1b67c103e9f85e691a01065359844fb0f4` |
+| `p03-video-long-crlf.synthetic.json` | video |                1 |        25,000 |      25,062 |   42 |       0 | `7d04aee9475c7269a814f422542f026a86583bb720b61be7a8371eea53f2edc0` |
+
+The 62-byte difference between code units and UTF-8 bytes comes from multibyte Hindi and emoji characters. Both files have zero bare CR characters, contain no BOM, and passed strict UTF-8 decoding and `JSON.parse`. These fixture checks are file-integrity evidence only; they are not browser save/readback or preservation evidence.

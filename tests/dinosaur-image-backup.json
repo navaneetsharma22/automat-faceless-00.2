@@ -1,0 +1,234 @@
+{
+  "shot_id": "01",
+  "prompt_type": "image",
+  "scene_title": "The Silent Giant Beyond the Mist",
+  "primary_instruction": "Create one exceptionally detailed, photorealistic cinematic image for a premium natural-history documentary. Show a single enormous dinosaur emerging from a dense, rain-soaked forest at first light. The image must communicate believable scale, quiet tension and the feeling of observing a living animal in its environment.",
+  "creative_direction": {
+    "story_context": "The audience is discovering this animal for the first time. Its head and upper body have emerged from the mist, while parts of the surrounding forest remain concealed. The scene should suggest a much larger world beyond the visible frame.",
+    "emotional_progression": "The viewer should first notice the animal's watchful eye, then understand its powerful body, then discover the small environmental details that communicate its extraordinary size.",
+    "mood": [
+      "mysterious",
+      "majestic",
+      "quietly threatening",
+      "immersive",
+      "observational"
+    ],
+    "visual_approach": "Use the visual language of a carefully photographed wildlife documentary combined with restrained cinematic lighting. The subject should feel physically present rather than designed as a fantasy monster.",
+    "storytelling_priority": "Tell the story through anatomy, posture, environmental scale, lighting and composition. Do not rely on written captions, symbols or exaggerated facial expressions."
+  },
+  "subject": {
+    "identity": "A single adult Tyrannosaurus rex presented as a natural-history reconstruction.",
+    "overall_appearance": "A large, muscular animal with convincing body mass, organic asymmetry and a coherent silhouette. Every visible body part must connect naturally to the same animal.",
+    "anatomy": {
+      "head": "A substantial head with believable underlying bone structure, subtle soft-tissue volume and natural variation around the jaw and eye socket.",
+      "neck": "A strong neck that transitions convincingly into the shoulders. Show restrained folds and changes in surface tension where the head turns.",
+      "torso": "A deep, weight-bearing torso with believable volume. Avoid a skeletal appearance or sharply outlined muscles that resemble a human bodybuilder.",
+      "hind_limbs": "Two powerful hind legs with consistent joint placement, clear separation and convincing contact with the ground.",
+      "forelimbs": "Two small forelimbs positioned naturally against the torso, without extra fingers, duplicate limbs or impossible articulation.",
+      "tail": "One continuous tail extending naturally behind the body as a counterbalance. Preserve its connection to the hips even where vegetation partially obscures it."
+    },
+    "surface_detail": {
+      "skin_character": "Organic skin with restrained scale patterns, folds, wrinkles and region-specific texture. The surface should vary naturally rather than repeat a uniform procedural pattern.",
+      "colouration": "Muted earth brown, charcoal and subdued olive tones with slightly lighter areas beneath the jaw and torso. Keep transitions irregular and natural.",
+      "wetness": "Small droplets and localized damp highlights on exposed surfaces. Avoid making the entire animal look polished, metallic or covered in oil.",
+      "weathering": "Include small, subtle scars and uneven patches of accumulated mud without turning them into dominant story elements.",
+      "eye_detail": "A small, alert eye with a realistic dark pupil, restrained colour and a soft reflection of the surrounding forest. No supernatural glow."
+    },
+    "pose": {
+      "orientation": "Three-quarter body view facing toward the right side of the composition.",
+      "head_position": "The head is slightly lowered and turned toward an unseen disturbance beyond the camera.",
+      "mouth": "Nearly closed, with a restrained suggestion of teeth visible through a small separation of the jaws.",
+      "weight_distribution": "The near hind foot is firmly planted in wet ground. The body's center of mass must feel supported rather than floating.",
+      "tail_position": "The tail extends behind the animal through a gap between trees, helping explain its full scale.",
+      "behavior": "The animal has paused while moving through the forest. Its posture conveys alert attention rather than a staged attack."
+    },
+    "expression": "Watchful, self-possessed and animal-like. Avoid a human smile, exaggerated anger or a theatrical roaring pose."
+  },
+  "environment": {
+    "setting": "A dense prehistoric forest reconstruction immediately after heavy rainfall.",
+    "time_of_day": "Early morning, when soft daylight begins to enter the canopy and low mist remains close to the ground.",
+    "weather": "The main rainfall has stopped. Leaves remain wet, occasional droplets fall from branches and moisture hangs in the still air.",
+    "foreground": {
+      "elements": [
+        "Broad fern leaves carrying individual water droplets",
+        "Dark wet soil with compressed footprints",
+        "Exposed roots crossing the lower edge of the frame",
+        "Small shallow puddles reflecting fragmented patches of sky",
+        "A fallen branch with rough bark and patches of moss"
+      ],
+      "placement": "Arrange foreground elements to create a natural frame around the lower corners without hiding the dinosaur's head or planted foot.",
+      "focus_treatment": "Allow selected leaves closest to the camera to fall gently out of focus. Keep their shapes recognizable rather than turning them into large abstract colour blobs.",
+      "scale_function": "Use the relative size of foliage, roots and disturbed ground to help the viewer understand the animal's mass."
+    },
+    "midground": {
+      "elements": [
+        "The primary dinosaur",
+        "Low vegetation pressed aside along its path",
+        "Several tree trunks at different distances",
+        "Thin layers of mist between the animal and surrounding plants",
+        "A small area of disturbed mud around the planted foot"
+      ],
+      "ground_interaction": "Show subtle compression of wet soil beneath the foot, a small displaced ridge of mud and a believable shallow disturbance in nearby water.",
+      "occlusion": "Let a limited amount of vegetation overlap the lower body. Preserve enough separation to make the legs, torso and tail understandable."
+    },
+    "background": {
+      "elements": [
+        "Tall overlapping tree trunks",
+        "Dense canopy with irregular openings",
+        "Layered vegetation fading into atmospheric haze",
+        "A narrow corridor of lighter mist behind the head"
+      ],
+      "depth_structure": "Create multiple distinct distance layers. Nearby trees should have visible bark texture; more distant trees should progressively lose contrast and detail.",
+      "negative_space": "Use a naturally lighter gap behind the head to preserve its silhouette without creating an artificial spotlight or obvious halo.",
+      "continuity": "The background must feel like the same forest as the foreground, with consistent plant scale, moisture, light direction and ground level."
+    }
+  },
+  "composition": {
+    "shot_design": "A wide environmental portrait that balances the animal with enough surrounding forest to establish scale and atmosphere.",
+    "subject_placement": "Place the dinosaur slightly left of center, allowing open visual space in the direction of its gaze.",
+    "framing": "Include the head, torso, both hind legs and enough of the tail to explain the animal's posture. Avoid accidental cropping through important joints.",
+    "visual_hierarchy": [
+      "The eye and upper edge of the head",
+      "The powerful shoulder and torso",
+      "The planted foot and disturbed ground",
+      "The tail leading into the mist",
+      "The layered forest beyond"
+    ],
+    "leading_lines": "Use roots, fallen branches and gaps between tree trunks to guide attention toward the head and shoulder.",
+    "balance": "Counter the animal's visual weight with a quieter area of mist and vegetation on the opposite side.",
+    "silhouette_readability": "Keep the jaw, neck, back, legs and tail distinguishable from nearby trees. Avoid tangencies where branches appear to grow from the body.",
+    "crop_safety": "Leave reasonable breathing room around the head and major body features so the image can tolerate modest editorial cropping.",
+    "depth": "Create a clear foreground, subject plane and background. Avoid flattening every element into the same level of sharpness and contrast."
+  },
+  "camera": {
+    "viewpoint": "A low observational viewpoint positioned close to the forest floor, as if the camera were concealed among wet plants.",
+    "perspective": "A natural cinematic wide perspective with enough environmental context to establish scale, while avoiding exaggerated stretching of the head or feet.",
+    "lens_character": "Realistic optical rendering with gentle falloff toward the edges and minimal geometric distortion.",
+    "focus_target": "The near eye and upper part of the head are the primary focus targets. The near shoulder should remain clearly resolved.",
+    "depth_of_field": "Moderate depth of field. Preserve useful detail through the animal while allowing the nearest leaves and farthest trees to soften gradually.",
+    "image_stability": "Render a crisp documentary still with no camera shake, motion streaks or artificial directional blur.",
+    "staging_reference": {
+      "camera_position": [
+        1.25,
+        2.5,
+        3.75
+      ],
+      "look_target": [
+        4.5,
+        3.25,
+        8.75
+      ],
+      "purpose": "Use these as illustrative staging coordinates while prioritizing the described low viewpoint, coherent perspective and readable animal silhouette."
+    }
+  },
+  "lighting": {
+    "key_light": {
+      "source": "Soft daylight passing through an irregular opening in the forest canopy.",
+      "direction": "From the upper left of the composition, slightly behind the camera-facing side of the animal.",
+      "quality": "Broad, diffused illumination with gentle transitions between lit and shaded surfaces.",
+      "priority": "Reveal the eye socket, upper jaw and selected shoulder surfaces without making the whole animal equally bright."
+    },
+    "ambient_fill": {
+      "source": "Cool light scattered by mist and reflected from the surrounding vegetation.",
+      "intensity": "Low enough to preserve shape, but sufficient to retain readable shadow detail.",
+      "colour": "Subtle cool grey with a restrained green environmental influence."
+    },
+    "edge_separation": "Allow a delicate natural highlight along selected sections of the head, neck and back. It should be caused by the environment rather than look like studio rim lighting.",
+    "volumetric_effect": "Include only a few soft light shafts where canopy openings and mist naturally align. Keep them secondary to the subject.",
+    "shadow_behavior": "Cast shadows consistently with the daylight direction. Make ground-contact shadows slightly denser beneath the planted foot and nearby body mass.",
+    "exposure": "Preserve texture in bright mist and wet highlights while keeping darker skin surfaces readable.",
+    "reflections": "Wet surfaces should reflect the actual surrounding brightness and colour. Avoid unrelated coloured reflections or mirror-like skin."
+  },
+  "colour_grading": {
+    "overall_direction": "A restrained natural-history documentary grade with cinematic depth.",
+    "palette": [
+      "Deep forest green",
+      "Muted olive",
+      "Wet earth brown",
+      "Charcoal",
+      "Cool grey mist",
+      "Soft neutral daylight"
+    ],
+    "contrast": "Moderate contrast with a clear subject silhouette and gentle highlight rolloff.",
+    "saturation": "Natural, slightly restrained saturation. Keep vegetation varied without turning it fluorescent.",
+    "skin_separation": "Maintain enough tonal difference between the animal and vegetation to preserve readability without introducing an unnatural colour cast.",
+    "highlights": "Soft neutral highlights with a faint suggestion of morning warmth.",
+    "shadows": "Slightly cool shadows that retain organic colour variation.",
+    "avoid": [
+      "Heavy orange-and-teal treatment",
+      "Crushed blacks",
+      "Clipped white mist",
+      "Oversaturated green foliage",
+      "Artificial neon accents"
+    ]
+  },
+  "atmosphere_and_materials": {
+    "mist": "Use thin, layered mist with varying density. It should reveal depth and partially conceal distant objects without becoming a uniform white curtain.",
+    "airborne_moisture": "Include very subtle suspended moisture only where light makes it visible.",
+    "foliage": "Show varied leaf thickness, small tears, natural curvature and localized water accumulation.",
+    "bark": "Tree bark should have irregular grooves and moisture-darkened areas rather than identical repeated patterns.",
+    "mud": "Render wet soil with mixed fine and coarse texture, small stones and realistic compression near the animal.",
+    "water": "Puddles should have uneven edges, subtle surface debris and reflections broken by small ripples.",
+    "detail_distribution": "Concentrate the finest detail around the animal's face, shoulder and ground contact. Let peripheral details support rather than compete with the subject."
+  },
+  "continuity_requirements": {
+    "subject_count": "Exactly one primary dinosaur.",
+    "anatomical_continuity": "All visible limbs, skin folds and body contours must belong to the same coherent animal.",
+    "environmental_continuity": "Maintain consistent forest density, moisture, ground level and atmospheric depth across the frame.",
+    "lighting_continuity": "The animal, vegetation, mist and puddles must share the same lighting conditions.",
+    "scale_continuity": "Keep the relative sizes of trees, plants, roots and footprints physically believable.",
+    "material_continuity": "Wetness should follow exposure and surface shape. Do not make sheltered surfaces equally soaked or reflective without a visible reason."
+  },
+  "quality_control": {
+    "anatomy_checks": [
+      "No duplicated head or jaw",
+      "No extra limbs",
+      "No disconnected tail",
+      "No fused hind legs",
+      "No impossible joint direction",
+      "No floating feet"
+    ],
+    "composition_checks": [
+      "The eye remains readable",
+      "The head separates from the background",
+      "The planted foot has convincing ground contact",
+      "Foreground foliage does not conceal the main subject",
+      "The frame contains clear depth layers"
+    ],
+    "rendering_checks": [
+      "Natural surface variation",
+      "Restrained sharpening",
+      "Consistent reflections",
+      "Believable shadow softness",
+      "No plastic or metallic skin",
+      "No visible procedural repetition"
+    ]
+  },
+  "exclusions": [
+    "Humans",
+    "Modern buildings",
+    "Roads",
+    "Vehicles",
+    "Weapons",
+    "Fantasy armour",
+    "Glowing eyes",
+    "Fire breath",
+    "Blood",
+    "Gore",
+    "Decorative magical particles",
+    "Additional dinosaurs",
+    "Logos",
+    "Watermarks",
+    "Captions",
+    "Charts",
+    "Interface elements",
+    "Baked-in typography",
+    "Collage layouts",
+    "Multiple panels"
+  ],
+  "language_reference": {
+    "hindi_scene_note": "धुंध से बाहर आता विशाल जीव—शांत जंगल, गीली मिट्टी और उसकी आँखों में सतर्कता।",
+    "instruction": "Use this sentence only as creative context. Do not render it as visible text inside the image."
+  },
+  "final_direction": "Deliver one cohesive, believable cinematic documentary image. Prioritize the animal's physical presence, readable anatomy, natural lighting, environmental scale and restrained atmosphere. Every detail should support the same moment rather than create a collection of unrelated visual effects."
+}
