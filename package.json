@@ -1,0 +1,40 @@
+{
+  "name": "automat-faceless",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Automat Faceless Chrome extension baseline",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,js,json,html}\" \"public/**/*.json\"",
+    "test": "vitest run --passWithNoTests",
+    "build": "tsc -b && vite build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dexie": "^4.4.7",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
+    "@types/chrome": "^0.3.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "playwright": "^1.64.1",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}
