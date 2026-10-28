@@ -49,7 +49,22 @@ function projectFromUrl(
   | undefined {
   try {
     const url = new URL(rawUrl);
-    if (url.protocol !== "https:") return undefined;
+    if (
+      url.protocol !== "https:" ||
+      url.username !== "" ||
+      url.password !== ""
+    ) {
+      return undefined;
+    }
+    if (url.hostname === "flow.google.com") {
+      const match = /^\/project\/([A-Za-z0-9_-]+)\/?$/.exec(url.pathname);
+      if (!match) return undefined;
+      return {
+        provider: "Flow",
+        projectId: match[1]!,
+        canonicalTarget: `${url.origin}/project/${match[1]}`,
+      };
+    }
     if (url.hostname === "labs.google") {
       const match = /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(
         url.pathname,

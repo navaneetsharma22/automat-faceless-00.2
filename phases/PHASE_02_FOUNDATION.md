@@ -1,6 +1,6 @@
 # P02 — Toolchain, MV3 foundation and platform connections
 
-Status: INCOMPLETE — P02.1, P02.2, and P02.3 OFFLINE_VERIFIED; P02.4 NOT_STARTED (live proof NOT_RUN).
+Status: INCOMPLETE — P02.1, P02.2, and P02.3 OFFLINE_VERIFIED; P02.4 package prepared, live proof NOT_RUN.
 
 **Outcome:** The new dashboard and worker connect read-only to the intended Flow/Vids targets with visible build identity.
 
@@ -154,7 +154,9 @@ Planned requirements:
 - Confirm reconnection without provider refresh and confirm existing Vids content remains intact.
 - Run negative target checks with mocks or separate test tabs, without touching unintended provider content.
 
-Current preservation live gate: **NOT_RUN**. No browser or open provider tab was available, so existing Vids content integrity and live Flow/Vids attachment remain unverified. Offline checks do not satisfy P02.4.
+P02.4 attempt, 28 October 2026: a focused toolbar-action fix was made because source inspection showed repeated activation always created another dashboard tab. The packaged dashboard now requests focus of its own tab/window and falls back to creating the dashboard only when no responder is available. Five focused mocked tests cover opening/focusing behavior and assert that the dashboard responder only activates its own tab/window; they do not prove Chrome runtime behavior. Production `dist` was rebuilt: version `0.1.0`, shared build ID `automat-faceless-0.1.0-mvrp0m5h`, minimum Chrome `106`; dashboard, worker, and standalone connector artifact IDs match. See [connection proof](../docs/evidence/connection-proof.md).
+
+Current live gate: **NOT_RUN**. The browser-control inventory exposed no browser session or extension-management UI, and no usable existing Chrome session/version could be identified. No separate profile was launched. The extension was not loaded; no provider tab was accessed; permissions, explicit targets, real handshakes, lifecycle recovery, and Flow/Vids content preservation were not observed. The UI/live acceptance is therefore still pending manual verification in the user's existing profile. Do not treat static artifacts or mocks as P02.4 completion.
 
 ## Phase gate
 

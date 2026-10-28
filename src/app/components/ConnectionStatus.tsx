@@ -4,6 +4,7 @@ import { handleWorkerRestart } from "../../platforms/shared/connectionLifecycle"
 import { attachToSelectedTab } from "../../platforms/shared/connection";
 import {
   createChromeConnectionPort,
+  hasTabListingAccess,
   listOpenProviderTabs,
   requestTabListingAccess,
 } from "../../platforms/shared/chromeConnectionPort";
@@ -73,6 +74,7 @@ export function ConnectionStatus() {
   });
   const [states, setStates] = useState(initialStates);
   const [listError, setListError] = useState("");
+  const [needsTabListingAccess, setNeedsTabListingAccess] = useState(false);
   const [busy, setBusy] = useState<ProviderName | undefined>();
   const toast = useToast();
 
@@ -167,8 +169,74 @@ export function ConnectionStatus() {
     };
   }, [invalidate, states]);
 
+  const applyTabListing = (
+    listing: Awaited<ReturnType<typeof listOpenProviderTabs>>,
+  ) => {
+    const openTabs = listing.tabs;
+    setTabs(openTabs);
+    for (const provider of providers) {
+      const existing = saved[provider];
+      const match = openTabs.find(
+        (tab) =>
+          tab.id === existing?.tabId &&
+          tab.canonicalTarget === existing?.canonicalTarget,
+      );
+      if (match) {
+        setSelected((current) => ({
+          ...current,
+          [provider]: String(match.id),
+        }));
+        setSelectionSaved((current) => ({ ...current, [provider]: true }));
+      } else {
+        setSelected((current) => ({ ...current, [provider]: "" }));
+        setSelectionSaved((current) => ({ ...current, [provider]: false }));
+        if (existing) {
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: "wrong-target",
+              message: "Saved project is no longer open. Select it again.",
+            },
+          }));
+        }
+      }
+    }
+    if (openTabs.length === 0 && listing.unsupportedProviderRoutes > 0) {
+      setListError(
+        "Flow or Vids tabs were found, but their editor/project route is unsupported. No project was inferred from the tab title.",
+      );
+    } else if (openTabs.length === 0 && listing.unavailableUrls > 0) {
+      setListError(
+        "Some tab URLs were unavailable, so they could not be checked for Flow or Vids projects. No project was inferred from tab titles.",
+      );
+    } else if (openTabs.length === 0) {
+      setListError(
+        "No matching Flow or Vids project tabs were found. Open the intended project and retry.",
+      );
+    } else if (listing.unsupportedProviderRoutes > 0) {
+      setListError(
+        "Some Flow or Vids tabs use unsupported editor/project routes and were not listed.",
+      );
+    } else if (listing.unavailableUrls > 0) {
+      setListError(
+        "Some tab URLs were unavailable and could not be assessed; supported projects are listed below.",
+      );
+    }
+  };
+
+  const queryOpenTabs = async () => {
+    try {
+      applyTabListing(await listOpenProviderTabs());
+    } catch {
+      setListError(
+        "Tab query failed. Chrome could not return the open tab list; retry discovery or inspect the extension error details.",
+      );
+    }
+  };
+
   const findOpenTabs = async () => {
     setListError("");
+    setNeedsTabListingAccess(false);
     try {
       if (!extensionAvailable()) {
         setListError(
@@ -176,49 +244,41 @@ export function ConnectionStatus() {
         );
         return;
       }
-      if (!(await requestTabListingAccess())) {
+      if (!(await hasTabListingAccess())) {
+        setNeedsTabListingAccess(true);
         setListError(
-          "Permission needed · allow tab access to identify an already-open Flow or Vids project.",
+          "Permission required · tab access is needed to read URLs and identify Flow/Vids project routes. No tabs were queried.",
         );
         return;
       }
-      const openTabs = await listOpenProviderTabs();
-      setTabs(openTabs);
-      for (const provider of providers) {
-        const existing = saved[provider];
-        const match = openTabs.find(
-          (tab) =>
-            tab.id === existing?.tabId &&
-            tab.canonicalTarget === existing?.canonicalTarget,
-        );
-        if (match) {
-          setSelected((current) => ({
-            ...current,
-            [provider]: String(match.id),
-          }));
-          setSelectionSaved((current) => ({ ...current, [provider]: true }));
-        } else {
-          setSelected((current) => ({ ...current, [provider]: "" }));
-          setSelectionSaved((current) => ({ ...current, [provider]: false }));
-          if (existing) {
-            setStates((current) => ({
-              ...current,
-              [provider]: {
-                status: "wrong-target",
-                message: "Saved project is no longer open. Select it again.",
-              },
-            }));
-          }
-        }
-      }
-      if (openTabs.length === 0) {
-        setListError(
-          "No supported open Flow or Vids project tabs were found. Open the intended project and retry.",
-        );
-      }
     } catch {
       setListError(
-        "Could not list tabs. Allow tab access in the browser prompt and retry.",
+        "Could not check tab access. No tabs were queried; retry the access check.",
+      );
+      return;
+    }
+    await queryOpenTabs();
+  };
+
+  const allowTabListingAccess = async () => {
+    setListError("");
+    try {
+      // This is the first asynchronous API call in this click handler so the
+      // optional-permission request retains Chrome's user-gesture context.
+      const granted = await requestTabListingAccess();
+      if (!granted) {
+        setNeedsTabListingAccess(true);
+        setListError(
+          "Permission denied · tab access was not granted. Allow it to discover open project URLs, then retry.",
+        );
+        return;
+      }
+      setNeedsTabListingAccess(false);
+      await queryOpenTabs();
+    } catch {
+      setNeedsTabListingAccess(true);
+      setListError(
+        "Permission request failed. No tabs were queried; retry the tab-access step.",
       );
     }
   };
@@ -405,6 +465,16 @@ export function ConnectionStatus() {
       >
         Find open projects
       </button>
+      {needsTabListingAccess && extensionAvailable() ? (
+        <button
+          className={`${styles.connectionListButton} motion-control`}
+          type="button"
+          disabled={busy !== undefined}
+          onClick={() => void allowTabListingAccess()}
+        >
+          Allow tab access for discovery
+        </button>
+      ) : null}
       {!extensionAvailable() ? (
         <p className={styles.connectionHint}>
           Local preview · Chrome tab and provider APIs are unavailable here.

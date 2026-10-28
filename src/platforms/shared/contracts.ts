@@ -46,7 +46,10 @@ export type DocumentIdentity = {
 };
 
 export type ConnectionPort = {
-  requestAccess: (provider: ProviderName) => Promise<boolean>;
+  requestAccess: (
+    provider: ProviderName,
+    selected: ProviderTab,
+  ) => Promise<boolean>;
   getTab: (tabId: number) => Promise<ProviderTab | undefined>;
   pingTopFrame: (
     tabId: number,

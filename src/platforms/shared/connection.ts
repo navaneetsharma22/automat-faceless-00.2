@@ -29,7 +29,13 @@ export function providerTabFromUrl(
     let provider: ProviderName;
     let projectId: string;
     let canonicalPath: string;
-    if (url.hostname === "labs.google") {
+    if (url.hostname === "flow.google.com") {
+      const match = /^\/project\/([A-Za-z0-9_-]+)\/?$/.exec(url.pathname);
+      if (!match) return undefined;
+      provider = "Flow";
+      projectId = match[1]!;
+      canonicalPath = `/project/${projectId}`;
+    } else if (url.hostname === "labs.google") {
       const match = /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(
         url.pathname,
       );
@@ -88,7 +94,7 @@ async function attach(
 
   try {
     // Permission prompts must originate from the explicit Connect gesture.
-    if (!(await port.requestAccess(provider))) {
+    if (!(await port.requestAccess(provider, selected))) {
       return failed(
         "permission-needed",
         `Access for ${provider} was not granted. Grant access in the browser prompt, then retry Connect.`,

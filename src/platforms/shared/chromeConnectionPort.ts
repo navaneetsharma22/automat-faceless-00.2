@@ -9,18 +9,38 @@ import type {
 import { CONNECTION_DISCONNECT_MESSAGE } from "./contracts";
 import { providerTabFromUrl } from "./connection";
 
-const providerOrigin = (provider: ProviderName) =>
-  provider === "Flow" ? "https://labs.google/*" : "https://vids.google.com/*";
+function providerOrigin(
+  provider: ProviderName,
+  selected: ProviderTab,
+): string | undefined {
+  try {
+    const origin = new URL(selected.canonicalTarget).origin;
+    const permittedOrigins =
+      provider === "Flow"
+        ? ["https://flow.google.com", "https://labs.google"]
+        : ["https://vids.google.com"];
+    return permittedOrigins.includes(origin) ? `${origin}/*` : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
-export async function requestTabListingAccess(): Promise<boolean> {
+export async function hasTabListingAccess(): Promise<boolean> {
   if (typeof chrome === "undefined" || !chrome.permissions || !chrome.tabs) {
     return false;
   }
-  const alreadyGranted = await chrome.permissions.contains({
+  return chrome.permissions.contains({
     permissions: ["tabs"],
   });
-  if (alreadyGranted) return true;
-  return await chrome.permissions.request({ permissions: ["tabs"] });
+}
+
+export function requestTabListingAccess(): Promise<boolean> {
+  if (typeof chrome === "undefined" || !chrome.permissions || !chrome.tabs) {
+    return Promise.resolve(false);
+  }
+  // Call this directly from the dedicated user-click handler. Do not await
+  // another extension API first: Chrome requires a user gesture for request().
+  return chrome.permissions.request({ permissions: ["tabs"] });
 }
 
 export function createChromeConnectionPort(): ConnectionPort | undefined {
@@ -34,8 +54,9 @@ export function createChromeConnectionPort(): ConnectionPort | undefined {
   }
 
   return {
-    requestAccess: async (provider: ProviderName) => {
-      const origin = providerOrigin(provider);
+    requestAccess: async (provider: ProviderName, selected: ProviderTab) => {
+      const origin = providerOrigin(provider, selected);
+      if (!origin || selected.provider !== provider) return false;
       const hasScripting = await chrome.permissions.contains({
         permissions: ["scripting"],
       });
@@ -122,10 +143,41 @@ function injectionIdentity(
   };
 }
 
-export async function listOpenProviderTabs(): Promise<ProviderTab[]> {
-  if (typeof chrome === "undefined" || !chrome.tabs) return [];
+export type ProviderTabListing = {
+  tabs: ProviderTab[];
+  unsupportedProviderRoutes: number;
+  unavailableUrls: number;
+};
+
+export async function listOpenProviderTabs(): Promise<ProviderTabListing> {
+  if (typeof chrome === "undefined" || !chrome.tabs) {
+    throw new Error("Chrome tabs API is unavailable");
+  }
   const tabs = await chrome.tabs.query({});
-  return tabs
-    .map((tab) => providerTabFromUrl(tab.id ?? -1, tab.title ?? "", tab.url))
-    .filter((tab): tab is ProviderTab => tab !== undefined);
+  let unsupportedProviderRoutes = 0;
+  let unavailableUrls = 0;
+  const providerTabs: ProviderTab[] = [];
+  for (const tab of tabs) {
+    if (tab.id === undefined || !tab.url) {
+      unavailableUrls += 1;
+      continue;
+    }
+    const parsed = providerTabFromUrl(tab.id, tab.title ?? "", tab.url);
+    if (parsed) {
+      providerTabs.push(parsed);
+      continue;
+    }
+    try {
+      const url = new URL(tab.url);
+      if (
+        url.protocol === "https:" &&
+        (url.hostname === "labs.google" || url.hostname === "vids.google.com")
+      ) {
+        unsupportedProviderRoutes += 1;
+      }
+    } catch {
+      unavailableUrls += 1;
+    }
+  }
+  return { tabs: providerTabs, unsupportedProviderRoutes, unavailableUrls };
 }

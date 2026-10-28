@@ -6,6 +6,8 @@ import {
 } from "../../src/platforms/shared/connection";
 import {
   createChromeConnectionPort,
+  hasTabListingAccess,
+  listOpenProviderTabs,
   requestTabListingAccess,
 } from "../../src/platforms/shared/chromeConnectionPort";
 import {
@@ -119,6 +121,17 @@ describe("explicit read-only Flow/Vids attachment", () => {
   it("accepts only the observed project routes and extracts stable IDs", () => {
     expect(
       providerTabFromUrl(
+        8,
+        "Flow project",
+        "https://flow.google.com/project/AbC_9-xy?panel=assets",
+      ),
+    ).toMatchObject({
+      provider: "Flow",
+      projectId: "AbC_9-xy",
+      canonicalTarget: "https://flow.google.com/project/AbC_9-xy",
+    });
+    expect(
+      providerTabFromUrl(
         9,
         "Flow project",
         "https://labs.google/fx/tools/flow/project_9?tab=assets",
@@ -154,6 +167,27 @@ describe("explicit read-only Flow/Vids attachment", () => {
         13,
         "Flow nested route",
         "https://labs.google/fx/tools/flow/project-1/settings",
+      ),
+    ).toBeUndefined();
+    expect(
+      providerTabFromUrl(
+        14,
+        "Flow nested route",
+        "https://flow.google.com/project/valid/settings",
+      ),
+    ).toBeUndefined();
+    expect(
+      providerTabFromUrl(
+        15,
+        "Spoofed Flow host",
+        "https://flow.google.com.evil.example/project/valid",
+      ),
+    ).toBeUndefined();
+    expect(
+      providerTabFromUrl(
+        16,
+        "Credentials in URL",
+        "https://user:secret@flow.google.com/project/valid",
       ),
     ).toBeUndefined();
   });
@@ -262,7 +296,7 @@ describe("explicit read-only Flow/Vids attachment", () => {
     expectProviderUntouched(forbiddenTabActions);
   });
 
-  it("inspects optional access first and requests only the selected site", async () => {
+  it("inspects connect permissions and requests only the selected site", async () => {
     const permissions = {
       contains: vi
         .fn()
@@ -277,7 +311,7 @@ describe("explicit read-only Flow/Vids attachment", () => {
     });
     const port = createChromeConnectionPort()!;
 
-    expect(await port.requestAccess("Flow")).toBe(true);
+    expect(await port.requestAccess("Flow", makeTab())).toBe(true);
     expect(permissions.contains).toHaveBeenNthCalledWith(1, {
       permissions: ["scripting"],
     });
@@ -288,12 +322,110 @@ describe("explicit read-only Flow/Vids attachment", () => {
       origins: ["https://labs.google/*"],
     });
 
-    permissions.contains.mockResolvedValueOnce(false);
+    permissions.contains
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    permissions.request.mockResolvedValueOnce(true);
+    const currentFlowRoute = providerTabFromUrl(
+      19,
+      "Flow current route",
+      "https://flow.google.com/project/selected-project",
+    )!;
+    expect(await port.requestAccess("Flow", currentFlowRoute)).toBe(true);
+    expect(permissions.contains).toHaveBeenNthCalledWith(3, {
+      permissions: ["scripting"],
+    });
+    expect(permissions.contains).toHaveBeenNthCalledWith(4, {
+      origins: ["https://flow.google.com/*"],
+    });
+    expect(permissions.request).toHaveBeenLastCalledWith({
+      origins: ["https://flow.google.com/*"],
+    });
+
+    expect(
+      await port.requestAccess(
+        "Vids",
+        providerTabFromUrl(
+          20,
+          "Vids project",
+          "https://flow.google.com/project/wrong-provider",
+        )!,
+      ),
+    ).toBe(false);
+    expect(permissions.request).toHaveBeenCalledTimes(2);
+
     permissions.request.mockResolvedValueOnce(false);
-    expect(await requestTabListingAccess()).toBe(false);
+    const tabPermission = requestTabListingAccess();
     expect(permissions.request).toHaveBeenLastCalledWith({
       permissions: ["tabs"],
     });
+    expect(await tabPermission).toBe(false);
+  });
+
+  it("first checks tabs access, then requests it synchronously from the dedicated user action", async () => {
+    const query = vi.fn().mockResolvedValue([
+      {
+        id: 5,
+        title: "Flow project",
+        url: "https://flow.google.com/project/selected-project",
+      },
+    ]);
+    const permissions = {
+      contains: vi.fn().mockResolvedValue(false),
+      request: vi.fn().mockResolvedValue(true),
+    };
+    vi.stubGlobal("chrome", {
+      permissions,
+      tabs: { query, get: vi.fn(), sendMessage: vi.fn() },
+      scripting: { executeScript: vi.fn() },
+    });
+
+    expect(await hasTabListingAccess()).toBe(false);
+    expect(permissions.contains).toHaveBeenCalledExactlyOnceWith({
+      permissions: ["tabs"],
+    });
+    expect(query).not.toHaveBeenCalled();
+
+    const permissionRequest = requestTabListingAccess();
+    expect(permissions.request).toHaveBeenCalledExactlyOnceWith({
+      permissions: ["tabs"],
+    });
+    expect(await permissionRequest).toBe(true);
+
+    const listing = await listOpenProviderTabs();
+    expect(query).toHaveBeenCalledExactlyOnceWith({});
+    expect(listing.tabs).toMatchObject([
+      { provider: "Flow", projectId: "selected-project" },
+    ]);
+  });
+
+  it("distinguishes unsupported provider routes and unavailable URLs from no matches", async () => {
+    const query = vi.fn().mockResolvedValue([
+      {
+        id: 1,
+        title: "Flow project",
+        url: "https://labs.google/fx/tools/flow/project-1/settings",
+      },
+      { id: 2, title: "Hidden URL" },
+      { id: 3, title: "Unrelated", url: "https://example.com/" },
+    ]);
+    vi.stubGlobal("chrome", { tabs: { query } });
+
+    await expect(listOpenProviderTabs()).resolves.toMatchObject({
+      tabs: [],
+      unsupportedProviderRoutes: 1,
+      unavailableUrls: 1,
+    });
+    query.mockResolvedValueOnce([
+      { id: 4, title: "Unrelated", url: "https://example.com/" },
+    ]);
+    await expect(listOpenProviderTabs()).resolves.toMatchObject({
+      tabs: [],
+      unsupportedProviderRoutes: 0,
+      unavailableUrls: 0,
+    });
+    query.mockRejectedValueOnce(new Error("query failed"));
+    await expect(listOpenProviderTabs()).rejects.toThrow("query failed");
   });
 
   it("keeps the local preview graceful when Chrome extension APIs are absent", async () => {
@@ -450,6 +582,68 @@ describe("explicit read-only Flow/Vids attachment", () => {
 });
 
 describe("packaged connector listener lifecycle", () => {
+  it("validates the current Flow host and exact project ID in its read-only handshake", async () => {
+    const listeners = new Set<(...args: unknown[]) => unknown>();
+    const runtime = {
+      id: "offline-extension",
+      onMessage: {
+        addListener: vi.fn((listener: (...args: unknown[]) => unknown) =>
+          listeners.add(listener),
+        ),
+        removeListener: vi.fn((listener: (...args: unknown[]) => unknown) =>
+          listeners.delete(listener),
+        ),
+      },
+    };
+    vi.stubGlobal("chrome", { runtime });
+    vi.stubGlobal("document", {});
+    const frame = { top: undefined as unknown };
+    frame.top = frame;
+    vi.stubGlobal("window", frame);
+    vi.stubGlobal("location", {
+      href: "https://flow.google.com/project/selected_9?panel=assets",
+    });
+
+    await import("../../src/platforms/shared/connectionProbe");
+
+    const [listener] = [...listeners];
+    const respond = vi.fn();
+    const request = {
+      type: "AUTOMAT_FACELESS_CONNECTION_PROBE",
+      provider: "Flow",
+      canonicalTarget: "https://flow.google.com/project/selected_9",
+      projectId: "selected_9",
+      protocolVersion: CONNECTOR_PROTOCOL_VERSION,
+      buildId: BUILD_ID,
+      attemptId: "attempt-current-flow",
+    };
+    listener!(request, { id: runtime.id }, respond);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        provider: "Flow",
+        projectId: "selected_9",
+        canonicalTarget: "https://flow.google.com/project/selected_9",
+        attemptId: "attempt-current-flow",
+        capabilities: [CONNECTION_CAPABILITY],
+      }),
+    );
+
+    const wrongProjectResponse = vi.fn();
+    listener!(
+      { ...request, projectId: "other-project" },
+      { id: runtime.id },
+      wrongProjectResponse,
+    );
+    expect(wrongProjectResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: false,
+        projectId: "selected_9",
+        error: "The current document does not match the selected project.",
+      }),
+    );
+  });
+
   it("removes a known prior listener before installing one replacement", async () => {
     const listeners = new Set<(...args: unknown[]) => unknown>();
     const runtime = {

@@ -8,6 +8,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { SettingsConfirmation } from "./components/SettingsConfirmation";
 import { ToastHost, useToast } from "./components/ToastHost";
 import { BUILD_ID } from "../shared/buildInfo";
+import { registerDashboardFocusResponder } from "./dashboardFocus";
 import styles from "./Dashboard.module.css";
 import {
   type DownloadPreviewState,
@@ -63,6 +64,18 @@ function Dashboard() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    if (
+      typeof chrome === "undefined" ||
+      !chrome.runtime?.onMessage ||
+      !chrome.tabs?.getCurrent ||
+      !chrome.windows?.update
+    ) {
+      return;
+    }
+    return registerDashboardFocusResponder(chrome);
+  }, []);
 
   const toggleReference = (id: string) => {
     setSelectedReferences((current) =>
