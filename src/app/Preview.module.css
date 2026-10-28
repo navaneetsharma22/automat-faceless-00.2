@@ -1,0 +1,137 @@
+.page {
+  display: grid;
+  width: min(100%, var(--content-max-width));
+  gap: var(--space-6);
+  margin-inline: auto;
+  padding: var(--layout-gutter);
+}
+
+.header {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--color-accent);
+  font-size: var(--font-size-xs);
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(var(--font-size-xl), 3vw, var(--font-size-title));
+  line-height: var(--line-height-tight);
+}
+
+.disclaimer {
+  max-width: 64ch;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.themeGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--space-4);
+}
+
+.themePanel {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-4);
+  padding: var(--card-padding);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text);
+}
+
+.themeHeader {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-block-end: var(--space-3);
+  border-block-end: 1px solid var(--color-border);
+}
+
+.themeTitle {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+.themeDescription {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.section {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 750;
+}
+
+.buttonRow,
+.toastTriggerRow {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.buttonRow > * {
+  max-width: 100%;
+}
+
+.toastPreviews {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.toastPreviews > * {
+  box-shadow: none;
+}
+
+.sampleCaption {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+@media (max-width: 760px) {
+  .themeGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .themePanel {
+    padding: var(--space-4);
+  }
+}
+
+@media (max-width: 380px) {
+  .buttonRow {
+    align-items: stretch;
+  }
+
+  .buttonRow > * {
+    flex: 1 1 100%;
+  }
+}

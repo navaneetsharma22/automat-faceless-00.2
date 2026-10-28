@@ -1,0 +1,239 @@
+.button {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: var(--control-height);
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--control-padding-block) var(--control-padding-inline);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+  line-height: var(--line-height-tight);
+  cursor: pointer;
+  white-space: normal;
+  text-align: center;
+}
+
+.buttonPrimary {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.buttonPrimary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.buttonSecondary {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.buttonSecondary:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--color-surface-raised);
+}
+
+.buttonQuiet {
+  background: transparent;
+  color: var(--color-accent);
+}
+
+.buttonQuiet:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+}
+
+.buttonCompact {
+  min-height: var(--control-height-compact);
+  padding-inline: var(--space-3);
+  font-size: var(--font-size-xs);
+}
+
+.buttonLoading {
+  cursor: progress;
+}
+
+.field {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.editorField {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.fieldLabel {
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+
+.requiredMark {
+  margin-inline-start: var(--space-1);
+  color: var(--color-error);
+}
+
+.control {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: var(--control-padding-block) var(--control-padding-inline);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.control:focus-visible {
+  border-color: var(--color-focus);
+}
+
+.fieldHint,
+.fieldError,
+.fieldMeta {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.fieldHint,
+.fieldMeta {
+  color: var(--color-text-muted);
+}
+
+.fieldError {
+  color: var(--color-error);
+  font-weight: 600;
+}
+
+.select {
+  cursor: pointer;
+}
+
+.editor {
+  min-height: 15rem;
+  max-height: min(65vh, 42rem);
+  overflow: auto;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+  tab-size: 2;
+  white-space: pre;
+}
+
+.editor[aria-invalid="true"] {
+  border-color: var(--color-error);
+}
+
+.confirmation {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+}
+
+.confirmationLegend {
+  padding-inline: var(--space-2);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+}
+
+.confirmationLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.checkbox {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: 0 0 auto;
+  margin: 0.125rem 0 0;
+  accent-color: var(--color-accent);
+}
+
+.confirmationDescription {
+  margin: var(--space-3) 0 0 1.875rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-relaxed);
+}
+
+.notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-inline-start-width: 3px;
+  border-radius: var(--radius-control);
+  color: var(--color-text);
+}
+
+.noticeSuccess {
+  border-color: var(--color-success);
+  background: var(--color-success-surface);
+}
+
+.noticeError {
+  border-color: var(--color-error);
+  background: var(--color-error-surface);
+}
+
+.noticeWarning {
+  border-color: var(--color-warning);
+  background: var(--color-warning-surface);
+}
+
+.noticeInfo {
+  border-color: var(--color-info);
+  background: var(--color-info-surface);
+}
+
+.noticeIcon {
+  color: var(--color-text);
+  font-size: var(--font-size-lg);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.noticeContent {
+  min-width: 0;
+}
+
+.noticeLabel {
+  display: block;
+  margin-block-end: var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: 750;
+}
+
+.noticeMessage {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .button {
+    white-space: normal;
+  }
+
+  .confirmation {
+    padding: var(--space-3);
+  }
+}

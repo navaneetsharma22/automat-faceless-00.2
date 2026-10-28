@@ -1,15 +1,9 @@
-:root {
-  color-scheme: light dark;
-  --color-background: #171717;
-  --color-foreground: #f5f0e8;
-  font-family: system-ui, sans-serif;
-}
-
 .root {
   min-height: 100vh;
   display: grid;
   align-content: center;
   justify-items: center;
-  background: var(--color-background);
-  color: var(--color-foreground);
+  padding: var(--layout-gutter);
+  background: var(--color-page);
+  color: var(--color-text);
 }

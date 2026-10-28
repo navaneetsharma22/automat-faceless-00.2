@@ -1,0 +1,117 @@
+.host {
+  position: fixed;
+  z-index: var(--layer-toast);
+  inset-block-start: 1rem;
+  inset-inline-end: 1rem;
+  display: grid;
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  gap: var(--space-3);
+  overflow: auto;
+  pointer-events: none;
+}
+
+.toast {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-inline-start-width: 3px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-overlay);
+  box-shadow: var(--shadow-overlay);
+  color: var(--color-text);
+  pointer-events: auto;
+  overflow-wrap: anywhere;
+}
+
+.success {
+  border-color: var(--color-success);
+  background: var(--color-success-surface);
+}
+
+.error {
+  border-color: var(--color-error);
+  background: var(--color-error-surface);
+}
+
+.warning {
+  border-color: var(--color-warning);
+  background: var(--color-warning-surface);
+}
+
+.info {
+  border-color: var(--color-info);
+  background: var(--color-info-surface);
+}
+
+.icon {
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.content {
+  min-width: 0;
+}
+
+.label {
+  display: block;
+  margin-block-end: var(--space-1);
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+  font-weight: 750;
+}
+
+.message {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
+}
+
+.dismiss {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 auto;
+  place-items: center;
+  margin: -0.5rem -0.5rem 0 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--font-size-xl);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dismiss:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+
+@media (max-width: 480px) {
+  .host {
+    inset-block-start: 0.75rem;
+    inset-inline: 0.75rem;
+    width: auto;
+    max-height: calc(100vh - 1.5rem);
+  }
+
+  .toast {
+    gap: var(--space-2);
+    padding: var(--space-3);
+  }
+}
