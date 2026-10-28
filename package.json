@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,js,json,html}\" \"public/**/*.json\"",
     "test": "vitest run --passWithNoTests",
-    "build": "tsc -b && vite build"
+    "build": "tsc -b && node tools/build.mjs"
   },
   "keywords": [],
   "author": "",

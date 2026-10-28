@@ -225,6 +225,7 @@ async function attach(
       identity,
       request,
       response,
+      responseIsCurrent ? firstResponse?.documentToken : undefined,
     );
     if (response.buildId !== BUILD_ID) {
       return failed(
@@ -253,14 +254,13 @@ async function attach(
         handshakeDiagnostics,
       );
     }
-    if (
-      responseIsCurrent &&
-      firstResponse?.documentToken !== response.documentToken
-    ) {
+    if (handshakeDiagnostics.documentTokenContinuity === "mismatch") {
       return failed(
         "wrong-target",
         "The provider document changed during attachment. No connected state was recorded.",
         "handshake_validation",
+        undefined,
+        handshakeDiagnostics,
       );
     }
 
@@ -370,7 +370,16 @@ function isCompatibleConnector(
     response.buildId === request.buildId &&
     response.attemptId === request.attemptId &&
     response.documentToken &&
-    response.capabilities?.includes(CONNECTION_CAPABILITY),
+    hasReadOnlyCapability(response.capabilities),
+  );
+}
+
+function hasReadOnlyCapability(
+  capabilities: readonly string[] | undefined,
+): boolean {
+  return (
+    Array.isArray(capabilities) &&
+    capabilities.some((capability) => capability === CONNECTION_CAPABILITY)
   );
 }
 
@@ -379,6 +388,7 @@ export function inspectHandshakeFields(
   identity: { documentId: string; frameId: number; url: string },
   request: ConnectionProbeRequest,
   response: ConnectionProbeResponse,
+  firstDocumentToken?: string,
 ): ConnectionHandshakeDiagnostics {
   const selectedRoute = parseProviderRoute(identity.url);
   const expectedRoute = parseProviderRoute(selected.canonicalTarget);
@@ -427,10 +437,16 @@ export function inspectHandshakeFields(
     readOnlyCapability: checkPresent(
       response.capabilities === undefined
         ? undefined
-        : response.capabilities.includes(CONNECTION_CAPABILITY),
+        : hasReadOnlyCapability(response.capabilities),
     ),
     connectorAcceptance: response.ok ? "accepted" : "rejected",
     documentToken: response.documentToken ? "present" : "missing",
+    documentTokenContinuity:
+      firstDocumentToken === undefined
+        ? "unverified"
+        : response.documentToken === firstDocumentToken
+          ? "match"
+          : "mismatch",
   };
 }
 
@@ -454,6 +470,7 @@ export function formatHandshakeDiagnostics(
     ["read-only-capability", diagnostics.readOnlyCapability],
     ["connector-acceptance", diagnostics.connectorAcceptance],
     ["document-token", diagnostics.documentToken],
+    ["document-token-continuity", diagnostics.documentTokenContinuity],
   ];
   return ` Handshake checks: ${labels.map(([field, state]) => `${field}=${state}`).join(", ")}.`;
 }

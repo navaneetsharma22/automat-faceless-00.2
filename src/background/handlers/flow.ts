@@ -36,6 +36,7 @@ type FlowSettingsConfirmation = {
   confirmedAt: number;
   tabId: number;
   projectId: string;
+  canonicalTarget: string;
 };
 
 export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
@@ -241,6 +242,7 @@ export function createFlowImageGenerateOnce(
       if (
         input.settingsConfirmation.tabId !== target.id ||
         input.settingsConfirmation.projectId !== target.projectId ||
+        input.settingsConfirmation.canonicalTarget !== target.canonicalTarget ||
         input.settingsConfirmation.confirmedAt > now()
       ) {
         return response(
@@ -330,6 +332,7 @@ export function createFlowImageGenerateOnce(
             userAttested: true,
             tabId: input.settingsConfirmation.tabId,
             projectId: input.settingsConfirmation.projectId,
+            canonicalTarget: input.settingsConfirmation.canonicalTarget,
           },
           state: "preparing",
           activeKey: flowImageAttemptActiveKey(item.id),

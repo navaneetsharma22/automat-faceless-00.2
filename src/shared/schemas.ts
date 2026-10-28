@@ -205,6 +205,7 @@ export const FlowImageAttemptRecordSchema = z
         userAttested: z.literal(true),
         tabId: z.number().int().nonnegative(),
         projectId: z.string().min(1).max(512),
+        canonicalTarget: z.string().min(1).max(2048).optional(),
       })
       .strict(),
     state: z.enum(FLOW_IMAGE_ATTEMPT_STATES),
@@ -243,6 +244,7 @@ export const FlowSettingsConfirmationSchema = z
     confirmedAt: z.number().finite().nonnegative(),
     tabId: z.number().int().nonnegative(),
     projectId: z.string().min(1).max(512),
+    canonicalTarget: z.string().min(1).max(2048),
   })
   .strict();
 export type FlowSettingsConfirmation = z.infer<
