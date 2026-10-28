@@ -21,9 +21,9 @@ These fixtures include nested objects and arrays; multiline decimal coordinates 
 
 ## Format and negative-case fixtures
 
-Expected scanner/importer outcomes below are **future P03.2 expectations**, not executed scanner tests. Prompt counts for rejected fixtures describe candidate complete values and do not mean any item should be accepted.
+Expected P03.2 outcomes below are the importer contract. `tests/unit/importBatch.test.ts` exercises the representative cases for both image and video; prompt counts for rejected fixtures describe candidate complete values and do not mean any item is accepted.
 
-| Fixture                  | JS code units | UTF-8 bytes | Lines | Candidate / expected prompt count  | Expected future outcome                                                             | Provenance             |
+| Fixture                  | JS code units | UTF-8 bytes | Lines | Candidate / expected prompt count  | Expected importer outcome                                                           | Provenance             |
 | ------------------------ | ------------: | ----------: | ----: | ---------------------------------- | ----------------------------------------------------------------------------------- | ---------------------- |
 | numberedTwoBodies        |           136 |         136 |     8 | 2                                  | Accept two bodies with outer IDs 1 and 2; internal numbered string remains content. | SYNTHETIC_FIXTURE_ONLY |
 | topLevelArray            |            62 |          62 |     4 | 1                                  | Accept the top-level array as one prompt.                                           | SYNTHETIC_FIXTURE_ONLY |
@@ -44,4 +44,4 @@ These existing synthetic records established one-body preservation through the m
 | syntheticPromptBodies.crlf |        15,918 |      20,820 |     6 |            1 | SYNTHETIC_P02_MOCK_TRANSPORT_FIXTURE |
 | syntheticPromptBodies.long |     1,260,163 |   1,652,165 |     6 |            1 | SYNTHETIC_P02_MOCK_TRANSPORT_FIXTURE |
 
-The three P02 measurements above are retained historical measurements from P02.2's evidence record. P03.1's tests validate the new corpus's content, length, UTF-8 measurement, line count, and provenance. They do not test JSON span extraction, outer-label scanning, atomic importer behavior, storage of these new fixture bodies, provider limits, or generation.
+The three P02 measurements above are retained historical measurements from P02.2's evidence record. P03.1 tests validate the new corpus's content, length, UTF-8 measurement, line count, and provenance. P03.2 importer tests verify exact source spans and atomic rejection for representative input forms. No tests establish storage of these new fixture bodies, provider limits, or generation behavior.

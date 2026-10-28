@@ -7,7 +7,7 @@ export type JsonValue =
   JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type JsonPrompt = JsonValue[] | { [key: string]: JsonValue };
 
-/** Proposed schemaVersion 1 envelope shape; no envelope importer exists yet. */
+/** Supported schemaVersion 1 envelope input shape for the pure P03.2 importer. */
 export type ExplicitPromptEnvelope = {
   schemaVersion: 1;
   kind: PromptKind;

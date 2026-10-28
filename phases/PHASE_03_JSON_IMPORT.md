@@ -1,6 +1,6 @@
 # P03 — Lossless large JSON import for both stages
 
-Status: **INCOMPLETE** — P03.1 is OFFLINE_VERIFIED for the proposed contract, synthetic fixtures, and provisional policy. Real production sample profiles remain EVIDENCE_PENDING; P03.2–P03.4 are NOT_STARTED.
+Status: **INCOMPLETE** — P03.1 and P03.2 have offline contract/source-test evidence. Real production sample profiles remain EVIDENCE_PENDING; P03.3–P03.4 are NOT_STARTED.
 
 **Outcome:** Large image and video JSON batches become correct, stable, unchanged prompt items.
 
@@ -36,7 +36,7 @@ P03.1 implementation evidence (offline): `src/domain/batches/types.ts` and `inpu
 
 The provisional application policy is 1,500,000 JS code units and 2,000,000 UTF-8 bytes per prompt; 5,000,000 code units and 10,000,000 bytes per batch; at most 50 prompts; and a proposed depth guard of 128. Policy size/count assessment is implemented and tested; the depth limit is documented but not enforced until a scanner exists. These are application guardrails only, not provider or generation limits. P02.2 transport evidence is a mocked one-body path through the message/repository boundaries and does not prove aggregate batches, actual Chrome/IndexedDB, editor performance, or provider capacity.
 
-**P00.2 remains EVIDENCE_PENDING:** no real image/video samples or production size profiles were available. The assistant-generated approved image structure is synthetic. P03.1 does not implement source-span scanning, import UI, or persistence for imported prompt items. Sample-dependent acceptance remains pending; P03.2–P03.4 remain NOT_STARTED.
+**P00.2 remains EVIDENCE_PENDING:** no real image/video samples or production size profiles were available. The assistant-generated approved image structure is synthetic. At the P03.1 boundary, source-span scanning, import UI, and imported-item persistence were not implemented; P03.2–P03.4 were NOT_STARTED then. Sample-dependent acceptance remains pending.
 
 ### P03.1 verification record
 
@@ -52,6 +52,10 @@ Start in these files:
 - tests/unit/importBatch.test.ts
 
 Acceptance: One decimal-array JSON remains one; two remain two; raw bodies, nested structures, strings, Unicode and CRLF policy are preserved. Duplicate/ambiguous/incomplete input is rejected clearly.
+
+P03.2 implementation evidence (offline): `jsonSpanScanner.ts` tracks JSON delimiters, strings, escapes, and the shared depth limit using JavaScript offsets. `importBatch.ts` implements single object/array prompts, consistently numbered blocks, and schemaVersion 1 envelopes for both kinds. It validates JSON without replacing source slices, extracts envelope prompt spans, resolves/canonicalizes identities with shared P03.1 policy, rejects duplicates/conflicts and invalid or trailing input atomically, and applies the centralized count/size policy. It has no storage, messaging, UI, or provider side effects.
+
+Checks on 28 October 2026: focused importer suite — PASS (1 file / 22 tests); full suite — PASS (10 files / 94 tests); `npm run typecheck`, `npm run lint`, changed-file Prettier, `npm run build` (Vite 8.3.5 / 146 modules), and `git diff --check` — PASS. Shared build ID: `automat-faceless-0.1.0-mvrthjnc`. Source/live provider verification is NOT_RUN. The fixture README retains exact synthetic size profiles; real production profiles remain pending P00.2.
 
 ### P03.3 — Build non-mutating import and preview UI
 
@@ -78,7 +82,7 @@ Acceptance: Import -> schema -> repository -> message retains each complete raw 
 
 ## Phase gate
 
-P03 is INCOMPLETE. P03.1 provides offline contract/fixture/policy evidence only. AC03–AC06 require later scanner/importer, UI, persistence, and real sample evidence; none is claimed complete here.
+P03 is INCOMPLETE. P03.1 and P03.2 provide offline contract, fixture, scanner, importer, and source-preservation test evidence only. UI, persistence, real sample, and provider evidence remain incomplete; P03.3–P03.4 are NOT_STARTED.
 
 ## Notes
 
@@ -88,7 +92,7 @@ P03 is INCOMPLETE. P03.1 provides offline contract/fixture/policy evidence only.
 
 ## Deferred next subphase (not started)
 
-P03.2 remains NOT_STARTED. It depends on representative prompt evidence from P00.2; do not begin it until separately requested and its prerequisite evidence is available.
+P03.3 remains NOT_STARTED. Do not begin it until separately requested.
 
 ## Completion report
 

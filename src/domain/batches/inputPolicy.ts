@@ -29,7 +29,7 @@ export const INPUT_POLICY = {
 export const OUTER_LABEL_GRAMMAR =
   "[space-or-tab]*(bare-positive-decimal plus :, ., or ); OR case-sensitive `Prompt` + space-or-tab + positive-decimal + :)[space-or-tab]*(same-line `{` or `[`)" as const;
 
-/** Prefix grammar contract for the future source-span scanner; not a scanner. */
+/** Prefix matcher; the scanner applies it only between complete JSON values. */
 export const OUTER_LABEL_PREFIX_PATTERN =
   /^[ \t]*(?:([0-9]+)[:.)]|Prompt[ \t]+([0-9]+):)[ \t]*(?=\{|\[)/;
 
@@ -113,6 +113,23 @@ export function measurePromptBody(rawBody: string): PromptMeasurement {
     stringCodeUnits: rawBody.length,
     utf8Bytes: new TextEncoder().encode(rawBody).byteLength,
   };
+}
+
+/** Early whole-source guard before scanning or parsing the batch. */
+export function assessInputSourceSize(
+  source: string,
+): Array<"input_code_units_exceeded" | "input_utf8_bytes_exceeded"> {
+  const measurement = measurePromptBody(source);
+  const issues: Array<
+    "input_code_units_exceeded" | "input_utf8_bytes_exceeded"
+  > = [];
+  if (measurement.stringCodeUnits > INPUT_POLICY.maxBatchCodeUnits) {
+    issues.push("input_code_units_exceeded");
+  }
+  if (measurement.utf8Bytes > INPUT_POLICY.maxBatchUtf8Bytes) {
+    issues.push("input_utf8_bytes_exceeded");
+  }
+  return issues;
 }
 
 /** Budget-only assessment; JSON syntax, identity and source spans are separate. */

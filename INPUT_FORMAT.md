@@ -1,6 +1,6 @@
 # Lossless Image and Video JSON Input Contract
 
-Status: **P03.1 contract and provisional policy defined; scanner/importer not implemented.** The formats below are documented proposals for P03.2. They are not claims that the current application already parses or imports them.
+Status: **P03.1 contract/policy and P03.2 pure scanner/importer implemented at offline evidence level.** The formats below are implemented by `src/domain/batches/importBatch.ts`; no UI, persistence, provider connection, or live import path is implemented.
 
 ## Evidence and provenance
 
@@ -10,7 +10,7 @@ The existing `tests/fixtures/syntheticPromptBodies.ts` and new P03.1 corpus are 
 
 ## Proposed version-one input forms
 
-The future importer will accept one of these modes per import request. It will not guess or mix modes.
+The importer accepts one of these modes per call. It does not guess or mix modes.
 
 ### A. One JSON prompt
 
@@ -18,7 +18,7 @@ One complete top-level JSON object or array is exactly one prompt. A top-level a
 
 ### B. Numbered complete JSON blocks
 
-Labels are recognized only between complete top-level JSON values, outside their source spans. The exact proposed prefix grammar is:
+Labels are recognized only between complete top-level JSON values, outside their source spans. The supported prefix grammar is:
 
 ```text
 HWS           := zero or more ASCII spaces or tabs
@@ -31,7 +31,7 @@ JSON_OPEN     := "{" | "["
 
 `Prompt` is case-sensitive. The opening `{` or `[` must follow on the same physical line as the label. For example, `1: {`, `01. [`, `2) {`, and `Prompt 3: {` match. `Prompt 3.` and a label with the JSON delimiter on the next line do not match. Zero is not a valid shot identity even though `0:` matches the lexical decimal-token shape.
 
-Labels are candidates only after the preceding JSON value is complete. A number-like line within a string, array, object, or nested value is prompt content and never a boundary. Outer separators may contain spaces, tabs, LF, or CRLF. Bare CR does not form an outer label line boundary. Leading/trailing separator whitespace and labels are outside the prompt body; they are not copied into it. Unrecognized non-whitespace text between/after values is an error. Two adjacent unlabelled top-level values are ambiguous and must be rejected.
+Labels are candidates only after the preceding JSON value is complete. A number-like line within a string, array, object, or nested value is prompt content and never a boundary. Outer separators may contain spaces, tabs, LF, or CRLF. Bare CR does not form an outer label line boundary. Leading/trailing separator whitespace and labels are outside the prompt body; they are not copied into it. Unrecognized non-whitespace text between/after values is an error. Two adjacent unlabelled top-level values are ambiguous and must be rejected. Numbered mode requires a supported label on every top-level body; numbered and unlabelled modes cannot be mixed.
 
 Labels `1:`, `1.`, `1)`, and `Prompt 1:` are **proposed formats**. They have not been observed in a real production sample.
 
@@ -39,7 +39,7 @@ Labels `1:`, `1.`, `1)`, and `Prompt 1:` are **proposed formats**. They have not
 
 The proposed envelope signature is a top-level object with the reserved keys `schemaVersion`, `kind`, and `items`. `schemaVersion` must be `1`; `kind` must be `image` or `video`; `items` must be a non-empty array. An item must have `shotId` and `prompt`; `shotId` is a positive decimal string and `prompt` is a JSON object or array. A recognized signature with an unsupported version or malformed items is an envelope error, not a fallback creative prompt.
 
-An `items` array by itself does **not** identify an envelope. An arbitrary object containing an `items` array but not the complete reserved signature is one prompt. Because the signature keys are reserved, an object with all three signature keys and an image/video `kind` is treated as an envelope candidate.
+An `items` array by itself does **not** identify an envelope. An arbitrary object containing an `items` array but not all three reserved keys is one prompt. An object with all three reserved keys is an envelope candidate; its version and kind are validated, and malformed candidates are rejected.
 
 Example (synthetic only):
 
@@ -61,7 +61,7 @@ Example (synthetic only):
 }
 ```
 
-The envelope parser must retain each `prompt` value's exact source span. Parsed objects are validation aids only and may never replace the source text.
+The importer retains each `prompt` value's exact source span. Parsed objects are validation aids only and may never replace the source text. An object with all three reserved keys is treated as an explicit envelope candidate and rejected if its version, kind, or items shape is unsupported; an `items` key by itself remains ordinary prompt content.
 
 ## Shot identity contract
 
@@ -76,7 +76,7 @@ The envelope parser must retain each `prompt` value's exact source span. Parsed 
 
 ## Lossless source preservation
 
-Preservation is relative to the exact string received at the future import boundary:
+Preservation is relative to the exact string passed to `importPromptBatch`:
 
 - The raw body starts at its opening object/array delimiter and ends just after its matching closing delimiter.
 - Keep every body code unit unchanged: whitespace, key order, escaping, Unicode, and LF/CRLF line endings. Outer labels and inter-item separators are excluded.
@@ -97,9 +97,9 @@ The contract begins at the received source string. Browser clipboard, textarea, 
 | Whole batch string length           | 5,000,000 code units | Aggregate multi-prompt transport/UI cost was not measured; provisional.                                                                       |
 | Whole batch UTF-8 size              |     10,000,000 bytes | Aggregate multi-prompt transport/UI cost was not measured; provisional.                                                                       |
 | Prompt count                        |                   50 | A new conservative application guardrail, not the legacy 100-item limit and not a product maximum; provisional pending queue/UI measurements. |
-| JSON nesting depth                  |                  128 | Provisional future scanner guard against extreme nesting; P03.1 does not parse or enforce depth.                                              |
+| JSON nesting depth                  |                  128 | Provisional scanner guard against extreme nesting; enforced by P03.2.                                                                         |
 
-All size/count guards reject the whole batch; no partial acceptance is permitted. The policy assessment in P03.1 measures raw body sizes and count only. P03.2 must apply the syntax/depth and atomic import rules. These provisional application budgets do not assert Flow/Vids editor limits, model context limits, Chrome transport limits, or generation support.
+All size/count guards reject the whole batch; no partial acceptance is permitted. The importer checks full-source size before scanning, depth while scanning, each body before parsing, and shared batch count/size rules before returning success. These provisional application budgets do not assert Flow/Vids editor limits, model context limits, Chrome transport limits, or generation support.
 
 ### Existing transport evidence and its limits
 
@@ -107,7 +107,7 @@ P02.2 synthetic offline tests passed a **1,260,163-code-unit / 1,652,165-byte** 
 
 ## P03.1 synthetic fixture corpus
 
-`tests/fixtures/prompts/promptFixtures.ts` contains deterministic IMAGE and VIDEO bodies at 10k, 25k, 50k, and 100k JavaScript code units, plus representative input-form and negative-case examples. The bodies cover nested structures, decimals, escaped quotes/backslashes, braces inside strings, English/Hindi/emoji, numbered instructions in a string, and both LF/CRLF. Expected negative importer outcomes are recorded as fixture metadata; P03.1 does not implement or test a scanner/importer.
+`tests/fixtures/prompts/promptFixtures.ts` contains deterministic IMAGE and VIDEO bodies at 10k, 25k, 50k, and 100k JavaScript code units, plus representative input-form and negative-case examples. The bodies cover nested structures, decimals, escaped quotes/backslashes, braces inside strings, English/Hindi/emoji, numbered instructions in a string, and both LF/CRLF. `tests/unit/importBatch.test.ts` exercises the fixtures for both kinds and compares extracted source slices directly with the original strings.
 
 Actual measurements and each fixture's prompt count/provenance are in [tests/fixtures/prompts/README.md](tests/fixtures/prompts/README.md). These are synthetic structural fixtures, not observed production samples or product limits.
 
