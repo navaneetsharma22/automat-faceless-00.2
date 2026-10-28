@@ -1,4 +1,8 @@
 import { createConnectionMessageListener } from "./handlers/connections";
+import {
+  createChromeFlowPromptEntryPort,
+  createFlowPromptEntry,
+} from "./handlers/flow";
 import { registerDashboardAction } from "./openDashboard";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import { FOUNDATION_WORKER_RESTARTED } from "../shared/messages";
@@ -14,6 +18,10 @@ const preferences = new ChromePreferenceRepository({
 });
 const workerReady = repositories.markTargetsUnverified();
 void workerReady.catch(() => undefined);
+const flowPromptEntry = createFlowPromptEntry(
+  repositories,
+  createChromeFlowPromptEntryPort(repositories),
+);
 
 // Register extension listeners synchronously during worker evaluation.
 chrome.runtime.onMessage.addListener(
@@ -21,6 +29,7 @@ chrome.runtime.onMessage.addListener(
     repositories,
     preferences,
     ready: workerReady,
+    flowPromptEntry,
   }),
 );
 registerDashboardAction(chrome);

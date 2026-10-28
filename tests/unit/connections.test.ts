@@ -152,6 +152,21 @@ describe("explicit read-only Flow/Vids attachment", () => {
       projectId: "AbC_9-xy",
       canonicalTarget: "https://flow.google.com/project/AbC_9-xy",
     });
+    const accountFlowUrl = "https://flow.google.com/u/1/project/AbC_9-xy?pli=1";
+    expect(
+      providerTabFromUrl(18, "Account Flow project", accountFlowUrl),
+    ).toMatchObject({
+      provider: "Flow",
+      projectId: "AbC_9-xy",
+      url: accountFlowUrl,
+      canonicalTarget: "https://flow.google.com/u/1/project/AbC_9-xy",
+    });
+    expect(
+      isSameProviderTargetUrl(
+        providerTabFromUrl(18, "Account Flow project", accountFlowUrl)!,
+        "https://flow.google.com/u/2/project/AbC_9-xy",
+      ),
+    ).toBe(false);
     expect(
       providerTabFromUrl(
         9,

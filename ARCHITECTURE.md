@@ -1,6 +1,6 @@
 # Architecture
 
-Status: P02.2 runtime foundation and P02.3 read-only target attachment are implemented at offline-verification level. Live provider compatibility and P02.4 packaging proof remain NOT_RUN; generation and workflow capabilities remain planned.
+Status: P02.2 runtime foundation and P02.3 read-only target attachment are implemented at offline-verification level. P04.1 Flow prompt entry is implemented and verified offline/local-browser only; actual Flow DOM compatibility remains NOT_RUN. Generation and workflow capabilities remain planned.
 
 ## Runtime surfaces
 
@@ -62,7 +62,15 @@ These are planned paths. Their presence in this document does not mean they alre
 
 P02.2 packages the existing dashboard, an MV3 module worker, and the standalone connector asset. P02.3 upgrades that asset into a read-only Flow/Vids top-frame connector with route, project, protocol, build, capability, and document-token checks. The connector exposes no generation capability. Offline mocks establish the extension's decisions and safe failure behavior; they do not establish that current live provider routes or document behavior match the supported rules.
 
-P02.3 selection requires an explicit tab choice per provider. The only supported routes are the observed Flow `/fx/tools/flow/{projectId}` and Vids `/video/{documentId}/edit` forms. Tab-listing access (`tabs`) is requested only from Find open projects; Connect inspects `scripting` and the selected provider host permission before requesting only missing grants. Permission state is independent of Connected state.
+P02.3 selection requires an explicit tab choice per provider. Supported Flow routes include `/fx/tools/flow/{projectId}`, `/project/{projectId}`, and the account-prefixed `/u/{accountNumber}/project/{projectId}` form; Vids accepts `/video/{documentId}/edit` and `/videos/d/{documentId}/edit` on its recorded hosts. Account prefixes are part of the Flow canonical target. The original tab URL is retained and never rewritten. Tab-listing access (`tabs`) is requested only from Find open projects; Connect inspects `scripting` and the selected provider host permission before requesting only missing grants. Permission state is independent of Connected state.
+
+## P04.1 Flow prompt entry boundary
+
+`src/platforms/flow/composer.ts` performs bounded semantic discovery in the selected top-frame document. Search controls are excluded. A single visible, enabled editor must belong to a labelled composer/form/group/region or an explicit composer owner. Placeholder text is only a corroborating candidate signal. These attributes are selector candidates; actual Flow DOM evidence remains NOT_RUN.
+
+`src/platforms/flow/promptEntry.ts` validates a single current image JSON body, revalidates the stored explicit Flow target and current tab URL, checks the top-frame loader identity, and sends text only through CDP `Input.insertText`. The editor must be an empty textarea/text input or already contain the exact full string. Different nonempty text is left untouched. Contenteditable discovery is reported unsupported because its exact insertion/readback contract has not been demonstrated. No fallback input method runs after failure or uncertain delivery. Exact string comparison is followed by bounded three-sample stability readback; diagnostics expose lengths, safe hashes, first mismatch offset/category, and binding replacement state without prompt excerpts. The endpoint never activates submit or Generate, and always reports generation unavailable.
+
+P04.1 requires Chrome's `debugger` permission as a required manifest permission because debugger access cannot be requested as an optional permission. It is not in `optional_permissions`. The permission is used only after the user invokes the explicit image fill control; selected tab/project and top-frame URL/loader are rechecked before and after asynchronous stages. The dashboard requires the user's existing manual Flow settings confirmation and exposes no Generate action. Local fixture evidence does not establish a compatible Flow framework editor.
 
 Connect first pings frame 0, reuses a matching connector, and injects the packaged connector only if absent or stale. An injected connector instance keeps its exact listener reference; known stale listeners are removed before replacement. An older unmanaged probe with no listener reference is left alone and reported as stale instead of being duplicated. `scripting.executeScript` supplies the browser `documentId`; the final message is addressed to that `documentId` and frame 0, and the project URL is checked again before and after the handshake. A worker-start event invalidates in-flight or displayed Connected claims and requires a new handshake. Selected-target records remain unverified metadata; connection status is ephemeral and grants no generation capability.
 

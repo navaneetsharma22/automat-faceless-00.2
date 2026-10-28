@@ -31,6 +31,7 @@ export type ImportPanelProps = {
   setEditorExpanded: (value: boolean) => void;
   workspaceId: string;
   persistenceClient: FoundationClient;
+  flowSettingsConfirmed?: boolean;
 };
 
 export function ImportPanel({
@@ -43,6 +44,7 @@ export function ImportPanel({
   setEditorExpanded,
   workspaceId,
   persistenceClient,
+  flowSettingsConfirmed = false,
 }: ImportPanelProps) {
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -69,6 +71,30 @@ export function ImportPanel({
   const [exportError, setExportError] = useState<string | undefined>();
   const [exportDetails, setExportDetails] = useState<
     SavedSourceExportDetails | undefined
+  >();
+  const [flowEntryPending, setFlowEntryPending] = useState(false);
+  const [flowEntryRequiresReview, setFlowEntryRequiresReview] = useState(false);
+  const [flowEntryResult, setFlowEntryResult] = useState<
+    | {
+        outcome?: string;
+        stage?: string;
+        connectorReachable?: boolean;
+        composer?: string;
+        methodCompatible?: boolean;
+        message?: string;
+        expectedCodeUnits?: number;
+        actualCodeUnits?: number;
+        expectedSha256?: string;
+        actualSha256?: string;
+        immediateMatch?: boolean;
+        settledMatch?: boolean;
+        firstDifferenceOffset?: number;
+        mismatchCategory?: string;
+        inputMethod?: string;
+        fillVerified?: boolean;
+        generationAvailable?: false;
+      }
+    | undefined
   >();
   const fileRequest = useRef(0);
   const lastToastId = useRef(0);
@@ -101,6 +127,7 @@ export function ImportPanel({
     setFileLoading(false);
     setFileError(undefined);
     setPersistenceError(undefined);
+    setFlowEntryResult(undefined);
     setReplacement(null);
     session.setSource(source);
   };
@@ -350,6 +377,62 @@ export function ImportPanel({
     }
   };
 
+  const fillFlowPrompt = async () => {
+    const current = session.getSnapshot();
+    const item = current.result?.items[0];
+    if (
+      kind !== "image" ||
+      !flowSettingsConfirmed ||
+      current.status !== "success" ||
+      current.resultRevision !== current.revision ||
+      current.result?.items.length !== 1 ||
+      !item
+    ) {
+      return;
+    }
+    setFlowEntryPending(true);
+    setFlowEntryResult(undefined);
+    try {
+      const rawResult = await persistenceClient.request("flow.prompt.fill", {
+        sourceText: item.rawBody,
+      });
+      if (!rawResult || typeof rawResult !== "object") {
+        throw new Error("Flow entry returned an invalid status.");
+      }
+      const result = rawResult as NonNullable<typeof flowEntryResult>;
+      setFlowEntryResult(result);
+      if (
+        result.outcome === "input-uncertain" ||
+        (result.outcome === "readback-mismatch" &&
+          result.inputMethod !== "none")
+      ) {
+        setFlowEntryRequiresReview(true);
+      }
+    } catch (error) {
+      setFlowEntryRequiresReview(true);
+      setFlowEntryResult({
+        outcome: "input-uncertain",
+        stage:
+          error &&
+          typeof error === "object" &&
+          "category" in error &&
+          error.category === "timeout"
+            ? "timeout"
+            : "worker-messaging",
+        message:
+          error &&
+          typeof error === "object" &&
+          "category" in error &&
+          error.category === "timeout"
+            ? "The request timed out. The editor outcome is unknown; inspect Flow before taking another action."
+            : "The request failed before a verified result. The editor outcome is unknown; inspect Flow before taking another action.",
+        generationAvailable: false,
+      });
+    } finally {
+      setFlowEntryPending(false);
+    }
+  };
+
   return (
     <div
       className={styles.importPanel}
@@ -405,6 +488,76 @@ export function ImportPanel({
           />
         </Field>
       </div>
+      {kind === "image" ? (
+        <div className={styles.sourceActions}>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={
+              !currentValidation ||
+              !flowSettingsConfirmed ||
+              flowEntryPending ||
+              flowEntryRequiresReview ||
+              currentItemCount !== 1
+            }
+            loading={flowEntryPending}
+            loadingLabel="Inspecting Flow composer…"
+            onClick={() => void fillFlowPrompt()}
+          >
+            Inspect and fill Flow prompt (no Generate)
+          </Button>
+          {!flowSettingsConfirmed ? (
+            <p className={styles.subtleText}>
+              Confirm that you manually selected Image mode, model, ratio, and
+              variants in Flow.
+            </p>
+          ) : null}
+          {!currentValidation ? (
+            <p className={styles.subtleText}>
+              Validate the current image source before Flow composer inspection
+              is available.
+            </p>
+          ) : currentItemCount !== 1 ? (
+            <p className={styles.subtleText}>
+              Flow single-prompt fill requires exactly one validated JSON body.
+            </p>
+          ) : null}
+          {flowEntryRequiresReview ? (
+            <p className={styles.subtleText}>
+              The last fill result is uncertain or mismatched. Inspect the
+              selected Flow editor before continuing; this panel will not retry
+              input.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      {flowEntryPending ? (
+        <Notice kind="info">
+          Flow composer discovery and prompt preflight are pending. No Generate
+          action is available.
+        </Notice>
+      ) : null}
+      {flowEntryResult ? (
+        <Notice kind={flowEntryResult.fillVerified ? "success" : "error"}>
+          {[
+            `${flowEntryResult.stage ?? "Flow entry"}: ${flowEntryResult.message ?? "Flow prompt entry did not complete."}`,
+            flowEntryResult.expectedCodeUnits !== undefined
+              ? `Expected ${flowEntryResult.expectedCodeUnits} code units; actual ${flowEntryResult.actualCodeUnits ?? "unavailable"}. Entry method: ${flowEntryResult.inputMethod ?? "none"}. Fill verified: ${flowEntryResult.fillVerified ? "yes" : "no"}. Generate: unavailable.`
+              : "",
+            flowEntryResult.composer
+              ? `Connector reachable: ${flowEntryResult.connectorReachable ? "yes" : "no"}; composer: ${flowEntryResult.composer}; entry method compatible: ${flowEntryResult.methodCompatible ? "yes" : "no"}.`
+              : "",
+            flowEntryResult.expectedSha256
+              ? `Expected SHA-256 ${flowEntryResult.expectedSha256}; actual ${flowEntryResult.actualSha256 ?? "unavailable"}.`
+              : "",
+            flowEntryResult.immediateMatch !== undefined
+              ? `Immediate match: ${flowEntryResult.immediateMatch ? "yes" : "no"}; settled match: ${flowEntryResult.settledMatch ? "yes" : "no"}. Mismatch: ${flowEntryResult.mismatchCategory ?? "none"}${flowEntryResult.firstDifferenceOffset !== undefined ? ` at offset ${flowEntryResult.firstDifferenceOffset}` : ""}.`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        </Notice>
+      ) : null}
 
       {replacement ? (
         <div

@@ -13,6 +13,7 @@ node_modules/
 !/phases/PHASE_02_FOUNDATION.md
 !/phases/PHASE_03_JSON_IMPORT.md
 !/phases/PHASE_00_BASELINE.md
+!/phases/PHASE_04_FLOW_ONE_IMAGE.md
 !INPUT_FORMAT.md
 !/tests/fixtures/prompts/README.md
 !docs/evidence/connection-proof.md
@@ -20,3 +21,4 @@ node_modules/
 !docs/evidence/import-preview.md
 !docs/evidence/prompt-preservation.md
 !docs/evidence/prompt-sample-profile.md
+!docs/evidence/flow-one-image.md

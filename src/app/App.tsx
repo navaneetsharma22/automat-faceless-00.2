@@ -267,6 +267,7 @@ function ImagesView({
           session={session}
           workspaceId="default"
           persistenceClient={persistenceClient}
+          settingsConfirmed={confirmed}
           exampleSource={demoJson}
           wrapLines={wrapLines}
           setWrapLines={setWrapLines}
@@ -276,7 +277,7 @@ function ImagesView({
         <SettingsConfirmation
           id="image-settings-confirm"
           provider="Flow"
-          contextLabel="demo image batch"
+          contextLabel="current image prompt"
           checked={confirmed}
           onChange={setConfirmed}
         />

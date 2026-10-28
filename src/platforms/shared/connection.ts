@@ -32,11 +32,14 @@ export function providerTabFromUrl(
     let projectId: string;
     let canonicalPath: string;
     if (url.hostname === "flow.google.com") {
-      const match = /^\/project\/([A-Za-z0-9_-]+)\/?$/.exec(url.pathname);
+      const match = /^\/(?:u\/([0-9]+)\/)?project\/([A-Za-z0-9_-]+)\/?$/.exec(
+        url.pathname,
+      );
       if (!match) return undefined;
       provider = "Flow";
-      projectId = match[1]!;
-      canonicalPath = `/project/${projectId}`;
+      const accountPrefix = match[1] ? `/u/${match[1]}` : "";
+      projectId = match[2]!;
+      canonicalPath = `${accountPrefix}/project/${projectId}`;
     } else if (url.hostname === "labs.google") {
       const match = /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(
         url.pathname,

@@ -20,6 +20,7 @@ export type FoundationDependencies = {
   repositories: ExtensionRepositories;
   preferences: ChromePreferenceRepository;
   ready?: Promise<void>;
+  flowPromptEntry?: (sourceText: string) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -141,6 +142,15 @@ async function dispatch(
           request.payload.enabled,
         ),
       };
+    case "flow.prompt.fill":
+      if (!dependencies.flowPromptEntry) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "flow_entry_unavailable",
+          "Flow prompt entry is unavailable in this extension context.",
+        );
+      }
+      return dependencies.flowPromptEntry(request.payload.sourceText);
     case "preferences.getTheme":
       return { theme: await dependencies.preferences.getTheme() };
     case "preferences.setTheme":

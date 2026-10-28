@@ -172,6 +172,23 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
       .strict(),
   }),
   requestBase.extend({
+    type: z.literal("flow.prompt.fill"),
+    payload: z
+      .object({
+        sourceText: z
+          .string()
+          .min(1)
+          .max(INPUT_POLICY.maxPromptCodeUnits)
+          .refine(
+            (source) =>
+              new TextEncoder().encode(source).byteLength <=
+              INPUT_POLICY.maxPromptUtf8Bytes,
+            "Prompt exceeds the provisional UTF-8 byte limit.",
+          ),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
     type: z.literal("preferences.getTheme"),
     payload: z.object({}).strict(),
   }),

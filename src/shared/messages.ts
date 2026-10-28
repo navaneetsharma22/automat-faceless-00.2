@@ -31,6 +31,7 @@ export type RequestPayloads = {
     provider: "Flow" | "Vids";
     enabled: boolean;
   };
+  "flow.prompt.fill": { sourceText: string };
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };
 };
@@ -57,6 +58,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "connections.recordSelection": 5000,
   "connections.getSelection": 5000,
   "connections.setReconnectIntent": 5000,
+  "flow.prompt.fill": 20_000,
   "preferences.getTheme": 3000,
   "preferences.setTheme": 3000,
 };

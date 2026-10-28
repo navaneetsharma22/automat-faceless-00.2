@@ -11,6 +11,7 @@ export function ImageImportPanel({
   setEditorExpanded,
   workspaceId,
   persistenceClient,
+  settingsConfirmed,
 }: {
   session: ImportPreviewSession;
   exampleSource: string;
@@ -20,12 +21,14 @@ export function ImageImportPanel({
   setEditorExpanded: (value: boolean) => void;
   workspaceId: string;
   persistenceClient: FoundationClient;
+  settingsConfirmed: boolean;
 }) {
   return (
     <SharedImportPanel
       kind="image"
       workspaceId={workspaceId}
       persistenceClient={persistenceClient}
+      flowSettingsConfirmed={settingsConfirmed}
       session={session}
       exampleSource={exampleSource}
       wrapLines={wrapLines}

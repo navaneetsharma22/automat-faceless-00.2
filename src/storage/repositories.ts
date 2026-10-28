@@ -380,7 +380,7 @@ export function promptBatchId(workspaceId: string, kind: PromptKind): string {
   return `import:${workspaceId}:${kind}`;
 }
 
-async function sha256Hex(value: string): Promise<string> {
+export async function sha256Hex(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) =>

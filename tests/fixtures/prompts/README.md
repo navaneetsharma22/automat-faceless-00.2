@@ -56,3 +56,11 @@ These files are one-prompt synthetic JSON inputs prepared for the remaining manu
 | `p03-video-long-crlf.synthetic.json` | video |                1 |        25,000 |      25,062 |   42 |       0 | `7d04aee9475c7269a814f422542f026a86583bb720b61be7a8371eea53f2edc0` |
 
 The 62-byte difference between code units and UTF-8 bytes comes from multibyte Hindi and emoji characters. Both files have zero bare CR characters, contain no BOM, and passed strict UTF-8 decoding and `JSON.parse`. These fixture checks are file-integrity evidence only; they are not browser save/readback or preservation evidence.
+
+## P04.1 user-approved intended-use image sample
+
+`p04-image-user-approved-intended-use.json` is an unchanged byte-for-byte copy of the user-selected assistant-generated image prompt supplied for upcoming intended-use generation tests. It is not a historical production sample and is not a reconstructed short fixture. The source file was verified before copying; both source and fixture have the same SHA-256.
+
+| Fixture file                                | Kind  | Expected prompts | JS code units | UTF-8 bytes | Lines / newline profile | SHA-256                                                            |
+| ------------------------------------------- | ----- | ---------------: | ------------: | ----------: | ----------------------: | ------------------------------------------------------------------ |
+| `p04-image-user-approved-intended-use.json` | image |                1 |        15,889 |      16,013 |      234 lines / 233 LF | `f452ef3df4f0e7281560c52f980378df7f3cbfbc1b461353be1e46294a664a8b` |
