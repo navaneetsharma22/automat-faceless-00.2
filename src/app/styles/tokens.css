@@ -59,9 +59,11 @@
 
   /* Radii and shadows */
   --radius-control: 0.625rem;
+  --radius-card-compact: 0.875rem;
   --radius-card: 1rem;
   --radius-pill: 999px;
   --shadow-card: 0 8px 24px rgb(48 36 43 / 8%);
+  --shadow-card-selected: 0 5px 18px rgb(115 29 62 / 10%);
   --shadow-overlay: 0 16px 48px rgb(25 20 24 / 18%);
   --shadow-focus: 0 0 0 3px
     color-mix(in srgb, var(--color-focus) 30%, transparent);
@@ -116,6 +118,8 @@
   --color-info-surface: #192633;
 
   --shadow-card: 0 8px 28px rgb(0 0 0 / 24%);
+  --shadow-card-selected:
+    0 0 0 2px rgb(155 236 0 / 9%), 0 8px 26px rgb(0 0 0 / 34%);
   --shadow-overlay: 0 18px 54px rgb(0 0 0 / 42%);
 }
 
