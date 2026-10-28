@@ -32,6 +32,16 @@ export type RequestPayloads = {
     enabled: boolean;
   };
   "flow.prompt.fill": { sourceText: string };
+  "flow.image.generateOnce": {
+    workspaceId: string;
+    promptHash: string;
+    settingsConfirmation: {
+      confirmationId: string;
+      confirmedAt: number;
+      tabId: number;
+      projectId: string;
+    };
+  };
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };
 };
@@ -59,6 +69,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "connections.getSelection": 5000,
   "connections.setReconnectIntent": 5000,
   "flow.prompt.fill": 20_000,
+  "flow.image.generateOnce": 30_000,
   "preferences.getTheme": 3000,
   "preferences.setTheme": 3000,
 };

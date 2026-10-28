@@ -7,7 +7,9 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { SettingsConfirmation } from "./components/SettingsConfirmation";
 import { ToastHost, useToast } from "./components/ToastHost";
 import { BUILD_ID } from "../shared/buildInfo";
+import type { FlowSettingsConfirmation } from "../shared/schemas";
 import { createFoundationClient } from "../shared/messageClient";
+import { flowTabFromUrl } from "../platforms/flow/connection";
 import { registerDashboardFocusResponder } from "./dashboardFocus";
 import { ImageImportPanel } from "./features/image-batch/ImportPanel";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
@@ -66,13 +68,66 @@ function Dashboard() {
   const [videoEditorExpanded, setVideoEditorExpanded] = useState(false);
   const [downloadPreview, setDownloadPreview] =
     useState<DownloadPreviewState>("empty");
-  const [imageConfirmed, setImageConfirmed] = useState(false);
+  const [imageSettingsConfirmation, setImageSettingsConfirmation] =
+    useState<FlowSettingsConfirmation | null>(null);
+  const [imageConfirmationPending, setImageConfirmationPending] =
+    useState(false);
+  const [imageConfirmationError, setImageConfirmationError] = useState<
+    string | undefined
+  >();
   const [videoConfirmed, setVideoConfirmed] = useState(false);
   const [destination, setDestination] = useState<"Flow" | "Vids">("Flow");
   const [selectedReferences, setSelectedReferences] = useState<string[]>([
     "SHOT-001",
   ]);
   const toast = useToast();
+
+  const updateImageSettingsConfirmation = async (checked: boolean) => {
+    if (!checked) {
+      setImageSettingsConfirmation(null);
+      setImageConfirmationError(undefined);
+      return;
+    }
+    setImageConfirmationPending(true);
+    setImageConfirmationError(undefined);
+    try {
+      const selected = await batchClient.request("connections.getSelection", {
+        provider: "Flow",
+      });
+      if (
+        !selected ||
+        typeof selected !== "object" ||
+        !("tabId" in selected) ||
+        typeof selected.tabId !== "number" ||
+        !("canonicalTarget" in selected) ||
+        typeof selected.canonicalTarget !== "string"
+      ) {
+        throw new Error("Select a Flow project in Connections first.");
+      }
+      const target = flowTabFromUrl(
+        selected.tabId,
+        "",
+        selected.canonicalTarget,
+      );
+      if (!target)
+        throw new Error("The selected Flow project is no longer valid.");
+      setImageSettingsConfirmation({
+        confirmationId: crypto.randomUUID(),
+        confirmedAt: Date.now(),
+        tabId: target.id,
+        projectId: target.projectId,
+      });
+    } catch (error) {
+      setImageSettingsConfirmation(null);
+      setImageConfirmationError(
+        error instanceof Error
+          ? error.message
+          : "Flow settings confirmation could not be bound to the selected project.",
+      );
+    } finally {
+      setImageConfirmationPending(false);
+    }
+  };
 
   useEffect(
     () => () => {
@@ -171,8 +226,10 @@ function Dashboard() {
             <ImagesView
               session={imageImportSession}
               persistenceClient={batchClient}
-              confirmed={imageConfirmed}
-              setConfirmed={setImageConfirmed}
+              settingsConfirmation={imageSettingsConfirmation}
+              confirmationPending={imageConfirmationPending}
+              confirmationError={imageConfirmationError}
+              setSettingsConfirmation={updateImageSettingsConfirmation}
             />
           </div>
           {workspace === "References" ? (
@@ -241,13 +298,17 @@ function workspaceSubtitle(workspace: Workspace) {
 function ImagesView({
   session,
   persistenceClient,
-  confirmed,
-  setConfirmed,
+  settingsConfirmation,
+  confirmationPending,
+  confirmationError,
+  setSettingsConfirmation,
 }: {
   session: ImportPreviewSession;
   persistenceClient: ReturnType<typeof createFoundationClient>;
-  confirmed: boolean;
-  setConfirmed: (value: boolean) => void;
+  settingsConfirmation: FlowSettingsConfirmation | null;
+  confirmationPending: boolean;
+  confirmationError?: string;
+  setSettingsConfirmation: (value: boolean) => void;
 }) {
   const [wrapLines, setWrapLines] = useState(false);
   const [editorExpanded, setEditorExpanded] = useState(false);
@@ -267,7 +328,7 @@ function ImagesView({
           session={session}
           workspaceId="default"
           persistenceClient={persistenceClient}
-          settingsConfirmed={confirmed}
+          settingsConfirmation={settingsConfirmation ?? undefined}
           exampleSource={demoJson}
           wrapLines={wrapLines}
           setWrapLines={setWrapLines}
@@ -278,8 +339,10 @@ function ImagesView({
           id="image-settings-confirm"
           provider="Flow"
           contextLabel="current image prompt"
-          checked={confirmed}
-          onChange={setConfirmed}
+          checked={settingsConfirmation !== null}
+          onChange={(checked) => void setSettingsConfirmation(checked)}
+          disabled={confirmationPending}
+          error={confirmationError}
         />
         <div className={styles.actionRow}>
           <Button disabled aria-describedby="image-disabled-reason">

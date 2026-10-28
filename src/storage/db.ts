@@ -5,6 +5,7 @@ import type {
   PromptMeasurement,
 } from "../domain/batches/types";
 import type { JsonSpan } from "../domain/batches/jsonSpanScanner";
+import type { FlowImageAttemptRecord } from "../domain/jobs/attempt";
 
 export type PromptDraftRecord = {
   id: string;
@@ -62,6 +63,7 @@ export class AutomatDatabase extends Dexie {
   workflows!: Table<WorkflowRecord, string>;
   batches!: Table<BatchRecord, string>;
   promptItems!: Table<PromptItemRecord, string>;
+  flowImageAttempts!: Table<FlowImageAttemptRecord, string>;
 
   constructor(name = "automat-faceless-app-v1") {
     super(name);
@@ -84,6 +86,15 @@ export class AutomatDatabase extends Dexie {
       workflows: "&id, updatedAt",
       batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
       promptItems: "&id, batchId, workspaceId, kind, order",
+    });
+    this.version(4).stores({
+      promptDrafts: "&id, kind, updatedAt",
+      selectedTargets: "&provider, tabId, verification, updatedAt",
+      workflows: "&id, updatedAt",
+      batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
+      promptItems: "&id, batchId, workspaceId, kind, order",
+      flowImageAttempts:
+        "&attemptId, &activeKey, &confirmationKey, workspaceId, batchId, itemId, state, createdAt",
     });
   }
 }

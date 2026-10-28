@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { importPromptBatch } from "../../../domain/batches/importBatch";
+import { sha256Hex } from "../../../domain/batches/hashPrompt";
 import { INPUT_POLICY } from "../../../domain/batches/inputPolicy";
 import type { PromptKind } from "../../../domain/batches/types";
 import { PromptBatchSnapshotSchema } from "../../../shared/schemas";
 import type { FoundationClient } from "../../../shared/messageClient";
+import type { FlowSettingsConfirmation } from "../../../shared/schemas";
 import { Button } from "../../components/Button";
 import { Field } from "../../components/Field";
 import { JsonEditor } from "../../components/JsonEditor";
@@ -32,6 +34,7 @@ export type ImportPanelProps = {
   workspaceId: string;
   persistenceClient: FoundationClient;
   flowSettingsConfirmed?: boolean;
+  flowSettingsConfirmation?: FlowSettingsConfirmation;
 };
 
 export function ImportPanel({
@@ -45,6 +48,7 @@ export function ImportPanel({
   workspaceId,
   persistenceClient,
   flowSettingsConfirmed = false,
+  flowSettingsConfirmation,
 }: ImportPanelProps) {
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -93,6 +97,23 @@ export function ImportPanel({
         inputMethod?: string;
         fillVerified?: boolean;
         generationAvailable?: false;
+      }
+    | undefined
+  >();
+  const [flowGeneratePending, setFlowGeneratePending] = useState(false);
+  const [flowGenerateLockConfirmationId, setFlowGenerateLockConfirmationId] =
+    useState<string | undefined>();
+  const [flowGenerateRequiresReview, setFlowGenerateRequiresReview] =
+    useState(false);
+  const [flowGenerateResult, setFlowGenerateResult] = useState<
+    | {
+        state?: string;
+        attemptId?: string;
+        code?: string;
+        message?: string;
+        pressAttempted?: boolean;
+        releaseAttempted?: boolean;
+        activationCount?: number;
       }
     | undefined
   >();
@@ -433,6 +454,72 @@ export function ImportPanel({
     }
   };
 
+  const generateFlowImageOnce = async () => {
+    const current = session.getSnapshot();
+    const item = current.result?.items[0];
+    const confirmation = flowSettingsConfirmation;
+    if (
+      kind !== "image" ||
+      !confirmation ||
+      current.status !== "success" ||
+      current.resultRevision !== current.revision ||
+      current.result?.items.length !== 1 ||
+      !item ||
+      savedSource !== current.source ||
+      flowGeneratePending ||
+      flowGenerateLockConfirmationId === confirmation?.confirmationId
+    ) {
+      return;
+    }
+    setFlowGeneratePending(true);
+    setFlowGenerateResult(undefined);
+    try {
+      const promptHash = await sha256Hex(item.rawBody);
+      if (session.getSnapshot().revision !== current.revision) {
+        setFlowGenerateResult({
+          state: "failed-before-dispatch",
+          code: "draft_changed_before_request",
+          message:
+            "The image draft changed before dispatch. No Generate action was sent.",
+        });
+        return;
+      }
+      const rawResult = await persistenceClient.request(
+        "flow.image.generateOnce",
+        {
+          workspaceId,
+          promptHash,
+          settingsConfirmation: confirmation,
+        },
+      );
+      if (!rawResult || typeof rawResult !== "object") {
+        throw new Error("The Generate attempt returned an invalid status.");
+      }
+      const result = rawResult as NonNullable<typeof flowGenerateResult>;
+      setFlowGenerateResult(result);
+      if (result.state === "dispatched" || result.state === "uncertain") {
+        setFlowGenerateRequiresReview(true);
+      } else if (
+        result.code === "attempt_already_active" ||
+        result.code === "duplicate_generate_click"
+      ) {
+        setFlowGenerateLockConfirmationId(confirmation.confirmationId);
+      }
+    } catch (error) {
+      setFlowGenerateRequiresReview(true);
+      setFlowGenerateResult({
+        state: "uncertain",
+        code: "response_unknown",
+        message:
+          error instanceof Error
+            ? `${error.message} Check the attempt status before continuing; the action will not retry.`
+            : "The worker response is unknown. Check the attempt status before continuing; the action will not retry.",
+      });
+    } finally {
+      setFlowGeneratePending(false);
+    }
+  };
+
   return (
     <div
       className={styles.importPanel}
@@ -497,6 +584,10 @@ export function ImportPanel({
               !currentValidation ||
               !flowSettingsConfirmed ||
               flowEntryPending ||
+              flowGeneratePending ||
+              flowGenerateRequiresReview ||
+              flowGenerateLockConfirmationId ===
+                flowSettingsConfirmation?.confirmationId ||
               flowEntryRequiresReview ||
               currentItemCount !== 1
             }
@@ -510,6 +601,39 @@ export function ImportPanel({
             <p className={styles.subtleText}>
               Confirm that you manually selected Image mode, model, ratio, and
               variants in Flow.
+            </p>
+          ) : null}
+          <Button
+            type="button"
+            disabled={
+              !currentValidation ||
+              !flowSettingsConfirmation ||
+              savedSource !== snapshot.source ||
+              persistenceStatus === "saving" ||
+              persistenceStatus === "loading" ||
+              flowEntryPending ||
+              flowGeneratePending ||
+              flowGenerateRequiresReview ||
+              flowGenerateLockConfirmationId ===
+                flowSettingsConfirmation?.confirmationId ||
+              currentItemCount !== 1
+            }
+            loading={flowGeneratePending}
+            loadingLabel="Preparing one Generate attempt…"
+            onClick={() => void generateFlowImageOnce()}
+          >
+            Generate once in Flow
+          </Button>
+          {!flowSettingsConfirmation ? (
+            <p className={styles.subtleText}>
+              Confirm manual image settings for the currently selected Flow
+              project before this one-shot action.
+            </p>
+          ) : null}
+          {savedSource !== snapshot.source ? (
+            <p className={styles.subtleText}>
+              Save the current validated one-prompt batch before enabling
+              Generate once.
             </p>
           ) : null}
           {!currentValidation ? (
@@ -536,6 +660,36 @@ export function ImportPanel({
           Flow composer discovery and prompt preflight are pending. No Generate
           action is available.
         </Notice>
+      ) : null}
+      {flowGeneratePending ? (
+        <Notice kind="info">
+          Preparing the saved prompt and checking the selected Flow document.
+          Generate has not been dispatched yet.
+        </Notice>
+      ) : null}
+      {flowGenerateResult ? (
+        <Notice
+          kind={
+            flowGenerateResult.state === "dispatched"
+              ? "info"
+              : flowGenerateResult.state === "uncertain"
+                ? "warning"
+                : flowGenerateResult.state === "blocked"
+                  ? "warning"
+                  : "error"
+          }
+        >
+          {`${flowGenerateResult.state ?? "Attempt"}: ${flowGenerateResult.message ?? "The Generate attempt did not complete."} Activation pair attempts: ${flowGenerateResult.activationCount ?? 0}. Press: ${flowGenerateResult.pressAttempted ? "sent or uncertain" : "not sent"}; release: ${flowGenerateResult.releaseAttempted ? "sent or uncertain" : "not sent"}.${flowGenerateResult.attemptId ? ` Attempt ${flowGenerateResult.attemptId}.` : ""}`}
+        </Notice>
+      ) : null}
+      {flowGenerateRequiresReview ||
+      flowGenerateLockConfirmationId ===
+        flowSettingsConfirmation?.confirmationId ? (
+        <p className={styles.subtleText}>
+          {flowGenerateRequiresReview
+            ? "This attempt is dispatched or uncertain. Do not activate Generate again; inspect its durable attempt status first."
+            : "This settings confirmation was already used. Reconfirm the manual settings before starting another attempt."}
+        </p>
       ) : null}
       {flowEntryResult ? (
         <Notice kind={flowEntryResult.fillVerified ? "success" : "error"}>

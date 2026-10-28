@@ -1,6 +1,7 @@
 import { ImportPanel as SharedImportPanel } from "../shared/ImportPanel";
 import type { ImportPreviewSession } from "../shared/importPreviewSession";
 import type { FoundationClient } from "../../../shared/messageClient";
+import type { FlowSettingsConfirmation } from "../../../shared/schemas";
 
 export function ImageImportPanel({
   session,
@@ -11,7 +12,7 @@ export function ImageImportPanel({
   setEditorExpanded,
   workspaceId,
   persistenceClient,
-  settingsConfirmed,
+  settingsConfirmation,
 }: {
   session: ImportPreviewSession;
   exampleSource: string;
@@ -21,14 +22,15 @@ export function ImageImportPanel({
   setEditorExpanded: (value: boolean) => void;
   workspaceId: string;
   persistenceClient: FoundationClient;
-  settingsConfirmed: boolean;
+  settingsConfirmation?: FlowSettingsConfirmation;
 }) {
   return (
     <SharedImportPanel
       kind="image"
       workspaceId={workspaceId}
       persistenceClient={persistenceClient}
-      flowSettingsConfirmed={settingsConfirmed}
+      flowSettingsConfirmed={settingsConfirmation !== undefined}
+      flowSettingsConfirmation={settingsConfirmation}
       session={session}
       exampleSource={exampleSource}
       wrapLines={wrapLines}

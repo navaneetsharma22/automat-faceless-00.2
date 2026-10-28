@@ -60,10 +60,15 @@ export type FlowPromptEntryPort = {
     params?: object,
   ) => Promise<unknown>;
   detach: (tabId: number) => Promise<void>;
+  expectedFrame?: Pick<FrameIdentity, "frameId" | "loaderId">;
   now?: () => number;
 };
 
-type FrameIdentity = { frameId: string; loaderId?: string; url: string };
+export type FrameIdentity = {
+  frameId: string;
+  loaderId?: string;
+  url: string;
+};
 
 const ENTRY_DEADLINE_MS = 12_000;
 const READBACK_DEADLINE_MS = 1_500;
@@ -171,6 +176,19 @@ export async function enterFlowPrompt(
     await command(port, target.id, "Page.enable", undefined, deadline, now);
     await command(port, target.id, "Runtime.enable", undefined, deadline, now);
     frame = await readTopFrame(port, target.id, deadline, now);
+    if (
+      port.expectedFrame &&
+      (frame.frameId !== port.expectedFrame.frameId ||
+        frame.loaderId !== port.expectedFrame.loaderId)
+    ) {
+      return result({
+        stage: "target-validation",
+        code: "document_binding_changed",
+        message:
+          "The selected Flow document changed after attempt preparation. No prompt input was sent.",
+        connectorReachable,
+      });
+    }
     if (!(await targetAndFrameCurrent(port, target, frame, deadline, now))) {
       return result({
         stage: "target-validation",

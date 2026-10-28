@@ -21,6 +21,9 @@ export type FoundationDependencies = {
   preferences: ChromePreferenceRepository;
   ready?: Promise<void>;
   flowPromptEntry?: (sourceText: string) => Promise<unknown>;
+  flowImageGenerateOnce?: (
+    input: Extract<AppRequest, { type: "flow.image.generateOnce" }>["payload"],
+  ) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -151,6 +154,15 @@ async function dispatch(
         );
       }
       return dependencies.flowPromptEntry(request.payload.sourceText);
+    case "flow.image.generateOnce":
+      if (!dependencies.flowImageGenerateOnce) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "flow_image_generate_unavailable",
+          "Flow image generation is unavailable in this extension context.",
+        );
+      }
+      return dependencies.flowImageGenerateOnce(request.payload);
     case "preferences.getTheme":
       return { theme: await dependencies.preferences.getTheme() };
     case "preferences.setTheme":

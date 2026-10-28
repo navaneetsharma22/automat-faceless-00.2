@@ -1,5 +1,6 @@
 import { createConnectionMessageListener } from "./handlers/connections";
 import {
+  createFlowImageGenerateOnceForWorker,
   createChromeFlowPromptEntryPort,
   createFlowPromptEntry,
 } from "./handlers/flow";
@@ -16,12 +17,16 @@ const preferences = new ChromePreferenceRepository({
   get: (key) => chrome.storage.local.get(key),
   set: (items) => chrome.storage.local.set(items),
 });
-const workerReady = repositories.markTargetsUnverified();
+const workerReady = Promise.all([
+  repositories.markTargetsUnverified(),
+  repositories.reconcileInterruptedFlowImageAttempts(),
+]).then(() => undefined);
 void workerReady.catch(() => undefined);
 const flowPromptEntry = createFlowPromptEntry(
-  repositories,
   createChromeFlowPromptEntryPort(repositories),
 );
+const flowImageGenerateOnce =
+  createFlowImageGenerateOnceForWorker(repositories);
 
 // Register extension listeners synchronously during worker evaluation.
 chrome.runtime.onMessage.addListener(
@@ -30,6 +35,7 @@ chrome.runtime.onMessage.addListener(
     preferences,
     ready: workerReady,
     flowPromptEntry,
+    flowImageGenerateOnce,
   }),
 );
 registerDashboardAction(chrome);

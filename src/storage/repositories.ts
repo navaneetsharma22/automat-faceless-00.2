@@ -11,10 +11,20 @@ import {
   PromptBatchInputSchema,
   PromptBatchRecordSchema,
   PromptBatchSnapshotSchema,
+  FlowImageAttemptRecordSchema,
   PromptItemRecordSchema,
 } from "../shared/schemas";
 import { importPromptBatch } from "../domain/batches/importBatch";
 import type { PromptKind } from "../domain/batches/types";
+import { sha256Hex } from "../domain/batches/hashPrompt";
+export { sha256Hex } from "../domain/batches/hashPrompt";
+import {
+  canTransitionFlowImageAttempt,
+  flowImageAttemptActiveKey,
+  type FlowImageAttemptEvent,
+  type FlowImageAttemptRecord,
+  type FlowImageAttemptState,
+} from "../domain/jobs/attempt";
 
 export type PromptDraftInput = Pick<
   PromptDraftRecord,
@@ -43,6 +53,40 @@ export class PromptBatchValidationError extends Error {
   }
 }
 
+export class ActiveFlowImageAttemptError extends Error {
+  constructor() {
+    super(
+      "A dispatched, uncertain, or active attempt already exists for this image prompt.",
+    );
+    this.name = "ActiveFlowImageAttemptError";
+  }
+}
+
+export class DuplicateFlowImageConfirmationError extends Error {
+  constructor() {
+    super(
+      "This settings confirmation has already been used for a Generate attempt.",
+    );
+    this.name = "DuplicateFlowImageConfirmationError";
+  }
+}
+
+export class FlowImageAttemptTransitionError extends Error {
+  constructor() {
+    super(
+      "The image attempt state changed or the requested transition is invalid.",
+    );
+    this.name = "FlowImageAttemptTransitionError";
+  }
+}
+
+export class FlowImageAttemptValidationError extends Error {
+  constructor() {
+    super("The image attempt record failed validation.");
+    this.name = "FlowImageAttemptValidationError";
+  }
+}
+
 export type Theme = "light" | "dark";
 
 export type PreferenceArea = {
@@ -62,6 +106,10 @@ export type RepositoryDatabase = {
     Table<PromptItemRecord, string>,
     "bulkPut" | "bulkDelete" | "toArray"
   >;
+  flowImageAttempts: Pick<
+    Table<FlowImageAttemptRecord, string>,
+    "add" | "get" | "put" | "toArray"
+  >;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -77,6 +125,7 @@ export function createDexieRepositoryDatabase(
     workflows: database.workflows,
     batches: database.batches,
     promptItems: database.promptItems,
+    flowImageAttempts: database.flowImageAttempts,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -96,6 +145,12 @@ export function createDexieRepositoryDatabase(
             "rw",
             database.batches,
             database.promptItems,
+            operation,
+          );
+        case "flowImageAttempts":
+          return database.transaction(
+            "rw",
+            database.flowImageAttempts,
             operation,
           );
         default:
@@ -374,16 +429,151 @@ export class ExtensionRepositories {
     }
     return { batch: savedBatch, items };
   }
+
+  async createFlowImageAttempt(
+    input: Omit<FlowImageAttemptRecord, "activeKey"> & { activeKey?: string },
+  ): Promise<FlowImageAttemptRecord> {
+    const record: FlowImageAttemptRecord = {
+      ...input,
+      activeKey: flowImageAttemptActiveKey(input.itemId),
+    };
+    if (!FlowImageAttemptRecordSchema.safeParse(record).success) {
+      throw new FlowImageAttemptValidationError();
+    }
+    try {
+      await this.tables.transaction(["flowImageAttempts"], async () => {
+        const existing = await this.tables.flowImageAttempts.toArray();
+        if (
+          existing.some((attempt) => attempt.activeKey === record.activeKey)
+        ) {
+          throw new ActiveFlowImageAttemptError();
+        }
+        if (
+          existing.some(
+            (attempt) => attempt.confirmationKey === record.confirmationKey,
+          )
+        ) {
+          throw new DuplicateFlowImageConfirmationError();
+        }
+        await this.tables.flowImageAttempts.add(record);
+      });
+    } catch (error) {
+      if (error instanceof ActiveFlowImageAttemptError) throw error;
+      if (error instanceof DuplicateFlowImageConfirmationError) throw error;
+      if (error instanceof DOMException && error.name === "ConstraintError") {
+        const existing = await this.tables.flowImageAttempts.toArray();
+        if (
+          existing.some((attempt) => attempt.activeKey === record.activeKey)
+        ) {
+          throw new ActiveFlowImageAttemptError();
+        }
+        if (
+          existing.some(
+            (attempt) => attempt.confirmationKey === record.confirmationKey,
+          )
+        ) {
+          throw new DuplicateFlowImageConfirmationError();
+        }
+        throw error;
+      }
+      throw error;
+    }
+    return record;
+  }
+
+  async transitionFlowImageAttempt(input: {
+    attemptId: string;
+    expected: FlowImageAttemptState;
+    next: FlowImageAttemptState;
+    event: FlowImageAttemptEvent;
+    baseline?: FlowImageAttemptRecord["baseline"];
+  }): Promise<FlowImageAttemptRecord> {
+    return this.tables.transaction(["flowImageAttempts"], async () => {
+      const current = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (
+        !current ||
+        current.state !== input.expected ||
+        !canTransitionFlowImageAttempt(current.state, input.next)
+      ) {
+        throw new FlowImageAttemptTransitionError();
+      }
+      const next: FlowImageAttemptRecord = {
+        ...current,
+        state: input.next,
+        ...(input.next === "failed-before-dispatch"
+          ? { activeKey: undefined }
+          : {}),
+        ...(input.baseline ? { baseline: input.baseline } : {}),
+        events: [...current.events, input.event],
+        updatedAt: input.event.at,
+      };
+      if (!FlowImageAttemptRecordSchema.safeParse(next).success) {
+        throw new FlowImageAttemptValidationError();
+      }
+      await this.tables.flowImageAttempts.put(next);
+      return next;
+    });
+  }
+
+  async getFlowImageAttempt(
+    attemptId: string,
+  ): Promise<FlowImageAttemptRecord | undefined> {
+    return this.tables.flowImageAttempts.get(attemptId);
+  }
+
+  getAllFlowImageAttempts(): Promise<FlowImageAttemptRecord[]> {
+    return this.tables.flowImageAttempts.toArray();
+  }
+
+  async reconcileInterruptedFlowImageAttempts(): Promise<{
+    failedBeforeDispatch: number;
+    uncertain: number;
+  }> {
+    return this.tables.transaction(["flowImageAttempts"], async () => {
+      const attempts = await this.tables.flowImageAttempts.toArray();
+      let failedBeforeDispatch = 0;
+      let uncertain = 0;
+      for (const current of attempts) {
+        const nextState =
+          current.state === "preparing" || current.state === "verified"
+            ? "failed-before-dispatch"
+            : current.state === "dispatch-intent"
+              ? "uncertain"
+              : undefined;
+        if (!nextState) continue;
+        const at = this.now();
+        const next: FlowImageAttemptRecord = {
+          ...current,
+          state: nextState,
+          ...(nextState === "failed-before-dispatch"
+            ? { activeKey: undefined }
+            : {}),
+          events: [
+            ...current.events,
+            {
+              stage: "recovery",
+              at,
+              method: "none",
+              code:
+                nextState === "uncertain"
+                  ? "worker_restart_after_intent"
+                  : "worker_restart_before_dispatch",
+            },
+          ],
+          updatedAt: at,
+        };
+        if (!FlowImageAttemptRecordSchema.safeParse(next).success) {
+          throw new FlowImageAttemptValidationError();
+        }
+        await this.tables.flowImageAttempts.put(next);
+        if (nextState === "uncertain") uncertain += 1;
+        else failedBeforeDispatch += 1;
+      }
+      return { failedBeforeDispatch, uncertain };
+    });
+  }
 }
 
 export function promptBatchId(workspaceId: string, kind: PromptKind): string {
   return `import:${workspaceId}:${kind}`;
-}
-
-export async function sha256Hex(value: string): Promise<string> {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
 }

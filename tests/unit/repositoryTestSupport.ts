@@ -6,6 +6,7 @@ import type {
   SelectedTargetRecord,
   WorkflowRecord,
 } from "../../src/storage/db";
+import type { FlowImageAttemptRecord } from "../../src/domain/jobs/attempt";
 
 export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const drafts = new Map<string, PromptDraftRecord>();
@@ -13,6 +14,8 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const workflows = new Map<string, WorkflowRecord>();
   const batches = new Map<string, BatchRecord>();
   const promptItems = new Map<string, PromptItemRecord>();
+  const flowImageAttempts = new Map<string, FlowImageAttemptRecord>();
+  let transactionTail = Promise.resolve();
 
   const table = <T extends { id?: string; provider?: string }>(
     values: Map<string, T>,
@@ -31,6 +34,33 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
     bulkDelete: async (keys: string[]) => {
       for (const value of keys) values.delete(value);
     },
+    add: async (item: T) => {
+      const id = key(item);
+      if (values.has(id))
+        throw new DOMException("Duplicate key", "ConstraintError");
+      if (
+        "activeKey" in item &&
+        item.activeKey !== undefined &&
+        [...values.values()].some(
+          (existing) =>
+            "activeKey" in existing && existing.activeKey === item.activeKey,
+        )
+      ) {
+        throw new DOMException("Duplicate active key", "ConstraintError");
+      }
+      if (
+        "confirmationKey" in item &&
+        [...values.values()].some(
+          (existing) =>
+            "confirmationKey" in existing &&
+            existing.confirmationKey === item.confirmationKey,
+        )
+      ) {
+        throw new DOMException("Duplicate confirmation key", "ConstraintError");
+      }
+      values.set(id, item);
+      return id;
+    },
   });
 
   return {
@@ -39,22 +69,41 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
     workflows: table(workflows, (item) => item.id!),
     batches: table(batches, (item) => item.id!),
     promptItems: table(promptItems, (item) => item.id!),
+    flowImageAttempts: table(flowImageAttempts, (item) => item.attemptId),
     transaction: async (_tableNames, operation) => {
-      const snapshots = [drafts, targets, workflows, batches, promptItems].map(
-        (values) => new Map(values),
-      );
+      let release!: () => void;
+      const previous = transactionTail;
+      transactionTail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      const snapshots = [
+        drafts,
+        targets,
+        workflows,
+        batches,
+        promptItems,
+        flowImageAttempts,
+      ].map((values) => new Map(values));
       try {
         return await operation();
       } catch (error) {
-        [drafts, targets, workflows, batches, promptItems].forEach(
-          (values, index) => {
-            values.clear();
-            for (const [key, value] of snapshots[index]!) {
-              values.set(key, value);
-            }
-          },
-        );
+        [
+          drafts,
+          targets,
+          workflows,
+          batches,
+          promptItems,
+          flowImageAttempts,
+        ].forEach((values, index) => {
+          values.clear();
+          for (const [key, value] of snapshots[index]!) {
+            values.set(key, value);
+          }
+        });
         throw error;
+      } finally {
+        release();
       }
     },
   };

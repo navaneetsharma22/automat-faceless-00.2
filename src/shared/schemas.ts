@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { INPUT_POLICY } from "../domain/batches/inputPolicy";
+import {
+  FLOW_IMAGE_ATTEMPT_STATES,
+  flowImageAttemptActiveKey,
+} from "../domain/jobs/attempt";
 
 const promptSourceSchema = z
   .string()
@@ -116,6 +120,98 @@ export const PromptBatchSnapshotSchema = z
   })
   .strict();
 
+const flowImageAttemptEventSchema = z
+  .object({
+    stage: z.enum(["preparation", "verification", "dispatch", "recovery"]),
+    at: z.number().finite().nonnegative(),
+    method: z.enum([
+      "none",
+      "CDP Input.insertText",
+      "CDP Input.dispatchMouseEvent",
+    ]),
+    code: z
+      .string()
+      .regex(/^[a-z0-9_]{1,64}$/)
+      .optional(),
+  })
+  .strict();
+
+export const FlowImageAttemptRecordSchema = z
+  .object({
+    attemptId: z.string().min(1).max(128),
+    activeKey: z.string().min(1).max(512).optional(),
+    confirmationKey: z.string().min(1).max(128),
+    workspaceId: workspaceIdSchema,
+    batchId: z.string().min(1).max(256),
+    itemId: z.string().min(1).max(256),
+    shotId: z
+      .string()
+      .regex(/^[1-9][0-9]*$/)
+      .optional(),
+    promptHash: z.string().regex(/^[0-9a-f]{64}$/),
+    promptCodeUnits: z
+      .number()
+      .int()
+      .positive()
+      .max(INPUT_POLICY.maxPromptCodeUnits),
+    promptUtf8Bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(INPUT_POLICY.maxPromptUtf8Bytes),
+    provider: z.literal("Flow"),
+    projectId: z.string().min(1).max(512),
+    tabId: z.number().int().nonnegative(),
+    frameId: z.string().min(1).max(256),
+    loaderId: z.string().min(1).max(256),
+    buildId: z.string().min(1).max(128),
+    protocolVersion: z.number().int().positive(),
+    settingsConfirmation: z
+      .object({
+        confirmationId: z.string().min(1).max(128),
+        confirmedAt: z.number().finite().nonnegative(),
+        userAttested: z.literal(true),
+        tabId: z.number().int().nonnegative(),
+        projectId: z.string().min(1).max(512),
+      })
+      .strict(),
+    state: z.enum(FLOW_IMAGE_ATTEMPT_STATES),
+    baseline: z
+      .object({
+        regionLabel: z.string().min(1).max(80),
+        mediaCount: z.number().int().nonnegative().max(100_000),
+        capturedAt: z.number().finite().nonnegative(),
+      })
+      .strict()
+      .optional(),
+    events: z.array(flowImageAttemptEventSchema).min(1).max(24),
+    createdAt: z.number().finite().nonnegative(),
+    updatedAt: z.number().finite().nonnegative(),
+  })
+  .strict()
+  .refine(
+    (attempt) =>
+      attempt.activeKey === undefined ||
+      attempt.activeKey === flowImageAttemptActiveKey(attempt.itemId),
+  )
+  .refine((attempt) =>
+    attempt.state === "failed-before-dispatch"
+      ? attempt.activeKey === undefined
+      : attempt.activeKey === flowImageAttemptActiveKey(attempt.itemId),
+  );
+
+export const FlowSettingsConfirmationSchema = z
+  .object({
+    confirmationId: z.string().min(1).max(128),
+    confirmedAt: z.number().finite().nonnegative(),
+    tabId: z.number().int().nonnegative(),
+    projectId: z.string().min(1).max(512),
+  })
+  .strict();
+export type FlowSettingsConfirmation = z.infer<
+  typeof FlowSettingsConfirmationSchema
+>;
+
 const requestBase = z
   .object({
     protocolVersion: z.number().int().positive(),
@@ -185,6 +281,16 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
               INPUT_POLICY.maxPromptUtf8Bytes,
             "Prompt exceeds the provisional UTF-8 byte limit.",
           ),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.image.generateOnce"),
+    payload: z
+      .object({
+        workspaceId: workspaceIdSchema,
+        promptHash: z.string().regex(/^[0-9a-f]{64}$/),
+        settingsConfirmation: FlowSettingsConfirmationSchema,
       })
       .strict(),
   }),

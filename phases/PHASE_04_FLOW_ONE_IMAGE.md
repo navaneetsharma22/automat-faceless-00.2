@@ -1,6 +1,6 @@
 # P04 — One long image JSON: entry and one Generate
 
-Status: **INCOMPLETE — P04.1 OFFLINE_VERIFIED / LOCAL_BROWSER_FIXTURES_VERIFIED; LIVE FLOW COMPOSER NOT_RUN.** P04.1 code and local evidence are recorded below. Its selector attributes remain candidates, and actual Flow editor compatibility is unverified. P04.2–P04.4 remain NOT_STARTED.
+Status: **INCOMPLETE — P04.1 OFFLINE_VERIFIED / LOCAL_BROWSER_FIXTURES_VERIFIED; P04.2 OFFLINE_VERIFIED; P04.3–P04.4 NOT_STARTED.** Real Flow DOM compatibility, live entry, and provider outcome remain unverified.
 
 **Outcome:** The extension can enter one actual long JSON in the correct Flow composer and activate Generate once.
 
@@ -105,6 +105,14 @@ Start in these files:
 - tests/integration/flowGenerateOnce.test.ts
 
 Acceptance: Intent is durable before input; zero input occurs on failed preflight; normal success produces one activation (one press/release pair if CDP is used). Preserve uncertain delivery unchanged.
+
+Implementation: The image workspace exposes **Generate once in Flow** only for one currently validated prompt whose source exactly matches its saved image batch, after a manual settings confirmation bound to the currently selected Flow tab/project. The worker reloads that saved batch through the validated repository, checks the item hash and measurements, validates the stored selected target against the current Flow route, and binds the attempt to the current top-frame ID/loader. The attempt record contains workspace/batch/item/shot identity, prompt hash/measurements, target/frame/build/protocol identity, user attestation, pre-dispatch result-region baseline, fixed event codes, and state; it does not duplicate the prompt body.
+
+The worker persists `preparing` before exact saved-source fill/readback, then `verified`, inspects one semantic image composer, one exact enabled Generate control and one labelled results region, and rechecks the target/frame, prompt, control and baseline before persisting `dispatch-intent`. Only then does it issue one CDP `mousePressed`/`mouseReleased` pair. Dispatched means the pair was sent; it does not mean Flow accepted the request or produced an image. Partial/unknown activation is retained as `uncertain` and cannot be replayed. Active item and confirmation keys prevent concurrent and repeated clicks. Worker-start reconciliation turns `preparing`/`verified` into `failed-before-dispatch` and `dispatch-intent` into `uncertain`; it never replays Generate.
+
+Evidence boundary: offline handler/repository tests exercise state and failure decisions, including restart-state reconciliation. The P04.2 local Playwright suite could not start in this environment because its worker process was denied with `spawn EPERM`; no local browser result is claimed for P04.2. No real Flow page, provider settings, or Generate control was accessed. The semantic selectors remain candidates, and the provider result observer is only a labelled-region baseline, not terminal attribution.
+
+P04.2 implementation is **OFFLINE_VERIFIED**. P04.3 real-provider long-JSON entry/Generate and P04.4 bounded failure attribution remain **NOT_STARTED**. The Phase 04 gate remains **INCOMPLETE** pending those gates and P05 terminal completion/attribution evidence.
 
 ### P04.3 — Run one explicitly authorized real long-JSON entry/Generate test
 
