@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  connectionWorkerFailureDetail,
+  withPendingCleanup,
+} from "../connectionAttempt";
+import { ConnectionError } from "./ConnectionError";
 import { createChromeFoundationClient } from "../../shared/messageClient";
 import { handleWorkerRestart } from "../../platforms/shared/connectionLifecycle";
 import { attachToSelectedTab } from "../../platforms/shared/connection";
 import {
   createChromeConnectionPort,
+  connectionApiDiagnostic,
   hasTabListingAccess,
   listOpenProviderTabs,
+  requestProviderAccess,
   requestTabListingAccess,
 } from "../../platforms/shared/chromeConnectionPort";
+import {
+  getChromeExecutionContext,
+  hasDiscoveryApis,
+  hasWorkerMessagingApi,
+} from "../../platforms/shared/chromeApiDiagnostics";
 import type {
   ConnectionResult,
   ConnectionStateName,
@@ -26,27 +38,41 @@ type LiveConnection = {
 type ProviderState = {
   status: ConnectionStateName;
   message: string;
+  detail?: string;
+  permissionRequest?: Extract<
+    ConnectionResult,
+    { ok: false }
+  >["permissionRequest"];
   live?: LiveConnection;
 };
 
 const providers = ["Flow", "Vids"] as const;
+function connectionStatusLabel(status: ConnectionStateName): string {
+  switch (status) {
+    case "pending":
+      return "Connecting";
+    case "connected":
+      return "Connected";
+    case "permission-needed":
+      return "Permission needed";
+    case "wrong-target":
+      return "Wrong target";
+    case "stale-build":
+      return "Outdated connector";
+    case "failed":
+      return "Not connected";
+    case "disconnected":
+      return "Not connected";
+  }
+}
+
 const initialStates = (): Record<ProviderName, ProviderState> => ({
   Flow: { status: "disconnected", message: "Not connected" },
   Vids: { status: "disconnected", message: "Not connected" },
 });
 
 function extensionAvailable(): boolean {
-  if (typeof chrome === "undefined") return false;
-  const apis = chrome as unknown as {
-    runtime?: { sendMessage?: unknown };
-    permissions?: { request?: unknown };
-    tabs?: { query?: unknown };
-  };
-  return (
-    typeof apis.runtime?.sendMessage === "function" &&
-    typeof apis.permissions?.request === "function" &&
-    typeof apis.tabs?.query === "function"
-  );
+  return hasDiscoveryApis();
 }
 
 export function ConnectionStatus() {
@@ -95,7 +121,11 @@ export function ConnectionStatus() {
       setStates((current) => {
         return {
           ...current,
-          [provider]: { status, message },
+          [provider]: {
+            status,
+            message: connectionStatusLabel(status),
+            detail: message,
+          },
         };
       });
     },
@@ -103,7 +133,7 @@ export function ConnectionStatus() {
   );
 
   useEffect(() => {
-    if (!extensionAvailable()) return;
+    if (!hasWorkerMessagingApi()) return;
     const client = createChromeFoundationClient();
     let active = true;
     void Promise.all(
@@ -119,7 +149,9 @@ export function ConnectionStatus() {
               ...current,
               [provider]: {
                 status: "disconnected",
-                message: "Saved target · reconnect to verify",
+                message: "Not connected",
+                detail:
+                  "Saved target · reconnect to verify its current identity.",
               },
             }));
           }
@@ -195,7 +227,8 @@ export function ConnectionStatus() {
             ...current,
             [provider]: {
               status: "wrong-target",
-              message: "Saved project is no longer open. Select it again.",
+              message: "Wrong target",
+              detail: "Saved project is no longer open. Select it again.",
             },
           }));
         }
@@ -240,7 +273,7 @@ export function ConnectionStatus() {
     try {
       if (!extensionAvailable()) {
         setListError(
-          "Tab selection is unavailable in this local preview. Open the installed extension dashboard to connect.",
+          `Tab discovery is unavailable in this context (${getChromeExecutionContext()}). Open the packaged dashboard to list projects.`,
         );
         return;
       }
@@ -298,7 +331,9 @@ export function ConnectionStatus() {
       ...current,
       [provider]: {
         status: "disconnected",
-        message: tabId ? "Selected · not connected" : "Not connected",
+        message: "Not connected",
+        detail: tabId ? "Selected · not connected" : undefined,
+        permissionRequest: undefined,
       },
     }));
     setSelectionSaved((current) => ({ ...current, [provider]: false }));
@@ -326,7 +361,8 @@ export function ConnectionStatus() {
             ...current,
             [provider]: {
               status: "disconnected",
-              message: "Selected · not connected",
+              message: "Not connected",
+              detail: "Selected · not connected",
             },
           }));
         }
@@ -334,7 +370,7 @@ export function ConnectionStatus() {
     selectionSaveTasks.current[provider] = saveTask;
     try {
       await saveTask;
-    } catch {
+    } catch (error) {
       if (selectionRevision.current[provider] === revision) {
         setSelected((current) => ({ ...current, [provider]: "" }));
         setSaved((current) => ({ ...current, [provider]: undefined }));
@@ -342,8 +378,8 @@ export function ConnectionStatus() {
           ...current,
           [provider]: {
             status: "failed",
-            message:
-              "The selected target could not be saved. Reopen the extension dashboard and select it again before connecting.",
+            message: "Not connected",
+            detail: connectionWorkerFailureDetail(error),
           },
         }));
       }
@@ -359,77 +395,185 @@ export function ConnectionStatus() {
         ...current,
         [provider]: {
           status: "wrong-target",
-          message: `Select an already-open ${provider} project first.`,
+          message: "Wrong target",
+          detail: `Select an already-open ${provider} project first.`,
         },
       }));
       return;
     }
     const port = createChromeConnectionPort();
     if (!port) {
+      setBusy(provider);
       setStates((current) => ({
         ...current,
         [provider]: {
-          status: "disconnected",
-          message:
-            "Not connected · open this view from the installed extension.",
+          status: "pending",
+          message: "Checking extension access",
+          detail: "Checking dashboard context and connection APIsâ€¦",
         },
       }));
+      await withPendingCleanup(
+        async () => {
+          const diagnostic = await connectionApiDiagnostic(
+            "connection_setup",
+            tab,
+          );
+          const contextInvalidated = diagnostic.startsWith(
+            "extension_context_invalidated",
+          );
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: "failed",
+              message: "Not connected",
+              detail: contextInvalidated
+                ? `${diagnostic}. Reopen the extension dashboard and retry.`
+                : `${diagnostic}. Open the packaged extension dashboard to connect.`,
+            },
+          }));
+        },
+        () => setBusy(undefined),
+      );
       return;
     }
 
     const wasConnected = states[provider].status === "connected";
     const attemptRevision = ++connectionRevision.current[provider];
     const previousLive = states[provider].live;
-    if (previousLive) {
-      await port.releaseConnector(previousLive.tab.id, previousLive.documentId);
-    }
     setBusy(provider);
     setStates((current) => ({
       ...current,
       [provider]: {
         status: "pending",
-        message: "Connecting to selected project…",
+        message: "Connecting",
+        detail: "Validating the selected project and read-only connector…",
       },
     }));
-    const result: ConnectionResult = await attachToSelectedTab(
-      provider,
-      tab,
-      port,
-    );
-    setBusy(undefined);
-    if (connectionRevision.current[provider] !== attemptRevision) {
-      if (result.ok) {
-        await port.releaseConnector(result.tab.id, result.documentId);
+
+    try {
+      await withPendingCleanup(
+        async () => {
+          if (previousLive) {
+            await port.releaseConnector(
+              previousLive.tab.id,
+              previousLive.documentId,
+            );
+          }
+          const result: ConnectionResult = await attachToSelectedTab(
+            provider,
+            tab,
+            port,
+          );
+          if (connectionRevision.current[provider] !== attemptRevision) {
+            if (result.ok) {
+              await port.releaseConnector(result.tab.id, result.documentId);
+            }
+            return;
+          }
+          if (!result.ok) {
+            setStates((current) => ({
+              ...current,
+              [provider]: {
+                status: result.state,
+                message: connectionStatusLabel(result.state),
+                detail: `${result.stage}: ${result.error}`,
+                permissionRequest: result.permissionRequest,
+              },
+            }));
+            return;
+          }
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: "connected",
+              message: "Connected",
+              live: {
+                tab: result.tab,
+                documentId: result.documentId,
+                documentToken: result.documentToken,
+              },
+            },
+          }));
+          if (!wasConnected) {
+            toast.add({
+              kind: "success",
+              message: `${provider} read-only connection confirmed. Generation remains unavailable.`,
+              urgent: false,
+              actionable: false,
+            });
+          }
+        },
+        () => setBusy(undefined),
+      );
+    } catch {
+      if (connectionRevision.current[provider] === attemptRevision) {
+        setStates((current) => ({
+          ...current,
+          [provider]: {
+            status: "failed",
+            message: "Not connected",
+            detail: `connect_orchestration: The ${provider} connection could not finish. Check extension errors and retry without refreshing the provider page.`,
+          },
+        }));
       }
-      return;
     }
-    if (!result.ok) {
-      setStates((current) => ({
-        ...current,
-        [provider]: { status: result.state, message: result.error },
-      }));
-      return;
-    }
+  };
+
+  const allowProviderAccess = (provider: ProviderName) => {
+    const request = states[provider].permissionRequest;
+    if (!request) return;
+
+    setBusy(provider);
     setStates((current) => ({
       ...current,
       [provider]: {
-        status: "connected",
-        message: `Connected · ${result.tab.title} · read-only connector`,
-        live: {
-          tab: result.tab,
-          documentId: result.documentId,
-          documentToken: result.documentToken,
-        },
+        ...current[provider],
+        status: "pending",
+        message: "Requesting access",
+        detail: "Waiting for Chrome's permission decision…",
       },
     }));
-    if (!wasConnected) {
-      toast.add({
-        kind: "success",
-        message: `${provider} read-only connection confirmed. Generation remains unavailable.`,
-        urgent: false,
-        actionable: false,
-      });
+
+    // Invoke the optional permission request directly from this user click.
+    let permissionResult: Promise<boolean>;
+    try {
+      permissionResult = requestProviderAccess(request);
+    } catch {
+      permissionResult = Promise.reject(new Error("request failed"));
     }
+    void permissionResult
+      .then((granted) => {
+        setStates((current) => ({
+          ...current,
+          [provider]: granted
+            ? {
+                status: "disconnected",
+                message: "Not connected",
+                detail:
+                  "Access granted. Click Connect to verify the selected project.",
+              }
+            : {
+                ...current[provider],
+                status: "permission-needed",
+                message: "Permission needed",
+                detail:
+                  "permission_denied: Chrome did not grant the requested access. Grant it in the browser prompt, then retry this access step.",
+              },
+        }));
+      })
+      .catch(() => {
+        setStates((current) => ({
+          ...current,
+          [provider]: {
+            ...current[provider],
+            status: "failed",
+            message: "Not connected",
+            detail:
+              "permission_request: Chrome rejected the permission request before returning a decision. Check this extension's site access and retry the access step.",
+          },
+        }));
+      })
+      .finally(() => setBusy(undefined));
   };
 
   const disconnect = (provider: ProviderName) => {
@@ -477,7 +621,9 @@ export function ConnectionStatus() {
       ) : null}
       {!extensionAvailable() ? (
         <p className={styles.connectionHint}>
-          Local preview · Chrome tab and provider APIs are unavailable here.
+          {getChromeExecutionContext() === "localhost_preview"
+            ? "Local preview · Chrome tab and provider APIs are unavailable here."
+            : `Extension APIs unavailable · context=${getChromeExecutionContext()}.`}
         </p>
       ) : null}
       {listError ? (
@@ -493,7 +639,9 @@ export function ConnectionStatus() {
           <div className={styles.providerConnection} key={provider}>
             <div className={styles.providerConnectionTitle}>
               <span>{provider}</span>
-              <strong aria-live="polite">{state.message}</strong>
+              <strong aria-live="polite">
+                {connectionStatusLabel(state.status)}
+              </strong>
             </div>
             <label
               className={styles.connectionLabel}
@@ -543,19 +691,29 @@ export function ConnectionStatus() {
                 </button>
               ) : null}
             </div>
+            {state.permissionRequest ? (
+              <button
+                className={`${styles.connectionListButton} motion-control`}
+                type="button"
+                disabled={busy !== undefined}
+                onClick={() => allowProviderAccess(provider)}
+              >
+                Allow requested {provider} access
+              </button>
+            ) : null}
             {state.status === "connected" ? (
               <p className={styles.connectionHint}>
                 Connector reachable · read-only capability · no generation
                 capability.
               </p>
             ) : null}
-            {state.status !== "connected" && state.status !== "disconnected" ? (
-              <p className={styles.connectionError} role="alert">
-                {state.status === "pending"
-                  ? "Pending · "
-                  : `${state.status} · `}
-                {state.message}
+            {state.detail && state.status === "pending" ? (
+              <p className={styles.connectionHint} role="status">
+                {state.detail}
               </p>
+            ) : null}
+            {state.detail && state.status !== "pending" ? (
+              <ConnectionError detail={state.detail} />
             ) : null}
           </div>
         );

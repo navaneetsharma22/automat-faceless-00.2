@@ -45,18 +45,29 @@ export type DocumentIdentity = {
   url: string;
 };
 
+export type ProviderAccessRequest = {
+  permissions?: Array<"scripting">;
+  origins?: string[];
+};
+
 export type ConnectionPort = {
-  requestAccess: (
+  getMissingAccess: (
     provider: ProviderName,
     selected: ProviderTab,
-  ) => Promise<boolean>;
+  ) => Promise<ProviderAccessRequest>;
   getTab: (tabId: number) => Promise<ProviderTab | undefined>;
   pingTopFrame: (
     tabId: number,
     request: ConnectionProbeRequest,
   ) => Promise<ConnectionProbeResponse | undefined>;
-  identifyDocument: (tabId: number) => Promise<DocumentIdentity | undefined>;
-  injectConnector: (tabId: number) => Promise<DocumentIdentity | undefined>;
+  identifyDocument: (
+    tabId: number,
+    selected: ProviderTab,
+  ) => Promise<DocumentIdentity | undefined>;
+  injectConnector: (
+    tabId: number,
+    selected: ProviderTab,
+  ) => Promise<DocumentIdentity | undefined>;
   probeTopFrame: (
     tabId: number,
     documentId: string,
@@ -75,6 +86,17 @@ export type ConnectionStateName =
   | "stale-build"
   | "failed";
 
+export type ConnectionFailureStage =
+  | "permission_check"
+  | "permission_request"
+  | "target_validation"
+  | "connector_ping"
+  | "connector_injection"
+  | "document_validation"
+  | "handshake"
+  | "handshake_validation"
+  | "extension_context";
+
 export type ConnectionResult =
   | {
       ok: true;
@@ -90,5 +112,7 @@ export type ConnectionResult =
         ConnectionStateName,
         "connected" | "disconnected" | "pending"
       >;
+      stage: ConnectionFailureStage;
       error: string;
+      permissionRequest?: ProviderAccessRequest;
     };

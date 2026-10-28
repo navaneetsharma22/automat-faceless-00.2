@@ -159,11 +159,12 @@
   font-size: var(--font-size-xs);
 }
 .providerConnectionTitle strong {
-  overflow: hidden;
+  min-width: 0;
   font-size: var(--font-size-xs);
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-align: end;
+  white-space: normal;
 }
 .connectionActions {
   display: grid;
@@ -186,6 +187,8 @@
   font-size: var(--font-size-xs);
 }
 .connectionError {
+  width: 100%;
+  max-width: 100%;
   margin: 0;
   padding: var(--space-2);
   border-inline-start: 3px solid var(--color-error);
@@ -194,6 +197,9 @@
   font-size: var(--font-size-xs);
   line-height: var(--line-height-relaxed);
   overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 .connection ul {
   display: grid;

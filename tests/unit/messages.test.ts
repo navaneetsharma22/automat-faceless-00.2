@@ -215,6 +215,14 @@ describe("extension message protocol", () => {
       category: "worker_error",
     });
     await expect(
+      request(async () =>
+        Promise.reject(new Error("Extension context invalidated.")),
+      ),
+    ).rejects.toMatchObject({
+      category: "context_invalidated",
+      code: "extension_context_invalidated",
+    });
+    await expect(
       request(async () => ({ ok: true, requestId: "wrong" })),
     ).rejects.toMatchObject({
       category: "malformed_response",

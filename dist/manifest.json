@@ -9,7 +9,8 @@
   "optional_host_permissions": [
     "https://flow.google.com/*",
     "https://labs.google/*",
-    "https://vids.google.com/*"
+    "https://vids.google.com/*",
+    "https://docs.google.com/*"
   ],
   "background": {
     "service_worker": "background.js",

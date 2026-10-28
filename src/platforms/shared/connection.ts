@@ -3,6 +3,7 @@ import {
   CONNECTION_CAPABILITY,
   CONNECTOR_PROTOCOL_VERSION,
   CONNECTION_PROBE_MESSAGE,
+  type ConnectionFailureStage,
   type ConnectionPort,
   type ConnectionProbeRequest,
   type ConnectionProbeResponse,
@@ -10,6 +11,7 @@ import {
   type ProviderName,
   type ProviderTab,
 } from "./contracts";
+import { ConnectionApiUnavailableError } from "./chromeApiDiagnostics";
 
 const attachmentTasks = new Map<string, Promise<ConnectionResult>>();
 
@@ -43,12 +45,21 @@ export function providerTabFromUrl(
       provider = "Flow";
       projectId = match[1]!;
       canonicalPath = `/fx/tools/flow/${projectId}`;
-    } else if (url.hostname === "vids.google.com") {
-      const match = /^\/video\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname);
+    } else if (
+      url.hostname === "docs.google.com" ||
+      url.hostname === "vids.google.com"
+    ) {
+      const match =
+        url.hostname === "docs.google.com"
+          ? /^\/videos\/d\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname)
+          : /^\/video\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname);
       if (!match) return undefined;
       provider = "Vids";
       projectId = match[1]!;
-      canonicalPath = `/video/${projectId}/edit`;
+      canonicalPath =
+        url.hostname === "docs.google.com"
+          ? `/videos/d/${projectId}/edit`
+          : `/video/${projectId}/edit`;
     } else {
       return undefined;
     }
@@ -88,24 +99,36 @@ async function attach(
   port: ConnectionPort,
 ): Promise<ConnectionResult> {
   let replacingStaleConnector = false;
+  let stage: ConnectionFailureStage = "permission_check";
   if (selected.provider !== provider) {
-    return failed("wrong-target", `Select a supported ${provider} project.`);
+    return failed(
+      "wrong-target",
+      `Select a supported ${provider} project.`,
+      "target_validation",
+    );
   }
 
   try {
-    // Permission prompts must originate from the explicit Connect gesture.
-    if (!(await port.requestAccess(provider, selected))) {
+    const permissionRequest = await port.getMissingAccess(provider, selected);
+    if (
+      (permissionRequest.permissions?.length ?? 0) > 0 ||
+      (permissionRequest.origins?.length ?? 0) > 0
+    ) {
       return failed(
         "permission-needed",
-        `Access for ${provider} was not granted. Grant access in the browser prompt, then retry Connect.`,
+        `Chrome access for ${provider} is missing. Use the provider access button below, then retry Connect.`,
+        "permission_check",
+        permissionRequest,
       );
     }
 
+    stage = "target_validation";
     const before = await port.getTab(selected.id);
     if (!sameProject(before, selected)) {
       return failed(
         "wrong-target",
         `The selected ${provider} project changed or closed. Select the intended open project and retry.`,
+        "target_validation",
       );
     }
 
@@ -120,6 +143,7 @@ async function attach(
     };
 
     // Ping before injection so a compatible connector can be reused.
+    stage = "connector_ping";
     const firstResponse = await port.pingTopFrame(selected.id, request);
     if (
       firstResponse?.projectId &&
@@ -128,6 +152,7 @@ async function attach(
       return failed(
         "wrong-target",
         "The selected page responded for a different project. No connection was made.",
+        "connector_ping",
       );
     }
 
@@ -139,10 +164,12 @@ async function attach(
     );
     let identity;
     if (responseIsCurrent) {
-      identity = await port.identifyDocument(selected.id);
+      stage = "document_validation";
+      identity = await port.identifyDocument(selected.id, selected);
     } else {
       // This also safely replaces a known stale extension-owned listener.
-      identity = await port.injectConnector(selected.id);
+      stage = "connector_injection";
+      identity = await port.injectConnector(selected.id, selected);
     }
     if (!identity || identity.frameId !== 0 || !identity.documentId) {
       return failed(
@@ -150,9 +177,11 @@ async function attach(
         replacingStaleConnector
           ? "The stale connector could not be safely replaced. Connection is blocked; the provider page was left unchanged."
           : "The top-frame document identity could not be confirmed. The provider page was left unchanged.",
+        stage,
       );
     }
 
+    stage = "document_validation";
     const identityTab = providerTabFromUrl(
       selected.id,
       selected.title,
@@ -162,6 +191,7 @@ async function attach(
       return failed(
         "wrong-target",
         "The selected document changed before attachment. Select the intended project and retry.",
+        "document_validation",
       );
     }
 
@@ -170,9 +200,11 @@ async function attach(
       return failed(
         "wrong-target",
         "The selected project changed before the connection handshake. No connection was made.",
+        "document_validation",
       );
     }
 
+    stage = "handshake";
     const response = await port.probeTopFrame(
       selected.id,
       identity.documentId,
@@ -181,26 +213,29 @@ async function attach(
     if (!response) {
       return failed(
         "failed",
-        "The selected document did not respond. It was not refreshed or navigated; retry when it is ready.",
+        "The selected top-frame document returned no connector response. Check selected-site access and extension error details, then retry without refreshing or navigating the provider page.",
+        "handshake",
       );
     }
     if (response.buildId !== BUILD_ID) {
       return failed(
         "stale-build",
         "The connector build is stale and could not be safely replaced. Reopen the extension dashboard and retry; the provider page was not refreshed.",
+        "handshake_validation",
       );
     }
     if (response.protocolVersion !== CONNECTOR_PROTOCOL_VERSION) {
       return failed(
         "stale-build",
         "The connector protocol is incompatible and could not be safely replaced. The provider page was not refreshed.",
+        "handshake_validation",
       );
     }
     if (!isCompatibleConnector(response, request) || !response.documentToken) {
       return failed(
         "wrong-target",
-        response.error ??
-          "The document, project, or connector capability did not match the selected target.",
+        "The response did not match the selected project, document, request, build, or read-only capability. No connection was recorded.",
+        "handshake_validation",
       );
     }
     if (
@@ -210,14 +245,17 @@ async function attach(
       return failed(
         "wrong-target",
         "The provider document changed during attachment. No connected state was recorded.",
+        "handshake_validation",
       );
     }
 
+    stage = "document_validation";
     const afterHandshake = await port.getTab(selected.id);
     if (!sameProject(afterHandshake, selected)) {
       return failed(
         "wrong-target",
         "The selected project changed during attachment. No connected state was recorded.",
+        "document_validation",
       );
     }
 
@@ -230,29 +268,53 @@ async function attach(
       capabilities: [CONNECTION_CAPABILITY],
     };
   } catch (error) {
+    if (error instanceof ConnectionApiUnavailableError) {
+      return failed("failed", error.diagnostic, error.stage);
+    }
+    if (
+      error instanceof Error &&
+      /extension context invalidated/i.test(error.message)
+    ) {
+      return failed(
+        "failed",
+        `extension_context_invalidated; stage=${stage}; runtime.id=${typeof chrome !== "undefined" && chrome.runtime?.id ? "present" : "absent"}. Reopen the extension dashboard and retry; the provider page was not changed.`,
+        "extension_context",
+      );
+    }
     if (replacingStaleConnector) {
       return failed(
         "stale-build",
         "The stale connector could not be safely replaced. Connection is blocked; the provider page was left unchanged.",
+        "connector_injection",
       );
     }
-    const text = error instanceof Error ? error.message : "";
-    if (/permission|not granted|access denied/i.test(text)) {
-      return failed(
-        "permission-needed",
-        `Browser access for ${provider} is required. Grant access to the selected site and retry.`,
-      );
-    }
-    if (/build|protocol|stale/i.test(text)) {
-      return failed(
-        "stale-build",
-        "The selected document has an incompatible connector build. It was not refreshed; retry after the extension package is updated.",
-      );
-    }
-    return failed(
-      "failed",
-      `Could not attach to the selected ${provider} project. The tab was left open and unchanged. Retry without refreshing it.`,
-    );
+    return failed("failed", errorMessageForStage(provider, stage), stage);
+  }
+}
+
+function errorMessageForStage(
+  provider: ProviderName,
+  stage: ConnectionFailureStage,
+): string {
+  switch (stage) {
+    case "permission_check":
+      return `Could not inspect Chrome access for ${provider}. No connector was injected. Retry Connect or check this extension's permission status.`;
+    case "permission_request":
+      return `Chrome rejected the ${provider} access request before returning a grant decision. Check the extension's site access, then retry the permission step.`;
+    case "target_validation":
+      return `Could not validate the selected ${provider} tab. Confirm it is still open on the same project and retry.`;
+    case "connector_ping":
+      return `Could not check the selected ${provider} document for a compatible connector. No provider content was changed.`;
+    case "connector_injection":
+      return `Could not inject the packaged read-only connector into the selected ${provider} top frame. Check the selected site's host access and the extension package; the page was not refreshed or navigated.`;
+    case "document_validation":
+      return `Could not confirm the selected ${provider} project/document identity. No connection was recorded and the page was left unchanged.`;
+    case "handshake":
+      return `The selected ${provider} document did not complete the read-only connector handshake. Check extension errors and selected-site access, then retry without refreshing the provider page.`;
+    case "handshake_validation":
+      return `The selected ${provider} document returned an invalid or mismatched connector response. No connection was recorded.`;
+    case "extension_context":
+      return `The extension execution context was invalidated during the ${provider} connection attempt. Reopen the packaged dashboard and retry; the provider page was left unchanged.`;
   }
 }
 
@@ -300,6 +362,17 @@ function isCompatibleConnector(
 function failed(
   state: Extract<ConnectionResult, { ok: false }>["state"],
   error: string,
+  stage: ConnectionFailureStage = "handshake_validation",
+  permissionRequest?: Extract<
+    ConnectionResult,
+    { ok: false }
+  >["permissionRequest"],
 ): ConnectionResult {
-  return { ok: false, state, error };
+  return {
+    ok: false,
+    state,
+    error,
+    stage,
+    ...(permissionRequest ? { permissionRequest } : {}),
+  };
 }

@@ -76,13 +76,22 @@ function projectFromUrl(
         canonicalTarget: `${url.origin}/fx/tools/flow/${match[1]}`,
       };
     }
-    if (url.hostname === "vids.google.com") {
-      const match = /^\/video\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname);
+    if (
+      url.hostname === "docs.google.com" ||
+      url.hostname === "vids.google.com"
+    ) {
+      const match =
+        url.hostname === "docs.google.com"
+          ? /^\/videos\/d\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname)
+          : /^\/video\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname);
       if (!match) return undefined;
       return {
         provider: "Vids",
         projectId: match[1]!,
-        canonicalTarget: `${url.origin}/video/${match[1]}/edit`,
+        canonicalTarget:
+          url.hostname === "docs.google.com"
+            ? `${url.origin}/videos/d/${match[1]}/edit`
+            : `${url.origin}/video/${match[1]}/edit`,
       };
     }
   } catch {

@@ -3,11 +3,18 @@ import type {
   ConnectionProbeRequest,
   ConnectionProbeResponse,
   DocumentIdentity,
+  ProviderAccessRequest,
   ProviderName,
   ProviderTab,
 } from "./contracts";
 import { CONNECTION_DISCONNECT_MESSAGE } from "./contracts";
 import { providerTabFromUrl } from "./connection";
+import {
+  connectionApiDiagnostic,
+  ConnectionApiUnavailableError,
+  hasConnectionSetupApis,
+  requireScriptingApi,
+} from "./chromeApiDiagnostics";
 
 function providerOrigin(
   provider: ProviderName,
@@ -18,7 +25,7 @@ function providerOrigin(
     const permittedOrigins =
       provider === "Flow"
         ? ["https://flow.google.com", "https://labs.google"]
-        : ["https://vids.google.com"];
+        : ["https://docs.google.com", "https://vids.google.com"];
     return permittedOrigins.includes(origin) ? `${origin}/*` : undefined;
   } catch {
     return undefined;
@@ -43,32 +50,36 @@ export function requestTabListingAccess(): Promise<boolean> {
   return chrome.permissions.request({ permissions: ["tabs"] });
 }
 
-export function createChromeConnectionPort(): ConnectionPort | undefined {
-  if (
-    typeof chrome === "undefined" ||
-    !chrome.tabs ||
-    !chrome.scripting ||
-    !chrome.permissions
-  ) {
-    return undefined;
+export function requestProviderAccess(
+  request: ProviderAccessRequest,
+): Promise<boolean> {
+  if (typeof chrome === "undefined" || !chrome.permissions) {
+    return Promise.reject(new Error("Chrome permission API is unavailable"));
   }
+  // Invoke this immediately from the provider-specific permission button.
+  return chrome.permissions.request(request as chrome.permissions.Permissions);
+}
+
+export function createChromeConnectionPort(): ConnectionPort | undefined {
+  if (!hasConnectionSetupApis()) return undefined;
 
   return {
-    requestAccess: async (provider: ProviderName, selected: ProviderTab) => {
+    getMissingAccess: async (provider: ProviderName, selected: ProviderTab) => {
       const origin = providerOrigin(provider, selected);
-      if (!origin || selected.provider !== provider) return false;
+      if (!origin || selected.provider !== provider) {
+        throw new Error("Selected provider origin is unsupported");
+      }
       const hasScripting = await chrome.permissions.contains({
         permissions: ["scripting"],
       });
       const hasOrigin = await chrome.permissions.contains({
         origins: [origin],
       });
-      if (hasScripting && hasOrigin) return true;
 
-      const request: chrome.permissions.Permissions = {};
+      const request: ProviderAccessRequest = {};
       if (!hasScripting) request.permissions = ["scripting"];
       if (!hasOrigin) request.origins = [origin];
-      return chrome.permissions.request(request);
+      return request;
     },
     getTab: async (tabId: number) => {
       const tab = await chrome.tabs.get(tabId);
@@ -84,19 +95,21 @@ export function createChromeConnectionPort(): ConnectionPort | undefined {
         return undefined;
       }
     },
-    identifyDocument: async (tabId: number) => {
-      const results = await chrome.scripting.executeScript({
+    identifyDocument: async (tabId: number, selected: ProviderTab) => {
+      const scripting = await requireScriptingApi(selected);
+      const results = await scripting.executeScript({
         target: { tabId, frameIds: [0] },
         func: () => location.href,
       });
       return injectionIdentity(results[0]);
     },
-    injectConnector: async (tabId: number) => {
-      await chrome.scripting.executeScript({
+    injectConnector: async (tabId: number, selected: ProviderTab) => {
+      const scripting = await requireScriptingApi(selected);
+      await scripting.executeScript({
         target: { tabId, frameIds: [0] },
         files: ["connection-probe.js"],
       });
-      const results = await chrome.scripting.executeScript({
+      const results = await scripting.executeScript({
         target: { tabId, frameIds: [0] },
         func: () => location.href,
       });
@@ -171,7 +184,10 @@ export async function listOpenProviderTabs(): Promise<ProviderTabListing> {
       const url = new URL(tab.url);
       if (
         url.protocol === "https:" &&
-        (url.hostname === "labs.google" || url.hostname === "vids.google.com")
+        (url.hostname === "labs.google" ||
+          url.hostname === "vids.google.com" ||
+          (url.hostname === "docs.google.com" &&
+            url.pathname.startsWith("/videos/")))
       ) {
         unsupportedProviderRoutes += 1;
       }
@@ -181,3 +197,5 @@ export async function listOpenProviderTabs(): Promise<ProviderTabListing> {
   }
   return { tabs: providerTabs, unsupportedProviderRoutes, unavailableUrls };
 }
+
+export { connectionApiDiagnostic, ConnectionApiUnavailableError };

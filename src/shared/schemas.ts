@@ -60,6 +60,7 @@ export const FailureCategorySchema = z.enum([
   "not_found",
   "storage_failure",
   "missing_receiver",
+  "context_invalidated",
   "worker_error",
   "malformed_response",
   "timeout",

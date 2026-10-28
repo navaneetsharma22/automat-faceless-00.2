@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILD_ID } from "../../src/shared/buildInfo";
 import {
   attachToSelectedTab,
@@ -8,6 +8,7 @@ import {
   createChromeConnectionPort,
   hasTabListingAccess,
   listOpenProviderTabs,
+  requestProviderAccess,
   requestTabListingAccess,
 } from "../../src/platforms/shared/chromeConnectionPort";
 import {
@@ -21,6 +22,19 @@ import {
 } from "../../src/platforms/shared/contracts";
 import { handleWorkerRestart } from "../../src/platforms/shared/connectionLifecycle";
 import { FOUNDATION_WORKER_RESTARTED } from "../../src/shared/messages";
+import {
+  connectionApiDiagnostic,
+  getChromeExecutionContext,
+  hasDiscoveryApis,
+  hasWorkerMessagingApi,
+} from "../../src/platforms/shared/chromeApiDiagnostics";
+
+beforeEach(() => {
+  vi.stubGlobal("location", {
+    protocol: "chrome-extension:",
+    hostname: "offline-extension",
+  });
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -71,7 +85,7 @@ function makeResponse(
 function makePort(tab = makeTab()) {
   let request: ConnectionProbeRequest | undefined;
   const port = {
-    requestAccess: vi.fn(async () => true),
+    getMissingAccess: vi.fn(async () => ({})),
     getTab: vi.fn(async () => tab),
     pingTopFrame: vi.fn(async (_tabId, value) => {
       request = value;
@@ -152,6 +166,16 @@ describe("explicit read-only Flow/Vids attachment", () => {
       projectId: "vid-10",
       canonicalTarget: "https://vids.google.com/video/vid-10/edit",
     });
+    const actualVidsUrl =
+      "https://docs.google.com/videos/d/VIDEO_ID/edit?pli=1&scene=id.p#scene=id.p";
+    expect(
+      providerTabFromUrl(17, "Vids document", actualVidsUrl),
+    ).toMatchObject({
+      provider: "Vids",
+      projectId: "VIDEO_ID",
+      url: actualVidsUrl,
+      canonicalTarget: "https://docs.google.com/videos/d/VIDEO_ID/edit",
+    });
     expect(
       providerTabFromUrl(11, "Vids home", "https://vids.google.com/"),
     ).toBeUndefined();
@@ -207,7 +231,10 @@ describe("explicit read-only Flow/Vids attachment", () => {
 
     expect(result).toMatchObject({ ok: true, tab: chosen, state: "connected" });
     expect(port.getTab).toHaveBeenCalledWith(chosen.id);
-    expect(port.identifyDocument).toHaveBeenCalledExactlyOnceWith(chosen.id);
+    expect(port.identifyDocument).toHaveBeenCalledExactlyOnceWith(
+      chosen.id,
+      chosen,
+    );
     expect(port.injectConnector).not.toHaveBeenCalled();
     expect(port.probeTopFrame).toHaveBeenCalledWith(
       chosen.id,
@@ -227,7 +254,7 @@ describe("explicit read-only Flow/Vids attachment", () => {
 
       expect(result).toMatchObject({ ok: true, tab, state: "connected" });
       expect(port.pingTopFrame).toHaveBeenCalledBefore(port.injectConnector);
-      expect(port.injectConnector).toHaveBeenCalledExactlyOnceWith(tab.id);
+      expect(port.injectConnector).toHaveBeenCalledExactlyOnceWith(tab.id, tab);
       expect(port.getTab).toHaveBeenCalledTimes(3);
       expect(port.probeTopFrame).toHaveBeenCalledExactlyOnceWith(
         tab.id,
@@ -285,18 +312,29 @@ describe("explicit read-only Flow/Vids attachment", () => {
     expect(nonTop.port.probeTopFrame).not.toHaveBeenCalled();
   });
 
-  it("reports permission denial without probing or injecting", async () => {
+  it("reports missing access without probing or injecting", async () => {
     const { port, forbiddenTabActions } = makePort();
-    vi.mocked(port.requestAccess).mockResolvedValueOnce(false);
+    vi.mocked(port.getMissingAccess).mockResolvedValueOnce({
+      permissions: ["scripting"],
+      origins: ["https://labs.google/*"],
+    });
     const result = await attachToSelectedTab("Flow", makeTab(), port);
-    expect(result).toMatchObject({ ok: false, state: "permission-needed" });
+    expect(result).toMatchObject({
+      ok: false,
+      state: "permission-needed",
+      stage: "permission_check",
+      permissionRequest: {
+        permissions: ["scripting"],
+        origins: ["https://labs.google/*"],
+      },
+    });
     expect(port.getTab).not.toHaveBeenCalled();
     expect(port.pingTopFrame).not.toHaveBeenCalled();
     expect(port.injectConnector).not.toHaveBeenCalled();
     expectProviderUntouched(forbiddenTabActions);
   });
 
-  it("inspects connect permissions and requests only the selected site", async () => {
+  it("inspects connect permissions and requests only the selected site from its own action", async () => {
     const permissions = {
       contains: vi
         .fn()
@@ -305,45 +343,64 @@ describe("explicit read-only Flow/Vids attachment", () => {
       request: vi.fn().mockResolvedValue(true),
     };
     vi.stubGlobal("chrome", {
+      runtime: { id: "offline-extension" },
       permissions,
       tabs: { get: vi.fn(), query: vi.fn(), sendMessage: vi.fn() },
       scripting: { executeScript: vi.fn() },
     });
     const port = createChromeConnectionPort()!;
 
-    expect(await port.requestAccess("Flow", makeTab())).toBe(true);
+    expect(await port.getMissingAccess("Flow", makeTab())).toEqual({
+      origins: ["https://labs.google/*"],
+    });
     expect(permissions.contains).toHaveBeenNthCalledWith(1, {
       permissions: ["scripting"],
     });
     expect(permissions.contains).toHaveBeenNthCalledWith(2, {
       origins: ["https://labs.google/*"],
     });
-    expect(permissions.request).toHaveBeenCalledExactlyOnceWith({
-      origins: ["https://labs.google/*"],
-    });
+    expect(permissions.request).not.toHaveBeenCalled();
 
     permissions.contains
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(false);
-    permissions.request.mockResolvedValueOnce(true);
     const currentFlowRoute = providerTabFromUrl(
       19,
       "Flow current route",
       "https://flow.google.com/project/selected-project",
     )!;
-    expect(await port.requestAccess("Flow", currentFlowRoute)).toBe(true);
+    expect(await port.getMissingAccess("Flow", currentFlowRoute)).toEqual({
+      origins: ["https://flow.google.com/*"],
+    });
     expect(permissions.contains).toHaveBeenNthCalledWith(3, {
       permissions: ["scripting"],
     });
     expect(permissions.contains).toHaveBeenNthCalledWith(4, {
       origins: ["https://flow.google.com/*"],
     });
-    expect(permissions.request).toHaveBeenLastCalledWith({
-      origins: ["https://flow.google.com/*"],
-    });
+    expect(permissions.request).not.toHaveBeenCalled();
 
-    expect(
-      await port.requestAccess(
+    permissions.contains
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const actualVidsRoute = providerTabFromUrl(
+      21,
+      "Vids document",
+      "https://docs.google.com/videos/d/VIDEO_ID/edit?pli=1&scene=id.p#scene=id.p",
+    )!;
+    expect(await port.getMissingAccess("Vids", actualVidsRoute)).toEqual({
+      origins: ["https://docs.google.com/*"],
+    });
+    expect(permissions.contains).toHaveBeenNthCalledWith(5, {
+      permissions: ["scripting"],
+    });
+    expect(permissions.contains).toHaveBeenNthCalledWith(6, {
+      origins: ["https://docs.google.com/*"],
+    });
+    expect(permissions.request).not.toHaveBeenCalled();
+
+    await expect(
+      port.getMissingAccess(
         "Vids",
         providerTabFromUrl(
           20,
@@ -351,15 +408,44 @@ describe("explicit read-only Flow/Vids attachment", () => {
           "https://flow.google.com/project/wrong-provider",
         )!,
       ),
-    ).toBe(false);
-    expect(permissions.request).toHaveBeenCalledTimes(2);
+    ).rejects.toThrow("Selected provider origin is unsupported");
+    expect(permissions.request).not.toHaveBeenCalled();
 
     permissions.request.mockResolvedValueOnce(false);
-    const tabPermission = requestTabListingAccess();
-    expect(permissions.request).toHaveBeenLastCalledWith({
-      permissions: ["tabs"],
+    const selectedAccess = requestProviderAccess({
+      origins: ["https://flow.google.com/*"],
     });
-    expect(await tabPermission).toBe(false);
+    expect(permissions.request).toHaveBeenCalledExactlyOnceWith({
+      origins: ["https://flow.google.com/*"],
+    });
+    expect(await selectedAccess).toBe(false);
+    permissions.request.mockRejectedValueOnce(new Error("denied by browser"));
+    await expect(
+      requestProviderAccess({ permissions: ["scripting"] }),
+    ).rejects.toThrow("denied by browser");
+  });
+
+  it("recognizes already-granted provider permissions without requesting again", async () => {
+    const permissions = {
+      contains: vi.fn().mockResolvedValue(true),
+      request: vi.fn(),
+    };
+    vi.stubGlobal("chrome", {
+      runtime: { id: "offline-extension" },
+      permissions,
+      tabs: { get: vi.fn(), query: vi.fn(), sendMessage: vi.fn() },
+      scripting: { executeScript: vi.fn() },
+    });
+    const port = createChromeConnectionPort()!;
+
+    expect(await port.getMissingAccess("Flow", makeTab())).toEqual({});
+    expect(permissions.contains).toHaveBeenNthCalledWith(1, {
+      permissions: ["scripting"],
+    });
+    expect(permissions.contains).toHaveBeenNthCalledWith(2, {
+      origins: ["https://labs.google/*"],
+    });
+    expect(permissions.request).not.toHaveBeenCalled();
   });
 
   it("first checks tabs access, then requests it synchronously from the dedicated user action", async () => {
@@ -375,6 +461,7 @@ describe("explicit read-only Flow/Vids attachment", () => {
       request: vi.fn().mockResolvedValue(true),
     };
     vi.stubGlobal("chrome", {
+      runtime: { id: "offline-extension" },
       permissions,
       tabs: { query, get: vi.fn(), sendMessage: vi.fn() },
       scripting: { executeScript: vi.fn() },
@@ -399,12 +486,132 @@ describe("explicit read-only Flow/Vids attachment", () => {
     ]);
   });
 
+  it("keeps a packaged connection port available before optional scripting access is granted", async () => {
+    let granted = false;
+    const executeScript = vi.fn(async () => [
+      {
+        documentId: "doc-after-grant",
+        frameId: 0,
+        result: "https://flow.google.com/project/selected-project",
+      },
+    ]);
+    const extensionChrome = {
+      runtime: { id: "offline-extension" },
+      permissions: {
+        contains: vi.fn(async () => granted),
+        request: vi.fn(async () => true),
+      },
+      tabs: { get: vi.fn(), query: vi.fn(), sendMessage: vi.fn() },
+      scripting: undefined as unknown as typeof chrome.scripting,
+    };
+    vi.stubGlobal("chrome", extensionChrome);
+    const selected = providerTabFromUrl(
+      42,
+      "Flow project",
+      "https://flow.google.com/project/selected-project",
+    )!;
+
+    expect(getChromeExecutionContext()).toBe("packaged_extension");
+    expect(hasDiscoveryApis()).toBe(true);
+    expect(hasWorkerMessagingApi()).toBe(false);
+    const port = createChromeConnectionPort();
+    expect(port).toBeDefined();
+    expect(await port!.getMissingAccess("Flow", selected)).toEqual({
+      permissions: ["scripting"],
+      origins: ["https://flow.google.com/*"],
+    });
+
+    await expect(
+      port!.injectConnector(selected.id, selected),
+    ).rejects.toMatchObject({
+      name: "ConnectionApiUnavailableError",
+      stage: "connector_injection",
+      diagnostic: expect.stringContaining(
+        "missing_api=chrome.scripting.executeScript",
+      ),
+    });
+    const beforeGrant = await connectionApiDiagnostic(
+      "connector_injection",
+      selected,
+    );
+    expect(beforeGrant).toContain("context=packaged_extension");
+    expect(beforeGrant).toContain("permission.scripting=not_granted");
+    expect(beforeGrant).toContain("permission.selected_host=not_granted");
+
+    const permission = requestProviderAccess({
+      permissions: ["scripting"],
+      origins: ["https://flow.google.com/*"],
+    });
+    expect(extensionChrome.permissions.request).toHaveBeenCalledWith({
+      permissions: ["scripting"],
+      origins: ["https://flow.google.com/*"],
+    });
+    await expect(permission).resolves.toBe(true);
+    granted = true;
+    extensionChrome.scripting = { executeScript };
+
+    const afterGrantPort = createChromeConnectionPort();
+    expect(afterGrantPort).toBeDefined();
+    expect(await afterGrantPort!.getMissingAccess("Flow", selected)).toEqual(
+      {},
+    );
+    await expect(
+      afterGrantPort!.injectConnector(selected.id, selected),
+    ).resolves.toMatchObject({
+      documentId: "doc-after-grant",
+      frameId: 0,
+    });
+  });
+
+  it("reports localhost and invalid extension contexts without confusing them with optional access", async () => {
+    vi.stubGlobal("chrome", undefined);
+    vi.stubGlobal("location", {
+      protocol: "http:",
+      hostname: "localhost",
+    });
+    expect(getChromeExecutionContext()).toBe("localhost_preview");
+    expect(hasDiscoveryApis()).toBe(false);
+    await expect(connectionApiDiagnostic("discovery")).resolves.toContain(
+      "context=localhost_preview; stage=discovery; missing_api=chrome.runtime.id",
+    );
+
+    vi.stubGlobal("location", {
+      protocol: "https:",
+      hostname: "example.test",
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {},
+      tabs: { get: vi.fn(), query: vi.fn(), sendMessage: vi.fn() },
+      permissions: { contains: vi.fn(), request: vi.fn() },
+    });
+    expect(getChromeExecutionContext()).toBe("invalid_extension_context");
+    expect(createChromeConnectionPort()).toBeUndefined();
+    await expect(
+      connectionApiDiagnostic("connection_setup"),
+    ).resolves.toContain("runtime.id=absent");
+
+    vi.stubGlobal("location", {
+      protocol: "chrome-extension:",
+      hostname: "offline-extension",
+    });
+    await expect(
+      connectionApiDiagnostic("connection_setup"),
+    ).resolves.toContain(
+      "extension_context_invalidated; context=invalidated_extension_context",
+    );
+  });
+
   it("distinguishes unsupported provider routes and unavailable URLs from no matches", async () => {
     const query = vi.fn().mockResolvedValue([
       {
         id: 1,
         title: "Flow project",
         url: "https://labs.google/fx/tools/flow/project-1/settings",
+      },
+      {
+        id: 6,
+        title: "Unsupported Vids route",
+        url: "https://docs.google.com/videos/d/video-1/preview",
       },
       { id: 2, title: "Hidden URL" },
       { id: 3, title: "Unrelated", url: "https://example.com/" },
@@ -413,8 +620,26 @@ describe("explicit read-only Flow/Vids attachment", () => {
 
     await expect(listOpenProviderTabs()).resolves.toMatchObject({
       tabs: [],
-      unsupportedProviderRoutes: 1,
+      unsupportedProviderRoutes: 2,
       unavailableUrls: 1,
+    });
+    query.mockResolvedValueOnce([
+      {
+        id: 5,
+        title: "Vids document",
+        url: "https://docs.google.com/videos/d/VIDEO_ID/edit?pli=1&scene=id.p#scene=id.p",
+      },
+    ]);
+    await expect(listOpenProviderTabs()).resolves.toMatchObject({
+      tabs: [
+        {
+          id: 5,
+          provider: "Vids",
+          projectId: "VIDEO_ID",
+          canonicalTarget: "https://docs.google.com/videos/d/VIDEO_ID/edit",
+        },
+      ],
+      unsupportedProviderRoutes: 0,
     });
     query.mockResolvedValueOnce([
       { id: 4, title: "Unrelated", url: "https://example.com/" },
@@ -456,6 +681,56 @@ describe("explicit read-only Flow/Vids attachment", () => {
     expect(port.pingTopFrame).toHaveBeenCalledOnce();
     expect(port.probeTopFrame).not.toHaveBeenCalled();
     expectProviderUntouched(forbiddenTabActions);
+  });
+
+  it("preserves safe stage diagnostics for permission inspection, injection, and handshake failures", async () => {
+    const permissionCheck = makePort();
+    vi.mocked(permissionCheck.port.getMissingAccess).mockRejectedValueOnce(
+      new Error("private URL https://labs.google/fx/tools/flow/private-id"),
+    );
+    const permissionResult = await attachToSelectedTab(
+      "Flow",
+      permissionCheck.tab,
+      permissionCheck.port,
+    );
+    expect(permissionResult).toMatchObject({
+      ok: false,
+      state: "failed",
+      stage: "permission_check",
+    });
+    if (!permissionResult.ok) {
+      expect(permissionResult.error).not.toContain("private-id");
+    }
+
+    const injection = makePort();
+    vi.mocked(injection.port.injectConnector).mockRejectedValueOnce(
+      new Error("Chrome injection error"),
+    );
+    const injectionResult = await attachToSelectedTab(
+      "Flow",
+      injection.tab,
+      injection.port,
+    );
+    expect(injectionResult).toMatchObject({
+      ok: false,
+      state: "failed",
+      stage: "connector_injection",
+    });
+
+    const handshake = makePort();
+    vi.mocked(handshake.port.probeTopFrame).mockRejectedValueOnce(
+      new Error("response channel closed"),
+    );
+    const handshakeResult = await attachToSelectedTab(
+      "Flow",
+      handshake.tab,
+      handshake.port,
+    );
+    expect(handshakeResult).toMatchObject({
+      ok: false,
+      state: "failed",
+      stage: "handshake",
+    });
   });
 
   it("safely replaces a stale connector and blocks when replacement cannot be confirmed", async () => {
@@ -508,16 +783,16 @@ describe("explicit read-only Flow/Vids attachment", () => {
 
   it("coalesces repeated Connect clicks so only one attachment runs", async () => {
     const { port } = makePort();
-    let grant!: (allowed: boolean) => void;
-    vi.mocked(port.requestAccess).mockImplementationOnce(
+    let grant!: (access: Record<string, never>) => void;
+    vi.mocked(port.getMissingAccess).mockImplementationOnce(
       () => new Promise((resolve) => (grant = resolve)),
     );
     const selected = makeTab();
     const first = attachToSelectedTab("Flow", selected, port);
     const second = attachToSelectedTab("Flow", selected, port);
     expect(second).toBe(first);
-    expect(port.requestAccess).toHaveBeenCalledOnce();
-    grant(true);
+    expect(port.getMissingAccess).toHaveBeenCalledOnce();
+    grant({});
     expect(await first).toMatchObject({ ok: true, state: "connected" });
     expect(port.injectConnector).toHaveBeenCalledOnce();
   });
@@ -570,7 +845,9 @@ describe("explicit read-only Flow/Vids attachment", () => {
     for (const failureState of ["success", "denied", "missing"] as const) {
       const { port, forbiddenTabActions } = makePort();
       if (failureState === "denied") {
-        vi.mocked(port.requestAccess).mockResolvedValueOnce(false);
+        vi.mocked(port.getMissingAccess).mockResolvedValueOnce({
+          permissions: ["scripting"],
+        });
       }
       if (failureState === "missing") {
         vi.mocked(port.injectConnector).mockResolvedValueOnce(undefined);
@@ -642,6 +919,58 @@ describe("packaged connector listener lifecycle", () => {
         error: "The current document does not match the selected project.",
       }),
     );
+  });
+
+  it("validates the current Vids document ID while ignoring scene query and fragment", async () => {
+    const listeners = new Set<(...args: unknown[]) => unknown>();
+    const runtime = {
+      id: "offline-extension",
+      onMessage: {
+        addListener: vi.fn((listener: (...args: unknown[]) => unknown) =>
+          listeners.add(listener),
+        ),
+        removeListener: vi.fn((listener: (...args: unknown[]) => unknown) =>
+          listeners.delete(listener),
+        ),
+      },
+    };
+    const actualVidsUrl =
+      "https://docs.google.com/videos/d/VIDEO_ID/edit?pli=1&scene=id.p#scene=id.p";
+    vi.stubGlobal("chrome", { runtime });
+    vi.stubGlobal("document", {});
+    const frame = { top: undefined as unknown };
+    frame.top = frame;
+    vi.stubGlobal("window", frame);
+    vi.stubGlobal("location", { href: actualVidsUrl });
+
+    await import("../../src/platforms/shared/connectionProbe");
+
+    const [listener] = [...listeners];
+    const respond = vi.fn();
+    listener!(
+      {
+        type: "AUTOMAT_FACELESS_CONNECTION_PROBE",
+        provider: "Vids",
+        canonicalTarget: "https://docs.google.com/videos/d/VIDEO_ID/edit",
+        projectId: "VIDEO_ID",
+        protocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        buildId: BUILD_ID,
+        attemptId: "attempt-actual-vids",
+      },
+      { id: runtime.id },
+      respond,
+    );
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        provider: "Vids",
+        projectId: "VIDEO_ID",
+        canonicalTarget: "https://docs.google.com/videos/d/VIDEO_ID/edit",
+        attemptId: "attempt-actual-vids",
+        capabilities: [CONNECTION_CAPABILITY],
+      }),
+    );
+    expect(location.href).toBe(actualVidsUrl);
   });
 
   it("removes a known prior listener before installing one replacement", async () => {

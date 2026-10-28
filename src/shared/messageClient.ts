@@ -37,6 +37,13 @@ function isMissingReceiver(error: unknown): boolean {
   );
 }
 
+function isExtensionContextInvalidated(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /extension context invalidated/i.test(error.message)
+  );
+}
+
 export function createFoundationClient(
   transport: MessageTransport,
   options: FoundationClientOptions = {},
@@ -117,6 +124,13 @@ export function createFoundationClient(
             "missing_receiver",
             "worker_unavailable",
             "The extension worker is unavailable. Reopen the dashboard and retry.",
+          );
+        }
+        if (isExtensionContextInvalidated(error)) {
+          throw new FoundationClientError(
+            "context_invalidated",
+            "extension_context_invalidated",
+            "The extension page context was invalidated. Reopen the packaged dashboard and retry.",
           );
         }
         throw new FoundationClientError(
