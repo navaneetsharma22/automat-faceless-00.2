@@ -1,6 +1,6 @@
 # P03 — Lossless large JSON import for both stages
 
-Status: **INCOMPLETE** — P03.1–P03.4 have offline evidence. Real production sample profiles remain EVIDENCE_PENDING; packaged browser durability/UI verification is NOT_RUN.
+Status: **INCOMPLETE — REQUIRED GATES OPEN**. P03.1–P03.4 implementation and offline evidence are complete. Packaged browser save/reopen/load checks have **USER_REPORTED_PASS** for the stated synthetic samples, but other required browser checks and P00.2 production-sample evidence remain pending.
 
 **Outcome:** Large image and video JSON batches become correct, stable, unchanged prompt items.
 
@@ -92,13 +92,21 @@ The dashboard sends only extension-internal `promptBatch.put/get` messages. The 
 
 Regression evidence compares exact strings directly. All eight P03.1 fixtures passed through the actual importer, schemas, repository methods, worker handler, JSON-cloned message envelope, and readback: image/video bodies at 10k, 25k, 50k, and 100k JavaScript code units, including LF/CRLF, decimal arrays, nested structures, escaped strings, Hindi, and emoji. The historical 1,260,163-code-unit / 1,652,165-byte fixture also passed for both kinds. Numbered blocks, top-level arrays, and versioned envelopes preserve body order and canonical IDs. Additional tests reject policy overflow, schema-invalid input, corrupted saved data, and failed messages; a partial item write is rolled back while the previous saved batch remains intact.
 
-Evidence limits: the message handler and repository are production source exercised offline, but Chrome runtime serialization is represented by JSON cloning and IndexedDB is represented by a transactional in-memory table adapter with rollback behavior. These mocks do not prove actual Chrome message capacity or browser IndexedDB durability. Browser inventory returned no apps/browsers, so packaged save, dashboard reopen, and exact readback UI checks are **NOT_RUN**. No provider page was accessed. Manual packaged retest: (1) load the built extension and open its dashboard; (2) in Images and Videos separately, validate and save a known JSON source; (3) close/reopen the dashboard, choose **Load saved batch**, and compare the complete editor text with the original; (4) create an unsaved edit and confirm loading requires a replacement decision; (5) repeat with a long CRLF fixture. Keep this test inside the extension dashboard and away from provider actions.
+Evidence limits: the message handler and repository are production source exercised offline, but Chrome runtime serialization is represented by JSON cloning and IndexedDB is represented by a transactional in-memory table adapter with rollback behavior. These mocks do not prove actual Chrome message capacity or browser IndexedDB durability. The browser checks below are user-reported and were not independently observed in this session. No provider prompt field, settings change, refresh, pairing, generation, OAuth, or download occurred.
 
-Full verification on 28 October 2026: focused preservation/UI/repository/message suite **PASS** (4 files / 38 tests); full suite **PASS** (12 files / 119 tests); typecheck, lint, changed-file Prettier, production build (Vite 8.3.5 / 154 modules), source/dist manifest equality, shared build ID consistency, and `git diff --check` **PASS**. Shared build ID: `automat-faceless-0.1.0-mvrutblo`. P00.2 real production samples remain **EVIDENCE_PENDING**. P03.4 is **OFFLINE_VERIFIED** only; P03 remains **INCOMPLETE**.
+Full verification on 28 October 2026: focused preservation/UI/repository/message suite **PASS** (4 files / 38 tests); full suite **PASS** (12 files / 119 tests); typecheck, lint, changed-file Prettier, production build (Vite 8.3.5 / 154 modules), source/dist manifest equality, shared build ID consistency, and `git diff --check` **PASS**. Shared build ID: `automat-faceless-0.1.0-mvrutblo`. This records the existing offline checks; no checks were rerun for this documentation update.
+
+### Packaged browser evidence
+
+**USER_REPORTED_PASS:** The user tested synthetic samples in the packaged browser dashboard. Image JSON measured **15,889 JavaScript code units** and video JSON measured **17,935 JavaScript code units**; save, dashboard reopen, and load passed for each. The saved image and video batches remained separate. Loading both batches in the latest check did not disconnect Flow or Vids. These results are user-reported, not independently observed or automated. No byte counts, browser version, or build ID were supplied. No exact character equality is inferred from the screenshot.
+
+**SCREENSHOT_EVIDENCE:** The supplied screenshot shows both providers Connected and the loaded video preview. This observation alone does not prove source equality or worker lifecycle recovery.
+
+Still open: **P00.2 EVIDENCE_PENDING** for representative actual production samples and their profiles; the packaged unsaved-draft replacement check and long-CRLF check were not reported; worker-restart recovery is unverified. The browser results cover the stated synthetic save/reopen/load workflow only.
 
 ## Phase gate
 
-P03 is INCOMPLETE. P03.1–P03.4 have offline contract, fixture, scanner, importer, UI, schema, repository, and worker-message evidence. Browser rendering/durability, real sample, and provider evidence remain incomplete; P00.2 is pending.
+P03.1–P03.4 implementation and offline contract, fixture, scanner, importer, UI, schema, repository, and worker-message evidence are complete. The reported packaged save/reopen/load checks passed for the stated synthetic samples. **P03 remains INCOMPLETE while required gates are open:** P00.2 actual production-sample evidence is pending, and the unsaved-draft replacement and long-CRLF packaged checks remain unreported. Worker-restart recovery is unverified and is not inferred from successful batch loading.
 
 ## Notes
 

@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import App from "../../src/app/App";
 import {
   connectionWorkerFailureDetail,
   withPendingCleanup,
@@ -9,6 +10,18 @@ import { ConnectionError } from "../../src/app/components/ConnectionError";
 import { FoundationClientError } from "../../src/shared/messageClient";
 
 describe("connection feedback presentation", () => {
+  it("keeps connection ownership in the persistent shell around workspace views", () => {
+    const markup = renderToStaticMarkup(createElement(App));
+    const sidebarStart = markup.indexOf("<aside class=");
+    const connectionIndex = markup.indexOf('id="connection-title"');
+    const sidebarEnd = markup.indexOf("</aside>", sidebarStart);
+
+    expect(sidebarStart).toBeGreaterThanOrEqual(0);
+    expect(connectionIndex).toBeGreaterThan(sidebarStart);
+    expect(sidebarEnd).toBeGreaterThan(connectionIndex);
+    expect(markup).toContain('hidden=""');
+  });
+
   it("renders the complete actionable error in an alert without truncation", () => {
     const detail =
       "connector_injection: Could not inject the packaged read-only connector into the selected Flow top frame. Check selected-site host access and the extension package; the page was not refreshed or navigated.";

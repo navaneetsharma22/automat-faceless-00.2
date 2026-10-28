@@ -226,11 +226,11 @@ describe("P03.4 prompt preservation through schema, repository, and worker messa
     ).toBe(otherWorkspace);
     expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
       tabId: 41,
-      reconnectEnabled: true,
+      reconnectEnabled: false,
     });
     expect(await repositories.getSelectedTarget("Vids")).toMatchObject({
       tabId: 42,
-      reconnectEnabled: true,
+      reconnectEnabled: false,
     });
   });
 

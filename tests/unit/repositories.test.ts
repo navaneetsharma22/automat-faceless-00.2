@@ -42,7 +42,7 @@ describe("extension repository boundaries", () => {
       savedDraft,
     );
     expect(selected.verification).toBe("unverified");
-    expect(selected.reconnectEnabled).toBe(true);
+    expect(selected.reconnectEnabled).toBe(false);
     expect(await repositories.setReconnectIntent("Vids", false)).toBe(true);
     expect(
       await repositories.markTargetVerified("Vids", selected.canonicalTarget),
@@ -66,5 +66,22 @@ describe("extension repository boundaries", () => {
     await repository.setTheme("dark");
     expect(await repository.getTheme()).toBe("dark");
     expect(values).toEqual({ theme: "dark" });
+  });
+
+  it("treats a pre-lifecycle saved target as eligible for fresh verification", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database, () => 100);
+    await database.selectedTargets.put({
+      provider: "Flow",
+      tabId: 17,
+      canonicalTarget: "https://flow.google.com/project/legacy",
+      verification: "unverified",
+      updatedAt: 12,
+    });
+
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      tabId: 17,
+      reconnectEnabled: true,
+    });
   });
 });

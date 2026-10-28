@@ -1,7 +1,7 @@
 # P03.4 Prompt Preservation Evidence
 
 Date: 28 October 2026  
-Evidence level: **OFFLINE_VERIFIED** for importer, schemas, repository methods, worker handler, JSON-cloned messaging, and mocked transactional storage. Browser durability and packaged dashboard interaction are **NOT_RUN**.
+Evidence levels: **OFFLINE_VERIFIED** for importer, schemas, repository methods, worker handler, JSON-cloned messaging, and mocked transactional storage; partial packaged dashboard checks are **USER_REPORTED_PASS** for the stated synthetic samples below. Independent browser observation and worker-restart recovery are not established.
 Shared production build ID: `automat-faceless-0.1.0-mvrutblo`.
 
 ## Implemented path
@@ -25,9 +25,9 @@ The request and record schemas use the centralized provisional limits: 1,500,000
 
 Focused checks: **4 files / 38 tests PASS**. Full suite: **12 files / 119 tests PASS**. Typecheck, lint, changed-file Prettier, production build, manifest equality, build-ID consistency, and `git diff --check` are recorded in the P03.4 section of the phase card and project status.
 
-## Evidence limits and manual check
+## Evidence limits and browser check
 
-The handler, schemas, importer, and repository methods are real project source. Tests serialize requests/responses with `JSON.stringify` / `JSON.parse` and use an in-memory table adapter that simulates transaction rollback. They do not execute Chrome runtime messaging, Chrome IndexedDB, dashboard persistence across a browser restart, or actual browser message-size limits. No browser or app surface was available in the computer-use inventory; packaged save, dashboard reopen, and UI readback are **NOT_RUN**.
+The handler, schemas, importer, and repository methods are real project source. Tests serialize requests/responses with `JSON.stringify` / `JSON.parse` and use an in-memory table adapter that simulates transaction rollback. They do not execute Chrome runtime messaging, Chrome IndexedDB, dashboard persistence across a browser restart, or actual browser message-size limits.
 
 Manual packaged retest:
 
@@ -37,10 +37,27 @@ Manual packaged retest:
 4. Repeat independently in Videos, then make a nonempty unsaved edit and confirm the load action asks before replacing it.
 5. Repeat the save/reopen/readback with a long CRLF fixture.
 
-Keep this check within the extension dashboard. No provider page, prompt field, settings, refresh, pairing, generation, OAuth, or download is involved. P00.2 real production samples remain **EVIDENCE_PENDING**; synthetic fixtures do not close that gate. Phase 03 remains **INCOMPLETE**.
+Keep any remaining check within the extension dashboard. No provider prompt field, settings change, refresh, pairing, generation, OAuth, or download is involved. P00.2 real production samples remain **EVIDENCE_PENDING**; synthetic fixtures do not close that gate.
 
 ## User-reported browser result and lifecycle regression
 
-**USER_REPORTED_PASS:** The user reported successful image and video batch save, dashboard reopen, and load, with image and video data remaining separate. These are user-reported observations and are not independently automated or observed in this session. The report is separate from the offline message/repository tests above.
+### Offline automated evidence
 
-The focused lifecycle regression checks that image/video save/load operations leave the previously selected Flow and Vids target records and reconnect intent unchanged. `ConnectionStatus` remains mounted in the dashboard sidebar while workspace panels switch, and batch APIs do not mutate selected-target state. Independent packaged browser verification of durability and connection recovery after worker restart/reopen is **NOT_RUN** because no browser surface was available. See [connection proof](connection-proof.md) for the lifecycle cause and implementation evidence.
+The offline source, schema, worker-handler, repository, JSON-cloned message, exact-string comparison, and transactional-adapter results above remain **OFFLINE_VERIFIED**. They do not establish browser behavior.
+
+### Screenshot observations
+
+**SCREENSHOT_EVIDENCE:** The supplied screenshot shows Flow and Vids as Connected and shows a loaded video preview. A screenshot establishes only those visible states; it does not establish exact character-for-character equality of the loaded source.
+
+### USER_REPORTED_PASS browser checks
+
+The user reports testing synthetic samples in the packaged browser dashboard:
+
+- Image JSON: **15,889 JavaScript code units**; save, dashboard reopen, and load passed.
+- Video JSON: **17,935 JavaScript code units**; save, dashboard reopen, and load passed.
+- The saved image and video batches remained separate.
+- Loading both batches in the latest check did not disconnect Flow or Vids.
+
+These are **USER_REPORTED_PASS**, separate from offline automated evidence and screenshot observations; they were not independently observed in this session. No UTF-8 byte counts, browser version, or build ID were reported. These are user-tested synthetic samples, not P00.2 production samples. The report does not establish worker-restart recovery, an unsaved-draft replacement check, or the long-CRLF packaged check. Worker-restart recovery remains unverified.
+
+The focused lifecycle regression checks that image/video save/load operations leave the previously selected Flow and Vids target records and reconnect intent unchanged. `ConnectionStatus` remains mounted in the dashboard sidebar while workspace panels switch, and batch APIs do not mutate selected-target state. The reported latest browser check says loading both batches did not disconnect Flow or Vids; it does not verify worker-restart recovery. See [connection proof](connection-proof.md) for the lifecycle cause and implementation evidence.

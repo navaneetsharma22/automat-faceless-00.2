@@ -84,8 +84,8 @@ export function isSameProviderTargetUrl(
   const current = providerTabFromUrl(selected.id, selected.title, rawUrl);
   return Boolean(
     current &&
-      current.provider === selected.provider &&
-      current.canonicalTarget === selected.canonicalTarget,
+    current.provider === selected.provider &&
+    current.canonicalTarget === selected.canonicalTarget,
   );
 }
 
