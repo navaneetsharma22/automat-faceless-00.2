@@ -40,6 +40,7 @@ export type RequestPayloads = {
       confirmedAt: number;
       tabId: number;
       projectId: string;
+      canonicalTarget: string;
     };
   };
   "preferences.getTheme": Record<string, never>;

@@ -116,6 +116,7 @@ function Dashboard() {
         confirmedAt: Date.now(),
         tabId: target.id,
         projectId: target.projectId,
+        canonicalTarget: target.canonicalTarget,
       });
     } catch (error) {
       setImageSettingsConfirmation(null);

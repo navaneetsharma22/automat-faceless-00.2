@@ -41,6 +41,7 @@ export type FlowImageAttemptRecord = {
     userAttested: true;
     tabId: number;
     projectId: string;
+    canonicalTarget?: string;
   };
   state: FlowImageAttemptState;
   baseline?: {

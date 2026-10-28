@@ -39,6 +39,7 @@ const settingsConfirmation: FlowSettingsConfirmation = {
   confirmedAt: 1_000,
   tabId: selectedTab.id,
   projectId: selectedTab.projectId,
+  canonicalTarget: selectedTab.canonicalTarget,
 };
 
 function discovery(
@@ -247,7 +248,11 @@ describe("P04.2 durable Flow image Generate attempt", () => {
       frameId: frame.frameId,
       loaderId: frame.loaderId,
       state: "dispatched",
-      settingsConfirmation: { userAttested: true, projectId: "project_01" },
+      settingsConfirmation: {
+        userAttested: true,
+        projectId: "project_01",
+        canonicalTarget: selectedTab.canonicalTarget,
+      },
       baseline: { regionLabel: "Generated results", mediaCount: 2 },
     });
     expect("prompt" in attempts[0]!).toBe(false);
@@ -531,10 +536,23 @@ describe("P04.2 durable Flow image Generate attempt", () => {
         })
       ).code,
     ).toBe("settings_confirmation_stale");
+    const accountRouteChangedAttestation = await setup();
+    expect(
+      (
+        await accountRouteChangedAttestation.generate({
+          ...accountRouteChangedAttestation.payload,
+          settingsConfirmation: {
+            ...settingsConfirmation,
+            canonicalTarget: "https://flow.google.com/u/2/project/project_01",
+          },
+        })
+      ).code,
+    ).toBe("settings_confirmation_stale");
     expect(
       badHash.fixture.activations +
         wrongTarget.fixture.activations +
-        wrongAttestation.fixture.activations,
+        wrongAttestation.fixture.activations +
+        accountRouteChangedAttestation.fixture.activations,
     ).toBe(0);
   });
 
@@ -641,6 +659,7 @@ describe("P04.2 durable Flow image Generate attempt", () => {
           userAttested: true,
           tabId: selectedTab.id,
           projectId: "project_01",
+          canonicalTarget: selectedTab.canonicalTarget,
         },
         state,
         events: [{ stage: "preparation", at, method: "none" }],

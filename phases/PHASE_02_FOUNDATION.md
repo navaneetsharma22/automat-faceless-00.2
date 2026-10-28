@@ -1,6 +1,6 @@
 # P02 — Toolchain, MV3 foundation and platform connections
 
-Status: **DONE for the read-only connection scope.** P02.1–P02.3 are OFFLINE_VERIFIED. P02.4 has recorded offline evidence, user screenshots, and USER_REPORTED_PASS checks; user checks are not described as independent or automated verification.
+Status: **INCOMPLETE pending account-prefixed Flow packaged-browser retest.** P02.1–P02.3 remain OFFLINE_VERIFIED. P02.4's prior screenshots and USER_REPORTED_PASS checks remain recorded for their tested sessions/builds. The later account-prefixed Flow mismatch has an OFFLINE_VERIFIED source fix; the live retest is NOT_RUN and is not claimed as passed.
 
 **Outcome:** The new dashboard and worker connect read-only to the intended Flow/Vids targets with visible build identity.
 
@@ -188,3 +188,7 @@ State changed files and resulting behaviour, focused checks with actual output, 
 ## Current task boundary
 
 This card is a future work specification. Its presence does not authorize running live provider actions now. Follow the actual user task's authorization. Start only the requested subphase, not every row in this card.
+
+## Account-prefixed Flow compatibility correction - 28 October 2026
+
+The shared route and capability correction is **OFFLINE_VERIFIED**. The account-prefixed Flow browser retest remains **NOT_RUN**, so Phase 02/P02.4 remains **INCOMPLETE**. Final verification passed: Vitest 16 files / 162 tests, local synthetic Playwright 12 tests, typecheck, lint, Prettier, production build, manifest consistency, and standalone connector packaging. Shared packaged build ID: `automat-faceless-0.1.0-mvs8v92s`. See [connection proof](../docs/evidence/connection-proof.md#account-prefixed-flow-correction-verification---28-october-2026) for the source-level cause and safe retest steps. Do not refresh, navigate, replace, or close/reopen provider tabs.

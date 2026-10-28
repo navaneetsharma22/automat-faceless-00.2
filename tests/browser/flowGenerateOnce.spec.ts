@@ -31,6 +31,7 @@ const settingsConfirmation: FlowSettingsConfirmation = {
   confirmedAt: 1_000,
   tabId: selectedTab.id,
   projectId: selectedTab.projectId,
+  canonicalTarget: selectedTab.canonicalTarget,
 };
 
 async function installImageComposer(page: Page) {

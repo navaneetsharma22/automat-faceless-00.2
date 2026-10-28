@@ -5,12 +5,12 @@
   "type": "module",
   "description": "Automat Faceless Chrome extension baseline",
   "scripts": {
-    "dev": "vite",
+    "dev": "node init && vite",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,js,json,html}\" \"public/**/*.json\"",
     "test": "vitest run --passWithNoTests",
-    "build": "tsc -b && vite build"
+    "build": "node init && tsc -b && node tools/build.mjs"
   },
   "keywords": [],
   "author": "",

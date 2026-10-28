@@ -58,6 +58,7 @@ export type ConnectionHandshakeDiagnostics = {
   readOnlyCapability: HandshakeCheck;
   connectorAcceptance: "accepted" | "rejected";
   documentToken: "present" | "missing";
+  documentTokenContinuity: "match" | "mismatch" | "unverified";
 };
 
 export type DocumentIdentity = {

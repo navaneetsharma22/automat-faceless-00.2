@@ -943,6 +943,44 @@ describe("explicit read-only Flow/Vids attachment", () => {
       stage: "handshake_validation",
       handshakeDiagnostics: { readOnlyCapability: "mismatch" },
     });
+
+    const malformedCapability = makePort(tab);
+    vi.mocked(malformedCapability.port.probeTopFrame).mockImplementationOnce(
+      async (_id, _documentId, request) =>
+        makeResponse(tab, request, {
+          capabilities:
+            `${CONNECTION_CAPABILITY}:flow-image-generate-once-v1` as unknown as readonly string[],
+        }),
+    );
+    const malformedBlocked = await attachToSelectedTab(
+      "Flow",
+      tab,
+      malformedCapability.port,
+    );
+    expect(malformedBlocked).toMatchObject({
+      ok: false,
+      stage: "handshake_validation",
+      handshakeDiagnostics: { readOnlyCapability: "mismatch" },
+    });
+
+    const changedDocument = makePort(tab);
+    vi.mocked(changedDocument.port.pingTopFrame).mockImplementationOnce(
+      async (_id, request) => makeResponse(tab, request),
+    );
+    vi.mocked(changedDocument.port.probeTopFrame).mockImplementationOnce(
+      async (_id, _documentId, request) =>
+        makeResponse(tab, request, { documentToken: "different-token" }),
+    );
+    const changed = await attachToSelectedTab(
+      "Flow",
+      tab,
+      changedDocument.port,
+    );
+    expect(changed).toMatchObject({
+      ok: false,
+      state: "wrong-target",
+      handshakeDiagnostics: { documentTokenContinuity: "mismatch" },
+    });
   });
 
   it("coalesces repeated Connect clicks so only one attachment runs", async () => {
@@ -1061,6 +1099,33 @@ describe("explicit read-only Flow/Vids attachment", () => {
     );
     expect(blocked).toMatchObject({ ok: false, state: "wrong-target" });
     expect(changed.port.injectConnector).not.toHaveBeenCalled();
+
+    const accountTarget = providerTabFromUrl(
+      42,
+      "Flow account route",
+      "https://flow.google.com/u/1/project/same-project",
+    )!;
+    const accountChanged = makePort(accountTarget);
+    vi.mocked(accountChanged.port.getTab).mockResolvedValueOnce(
+      providerTabFromUrl(
+        42,
+        "Flow account route changed",
+        "https://flow.google.com/u/2/project/same-project",
+      ),
+    );
+    const accountBlocked = await verifyPersistedTarget(
+      "Flow",
+      {
+        tabId: accountTarget.id,
+        canonicalTarget: accountTarget.canonicalTarget,
+      },
+      accountChanged.port,
+    );
+    expect(accountBlocked).toMatchObject({
+      ok: false,
+      state: "wrong-target",
+    });
+    expect(accountChanged.port.injectConnector).not.toHaveBeenCalled();
 
     const closed = makePort();
     vi.mocked(closed.port.getTab).mockResolvedValueOnce(undefined);

@@ -167,3 +167,15 @@ Keep the currently selected Flow project open; do not refresh, navigate, or chan
 ```
 
 Diagnostic output is **NOT_COLLECTED** because no browser surface was available. Candidate metadata from this snippet would still need comparison with a live extension target/frame binding and the app's target-bound settings confirmation. No fill or Generate action is authorized by this diagnostic alone.
+
+## P04.3 pause — connection compatibility correction
+
+P04.3 generation testing is **PAUSED** pending the account-prefixed Flow connection fix's packaged browser retest. Source review found that dashboard route discovery retained `/u/{index}` but the injected connector rejected that Flow path. The shared strict route parser now covers discovery, connector handshake, P04 composer/entry, and saved-target restoration. New P04 settings confirmations and attempts also record the canonical target, preventing reuse after an account-route change on the same tab/project ID. Existing immutable prompt snapshots and attempt states are unchanged. Automated tests use local mocks/synthetic DOM only. No Flow tab, saved prompt, settings, fill action, Generate control, or provider outcome was accessed in this fix. Live route/handshake verification and P04.3 remain **NOT_RUN**.
+
+## Connection compatibility correction - 28 October 2026
+
+P04.3 remains **PAUSED / NOT_RUN**. The confirmed source-level cause was a duplicated route parser: dashboard discovery recognized Flow `/u/{index}/project/{id}`, while the injected connector accepted only the unprefixed Flow path. On the reported route that made response provider, project/document ID, and canonical-target fields missing; no live handshake payload was captured, so the exact state in the user's loaded package remains unobserved.
+
+Both layers now use one strict parser. The account index is retained only in the canonical route target; the original tab URL and manually selected tab are preserved. The P04 settings confirmation now binds to that canonical target. Handshake details expose only per-field states, and an additive connector capability does not remove the required read-only capability or grant new authority. Attempt snapshots, saved prompt batches, and non-replay behavior were not changed.
+
+Final local verification: Vitest **16 files / 162 tests PASS** and local synthetic Playwright **12 tests PASS**; typecheck, lint, Prettier, build, manifest consistency, and standalone connector packaging **PASS**. Current packaged dashboard/worker/connector build ID: **`automat-faceless-0.1.0-mvs8v92s`**. The build ID is not confirmed as loaded in the user's Chrome profile. No Flow/Vids tab, prompt, settings, fill action, Generate control, or provider outcome was accessed. A packaged read-only retest remains **NOT_RUN**; see [connection proof](connection-proof.md#account-prefixed-flow-correction-verification---28-october-2026). Do not resume P04.3 until that retest succeeds.
