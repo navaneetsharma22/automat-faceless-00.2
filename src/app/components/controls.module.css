@@ -67,6 +67,12 @@
   gap: var(--space-2);
 }
 
+.editorToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .fieldLabel {
   color: var(--color-text);
   font-size: var(--font-size-sm);
@@ -118,8 +124,8 @@
 }
 
 .editor {
-  min-height: 15rem;
-  max-height: min(65vh, 42rem);
+  min-height: 10.5rem;
+  max-height: min(42vh, 28rem);
   overflow: auto;
   resize: vertical;
   font-family: var(--font-mono);
@@ -127,6 +133,55 @@
   line-height: var(--line-height-relaxed);
   tab-size: 2;
   white-space: pre;
+}
+
+.editorWrapped {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.editorDialog {
+  width: min(86rem, calc(100vw - 2rem));
+  max-width: none;
+  max-height: calc(100dvh - 2rem);
+  padding: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-overlay);
+  box-shadow: var(--shadow-overlay);
+  color: var(--color-text);
+}
+
+.editorDialog::backdrop {
+  background: var(--color-scrim);
+  backdrop-filter: blur(3px);
+}
+
+.editorDialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-block-end: var(--space-4);
+}
+
+.editorDialogHeader h2 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+.editorDialogActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.editorExpanded {
+  min-height: min(68vh, 50rem);
+  max-height: none;
+  resize: vertical;
 }
 
 .editor[aria-invalid="true"] {
@@ -235,5 +290,15 @@
 
   .confirmation {
     padding: var(--space-3);
+  }
+
+  .editorDialog {
+    width: calc(100vw - 1rem);
+    max-height: calc(100dvh - 1rem);
+    padding: var(--space-3);
+  }
+
+  .editorExpanded {
+    min-height: 65vh;
   }
 }

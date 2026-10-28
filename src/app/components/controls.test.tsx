@@ -33,6 +33,29 @@ function findElement(
   return findElement(node.props.children as React.ReactNode, targetType);
 }
 
+function findElements(
+  node: React.ReactNode,
+  targetType: string,
+): ReactElement<Record<string, unknown>>[] {
+  if (Array.isArray(node)) {
+    return node.flatMap((child) => findElements(child, targetType));
+  }
+
+  if (!isValidElement<Record<string, unknown>>(node)) return [];
+  if (typeof node.type === "function") {
+    const component = node.type as (
+      props: Record<string, unknown>,
+    ) => React.ReactNode;
+    return findElements(component(node.props), targetType);
+  }
+
+  const matches = node.type === targetType ? [node] : [];
+  return [
+    ...matches,
+    ...findElements(node.props.children as React.ReactNode, targetType),
+  ];
+}
+
 describe("shared controls", () => {
   it("preserves JSON editor values and edits exactly the supplied string", () => {
     const onChange = vi.fn<(value: string) => void>();
@@ -51,6 +74,82 @@ describe("shared controls", () => {
       currentTarget: { value: edited },
     });
     expect(onChange).toHaveBeenCalledExactlyOnceWith(edited);
+  });
+
+  it("toggles JSON presentation controls without changing the raw value", () => {
+    const raw = ' {\r\n  "prompt": "keep every character",\r\n}\n  ';
+    const onChange = vi.fn<(value: string) => void>();
+    const onWrapLinesChange = vi.fn<(wrap: boolean) => void>();
+    const onExpandedChange = vi.fn<(expanded: boolean) => void>();
+    const tree = JsonEditor({
+      id: "json-display-controls",
+      label: "JSON sample",
+      value: raw,
+      onChange,
+      wrapLines: false,
+      onWrapLinesChange,
+      expanded: false,
+      onExpandedChange,
+    });
+    const [wrapButton, expandButton] = findElements(tree, "button");
+    const textarea = findElement(tree, "textarea");
+
+    expect(wrapButton?.props["aria-pressed"]).toBe(false);
+    expect(expandButton?.props["aria-expanded"]).toBe(false);
+    expect(textarea?.props.value).toBe(raw);
+    expect(textarea?.props.wrap).toBe("off");
+
+    (
+      wrapButton?.props.onClick as (event: {
+        preventDefault: () => void;
+      }) => void
+    )({
+      preventDefault: vi.fn(),
+    });
+    (
+      expandButton?.props.onClick as (event: {
+        preventDefault: () => void;
+      }) => void
+    )({
+      preventDefault: vi.fn(),
+    });
+    expect(onWrapLinesChange).toHaveBeenCalledExactlyOnceWith(true);
+    expect(onExpandedChange).toHaveBeenCalledExactlyOnceWith(true);
+
+    const wrappedTree = JsonEditor({
+      id: "json-display-controls",
+      label: "JSON sample",
+      value: raw,
+      onChange,
+      wrapLines: true,
+      onWrapLinesChange,
+      expanded: false,
+      onExpandedChange,
+    });
+    const wrappedTextarea = findElement(wrappedTree, "textarea");
+    expect(wrappedTextarea?.props.value).toBe(raw);
+    expect(wrappedTextarea?.props.wrap).toBe("soft");
+  });
+
+  it("provides a dialog close control for the expanded editor", () => {
+    const tree = JsonEditor({
+      id: "expanded-json",
+      label: "JSON sample",
+      value: '{"prompt":"unchanged"}',
+      onChange: vi.fn(),
+      expanded: true,
+      onExpandedChange: vi.fn(),
+    });
+    const dialog = findElement(tree, "dialog");
+    const form = findElement(tree, "form");
+    const buttons = findElements(tree, "button");
+
+    expect(dialog?.props.id).toBe("expanded-json-expanded-dialog");
+    expect(dialog?.props["aria-labelledby"]).toBe(
+      "expanded-json-expanded-title",
+    );
+    expect(form?.props.method).toBe("dialog");
+    expect(buttons[3]?.props.children).toBe("Close editor");
   });
 
   it("wires field labels, hints, and external errors to the control", () => {

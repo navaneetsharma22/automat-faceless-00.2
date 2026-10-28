@@ -2,5 +2,10 @@
   "manifest_version": 3,
   "name": "Automat Faceless",
   "version": "0.1.0",
-  "description": "Automat Faceless extension baseline"
+  "description": "Automat Faceless extension baseline",
+  "optional_permissions": ["tabs", "scripting"],
+  "optional_host_permissions": [
+    "https://labs.google/*",
+    "https://vids.google.com/*"
+  ]
 }

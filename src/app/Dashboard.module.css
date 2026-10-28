@@ -2,13 +2,7 @@
   display: grid;
   min-height: 100vh;
   grid-template-columns: 16rem minmax(0, 1fr);
-  background:
-    radial-gradient(
-      ellipse at 80% -10%,
-      color-mix(in srgb, var(--color-accent) 5%, transparent),
-      transparent 36rem
-    ),
-    var(--color-page);
+  background: var(--color-page);
   color: var(--color-text);
 }
 
@@ -58,7 +52,7 @@
 .brand small {
   margin-block-start: 2px;
   color: var(--color-text-muted);
-  font-size: 0.625rem;
+  font-size: var(--font-size-xs);
   font-weight: 750;
   letter-spacing: 0.13em;
 }
@@ -66,7 +60,7 @@
 .kicker {
   margin: 0;
   color: var(--color-text-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 750;
   letter-spacing: 0.12em;
 }
@@ -111,7 +105,7 @@
 }
 .connection {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-2);
   padding: var(--space-4);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
@@ -131,11 +125,70 @@
   margin: 0;
   font-size: var(--font-size-sm);
 }
-.connection p {
+.connectionHint {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   line-height: var(--line-height-relaxed);
+}
+.connectionListButton {
+  width: 100%;
+  min-height: var(--control-height-compact);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+}
+.providerConnection {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
+}
+.providerConnectionTitle {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+}
+.providerConnectionTitle strong {
+  overflow: hidden;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connectionLabel {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+.connectionSelect {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height-compact);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+}
+.connectionError {
+  margin: 0;
+  padding: var(--space-2);
+  border-inline-start: 3px solid var(--color-error);
+  background: var(--color-error-surface);
+  color: var(--color-error);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
 }
 .connection ul {
   display: grid;
@@ -162,19 +215,6 @@
   height: 0.45rem;
   border-radius: 50%;
   background: var(--color-text-muted);
-}
-.sidebarFoot {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  margin-block-start: auto;
-  color: var(--color-text-muted);
-  font-size: 0.68rem;
-  line-height: 1.35;
-}
-.buildMark {
-  color: var(--color-accent);
-  font-size: 0.6rem;
 }
 .mainArea {
   min-width: 0;
@@ -216,7 +256,7 @@
   align-items: center;
   gap: var(--space-2);
   color: var(--color-text-muted);
-  font-size: 0.65rem;
+  font-size: var(--font-size-xs);
   font-weight: 750;
   letter-spacing: 0.1em;
   white-space: nowrap;
@@ -261,29 +301,7 @@
   letter-spacing: -0.045em;
   line-height: var(--line-height-tight);
 }
-.pageHeading .kicker span {
-  color: var(--color-accent);
-}
 .lede,
-.muted {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-relaxed);
-}
-.demoBadge {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  padding: 0.3rem 0.55rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
-  color: var(--color-text-muted);
-  font-size: 0.62rem;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  white-space: nowrap;
-}
 .workspaceGrid {
   display: grid;
   min-width: 0;
@@ -333,7 +351,7 @@
   min-width: 0;
   padding: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-card-compact);
   background: color-mix(
     in srgb,
     var(--color-surface) 76%,
@@ -351,7 +369,7 @@
 }
 .progressMeta span {
   color: var(--color-text-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   text-align: end;
 }
 .progressTrack {
@@ -368,7 +386,7 @@
 }
 .progressValue {
   color: var(--color-text-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 .actionRow {
   display: grid;
@@ -393,7 +411,7 @@
   gap: var(--space-2);
   padding: var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: 0.875rem;
+  border-radius: var(--radius-card-compact);
   background: linear-gradient(
     145deg,
     var(--color-surface),
@@ -416,10 +434,10 @@
   place-items: center;
   border: 1px solid var(--color-border);
   border-radius: 0.625rem;
-  background: radial-gradient(
-    circle at 50% 40%,
-    color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-raised)),
-    var(--color-surface-raised)
+  background: linear-gradient(
+    155deg,
+    var(--color-surface-raised),
+    var(--color-surface)
   );
   color: var(--color-text-muted);
   font-family: var(--font-mono);
@@ -432,7 +450,7 @@
 .shotId {
   color: var(--color-accent);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--font-size-xs);
   font-weight: 750;
 }
 .referenceCard strong {
@@ -441,11 +459,25 @@
 }
 .referenceState {
   color: var(--color-text-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 .pairList {
   display: grid;
   gap: var(--space-2);
+}
+.pairPreview {
+  display: grid;
+  gap: var(--space-3);
+  padding-block-start: var(--space-4);
+  border-block-start: 1px solid var(--color-border);
+}
+.pairPreviewHeading {
+  display: grid;
+  gap: var(--space-1);
+}
+.pairPreviewHeading h3 {
+  margin: 0;
+  font-size: var(--font-size-md);
 }
 .pairRow {
   display: grid;
@@ -454,7 +486,7 @@
   gap: var(--space-2) var(--space-3);
   padding: var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-card-compact);
   background: var(--color-surface);
 }
 .pairSides {
@@ -517,7 +549,7 @@
   gap: var(--space-3);
   padding: var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-card-compact);
   background: var(--color-surface);
   cursor: pointer;
 }
@@ -536,14 +568,50 @@
 }
 .destinationOption small {
   color: var(--color-text-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 .downloadsPanel {
   gap: var(--space-5);
 }
+.downloadStateSelector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.downloadStateSelector legend {
+  margin-block-end: var(--space-2);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+}
+.downloadStateOption {
+  display: inline-flex;
+  min-height: var(--control-height-compact);
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.downloadStateOption:has(input:checked) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface));
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.downloadStateOption input {
+  accent-color: var(--color-accent);
+}
 .downloadGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
 }
 .downloadCard {
@@ -554,7 +622,7 @@
   gap: var(--space-3);
   padding: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: 0.875rem;
+  border-radius: var(--radius-card-compact);
   background: linear-gradient(
     145deg,
     var(--color-surface),
@@ -565,6 +633,9 @@
 .downloadEmpty {
   border-style: dashed;
 }
+.downloadActionRow {
+  margin-block-start: var(--space-2);
+}
 .fileIcon {
   display: grid;
   width: 2.5rem;
@@ -574,7 +645,7 @@
   border-radius: 0.7rem;
   color: var(--color-text-muted);
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: var(--font-size-xs);
   font-weight: 800;
 }
 .downloadCard h3 {
@@ -671,9 +742,7 @@
     width: 2.15rem;
     height: 2.15rem;
   }
-  .navLabel,
-  .connection,
-  .sidebarFoot {
+  .navLabel {
     display: none;
   }
   .navigation {
@@ -712,14 +781,11 @@
 }
 
 @media (max-width: 480px) {
-  .previewLabel {
+  .breadcrumb > span {
     display: none;
   }
   .pageHeading {
     display: grid;
-  }
-  .pageHeading > .demoBadge {
-    justify-self: start;
   }
   .panel {
     padding: var(--space-4);

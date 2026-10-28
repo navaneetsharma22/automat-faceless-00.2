@@ -7,6 +7,7 @@
   --color-surface: #ffffff;
   --color-surface-raised: #fcf8f3;
   --color-surface-overlay: #ffffff;
+  --color-scrim: rgb(7 9 12 / 64%);
   --color-text: #30242b;
   --color-text-muted: #75636d;
   --color-text-subtle: #66545e;
@@ -96,6 +97,7 @@
   --color-surface: #15181d;
   --color-surface-raised: #1d2229;
   --color-surface-overlay: #20262e;
+  --color-scrim: rgb(7 9 12 / 72%);
   --color-text: #f1f4f8;
   --color-text-muted: #a7b0bd;
   --color-text-subtle: #bac2cc;

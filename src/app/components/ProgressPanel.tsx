@@ -10,14 +10,10 @@ export function ProgressPanel({ items }: { items: DemoProgress[] }) {
     >
       <div className={styles.panelHeading}>
         <div>
-          <p className={styles.kicker}>EXAMPLE STATUS</p>
+          <p className={styles.kicker}>DEMO PROGRESS</p>
           <h2 id="progress-title">Batch overview</h2>
         </div>
-        <span className={styles.demoBadge}>DEMO</span>
       </div>
-      <p className={styles.muted}>
-        Illustrative progress only. No provider work is running.
-      </p>
       <div className={styles.progressList}>
         {items.map((item) => (
           <article className={styles.progressCard} key={item.label}>

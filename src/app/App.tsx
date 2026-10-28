@@ -8,11 +8,23 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { SettingsConfirmation } from "./components/SettingsConfirmation";
 import { ToastHost, useToast } from "./components/ToastHost";
 import styles from "./Dashboard.module.css";
+import {
+  type DownloadPreviewState,
+  type PromptDrafts,
+  updatePromptDrafts,
+} from "./previewState";
 
 const demoJson = `{
   "batch": "DEMO ONLY — synthetic image prompts",
   "prompts": [
 ${Array.from({ length: 28 }, (_, index) => `    { "shot_id": "SHOT-${String(index + 1).padStart(3, "0")}", "prompt": "Illustrative long prompt ${index + 1}: cinematic studio portrait, soft window light, natural detail, composed for a 16:9 frame." }`).join(",\n")}
+  ]
+}`;
+
+const demoVideoJson = `{
+  "batch": "DEMO ONLY — synthetic video prompts",
+  "prompts": [
+${Array.from({ length: 18 }, (_, index) => `    { "shot_id": "SHOT-${String(index + 1).padStart(3, "0")}", "prompt": "Independent example video prompt ${index + 1}: slow cinematic camera drift, natural motion, soft environmental light, preserve subject identity." }`).join(",\n")}
   ]
 }`;
 
@@ -31,7 +43,14 @@ const referenceCards = [
 function Dashboard() {
   const [workspace, setWorkspace] = useState<Workspace>("Images");
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [imageJson, setImageJson] = useState(demoJson);
+  const [promptDrafts, setPromptDrafts] = useState<PromptDrafts>({
+    images: demoJson,
+    videos: demoVideoJson,
+  });
+  const [videoWrapLines, setVideoWrapLines] = useState(false);
+  const [videoEditorExpanded, setVideoEditorExpanded] = useState(false);
+  const [downloadPreview, setDownloadPreview] =
+    useState<DownloadPreviewState>("empty");
   const [imageConfirmed, setImageConfirmed] = useState(false);
   const [videoConfirmed, setVideoConfirmed] = useState(false);
   const [destination, setDestination] = useState<"Flow" | "Vids">("Flow");
@@ -59,6 +78,10 @@ function Dashboard() {
     });
   };
 
+  const updatePrompt = (workspace: keyof PromptDrafts, value: string) => {
+    setPromptDrafts((current) => updatePromptDrafts(current, workspace, value));
+  };
+
   return (
     <main className={styles.appShell}>
       <aside className={styles.sidebar}>
@@ -78,12 +101,6 @@ function Dashboard() {
         <p className={styles.navLabel}>WORKSPACE</p>
         <Navigation active={workspace} onSelect={setWorkspace} />
         <ConnectionStatus />
-        <div className={styles.sidebarFoot}>
-          <span className={styles.buildMark} aria-hidden="true">
-            ●
-          </span>
-          <span>UI preview · no provider activity</span>
-        </div>
       </aside>
 
       <section className={styles.mainArea} id="workspace">
@@ -117,18 +134,15 @@ function Dashboard() {
         >
           <div className={styles.pageHeading}>
             <div>
-              <p className={styles.kicker}>
-                CREATIVE WORKSPACE <span>· DEMONSTRATION DATA</span>
-              </p>
+              <p className={styles.kicker}>CREATIVE WORKSPACE</p>
               <h1>{workspace}</h1>
               <p className={styles.lede}>{workspaceSubtitle(workspace)}</p>
             </div>
-            <span className={styles.demoBadge}>DEMO CONTENT</span>
           </div>
           {workspace === "Images" ? (
             <ImagesView
-              imageJson={imageJson}
-              setImageJson={setImageJson}
+              imageJson={promptDrafts.images}
+              setImageJson={(value) => updatePrompt("images", value)}
               confirmed={imageConfirmed}
               setConfirmed={setImageConfirmed}
             />
@@ -141,13 +155,24 @@ function Dashboard() {
           ) : null}
           {workspace === "Videos" ? (
             <VideosView
+              videoJson={promptDrafts.videos}
+              setVideoJson={(value) => updatePrompt("videos", value)}
+              wrapLines={videoWrapLines}
+              setWrapLines={setVideoWrapLines}
+              editorExpanded={videoEditorExpanded}
+              setEditorExpanded={setVideoEditorExpanded}
               destination={destination}
               setDestination={setDestination}
               confirmed={videoConfirmed}
               setConfirmed={setVideoConfirmed}
             />
           ) : null}
-          {workspace === "Downloads" ? <DownloadsView /> : null}
+          {workspace === "Downloads" ? (
+            <DownloadsView
+              state={downloadPreview}
+              onStateChange={setDownloadPreview}
+            />
+          ) : null}
           <details className={styles.advanced}>
             <summary>
               Advanced details <span>Technical preview information</span>
@@ -200,6 +225,9 @@ function ImagesView({
   confirmed: boolean;
   setConfirmed: (value: boolean) => void;
 }) {
+  const [wrapLines, setWrapLines] = useState(false);
+  const [editorExpanded, setEditorExpanded] = useState(false);
+
   return (
     <div className={styles.workspaceGrid}>
       <section
@@ -207,21 +235,20 @@ function ImagesView({
         aria-labelledby="image-input-title"
       >
         <PanelHeader
-          kicker="IMAGE BATCH · EXAMPLE"
+          kicker="IMAGE BATCH · DEMO"
           title="Prompt input"
           id="image-input-title"
         />
-        <Notice kind="info" announce={false}>
-          DEMO DATA — synthetic JSON is editable here for layout review. The
-          text is not parsed or submitted.
-        </Notice>
         <JsonEditor
           id="image-demo-json"
-          label="Example image prompt JSON"
+          label="Image prompt JSON"
           value={imageJson}
           onChange={setImageJson}
-          rows={14}
-          hint="Full example body stays visible in the editor; no import or parsing is active."
+          rows={6}
+          wrapLines={wrapLines}
+          onWrapLinesChange={setWrapLines}
+          expanded={editorExpanded}
+          onExpandedChange={setEditorExpanded}
         />
         <SettingsConfirmation
           id="image-settings-confirm"
@@ -229,7 +256,6 @@ function ImagesView({
           contextLabel="demo image batch"
           checked={confirmed}
           onChange={setConfirmed}
-          hint="This demonstration checkbox only previews the confirmation state."
         />
         <div className={styles.actionRow}>
           <Button disabled aria-describedby="image-disabled-reason">
@@ -257,13 +283,10 @@ function ReferencesView({
     <div className={styles.workspaceGrid}>
       <section className={styles.panel} aria-labelledby="references-title">
         <PanelHeader
-          kicker="REFERENCE LIBRARY · EXAMPLE"
+          kicker="REFERENCE LIBRARY · DEMO"
           title="Shot references"
           id="references-title"
         />
-        <p className={styles.muted}>
-          Every card is labeled demo content. Selection is local UI state only.
-        </p>
         <div className={styles.referenceGrid}>
           {referenceCards.map((card) => {
             const isSelected = selected.includes(card.id);
@@ -295,10 +318,6 @@ function ReferencesView({
             );
           })}
         </div>
-        <Notice kind="warning" announce={false}>
-          An empty reference is shown intentionally. No image capture or
-          assignment occurs in this preview.
-        </Notice>
         <div className={styles.actionRow}>
           <Button disabled aria-describedby="reference-disabled-reason">
             Confirm references
@@ -318,12 +337,24 @@ function ReferencesView({
   );
 }
 
-function VideosView({
+export function VideosView({
+  videoJson,
+  setVideoJson,
+  wrapLines,
+  setWrapLines,
+  editorExpanded,
+  setEditorExpanded,
   destination,
   setDestination,
   confirmed,
   setConfirmed,
 }: {
+  videoJson: string;
+  setVideoJson: (value: string) => void;
+  wrapLines: boolean;
+  setWrapLines: (wrap: boolean) => void;
+  editorExpanded: boolean;
+  setEditorExpanded: (expanded: boolean) => void;
   destination: "Flow" | "Vids";
   setDestination: (value: "Flow" | "Vids") => void;
   confirmed: boolean;
@@ -333,36 +364,56 @@ function VideosView({
     <div className={styles.workspaceGrid}>
       <section className={styles.panel} aria-labelledby="video-pair-title">
         <PanelHeader
-          kicker="VIDEO BATCH · EXAMPLE"
-          title="Image + prompt pairs"
-          id="video-pair-title"
+          kicker="VIDEO BATCH · DEMO"
+          title="Video prompt JSON"
+          id="video-input-title"
         />
-        <p className={styles.muted}>
-          Pairs are illustrative and display shot-ID matching errors. No pairing
-          logic runs.
-        </p>
-        <div className={styles.pairList}>
-          <PairRow
-            id="SHOT-001"
-            image="Image SHOT-001 · demo"
-            prompt="Video prompt SHOT-001 · demo"
-            state="Matched example"
-          />
-          <PairRow
-            id="SHOT-002"
-            image="Image SHOT-003 · demo"
-            prompt="Video prompt SHOT-002 · demo"
-            state="Shot ID mismatch · demo error"
-            error
-          />
-          <PairRow
-            id="SHOT-003"
-            image="No image · demo"
-            prompt="Video prompt SHOT-003 · demo"
-            state="Missing image · demo error"
-            error
-          />
-        </div>
+        <JsonEditor
+          id="video-demo-json"
+          label="Video prompt JSON"
+          value={videoJson}
+          onChange={setVideoJson}
+          rows={6}
+          wrapLines={wrapLines}
+          onWrapLinesChange={setWrapLines}
+          expanded={editorExpanded}
+          onExpandedChange={setEditorExpanded}
+        />
+        <Notice kind="info" announce={false}>
+          UI preview only. Editing does not parse, pair, submit, or generate
+          anything.
+        </Notice>
+        <section
+          className={styles.pairPreview}
+          aria-labelledby="video-pairs-demo-title"
+        >
+          <div className={styles.pairPreviewHeading}>
+            <p className={styles.kicker}>INDEPENDENT DEMO DATA</p>
+            <h3 id="video-pairs-demo-title">Pairing examples</h3>
+          </div>
+          <div className={styles.pairList}>
+            <PairRow
+              id="SHOT-001"
+              image="Image SHOT-001 · demo"
+              prompt="Video prompt SHOT-001 · demo"
+              state="Matched example"
+            />
+            <PairRow
+              id="SHOT-002"
+              image="Image SHOT-003 · demo"
+              prompt="Video prompt SHOT-002 · demo"
+              state="Shot ID mismatch · demo error"
+              error
+            />
+            <PairRow
+              id="SHOT-003"
+              image="No image · demo"
+              prompt="Video prompt SHOT-003 · demo"
+              state="Missing image · demo error"
+              error
+            />
+          </div>
+        </section>
         <fieldset className={styles.destinationGroup}>
           <legend>
             Video destination <span>Choose one for this demo</span>
@@ -396,7 +447,6 @@ function VideosView({
           contextLabel="demo video batch"
           checked={confirmed}
           onChange={setConfirmed}
-          hint="Confirmation is a local preview and does not inspect destination settings."
         />
         <Notice kind="error" announce={false}>
           Example pairing errors remain visible. Resolve shot IDs before a real
@@ -450,68 +500,93 @@ function PairRow({
   );
 }
 
-function DownloadsView() {
+export function DownloadsView({
+  state,
+  onStateChange,
+}: {
+  state: DownloadPreviewState;
+  onStateChange: (state: DownloadPreviewState) => void;
+}) {
   return (
     <section
       className={`${styles.panel} ${styles.downloadsPanel}`}
       aria-labelledby="downloads-title"
     >
       <PanelHeader
-        kicker="DELIVERY · EXAMPLE STATES"
+        kicker="DELIVERY · DEMO"
         title="Downloads"
         id="downloads-title"
       />
-      <p className={styles.muted}>
-        Example files and progress are labeled throughout. No files are being
-        downloaded.
-      </p>
-      <div className={styles.downloadGrid}>
-        <article
-          className={`${styles.downloadCard} ${styles.downloadEmpty} motion-card`}
-        >
+      <fieldset className={styles.downloadStateSelector}>
+        <legend>Preview state</legend>
+        <label className={styles.downloadStateOption}>
+          <input
+            type="radio"
+            name="download-preview-state"
+            value="empty"
+            checked={state === "empty"}
+            onChange={() => onStateChange("empty")}
+          />
+          <span>Empty</span>
+        </label>
+        <label className={styles.downloadStateOption}>
+          <input
+            type="radio"
+            name="download-preview-state"
+            value="examples"
+            checked={state === "examples"}
+            onChange={() => onStateChange("examples")}
+          />
+          <span>Example downloads</span>
+        </label>
+      </fieldset>
+      {state === "empty" ? (
+        <article className={`${styles.downloadCard} ${styles.downloadEmpty}`}>
           <span className={styles.fileIcon} aria-hidden="true">
             —
           </span>
-          <span className={styles.demoBadge}>EMPTY STATE</span>
           <h3>No downloads yet</h3>
-          <p>Completed example files will appear here.</p>
+          <p>Nothing is being downloaded in this preview.</p>
         </article>
-        <article className={`${styles.downloadCard} motion-card`}>
-          <span className={styles.fileIcon} aria-hidden="true">
-            MP4
-          </span>
-          <span className={styles.demoBadge}>DEMO FILE</span>
-          <h3>SHOT-001_example.mp4</h3>
-          <p>Example file · 18.4 MB</p>
-          <div
-            className={styles.progressTrack}
-            role="img"
-            aria-label="Example download progress 68 percent"
-          >
-            <span style={{ width: "68%" }} />
-          </div>
-          <strong className={styles.progressValue}>68% example progress</strong>
-        </article>
-        <article className={`${styles.downloadCard} motion-card`}>
-          <span className={styles.fileIcon} aria-hidden="true">
-            MP4
-          </span>
-          <span className={styles.demoBadge}>DEMO FILE</span>
-          <h3>SHOT-002_example.mp4</h3>
-          <p>Example file · waiting</p>
-          <div
-            className={styles.progressTrack}
-            role="img"
-            aria-label="Example download progress 0 percent"
-          >
-            <span style={{ width: "0%" }} />
-          </div>
-          <strong className={styles.progressValue}>
-            Not started · example
-          </strong>
-        </article>
-      </div>
-      <div className={styles.actionRow}>
+      ) : (
+        <div className={styles.downloadGrid} aria-label="Example downloads">
+          <article className={`${styles.downloadCard} motion-card`}>
+            <span className={styles.fileIcon} aria-hidden="true">
+              MP4
+            </span>
+            <h3>SHOT-001_example.mp4</h3>
+            <p>Example file · 18.4 MB</p>
+            <div
+              className={styles.progressTrack}
+              role="img"
+              aria-label="Example download progress 68 percent"
+            >
+              <span style={{ width: "68%" }} />
+            </div>
+            <strong className={styles.progressValue}>
+              68% example progress
+            </strong>
+          </article>
+          <article className={`${styles.downloadCard} motion-card`}>
+            <span className={styles.fileIcon} aria-hidden="true">
+              MP4
+            </span>
+            <h3>SHOT-002_example.mp4</h3>
+            <p>Example file · waiting</p>
+            <div
+              className={styles.progressTrack}
+              role="img"
+              aria-label="Example download progress 0 percent"
+            >
+              <span style={{ width: "0%" }} />
+            </div>
+            <strong className={styles.progressValue}>
+              Not started · example
+            </strong>
+          </article>
+        </div>
+      )}
+      <div className={`${styles.actionRow} ${styles.downloadActionRow}`}>
         <Button disabled aria-describedby="download-disabled-reason">
           Download selected files
         </Button>
@@ -539,7 +614,6 @@ function PanelHeader({
         <p className={styles.kicker}>{kicker}</p>
         <h2 id={id}>{title}</h2>
       </div>
-      <span className={styles.demoBadge}>EXAMPLE</span>
     </div>
   );
 }
