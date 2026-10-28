@@ -6,6 +6,7 @@ import type {
 } from "../domain/batches/types";
 import type { JsonSpan } from "../domain/batches/jsonSpanScanner";
 import type { FlowImageAttemptRecord } from "../domain/jobs/attempt";
+import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
 
 export type PromptDraftRecord = {
   id: string;
@@ -64,6 +65,7 @@ export class AutomatDatabase extends Dexie {
   batches!: Table<BatchRecord, string>;
   promptItems!: Table<PromptItemRecord, string>;
   flowImageAttempts!: Table<FlowImageAttemptRecord, string>;
+  flowImagePromptSnapshots!: Table<FlowImagePromptSnapshotRecord, string>;
 
   constructor(name = "automat-faceless-app-v1") {
     super(name);
@@ -95,6 +97,17 @@ export class AutomatDatabase extends Dexie {
       promptItems: "&id, batchId, workspaceId, kind, order",
       flowImageAttempts:
         "&attemptId, &activeKey, &confirmationKey, workspaceId, batchId, itemId, state, createdAt",
+    });
+    this.version(5).stores({
+      promptDrafts: "&id, kind, updatedAt",
+      selectedTargets: "&provider, tabId, verification, updatedAt",
+      workflows: "&id, updatedAt",
+      batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
+      promptItems: "&id, batchId, workspaceId, kind, order",
+      flowImageAttempts:
+        "&attemptId, &activeKey, &confirmationKey, workspaceId, batchId, itemId, state, createdAt",
+      flowImagePromptSnapshots:
+        "&snapshotId, workspaceId, batchId, itemId, promptHash, createdAt",
     });
   }
 }

@@ -6,6 +6,7 @@ import {
   type FlowImageAttemptRecord,
   type FlowImageAttemptState,
 } from "../../src/domain/jobs/attempt";
+import { flowImagePromptSnapshotId } from "../../src/domain/batches/flowImagePromptSnapshot";
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import { activateFlowImageGenerate } from "../../src/platforms/flow/images";
 import type { FlowPromptEntryPort } from "../../src/platforms/flow/promptEntry";
@@ -235,6 +236,10 @@ describe("P04.2 durable Flow image Generate attempt", () => {
       workspaceId: "default",
       batchId: test.saved.batch.id,
       itemId: test.saved.items[0]?.id,
+      sourceSnapshotId: flowImagePromptSnapshotId(
+        test.saved.items[0]!.id,
+        await sha256Hex(prompt),
+      ),
       shotId: "1",
       promptHash: await sha256Hex(prompt),
       projectId: "project_01",
@@ -250,6 +255,91 @@ describe("P04.2 durable Flow image Generate attempt", () => {
       (await test.repositories.getPromptBatch("default", "image"))?.items[0]
         ?.rawJsonBody,
     ).toBe(prompt);
+    expect(
+      await test.repositories.getFlowImagePromptSnapshot(
+        attempts[0]!.sourceSnapshotId,
+      ),
+    ).toMatchObject({
+      rawJsonBody: prompt,
+      promptHash: await sha256Hex(prompt),
+    });
+  });
+
+  it("keeps the attempted source immutable when the latest saved batch is replaced", async () => {
+    const test = await setup();
+    const createAttempt = test.repositories.createFlowImageAttempt.bind(
+      test.repositories,
+    );
+    const replacement = '{"shot_id":"02","scene":"SYNTHETIC later save"}';
+    test.repositories.createFlowImageAttempt = async (input) => {
+      const record = await createAttempt(input);
+      await test.repositories.savePromptBatch({
+        workspaceId: "default",
+        kind: "image",
+        sourceText: replacement,
+      });
+      return record;
+    };
+
+    const result = await test.generate(test.payload);
+    const attempt = (await test.repositories.getAllFlowImageAttempts())[0]!;
+    const immutableSource = await test.repositories.getFlowImagePromptSnapshot(
+      attempt.sourceSnapshotId,
+    );
+    const currentBatch = await test.repositories.getPromptBatch(
+      "default",
+      "image",
+    );
+
+    expect(result.state).toBe("dispatched");
+    expect(test.fillCalls[0]?.sourceText).toBe(prompt);
+    expect(immutableSource?.rawJsonBody).toBe(prompt);
+    expect(currentBatch?.items[0]?.rawJsonBody).toBe(replacement);
+    expect(attempt.promptHash).toBe(await sha256Hex(prompt));
+    expect(attempt.promptHash).not.toBe(await sha256Hex(replacement));
+  });
+
+  it("blocks Generate when the attempt's immutable source snapshot is unavailable", async () => {
+    const test = await setup();
+    test.repositories.getFlowImagePromptSnapshot = async () => undefined;
+
+    const result = await test.generate(test.payload);
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      code: "source_snapshot_mismatch",
+    });
+    expect(test.fixture.activations).toBe(0);
+    expect((await test.repositories.getAllFlowImageAttempts())[0]?.state).toBe(
+      "failed-before-dispatch",
+    );
+  });
+
+  it("blocks Generate when the attempt's immutable source snapshot mismatches", async () => {
+    const test = await setup();
+    const item = test.saved.items[0]!;
+    test.repositories.getFlowImagePromptSnapshot = async (snapshotId) => ({
+      snapshotId,
+      workspaceId: "default",
+      batchId: test.saved.batch.id,
+      itemId: item.id,
+      promptHash: await sha256Hex(prompt),
+      rawJsonBody: "{}",
+      promptCodeUnits: 2,
+      promptUtf8Bytes: 2,
+      createdAt: 1_100,
+    });
+
+    const result = await test.generate(test.payload);
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      code: "source_snapshot_mismatch",
+    });
+    expect(test.fixture.activations).toBe(0);
+    expect((await test.repositories.getAllFlowImageAttempts())[0]?.state).toBe(
+      "failed-before-dispatch",
+    );
   });
 
   it("sends one CDP press/release pair and never repeats a failed press", async () => {
@@ -526,7 +616,7 @@ describe("P04.2 durable Flow image Generate attempt", () => {
     ];
     for (const [index, state] of states.entries()) {
       const at = 1_200 + index;
-      const record: FlowImageAttemptRecord = {
+      const record: Omit<FlowImageAttemptRecord, "sourceSnapshotId"> = {
         attemptId: `restart-${state}`,
         confirmationKey: `restart-confirm-${state}`,
         ...(state === "failed-before-dispatch"
@@ -557,7 +647,23 @@ describe("P04.2 durable Flow image Generate attempt", () => {
         createdAt: at,
         updatedAt: at,
       };
-      await test.repositories.createFlowImageAttempt(record);
+      await test.repositories.createFlowImageAttempt({
+        ...record,
+        sourceSnapshot: {
+          snapshotId: flowImagePromptSnapshotId(
+            record.itemId,
+            record.promptHash,
+          ),
+          workspaceId: record.workspaceId,
+          batchId: record.batchId,
+          itemId: record.itemId,
+          promptHash: record.promptHash,
+          rawJsonBody: prompt,
+          promptCodeUnits: prompt.length,
+          promptUtf8Bytes: new TextEncoder().encode(prompt).byteLength,
+          createdAt: at,
+        },
+      });
     }
     const recovery =
       await test.repositories.reconcileInterruptedFlowImageAttempts();

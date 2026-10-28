@@ -20,11 +20,13 @@ import {
   flowImageAttemptActiveKey,
   type FlowImageAttemptRecord,
 } from "../../domain/jobs/attempt";
+import { flowImagePromptSnapshotId } from "../../domain/batches/flowImagePromptSnapshot";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import {
   ActiveFlowImageAttemptError,
   DuplicateFlowImageConfirmationError,
   FlowImageAttemptTransitionError,
+  FlowImagePromptSnapshotConflictError,
   sha256Hex,
 } from "../../storage/repositories";
 import type { ProviderTab } from "../../platforms/shared/contracts";
@@ -292,6 +294,17 @@ export function createFlowImageGenerateOnce(
         );
       }
       const at = now();
+      const sourceSnapshot = {
+        snapshotId: flowImagePromptSnapshotId(item.id, item.contentHash),
+        workspaceId: item.workspaceId,
+        batchId: item.batchId,
+        itemId: item.id,
+        promptHash: item.contentHash,
+        rawJsonBody: item.rawJsonBody,
+        promptCodeUnits: item.measurement.stringCodeUnits,
+        promptUtf8Bytes: item.measurement.utf8Bytes,
+        createdAt: at,
+      };
       try {
         attempt = await dependencies.repositories.createFlowImageAttempt({
           attemptId: makeId(),
@@ -301,6 +314,7 @@ export function createFlowImageGenerateOnce(
           itemId: item.id,
           ...(item.shotId ? { shotId: item.shotId } : {}),
           promptHash: item.contentHash,
+          sourceSnapshot,
           promptCodeUnits: item.measurement.stringCodeUnits,
           promptUtf8Bytes: item.measurement.utf8Bytes,
           provider: "Flow",
@@ -345,6 +359,13 @@ export function createFlowImageGenerateOnce(
             "This settings confirmation was already used. Reconfirm settings before another attempt.",
           );
         }
+        if (error instanceof FlowImagePromptSnapshotConflictError) {
+          return response(
+            "blocked",
+            "source_snapshot_conflict",
+            "The immutable saved-prompt snapshot conflicted with an existing revision. Generate was not activated.",
+          );
+        }
         return response(
           "blocked",
           "preparation_persist_failed",
@@ -352,7 +373,38 @@ export function createFlowImageGenerateOnce(
         );
       }
 
-      const filled = await dependencies.fillPrompt(item.rawJsonBody, frame);
+      let promptSource: string;
+      try {
+        const persistedSource =
+          await dependencies.repositories.getFlowImagePromptSnapshot(
+            attempt.sourceSnapshotId,
+          );
+        if (
+          !persistedSource ||
+          persistedSource.snapshotId !== attempt.sourceSnapshotId ||
+          persistedSource.workspaceId !== attempt.workspaceId ||
+          persistedSource.batchId !== attempt.batchId ||
+          persistedSource.itemId !== attempt.itemId ||
+          persistedSource.promptHash !== attempt.promptHash ||
+          persistedSource.promptCodeUnits !== attempt.promptCodeUnits ||
+          persistedSource.promptUtf8Bytes !== attempt.promptUtf8Bytes ||
+          persistedSource.rawJsonBody !== item.rawJsonBody ||
+          (await sha256Hex(persistedSource.rawJsonBody)) !== attempt.promptHash
+        ) {
+          return failBefore(
+            "source_snapshot_mismatch",
+            "The immutable saved-prompt snapshot is missing or mismatched. Generate was not activated.",
+          );
+        }
+        promptSource = persistedSource.rawJsonBody;
+      } catch {
+        return failBefore(
+          "source_snapshot_unavailable",
+          "The immutable saved-prompt snapshot could not be verified. Generate was not activated.",
+        );
+      }
+
+      const filled = await dependencies.fillPrompt(promptSource, frame);
       if (
         !filled.fillVerified ||
         !filled.settledMatch ||
@@ -386,7 +438,7 @@ export function createFlowImageGenerateOnce(
           "The selected Flow document changed after prompt verification. Generate was not activated.",
         );
       }
-      const discovery = await port.inspectGenerate(target.id, item.rawJsonBody);
+      const discovery = await port.inspectGenerate(target.id, promptSource);
       const preflightError = discoveryFailure(discovery);
       if (preflightError) {
         return failBefore(preflightError.code, preflightError.message);
@@ -402,7 +454,7 @@ export function createFlowImageGenerateOnce(
       if (
         !(await port.recheckGenerate(
           target.id,
-          item.rawJsonBody,
+          promptSource,
           frame,
           buttonId,
           baseline,
@@ -441,7 +493,7 @@ export function createFlowImageGenerateOnce(
         !(await currentFlowBinding(port, selected, target, frame)) ||
         !(await port.recheckGenerate(
           target.id,
-          item.rawJsonBody,
+          promptSource,
           frame,
           buttonId,
           baseline,

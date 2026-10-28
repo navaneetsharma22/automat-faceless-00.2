@@ -12,12 +12,15 @@ import {
   PromptBatchRecordSchema,
   PromptBatchSnapshotSchema,
   FlowImageAttemptRecordSchema,
+  FlowImagePromptSnapshotRecordSchema,
   PromptItemRecordSchema,
 } from "../shared/schemas";
 import { importPromptBatch } from "../domain/batches/importBatch";
 import type { PromptKind } from "../domain/batches/types";
 import { sha256Hex } from "../domain/batches/hashPrompt";
 export { sha256Hex } from "../domain/batches/hashPrompt";
+import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
+import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnapshot";
 import {
   canTransitionFlowImageAttempt,
   flowImageAttemptActiveKey,
@@ -87,6 +90,24 @@ export class FlowImageAttemptValidationError extends Error {
   }
 }
 
+export class FlowImagePromptSnapshotValidationError extends Error {
+  constructor() {
+    super(
+      "The immutable Flow image prompt snapshot failed integrity validation.",
+    );
+    this.name = "FlowImagePromptSnapshotValidationError";
+  }
+}
+
+export class FlowImagePromptSnapshotConflictError extends Error {
+  constructor() {
+    super(
+      "The immutable Flow image prompt snapshot does not match this attempt.",
+    );
+    this.name = "FlowImagePromptSnapshotConflictError";
+  }
+}
+
 export type Theme = "light" | "dark";
 
 export type PreferenceArea = {
@@ -110,6 +131,10 @@ export type RepositoryDatabase = {
     Table<FlowImageAttemptRecord, string>,
     "add" | "get" | "put" | "toArray"
   >;
+  flowImagePromptSnapshots: Pick<
+    Table<FlowImagePromptSnapshotRecord, string>,
+    "add" | "get"
+  >;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -126,6 +151,7 @@ export function createDexieRepositoryDatabase(
     batches: database.batches,
     promptItems: database.promptItems,
     flowImageAttempts: database.flowImageAttempts,
+    flowImagePromptSnapshots: database.flowImagePromptSnapshots,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -151,6 +177,13 @@ export function createDexieRepositoryDatabase(
           return database.transaction(
             "rw",
             database.flowImageAttempts,
+            operation,
+          );
+        case "flowImageAttempts+flowImagePromptSnapshots":
+          return database.transaction(
+            "rw",
+            database.flowImageAttempts,
+            database.flowImagePromptSnapshots,
             operation,
           );
         default:
@@ -431,35 +464,77 @@ export class ExtensionRepositories {
   }
 
   async createFlowImageAttempt(
-    input: Omit<FlowImageAttemptRecord, "activeKey"> & { activeKey?: string },
+    input: Omit<FlowImageAttemptRecord, "activeKey" | "sourceSnapshotId"> & {
+      activeKey?: string;
+      sourceSnapshot: FlowImagePromptSnapshotRecord;
+    },
   ): Promise<FlowImageAttemptRecord> {
+    const { sourceSnapshot, ...attemptInput } = input;
     const record: FlowImageAttemptRecord = {
-      ...input,
-      activeKey: flowImageAttemptActiveKey(input.itemId),
+      ...attemptInput,
+      sourceSnapshotId: sourceSnapshot.snapshotId,
+      activeKey: flowImageAttemptActiveKey(attemptInput.itemId),
     };
+    if (
+      sourceSnapshot.workspaceId !== record.workspaceId ||
+      sourceSnapshot.batchId !== record.batchId ||
+      sourceSnapshot.itemId !== record.itemId ||
+      sourceSnapshot.promptHash !== record.promptHash ||
+      sourceSnapshot.promptCodeUnits !== record.promptCodeUnits ||
+      sourceSnapshot.promptUtf8Bytes !== record.promptUtf8Bytes ||
+      sourceSnapshot.snapshotId !==
+        flowImagePromptSnapshotId(record.itemId, record.promptHash) ||
+      !FlowImagePromptSnapshotRecordSchema.safeParse(sourceSnapshot).success ||
+      (await sha256Hex(sourceSnapshot.rawJsonBody)) !==
+        sourceSnapshot.promptHash
+    ) {
+      throw new FlowImagePromptSnapshotConflictError();
+    }
     if (!FlowImageAttemptRecordSchema.safeParse(record).success) {
       throw new FlowImageAttemptValidationError();
     }
     try {
-      await this.tables.transaction(["flowImageAttempts"], async () => {
-        const existing = await this.tables.flowImageAttempts.toArray();
-        if (
-          existing.some((attempt) => attempt.activeKey === record.activeKey)
-        ) {
-          throw new ActiveFlowImageAttemptError();
-        }
-        if (
-          existing.some(
-            (attempt) => attempt.confirmationKey === record.confirmationKey,
-          )
-        ) {
-          throw new DuplicateFlowImageConfirmationError();
-        }
-        await this.tables.flowImageAttempts.add(record);
-      });
+      await this.tables.transaction(
+        ["flowImageAttempts+flowImagePromptSnapshots"],
+        async () => {
+          const existing = await this.tables.flowImageAttempts.toArray();
+          if (
+            existing.some((attempt) => attempt.activeKey === record.activeKey)
+          ) {
+            throw new ActiveFlowImageAttemptError();
+          }
+          if (
+            existing.some(
+              (attempt) => attempt.confirmationKey === record.confirmationKey,
+            )
+          ) {
+            throw new DuplicateFlowImageConfirmationError();
+          }
+          const savedSnapshot = await this.tables.flowImagePromptSnapshots.get(
+            sourceSnapshot.snapshotId,
+          );
+          if (savedSnapshot) {
+            if (
+              !FlowImagePromptSnapshotRecordSchema.safeParse(savedSnapshot)
+                .success ||
+              savedSnapshot.rawJsonBody !== sourceSnapshot.rawJsonBody ||
+              savedSnapshot.promptHash !== sourceSnapshot.promptHash ||
+              savedSnapshot.workspaceId !== sourceSnapshot.workspaceId ||
+              savedSnapshot.batchId !== sourceSnapshot.batchId ||
+              savedSnapshot.itemId !== sourceSnapshot.itemId
+            ) {
+              throw new FlowImagePromptSnapshotConflictError();
+            }
+          } else {
+            await this.tables.flowImagePromptSnapshots.add(sourceSnapshot);
+          }
+          await this.tables.flowImageAttempts.add(record);
+        },
+      );
     } catch (error) {
       if (error instanceof ActiveFlowImageAttemptError) throw error;
       if (error instanceof DuplicateFlowImageConfirmationError) throw error;
+      if (error instanceof FlowImagePromptSnapshotConflictError) throw error;
       if (error instanceof DOMException && error.name === "ConstraintError") {
         const existing = await this.tables.flowImageAttempts.toArray();
         if (
@@ -479,6 +554,20 @@ export class ExtensionRepositories {
       throw error;
     }
     return record;
+  }
+
+  async getFlowImagePromptSnapshot(
+    snapshotId: string,
+  ): Promise<FlowImagePromptSnapshotRecord | undefined> {
+    const snapshot = await this.tables.flowImagePromptSnapshots.get(snapshotId);
+    if (!snapshot) return undefined;
+    if (
+      !FlowImagePromptSnapshotRecordSchema.safeParse(snapshot).success ||
+      (await sha256Hex(snapshot.rawJsonBody)) !== snapshot.promptHash
+    ) {
+      throw new FlowImagePromptSnapshotValidationError();
+    }
+    return snapshot;
   }
 
   async transitionFlowImageAttempt(input: {

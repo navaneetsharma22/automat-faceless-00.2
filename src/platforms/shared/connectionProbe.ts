@@ -1,3 +1,5 @@
+import { parseProviderRoute } from "./providerRoute";
+
 const BUILD_ID = __AUTOMAT_BUILD_ID__;
 const CONNECTION_CAPABILITY = "read-only-connection-v1" as const;
 const CONNECTION_DISCONNECT_MESSAGE =
@@ -41,64 +43,6 @@ type ConnectorScope = typeof globalThis & {
   __automatFacelessConnector?: InstalledConnector;
   __automatFacelessConnectionProbeInstalled?: boolean;
 };
-
-function projectFromUrl(
-  rawUrl: string,
-):
-  | { provider: ProviderName; projectId: string; canonicalTarget: string }
-  | undefined {
-  try {
-    const url = new URL(rawUrl);
-    if (
-      url.protocol !== "https:" ||
-      url.username !== "" ||
-      url.password !== ""
-    ) {
-      return undefined;
-    }
-    if (url.hostname === "flow.google.com") {
-      const match = /^\/project\/([A-Za-z0-9_-]+)\/?$/.exec(url.pathname);
-      if (!match) return undefined;
-      return {
-        provider: "Flow",
-        projectId: match[1]!,
-        canonicalTarget: `${url.origin}/project/${match[1]}`,
-      };
-    }
-    if (url.hostname === "labs.google") {
-      const match = /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(
-        url.pathname,
-      );
-      if (!match) return undefined;
-      return {
-        provider: "Flow",
-        projectId: match[1]!,
-        canonicalTarget: `${url.origin}/fx/tools/flow/${match[1]}`,
-      };
-    }
-    if (
-      url.hostname === "docs.google.com" ||
-      url.hostname === "vids.google.com"
-    ) {
-      const match =
-        url.hostname === "docs.google.com"
-          ? /^\/videos\/d\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname)
-          : /^\/video\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname);
-      if (!match) return undefined;
-      return {
-        provider: "Vids",
-        projectId: match[1]!,
-        canonicalTarget:
-          url.hostname === "docs.google.com"
-            ? `${url.origin}/videos/d/${match[1]}/edit`
-            : `${url.origin}/video/${match[1]}/edit`,
-      };
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
 
 function makeDocumentToken(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -154,7 +98,7 @@ if (
     }
 
     const request = rawMessage as ConnectionProbeRequest;
-    const project = projectFromUrl(location.href);
+    const project = parseProviderRoute(location.href);
     const expected =
       project?.provider === request.provider &&
       project.projectId === request.projectId &&

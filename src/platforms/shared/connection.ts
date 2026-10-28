@@ -4,6 +4,7 @@ import {
   CONNECTOR_PROTOCOL_VERSION,
   CONNECTION_PROBE_MESSAGE,
   type ConnectionFailureStage,
+  type ConnectionHandshakeDiagnostics,
   type ConnectionPort,
   type ConnectionProbeRequest,
   type ConnectionProbeResponse,
@@ -12,6 +13,7 @@ import {
   type ProviderTab,
 } from "./contracts";
 import { ConnectionApiUnavailableError } from "./chromeApiDiagnostics";
+import { parseProviderRoute } from "./providerRoute";
 
 const attachmentTasks = new Map<string, Promise<ConnectionResult>>();
 
@@ -22,62 +24,16 @@ export function providerTabFromUrl(
 ): ProviderTab | undefined {
   if (!rawUrl || id < 0) return undefined;
 
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== "https:" || url.username || url.password) {
-      return undefined;
-    }
-
-    let provider: ProviderName;
-    let projectId: string;
-    let canonicalPath: string;
-    if (url.hostname === "flow.google.com") {
-      const match = /^\/(?:u\/([0-9]+)\/)?project\/([A-Za-z0-9_-]+)\/?$/.exec(
-        url.pathname,
-      );
-      if (!match) return undefined;
-      provider = "Flow";
-      const accountPrefix = match[1] ? `/u/${match[1]}` : "";
-      projectId = match[2]!;
-      canonicalPath = `${accountPrefix}/project/${projectId}`;
-    } else if (url.hostname === "labs.google") {
-      const match = /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(
-        url.pathname,
-      );
-      if (!match) return undefined;
-      provider = "Flow";
-      projectId = match[1]!;
-      canonicalPath = `/fx/tools/flow/${projectId}`;
-    } else if (
-      url.hostname === "docs.google.com" ||
-      url.hostname === "vids.google.com"
-    ) {
-      const match =
-        url.hostname === "docs.google.com"
-          ? /^\/videos\/d\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname)
-          : /^\/video\/([A-Za-z0-9_-]+)\/edit\/?$/.exec(url.pathname);
-      if (!match) return undefined;
-      provider = "Vids";
-      projectId = match[1]!;
-      canonicalPath =
-        url.hostname === "docs.google.com"
-          ? `/videos/d/${projectId}/edit`
-          : `/video/${projectId}/edit`;
-    } else {
-      return undefined;
-    }
-
-    return {
-      id,
-      title: title.trim() || `${provider} project ${projectId}`,
-      url: rawUrl,
-      provider,
-      projectId,
-      canonicalTarget: `${url.origin}${canonicalPath}`,
-    };
-  } catch {
-    return undefined;
-  }
+  const route = parseProviderRoute(rawUrl);
+  if (!route) return undefined;
+  return {
+    id,
+    title: title.trim() || `${route.provider} project ${route.projectId}`,
+    url: rawUrl,
+    provider: route.provider,
+    projectId: route.projectId,
+    canonicalTarget: route.canonicalTarget,
+  };
 }
 
 export function isSameProviderTargetUrl(
@@ -190,9 +146,15 @@ async function attach(
     // Ping before injection so a compatible connector can be reused.
     stage = "connector_ping";
     const firstResponse = await port.pingTopFrame(selected.id, request);
+    const firstResponseIsStale = Boolean(
+      firstResponse &&
+      (firstResponse.buildId !== BUILD_ID ||
+        firstResponse.protocolVersion !== CONNECTOR_PROTOCOL_VERSION),
+    );
     if (
       firstResponse?.projectId &&
-      !sameReportedProject(firstResponse, selected)
+      !sameReportedProject(firstResponse, selected) &&
+      !firstResponseIsStale
     ) {
       return failed(
         "wrong-target",
@@ -202,11 +164,7 @@ async function attach(
     }
 
     const responseIsCurrent = isCompatibleConnector(firstResponse, request);
-    replacingStaleConnector = Boolean(
-      firstResponse &&
-      (firstResponse.buildId !== BUILD_ID ||
-        firstResponse.protocolVersion !== CONNECTOR_PROTOCOL_VERSION),
-    );
+    replacingStaleConnector = firstResponseIsStale;
     let identity;
     if (responseIsCurrent) {
       stage = "document_validation";
@@ -262,11 +220,19 @@ async function attach(
         "handshake",
       );
     }
+    const handshakeDiagnostics = inspectHandshakeFields(
+      selected,
+      identity,
+      request,
+      response,
+    );
     if (response.buildId !== BUILD_ID) {
       return failed(
         "stale-build",
         "The connector build is stale and could not be safely replaced. Reopen the extension dashboard and retry; the provider page was not refreshed.",
         "handshake_validation",
+        undefined,
+        handshakeDiagnostics,
       );
     }
     if (response.protocolVersion !== CONNECTOR_PROTOCOL_VERSION) {
@@ -274,6 +240,8 @@ async function attach(
         "stale-build",
         "The connector protocol is incompatible and could not be safely replaced. The provider page was not refreshed.",
         "handshake_validation",
+        undefined,
+        handshakeDiagnostics,
       );
     }
     if (!isCompatibleConnector(response, request) || !response.documentToken) {
@@ -281,6 +249,8 @@ async function attach(
         "wrong-target",
         "The response did not match the selected project, document, request, build, or read-only capability. No connection was recorded.",
         "handshake_validation",
+        undefined,
+        handshakeDiagnostics,
       );
     }
     if (
@@ -404,6 +374,90 @@ function isCompatibleConnector(
   );
 }
 
+export function inspectHandshakeFields(
+  selected: ProviderTab,
+  identity: { documentId: string; frameId: number; url: string },
+  request: ConnectionProbeRequest,
+  response: ConnectionProbeResponse,
+): ConnectionHandshakeDiagnostics {
+  const selectedRoute = parseProviderRoute(identity.url);
+  const expectedRoute = parseProviderRoute(selected.canonicalTarget);
+  const responseRoute = response.canonicalTarget
+    ? parseProviderRoute(response.canonicalTarget)
+    : undefined;
+  const check = <T>(
+    actual: T | undefined,
+    expected: T | undefined,
+  ): ConnectionHandshakeDiagnostics["selectedProvider"] =>
+    actual === undefined
+      ? "missing"
+      : expected !== undefined && actual === expected
+        ? "match"
+        : "mismatch";
+  const checkPresent = (
+    present: boolean | undefined,
+  ): ConnectionHandshakeDiagnostics["selectedProvider"] =>
+    present === undefined ? "missing" : present ? "match" : "mismatch";
+
+  return {
+    selectedProvider: check(selectedRoute?.provider, selected.provider),
+    selectedOrigin: check(selectedRoute?.origin, expectedRoute?.origin),
+    selectedProjectId: check(selectedRoute?.projectId, selected.projectId),
+    selectedCanonicalTarget: check(
+      selectedRoute?.canonicalTarget,
+      selected.canonicalTarget,
+    ),
+    browserDocumentId: identity.documentId ? "bound" : "unbound",
+    topFrame: check(identity.frameId, 0),
+    responseProvider: check(response.provider, request.provider),
+    responseOrigin:
+      response.canonicalTarget === undefined
+        ? "missing"
+        : responseRoute
+          ? check(responseRoute.origin, expectedRoute?.origin)
+          : "mismatch",
+    responseProjectId: check(response.projectId, request.projectId),
+    responseCanonicalTarget: check(
+      response.canonicalTarget,
+      request.canonicalTarget,
+    ),
+    attemptCorrelation: check(response.attemptId, request.attemptId),
+    protocolVersion: check(response.protocolVersion, request.protocolVersion),
+    buildIdentity: check(response.buildId, request.buildId),
+    readOnlyCapability: checkPresent(
+      response.capabilities === undefined
+        ? undefined
+        : response.capabilities.includes(CONNECTION_CAPABILITY),
+    ),
+    connectorAcceptance: response.ok ? "accepted" : "rejected",
+    documentToken: response.documentToken ? "present" : "missing",
+  };
+}
+
+export function formatHandshakeDiagnostics(
+  diagnostics: ConnectionHandshakeDiagnostics,
+): string {
+  const labels: Array<[string, string]> = [
+    ["selected-provider", diagnostics.selectedProvider],
+    ["selected-origin", diagnostics.selectedOrigin],
+    ["selected-project/document", diagnostics.selectedProjectId],
+    ["selected-target", diagnostics.selectedCanonicalTarget],
+    ["browser-document", diagnostics.browserDocumentId],
+    ["top-frame", diagnostics.topFrame],
+    ["response-provider", diagnostics.responseProvider],
+    ["response-origin", diagnostics.responseOrigin],
+    ["response-project/document", diagnostics.responseProjectId],
+    ["response-target", diagnostics.responseCanonicalTarget],
+    ["attempt-correlation", diagnostics.attemptCorrelation],
+    ["protocol", diagnostics.protocolVersion],
+    ["build", diagnostics.buildIdentity],
+    ["read-only-capability", diagnostics.readOnlyCapability],
+    ["connector-acceptance", diagnostics.connectorAcceptance],
+    ["document-token", diagnostics.documentToken],
+  ];
+  return ` Handshake checks: ${labels.map(([field, state]) => `${field}=${state}`).join(", ")}.`;
+}
+
 function failed(
   state: Extract<ConnectionResult, { ok: false }>["state"],
   error: string,
@@ -412,6 +466,7 @@ function failed(
     ConnectionResult,
     { ok: false }
   >["permissionRequest"],
+  handshakeDiagnostics?: ConnectionHandshakeDiagnostics,
 ): ConnectionResult {
   return {
     ok: false,
@@ -419,5 +474,6 @@ function failed(
     error,
     stage,
     ...(permissionRequest ? { permissionRequest } : {}),
+    ...(handshakeDiagnostics ? { handshakeDiagnostics } : {}),
   };
 }

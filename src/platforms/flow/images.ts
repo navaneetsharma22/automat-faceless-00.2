@@ -159,7 +159,7 @@ export function flowImageRuntimeExpression(
   expectedText: string,
   mode: "inspect" | "button" = "inspect",
 ): string {
-  return `(${flowImageRuntime.toString()})(${JSON.stringify(expectedText)}, ${JSON.stringify(mode)})`;
+  return `(function(){const flowComposerRuntime=${flowComposerRuntime.toString()};return (${flowImageRuntime.toString()})(${JSON.stringify(expectedText)}, ${JSON.stringify(mode)});})()`;
 }
 
 export type FlowImagePagePort = Pick<

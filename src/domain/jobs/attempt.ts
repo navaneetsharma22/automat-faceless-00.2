@@ -25,6 +25,7 @@ export type FlowImageAttemptRecord = {
   itemId: string;
   shotId?: string;
   promptHash: string;
+  sourceSnapshotId: string;
   promptCodeUnits: number;
   promptUtf8Bytes: number;
   provider: "Flow";

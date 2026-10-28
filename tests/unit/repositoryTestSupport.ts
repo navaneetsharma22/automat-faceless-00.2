@@ -7,6 +7,7 @@ import type {
   WorkflowRecord,
 } from "../../src/storage/db";
 import type { FlowImageAttemptRecord } from "../../src/domain/jobs/attempt";
+import type { FlowImagePromptSnapshotRecord } from "../../src/domain/batches/flowImagePromptSnapshot";
 
 export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const drafts = new Map<string, PromptDraftRecord>();
@@ -15,9 +16,13 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const batches = new Map<string, BatchRecord>();
   const promptItems = new Map<string, PromptItemRecord>();
   const flowImageAttempts = new Map<string, FlowImageAttemptRecord>();
+  const flowImagePromptSnapshots = new Map<
+    string,
+    FlowImagePromptSnapshotRecord
+  >();
   let transactionTail = Promise.resolve();
 
-  const table = <T extends { id?: string; provider?: string }>(
+  const table = <T extends object>(
     values: Map<string, T>,
     key: (item: T) => string,
   ) => ({
@@ -70,6 +75,10 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
     batches: table(batches, (item) => item.id!),
     promptItems: table(promptItems, (item) => item.id!),
     flowImageAttempts: table(flowImageAttempts, (item) => item.attemptId),
+    flowImagePromptSnapshots: table(
+      flowImagePromptSnapshots,
+      (item) => item.snapshotId,
+    ),
     transaction: async (_tableNames, operation) => {
       let release!: () => void;
       const previous = transactionTail;
@@ -84,6 +93,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
         batches,
         promptItems,
         flowImageAttempts,
+        flowImagePromptSnapshots,
       ].map((values) => new Map(values));
       try {
         return await operation();
@@ -95,6 +105,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
           batches,
           promptItems,
           flowImageAttempts,
+          flowImagePromptSnapshots,
         ].forEach((values, index) => {
           values.clear();
           for (const [key, value] of snapshots[index]!) {

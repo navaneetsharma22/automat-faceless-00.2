@@ -8,12 +8,13 @@ import { createChromeFoundationClient } from "../../shared/messageClient";
 import {
   isCurrentConnectionAttempt,
   isCurrentWorkerStart,
+  providerDocumentNeedsReverification,
   readWorkerStartEvent,
   workerStartAction,
 } from "../../platforms/shared/connectionLifecycle";
 import {
   attachToSelectedTab,
-  isSameProviderTargetUrl,
+  formatHandshakeDiagnostics,
   providerTabFromUrl,
   verifyPersistedTarget,
 } from "../../platforms/shared/connection";
@@ -78,6 +79,12 @@ function connectionStatusLabel(status: ConnectionStateName): string {
     case "disconnected":
       return "Not connected";
   }
+}
+
+function connectionFailureDetail(
+  result: Extract<ConnectionResult, { ok: false }>,
+): string {
+  return `${result.stage}: ${result.error}${result.handshakeDiagnostics ? formatHandshakeDiagnostics(result.handshakeDiagnostics) : ""}`;
 }
 
 const initialStates = (): Record<ProviderName, ProviderState> => ({
@@ -246,7 +253,7 @@ export function ConnectionStatus() {
             [provider]: {
               status: result.state,
               message: connectionStatusLabel(result.state),
-              detail: `${result.stage}: ${result.error}`,
+              detail: connectionFailureDetail(result),
               permissionRequest: result.permissionRequest,
             },
           }));
@@ -374,17 +381,20 @@ export function ConnectionStatus() {
         }
       }
     };
-    const onUpdated = (tabId: number, changeInfo: { url?: string }) => {
-      if (!changeInfo.url) return;
+    const onUpdated = (
+      tabId: number,
+      changeInfo: { url?: string; status?: string },
+    ) => {
+      if (!changeInfo.url && changeInfo.status !== "loading") return;
       for (const provider of providers) {
         const live = statesRef.current[provider].live;
         if (
           live?.tab.id === tabId &&
-          !isSameProviderTargetUrl(live.tab, changeInfo.url)
+          providerDocumentNeedsReverification(live.tab, changeInfo)
         ) {
           invalidate(
             provider,
-            "Wrong target · the selected project or document changed. Reconnect to verify it.",
+            "The selected browser document is navigating or its project route changed. Reconnect to verify it again.",
             "wrong-target",
           );
         }
@@ -737,7 +747,7 @@ export function ConnectionStatus() {
               [provider]: {
                 status: result.state,
                 message: connectionStatusLabel(result.state),
-                detail: `${result.stage}: ${result.error}`,
+                detail: connectionFailureDetail(result),
                 permissionRequest: result.permissionRequest,
               },
             }));

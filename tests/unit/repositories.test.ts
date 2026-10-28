@@ -12,6 +12,7 @@ describe("extension repository boundaries", () => {
     expect(appDatabase.tables.map((table) => table.name).sort()).toEqual([
       "batches",
       "flowImageAttempts",
+      "flowImagePromptSnapshots",
       "promptDrafts",
       "promptItems",
       "selectedTargets",

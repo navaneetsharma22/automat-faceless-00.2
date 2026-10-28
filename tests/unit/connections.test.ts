@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILD_ID } from "../../src/shared/buildInfo";
 import {
   attachToSelectedTab,
+  formatHandshakeDiagnostics,
   isSameProviderTargetUrl,
   providerTabFromUrl,
   verifyPersistedTarget,
@@ -25,6 +26,7 @@ import {
 import {
   isCurrentConnectionAttempt,
   isCurrentWorkerStart,
+  providerDocumentNeedsReverification,
   readWorkerStartEvent,
   workerStartAction,
 } from "../../src/platforms/shared/connectionLifecycle";
@@ -254,6 +256,42 @@ describe("explicit read-only Flow/Vids attachment", () => {
         "https://user:secret@flow.google.com/project/valid",
       ),
     ).toBeUndefined();
+  });
+
+  it("uses the explicitly selected account/project tab when several are open", async () => {
+    vi.stubGlobal("chrome", {
+      tabs: {
+        query: vi.fn().mockResolvedValue([
+          {
+            id: 31,
+            title: "Flow project in another account",
+            url: "https://flow.google.com/u/0/project/shared-project",
+          },
+          {
+            id: 32,
+            title: "Flow project selected by the user",
+            url: "https://flow.google.com/u/4/project/shared-project",
+          },
+        ]),
+      },
+    });
+    const listing = await listOpenProviderTabs();
+    expect(listing.tabs.map((tab) => tab.id)).toEqual([31, 32]);
+    const otherAccount = listing.tabs[0]!;
+    const selected = listing.tabs[1]!;
+    const { port, getRequest } = makePort(selected);
+
+    const result = await attachToSelectedTab("Flow", selected, port);
+
+    expect(result).toMatchObject({ ok: true, state: "connected" });
+    expect(port.getTab).toHaveBeenCalledWith(32);
+    expect(port.probeTopFrame).toHaveBeenCalledWith(
+      32,
+      "chrome-document-1",
+      expect.objectContaining({ canonicalTarget: selected.canonicalTarget }),
+    );
+    expect(getRequest()?.canonicalTarget).toBe(selected.canonicalTarget);
+    expect(otherAccount.canonicalTarget).not.toBe(selected.canonicalTarget);
   });
 
   it("attaches only to the user-selected candidate and reuses a compatible connector", async () => {
@@ -778,7 +816,12 @@ describe("explicit read-only Flow/Vids attachment", () => {
     const replaced = makePort(tab);
     vi.mocked(replaced.port.pingTopFrame).mockImplementationOnce(
       async (_id, request) =>
-        makeResponse(tab, request, { buildId: "old-build", ok: false }),
+        makeResponse(tab, request, {
+          buildId: "old-build",
+          ok: false,
+          projectId: "stale-project",
+          canonicalTarget: "https://labs.google/fx/tools/flow/stale-project",
+        }),
     );
     const connected = await attachToSelectedTab("Flow", tab, replaced.port);
     expect(connected).toMatchObject({ ok: true, state: "connected" });
@@ -819,6 +862,87 @@ describe("explicit read-only Flow/Vids attachment", () => {
       staleProtocol.port,
     );
     expect(protocolResult).toMatchObject({ ok: false, state: "stale-build" });
+  });
+
+  it("reports safe handshake field checks and accepts compatible extra capabilities", async () => {
+    const tab = providerTabFromUrl(
+      42,
+      "Flow project",
+      "https://flow.google.com/u/1/project/project-private-id",
+    )!;
+    const compatible = makePort(tab);
+    vi.mocked(compatible.port.probeTopFrame).mockImplementationOnce(
+      async (_id, _documentId, request) =>
+        makeResponse(tab, request, {
+          capabilities: [
+            CONNECTION_CAPABILITY,
+            "flow-image-entry-v1",
+            "flow-image-generate-once-v1",
+          ],
+        }),
+    );
+    const accepted = await attachToSelectedTab("Flow", tab, compatible.port);
+    expect(accepted).toMatchObject({
+      ok: true,
+      capabilities: [CONNECTION_CAPABILITY],
+    });
+
+    const mismatch = makePort(tab);
+    vi.mocked(mismatch.port.probeTopFrame).mockImplementationOnce(
+      async (_id, _documentId, request) =>
+        makeResponse(tab, request, {
+          ok: false,
+          provider: undefined,
+          canonicalTarget: undefined,
+          projectId: undefined,
+        }),
+    );
+    const rejected = await attachToSelectedTab("Flow", tab, mismatch.port);
+    expect(rejected).toMatchObject({
+      ok: false,
+      stage: "handshake_validation",
+      handshakeDiagnostics: {
+        selectedProvider: "match",
+        selectedOrigin: "match",
+        selectedProjectId: "match",
+        selectedCanonicalTarget: "match",
+        browserDocumentId: "bound",
+        topFrame: "match",
+        responseProvider: "missing",
+        responseOrigin: "missing",
+        responseProjectId: "missing",
+        responseCanonicalTarget: "missing",
+        attemptCorrelation: "match",
+        protocolVersion: "match",
+        buildIdentity: "match",
+        readOnlyCapability: "match",
+        connectorAcceptance: "rejected",
+        documentToken: "present",
+      },
+    });
+    if (!rejected.ok) {
+      const detail = formatHandshakeDiagnostics(rejected.handshakeDiagnostics!);
+      expect(detail).toContain("response-target=missing");
+      expect(detail).not.toContain("project-private-id");
+      expect(detail).not.toContain("https://");
+      expect(detail).not.toContain("document-token-1");
+    }
+
+    const missingCapability = makePort(tab);
+    vi.mocked(missingCapability.port.probeTopFrame).mockImplementationOnce(
+      async (_id, _documentId, request) =>
+        makeResponse(tab, request, { capabilities: ["flow-image-entry-v1"] }),
+    );
+    const blocked = await attachToSelectedTab(
+      "Flow",
+      tab,
+      missingCapability.port,
+    );
+    expect(blocked).toMatchObject({
+      ok: false,
+      stage: "handshake_validation",
+      handshakeDiagnostics: { readOnlyCapability: "mismatch" },
+    });
   });
 
   it("coalesces repeated Connect clicks so only one attachment runs", async () => {
@@ -885,6 +1009,33 @@ describe("explicit read-only Flow/Vids attachment", () => {
     expect(isCurrentConnectionAttempt(7, 7, true)).toBe(true);
     expect(isCurrentConnectionAttempt(8, 7, true)).toBe(false);
     expect(isCurrentConnectionAttempt(7, 7, false)).toBe(false);
+  });
+
+  it("invalidates a live target when its route or browser document changes", () => {
+    const selected = providerTabFromUrl(
+      42,
+      "Flow project",
+      "https://flow.google.com/u/1/project/project-1",
+    )!;
+
+    expect(
+      providerDocumentNeedsReverification(selected, {
+        url: "https://flow.google.com/u/2/project/project-1",
+      }),
+    ).toBe(true);
+    expect(
+      providerDocumentNeedsReverification(selected, {
+        url: "https://flow.google.com/u/1/project/project-2",
+      }),
+    ).toBe(true);
+    expect(
+      providerDocumentNeedsReverification(selected, { status: "loading" }),
+    ).toBe(true);
+    expect(
+      providerDocumentNeedsReverification(selected, {
+        url: "https://flow.google.com/u/1/project/project-1?panel=assets",
+      }),
+    ).toBe(false);
   });
 
   it("re-verifies only the persisted tab and blocks a changed or closed target", async () => {
@@ -1001,6 +1152,75 @@ describe("packaged connector listener lifecycle", () => {
       }),
     );
   });
+
+  it.each([
+    [
+      "unprefixed",
+      "https://flow.google.com/project/selected_9?panel=assets",
+      "https://flow.google.com/project/selected_9",
+    ],
+    [
+      "manual account index 1",
+      "https://flow.google.com/u/1/project/selected_9?panel=assets",
+      "https://flow.google.com/u/1/project/selected_9",
+    ],
+    [
+      "manual account index 7",
+      "https://flow.google.com/u/7/project/selected_9?panel=assets",
+      "https://flow.google.com/u/7/project/selected_9",
+    ],
+  ])(
+    "uses the shared route contract for Flow %s",
+    async (_label, url, canonicalTarget) => {
+      const listeners = new Set<(...args: unknown[]) => unknown>();
+      const runtime = {
+        id: "offline-extension",
+        onMessage: {
+          addListener: vi.fn((listener: (...args: unknown[]) => unknown) =>
+            listeners.add(listener),
+          ),
+          removeListener: vi.fn((listener: (...args: unknown[]) => unknown) =>
+            listeners.delete(listener),
+          ),
+        },
+      };
+      vi.stubGlobal("chrome", { runtime });
+      vi.stubGlobal("document", {});
+      const frame = { top: undefined as unknown };
+      frame.top = frame;
+      vi.stubGlobal("window", frame);
+      vi.stubGlobal("location", { href: url });
+
+      await import("../../src/platforms/shared/connectionProbe");
+
+      const [listener] = [...listeners];
+      const respond = vi.fn();
+      listener!(
+        {
+          type: "AUTOMAT_FACELESS_CONNECTION_PROBE",
+          provider: "Flow",
+          canonicalTarget,
+          projectId: "selected_9",
+          protocolVersion: CONNECTOR_PROTOCOL_VERSION,
+          buildId: BUILD_ID,
+          attemptId: "attempt-account-route",
+        },
+        { id: runtime.id },
+        respond,
+      );
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ok: true,
+          provider: "Flow",
+          projectId: "selected_9",
+          canonicalTarget,
+          attemptId: "attempt-account-route",
+          capabilities: [CONNECTION_CAPABILITY],
+        }),
+      );
+      expect(location.href).toBe(url);
+    },
+  );
 
   it("validates the current Vids document ID while ignoring scene query and fragment", async () => {
     const listeners = new Set<(...args: unknown[]) => unknown>();

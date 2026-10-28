@@ -1,5 +1,7 @@
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import { FOUNDATION_WORKER_RESTARTED } from "../../shared/messages";
+import { isSameProviderTargetUrl } from "./connection";
+import type { ProviderTab } from "./contracts";
 
 export type WorkerStartEvent = {
   buildId: string;
@@ -52,4 +54,14 @@ export function isCurrentConnectionAttempt(
   reconnectEnabled: boolean,
 ): boolean {
   return currentRevision === attemptRevision && reconnectEnabled;
+}
+
+export function providerDocumentNeedsReverification(
+  selected: ProviderTab,
+  changeInfo: { url?: string; status?: string },
+): boolean {
+  if (changeInfo.status === "loading") return true;
+  return Boolean(
+    changeInfo.url && !isSameProviderTargetUrl(selected, changeInfo.url),
+  );
 }

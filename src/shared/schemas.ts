@@ -4,6 +4,7 @@ import {
   FLOW_IMAGE_ATTEMPT_STATES,
   flowImageAttemptActiveKey,
 } from "../domain/jobs/attempt";
+import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnapshot";
 
 const promptSourceSchema = z
   .string()
@@ -120,6 +121,36 @@ export const PromptBatchSnapshotSchema = z
   })
   .strict();
 
+export const FlowImagePromptSnapshotRecordSchema = z
+  .object({
+    snapshotId: z.string().min(1).max(512),
+    workspaceId: workspaceIdSchema,
+    batchId: z.string().min(1).max(256),
+    itemId: z.string().min(1).max(256),
+    promptHash: z.string().regex(/^[0-9a-f]{64}$/),
+    rawJsonBody: z
+      .string()
+      .min(2)
+      .max(INPUT_POLICY.maxPromptCodeUnits)
+      .refine(
+        (body) =>
+          new TextEncoder().encode(body).byteLength <=
+          INPUT_POLICY.maxPromptUtf8Bytes,
+      ),
+    promptCodeUnits: z.number().int().positive(),
+    promptUtf8Bytes: z.number().int().positive(),
+    createdAt: z.number().finite().nonnegative(),
+  })
+  .strict()
+  .refine(
+    (snapshot) =>
+      snapshot.snapshotId ===
+        flowImagePromptSnapshotId(snapshot.itemId, snapshot.promptHash) &&
+      snapshot.promptCodeUnits === snapshot.rawJsonBody.length &&
+      snapshot.promptUtf8Bytes ===
+        new TextEncoder().encode(snapshot.rawJsonBody).byteLength,
+  );
+
 const flowImageAttemptEventSchema = z
   .object({
     stage: z.enum(["preparation", "verification", "dispatch", "recovery"]),
@@ -149,6 +180,7 @@ export const FlowImageAttemptRecordSchema = z
       .regex(/^[1-9][0-9]*$/)
       .optional(),
     promptHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sourceSnapshotId: z.string().min(1).max(512),
     promptCodeUnits: z
       .number()
       .int()
@@ -189,6 +221,11 @@ export const FlowImageAttemptRecordSchema = z
     updatedAt: z.number().finite().nonnegative(),
   })
   .strict()
+  .refine(
+    (attempt) =>
+      attempt.sourceSnapshotId ===
+      flowImagePromptSnapshotId(attempt.itemId, attempt.promptHash),
+  )
   .refine(
     (attempt) =>
       attempt.activeKey === undefined ||

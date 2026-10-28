@@ -39,6 +39,27 @@ export type ConnectionProbeResponse = {
   error?: string;
 };
 
+export type HandshakeCheck = "match" | "mismatch" | "missing";
+export type DocumentBindingCheck = "bound" | "unbound";
+export type ConnectionHandshakeDiagnostics = {
+  selectedProvider: HandshakeCheck;
+  selectedOrigin: HandshakeCheck;
+  selectedProjectId: HandshakeCheck;
+  selectedCanonicalTarget: HandshakeCheck;
+  browserDocumentId: DocumentBindingCheck;
+  topFrame: HandshakeCheck;
+  responseProvider: HandshakeCheck;
+  responseOrigin: HandshakeCheck;
+  responseProjectId: HandshakeCheck;
+  responseCanonicalTarget: HandshakeCheck;
+  attemptCorrelation: HandshakeCheck;
+  protocolVersion: HandshakeCheck;
+  buildIdentity: HandshakeCheck;
+  readOnlyCapability: HandshakeCheck;
+  connectorAcceptance: "accepted" | "rejected";
+  documentToken: "present" | "missing";
+};
+
 export type DocumentIdentity = {
   documentId: string;
   frameId: number;
@@ -114,5 +135,6 @@ export type ConnectionResult =
       >;
       stage: ConnectionFailureStage;
       error: string;
+      handshakeDiagnostics?: ConnectionHandshakeDiagnostics;
       permissionRequest?: ProviderAccessRequest;
     };
