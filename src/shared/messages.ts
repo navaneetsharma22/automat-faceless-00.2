@@ -4,19 +4,33 @@ import type { AppRequest } from "./schemas";
 export { BUILD_ID, PROTOCOL_VERSION };
 export const FOUNDATION_WORKER_RESTARTED =
   "AUTOMAT_FOUNDATION_WORKER_RESTARTED";
-export { AppRequestSchema, AppResponseSchema } from "./schemas";
+export {
+  AppRequestSchema,
+  AppResponseSchema,
+  PromptBatchSnapshotSchema,
+} from "./schemas";
 export type { AppRequest, AppResponse, FailureCategory } from "./schemas";
 
 export type RequestPayloads = {
   "foundation.ping": Record<string, never>;
   "promptDraft.put": { id: string; kind: "image" | "video"; rawText: string };
   "promptDraft.get": { id: string };
+  "promptBatch.put": {
+    workspaceId: string;
+    kind: "image" | "video";
+    sourceText: string;
+  };
+  "promptBatch.get": { workspaceId: string; kind: "image" | "video" };
   "connections.recordSelection": {
     provider: "Flow" | "Vids";
     tabId: number;
     canonicalTarget: string;
   };
   "connections.getSelection": { provider: "Flow" | "Vids" };
+  "connections.setReconnectIntent": {
+    provider: "Flow" | "Vids";
+    enabled: boolean;
+  };
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };
 };
@@ -38,8 +52,11 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "foundation.ping": 3000,
   "promptDraft.put": 15000,
   "promptDraft.get": 5000,
+  "promptBatch.put": 30_000,
+  "promptBatch.get": 30_000,
   "connections.recordSelection": 5000,
   "connections.getSelection": 5000,
+  "connections.setReconnectIntent": 5000,
   "preferences.getTheme": 3000,
   "preferences.setTheme": 3000,
 };

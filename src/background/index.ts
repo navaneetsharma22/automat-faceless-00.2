@@ -30,6 +30,7 @@ void chrome.runtime
   .sendMessage({
     type: FOUNDATION_WORKER_RESTARTED,
     buildId: BUILD_ID,
+    workerInstanceId: crypto.randomUUID(),
     protocolVersion: PROTOCOL_VERSION,
   })
   .catch(() => undefined);

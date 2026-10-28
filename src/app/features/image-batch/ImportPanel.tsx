@@ -1,5 +1,6 @@
 import { ImportPanel as SharedImportPanel } from "../shared/ImportPanel";
 import type { ImportPreviewSession } from "../shared/importPreviewSession";
+import type { FoundationClient } from "../../../shared/messageClient";
 
 export function ImageImportPanel({
   session,
@@ -8,6 +9,8 @@ export function ImageImportPanel({
   setWrapLines,
   editorExpanded,
   setEditorExpanded,
+  workspaceId,
+  persistenceClient,
 }: {
   session: ImportPreviewSession;
   exampleSource: string;
@@ -15,10 +18,14 @@ export function ImageImportPanel({
   setWrapLines: (value: boolean) => void;
   editorExpanded: boolean;
   setEditorExpanded: (value: boolean) => void;
+  workspaceId: string;
+  persistenceClient: FoundationClient;
 }) {
   return (
     <SharedImportPanel
       kind="image"
+      workspaceId={workspaceId}
+      persistenceClient={persistenceClient}
       session={session}
       exampleSource={exampleSource}
       wrapLines={wrapLines}

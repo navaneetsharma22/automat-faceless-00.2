@@ -11,6 +11,7 @@ import {
   readJsonSourceFile,
 } from "../../src/app/features/shared/importFile";
 import { ToastHost } from "../../src/app/components/ToastHost";
+import { createFoundationClient } from "../../src/shared/messageClient";
 import {
   promptSizeFixtures,
   representativeCases,
@@ -48,6 +49,10 @@ function renderImportPanel(
     setWrapLines: () => undefined,
     editorExpanded: false,
     setEditorExpanded: () => undefined,
+    workspaceId: "default",
+    persistenceClient: createFoundationClient({
+      sendMessage: async () => ({}),
+    }),
   };
   const panel =
     kind === "image"
@@ -104,6 +109,8 @@ describe("P03.3 import preview integration", () => {
     expect(markup).toContain("Shot ID 2");
     expect(markup).toContain("Nothing has been sent to a provider");
     expect(markup).toContain("Show raw body");
+    expect(markup).toContain("Load saved batch");
+    expect(markup).toMatch(/<button[^>]*>Save validated batch<\/button>/);
     expect(markup).not.toContain("<pre");
   });
 
@@ -129,6 +136,8 @@ describe("P03.3 import preview integration", () => {
     expect(markup).toContain("PREVIOUS RESULT");
     expect(markup).toContain("does not describe the current draft");
     expect(markup).toContain("Line 1, column");
+    expect(markup).toContain("Save validated batch");
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Save validated batch/);
   });
 
   it("ignores a scheduled validation after a newer draft revision", () => {

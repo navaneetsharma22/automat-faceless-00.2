@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { importPromptBatch } from "../../../domain/batches/importBatch";
 import { INPUT_POLICY } from "../../../domain/batches/inputPolicy";
 import type { PromptKind } from "../../../domain/batches/types";
+import { PromptBatchSnapshotSchema } from "../../../shared/schemas";
+import type { FoundationClient } from "../../../shared/messageClient";
 import { Button } from "../../components/Button";
 import { Field } from "../../components/Field";
 import { JsonEditor } from "../../components/JsonEditor";
@@ -22,6 +25,8 @@ export type ImportPanelProps = {
   setWrapLines: (value: boolean) => void;
   editorExpanded: boolean;
   setEditorExpanded: (value: boolean) => void;
+  workspaceId: string;
+  persistenceClient: FoundationClient;
 };
 
 export function ImportPanel({
@@ -32,6 +37,8 @@ export function ImportPanel({
   setWrapLines,
   editorExpanded,
   setEditorExpanded,
+  workspaceId,
+  persistenceClient,
 }: ImportPanelProps) {
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -45,6 +52,15 @@ export function ImportPanel({
   const [fileError, setFileError] = useState<string | undefined>();
   const [fileLoading, setFileLoading] = useState(false);
   const [selectedPreview, setSelectedPreview] = useState<number | null>(null);
+  const [persistenceStatus, setPersistenceStatus] = useState<
+    "idle" | "saving" | "saved" | "save_error" | "loading" | "load_error"
+  >("idle");
+  const [persistenceError, setPersistenceError] = useState<
+    string | undefined
+  >();
+  const [savedSource, setSavedSource] = useState<string | undefined>();
+  const [savedAt, setSavedAt] = useState<number | undefined>();
+  const [confirmLoad, setConfirmLoad] = useState(false);
   const fileRequest = useRef(0);
   const lastToastId = useRef(0);
   const label = kind === "image" ? "Image" : "Video";
@@ -75,6 +91,7 @@ export function ImportPanel({
     fileRequest.current += 1;
     setFileLoading(false);
     setFileError(undefined);
+    setPersistenceError(undefined);
     setReplacement(null);
     session.setSource(source);
   };
@@ -161,6 +178,146 @@ export function ImportPanel({
     visiblePreviewIndex === null
       ? undefined
       : snapshot.result?.items[visiblePreviewIndex];
+  const currentValidation =
+    snapshot.status === "success" &&
+    snapshot.result !== undefined &&
+    snapshot.resultRevision === snapshot.revision;
+  const changedSinceValidation =
+    snapshot.result !== undefined &&
+    snapshot.resultRevision !== snapshot.revision;
+  const changedSinceSave =
+    savedSource !== undefined && snapshot.source !== savedSource;
+
+  const readSnapshot = (value: unknown) => {
+    const parsed = PromptBatchSnapshotSchema.safeParse(value);
+    if (!parsed.success) {
+      throw new Error("The extension returned an invalid saved batch.");
+    }
+    return parsed.data;
+  };
+
+  const saveValidatedBatch = async () => {
+    const current = session.getSnapshot();
+    if (
+      current.status !== "success" ||
+      !current.result ||
+      current.resultRevision !== current.revision
+    ) {
+      return;
+    }
+    const source = current.source;
+    const result = current.result;
+    const revision = current.revision;
+    let saveSucceeded = false;
+    setPersistenceStatus("saving");
+    setPersistenceError(undefined);
+    try {
+      const saved = readSnapshot(
+        await persistenceClient.request("promptBatch.put", {
+          workspaceId,
+          kind,
+          sourceText: source,
+        }),
+      );
+      if (
+        saved.batch.workspaceId !== workspaceId ||
+        saved.batch.kind !== kind ||
+        saved.batch.sourceText !== source ||
+        saved.items.length !== result.items.length ||
+        saved.items.some(
+          (item, index) => item.rawJsonBody !== result.items[index]?.rawBody,
+        )
+      ) {
+        throw new Error(
+          "Saved prompt bodies did not match the validated source.",
+        );
+      }
+      setSavedSource(source);
+      setSavedAt(saved.batch.updatedAt);
+      setPersistenceStatus("saved");
+      saveSucceeded = true;
+    } catch (error) {
+      setPersistenceStatus("save_error");
+      setPersistenceError(
+        error instanceof Error
+          ? error.message
+          : "The batch could not be saved to extension storage.",
+      );
+    }
+    if (saveSucceeded && session.getSnapshot().revision !== revision) {
+      setPersistenceError(
+        "Saved the validated revision; the current draft has changed since then.",
+      );
+    }
+  };
+
+  const loadSavedBatch = async () => {
+    const expectedRevision = session.getSnapshot().revision;
+    setConfirmLoad(false);
+    setPersistenceStatus("loading");
+    setPersistenceError(undefined);
+    try {
+      const saved = readSnapshot(
+        await persistenceClient.request("promptBatch.get", {
+          workspaceId,
+          kind,
+        }),
+      );
+      if (
+        saved.batch.workspaceId !== workspaceId ||
+        saved.batch.kind !== kind ||
+        saved.items.some(
+          (item, index) =>
+            item.order !== index ||
+            item.batchId !== saved.batch.id ||
+            saved.batch.orderedItemIds[index] !== item.id,
+        )
+      ) {
+        throw new Error("The saved prompt batch did not match this workspace.");
+      }
+      const verifiedSource = importPromptBatch(saved.batch.sourceText, kind);
+      if (
+        !verifiedSource.ok ||
+        verifiedSource.items.length !== saved.items.length ||
+        verifiedSource.items.some(
+          (item, index) =>
+            item.rawBody !== saved.items[index]?.rawJsonBody ||
+            item.sourceSpan.start !== saved.items[index]?.sourceSpan.start ||
+            item.sourceSpan.end !== saved.items[index]?.sourceSpan.end ||
+            item.shotId !== saved.items[index]?.shotId,
+        )
+      ) {
+        throw new Error(
+          "The saved prompt bodies failed exact source verification.",
+        );
+      }
+      if (session.getSnapshot().revision !== expectedRevision) {
+        throw new Error(
+          "The draft changed while the saved batch was loading. It was not replaced.",
+        );
+      }
+      setSavedSource(saved.batch.sourceText);
+      setSavedAt(saved.batch.updatedAt);
+      setPersistenceStatus("saved");
+      session.setSource(saved.batch.sourceText);
+      session.validate();
+    } catch (error) {
+      setPersistenceStatus("load_error");
+      setPersistenceError(
+        error instanceof Error
+          ? error.message
+          : "The saved batch could not be loaded from extension storage.",
+      );
+    }
+  };
+
+  const requestLoadSavedBatch = () => {
+    if (snapshot.source.length > 0 && snapshot.source !== savedSource) {
+      setConfirmLoad(true);
+      return;
+    }
+    void loadSavedBatch();
+  };
 
   return (
     <div
@@ -249,6 +406,77 @@ export function ImportPanel({
       ) : null}
       {fileError ? <Notice kind="error">{fileError}</Notice> : null}
 
+      <div className={styles.sourceActions}>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={
+            persistenceStatus === "loading" || persistenceStatus === "saving"
+          }
+          onClick={requestLoadSavedBatch}
+        >
+          {persistenceStatus === "loading"
+            ? "Loading saved batch…"
+            : "Load saved batch"}
+        </Button>
+        <Button
+          type="button"
+          disabled={!currentValidation || persistenceStatus === "saving"}
+          loading={persistenceStatus === "saving"}
+          loadingLabel="Saving…"
+          onClick={() => void saveValidatedBatch()}
+        >
+          Save validated batch
+        </Button>
+      </div>
+      <p role="status" aria-live="polite">
+        {persistenceStatus === "saving"
+          ? "Saving the complete validated batch…"
+          : persistenceStatus === "loading"
+            ? "Reading the saved batch from extension storage…"
+            : changedSinceSave
+              ? "Changed since save. The current draft is not the saved batch."
+              : changedSinceValidation
+                ? "Changed since validation. Validate the current draft before saving."
+                : currentValidation && savedSource === snapshot.source
+                  ? `Saved${savedAt === undefined ? "" : ` at ${new Date(savedAt).toLocaleString()}`}.`
+                  : currentValidation
+                    ? "Validated. Save is available for this exact revision."
+                    : persistenceStatus === "saved"
+                      ? `Saved${savedAt === undefined ? "" : ` at ${new Date(savedAt).toLocaleString()}`}.`
+                      : "Draft. Validate before saving."}
+      </p>
+      {confirmLoad ? (
+        <div
+          className={styles.replacePrompt}
+          role="group"
+          aria-label="Confirm saved batch load"
+        >
+          <p>
+            Loading the saved batch will replace this unsaved draft. Continue?
+          </p>
+          <div className={styles.sourceActions}>
+            <Button type="button" onClick={() => void loadSavedBatch()}>
+              Replace draft with saved batch
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setConfirmLoad(false)}
+            >
+              Keep current draft
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {persistenceError ? (
+        <Notice
+          kind={persistenceStatus.endsWith("error") ? "error" : "warning"}
+        >
+          {persistenceError}
+        </Notice>
+      ) : null}
+
       <div className={styles.validateRow}>
         <Button
           type="button"
@@ -320,7 +548,7 @@ export function ImportPanel({
             </Notice>
           ) : (
             <Notice kind="success">
-              Preview only. Nothing has been sent to a provider.
+              Validated preview. Nothing has been sent to a provider.
             </Notice>
           )}
           <p className={styles.totalMeasurement}>

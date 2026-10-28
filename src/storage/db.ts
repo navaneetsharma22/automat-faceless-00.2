@@ -1,4 +1,10 @@
 import Dexie, { type Table } from "dexie";
+import type {
+  PromptInputMode,
+  PromptKind,
+  PromptMeasurement,
+} from "../domain/batches/types";
+import type { JsonSpan } from "../domain/batches/jsonSpanScanner";
 
 export type PromptDraftRecord = {
   id: string;
@@ -12,6 +18,7 @@ export type SelectedTargetRecord = {
   tabId: number;
   canonicalTarget: string;
   verification: "unverified" | "verified";
+  reconnectEnabled?: boolean;
   updatedAt: number;
 };
 
@@ -24,9 +31,29 @@ export type WorkflowRecord = {
 export type BatchRecord = {
   id: string;
   workflowId: string;
+  workspaceId: string;
   kind: "image" | "video";
   status: "draft";
+  sourceText: string;
+  sourceMode: PromptInputMode;
+  orderedItemIds: string[];
+  total: PromptMeasurement;
   updatedAt: number;
+};
+
+export type PromptItemRecord = {
+  id: string;
+  batchId: string;
+  workspaceId: string;
+  kind: PromptKind;
+  order: number;
+  shotId?: string;
+  identitySource?: "outer_label" | "envelope" | "body_shot_id";
+  rawJsonBody: string;
+  sourceSpan: JsonSpan;
+  measurement: PromptMeasurement;
+  contentHash: string;
+  createdAt: number;
 };
 
 export class AutomatDatabase extends Dexie {
@@ -34,6 +61,7 @@ export class AutomatDatabase extends Dexie {
   selectedTargets!: Table<SelectedTargetRecord, string>;
   workflows!: Table<WorkflowRecord, string>;
   batches!: Table<BatchRecord, string>;
+  promptItems!: Table<PromptItemRecord, string>;
 
   constructor(name = "automat-faceless-app-v1") {
     super(name);
@@ -42,6 +70,20 @@ export class AutomatDatabase extends Dexie {
       selectedTargets: "&provider, tabId, verification, updatedAt",
       workflows: "&id, updatedAt",
       batches: "&id, workflowId, kind, status, updatedAt",
+    });
+    this.version(2).stores({
+      promptDrafts: "&id, kind, updatedAt",
+      selectedTargets: "&provider, tabId, verification, updatedAt",
+      workflows: "&id, updatedAt",
+      batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
+      promptItems: "&id, batchId, workspaceId, kind, order",
+    });
+    this.version(3).stores({
+      promptDrafts: "&id, kind, updatedAt",
+      selectedTargets: "&provider, tabId, verification, updatedAt",
+      workflows: "&id, updatedAt",
+      batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
+      promptItems: "&id, batchId, workspaceId, kind, order",
     });
   }
 }

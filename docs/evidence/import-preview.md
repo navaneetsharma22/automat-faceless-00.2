@@ -29,4 +29,4 @@ The existing synthetic fixtures were run through the importer/session and their 
 
 These timings cover importer/session processing under Node; they do not establish browser rendering or editing responsiveness. The computer-use inventory returned no browser surface, so live dashboard inspection of both themes, narrow layouts, keyboard behavior, and long-input rendering is **NOT_RUN**.
 
-P00.2 production samples remain **EVIDENCE_PENDING**. The application limits remain provisional and do not measure Flow/Vids acceptance or model capacity. P03.4 remains **NOT_STARTED**; Phase 03 remains **INCOMPLETE**.
+P00.2 production samples remain **EVIDENCE_PENDING**. The application limits remain provisional and do not measure Flow/Vids acceptance or model capacity. At this P03.3 evidence boundary P03.4 was **NOT_STARTED**; its later storage/message evidence is recorded in [prompt-preservation.md](prompt-preservation.md). Phase 03 remains **INCOMPLETE**.

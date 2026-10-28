@@ -1,12 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   connectionWorkerFailureDetail,
   withPendingCleanup,
 } from "../connectionAttempt";
 import { ConnectionError } from "./ConnectionError";
 import { createChromeFoundationClient } from "../../shared/messageClient";
-import { handleWorkerRestart } from "../../platforms/shared/connectionLifecycle";
-import { attachToSelectedTab } from "../../platforms/shared/connection";
+import {
+  isCurrentConnectionAttempt,
+  isCurrentWorkerStart,
+  readWorkerStartEvent,
+  workerStartAction,
+} from "../../platforms/shared/connectionLifecycle";
+import {
+  attachToSelectedTab,
+  isSameProviderTargetUrl,
+  providerTabFromUrl,
+  verifyPersistedTarget,
+} from "../../platforms/shared/connection";
 import {
   createChromeConnectionPort,
   connectionApiDiagnostic,
@@ -29,7 +39,11 @@ import type {
 import { useToast } from "./ToastHost";
 import styles from "../Dashboard.module.css";
 
-type TargetMetadata = { tabId: number; canonicalTarget: string };
+type TargetMetadata = {
+  tabId: number;
+  canonicalTarget: string;
+  reconnectEnabled: boolean;
+};
 type LiveConnection = {
   tab: ProviderTab;
   documentId: string;
@@ -103,34 +117,202 @@ export function ConnectionStatus() {
   const [needsTabListingAccess, setNeedsTabListingAccess] = useState(false);
   const [busy, setBusy] = useState<ProviderName | undefined>();
   const toast = useToast();
-
-  const invalidate = useCallback(
+  const statesRef = useRef(states);
+  const savedRef = useRef(saved);
+  const reconnectEnabledRef = useRef<Record<ProviderName, boolean>>({
+    Flow: false,
+    Vids: false,
+  });
+  const workerInstanceIdsRef = useRef(new Set<string>());
+  const verificationTasksRef = useRef<
+    Partial<
+      Record<
+        ProviderName,
+        { key: string; trigger: string; task: Promise<void> }
+      >
+    >
+  >({});
+  const verifySavedRef = useRef<
     (
       provider: ProviderName,
-      message: string,
-      status: "disconnected" | "wrong-target" | "stale-build" = "disconnected",
-    ) => {
-      connectionRevision.current[provider] += 1;
-      const live = states[provider].live;
-      if (live) {
-        void createChromeConnectionPort()?.releaseConnector(
-          live.tab.id,
-          live.documentId,
-        );
-      }
-      setStates((current) => {
-        return {
+      target: TargetMetadata,
+      trigger: string,
+    ) => Promise<void>
+  >(async () => undefined);
+  statesRef.current = states;
+  savedRef.current = saved;
+
+  const invalidate = (
+    provider: ProviderName,
+    message: string,
+    status: "disconnected" | "wrong-target" | "stale-build" = "disconnected",
+  ) => {
+    connectionRevision.current[provider] += 1;
+    const live = statesRef.current[provider].live;
+    if (live) {
+      void createChromeConnectionPort()?.releaseConnector(
+        live.tab.id,
+        live.documentId,
+      );
+    }
+    setStates((current) => ({
+      ...current,
+      [provider]: {
+        status,
+        message: connectionStatusLabel(status),
+        detail: message,
+      },
+    }));
+  };
+
+  const verifySavedConnection = async (
+    provider: ProviderName,
+    target: TargetMetadata,
+    trigger: string,
+  ): Promise<void> => {
+    if (!reconnectEnabledRef.current[provider]) return;
+    const key = `${target.tabId}:${target.canonicalTarget}`;
+    const active = verificationTasksRef.current[provider];
+    if (active?.key === key && active.trigger === trigger) return active.task;
+
+    const attemptRevision = ++connectionRevision.current[provider];
+    setBusy(provider);
+    setStates((current) => ({
+      ...current,
+      [provider]: {
+        status: "pending",
+        message: "Checking connection…",
+        detail:
+          "Verifying the previously selected project with a read-only handshake…",
+      },
+    }));
+
+    const task = (async () => {
+      try {
+        const port = createChromeConnectionPort();
+        let result: ConnectionResult;
+        if (!port) {
+          const selectedTab = providerTabFromUrl(
+            target.tabId,
+            "",
+            target.canonicalTarget,
+          );
+          const diagnostic = selectedTab
+            ? await connectionApiDiagnostic("connection_setup", selectedTab)
+            : "saved_target_invalid; stage=target_validation";
+          result = {
+            ok: false,
+            state: "failed",
+            stage: "extension_context",
+            error: diagnostic,
+          };
+        } else {
+          try {
+            const currentTab = await port.getTab(target.tabId);
+            if (
+              currentTab?.provider === provider &&
+              currentTab.canonicalTarget === target.canonicalTarget
+            ) {
+              setTabs((current) => [
+                ...current.filter((tab) => tab.id !== currentTab.id),
+                currentTab,
+              ]);
+            }
+          } catch {
+            // verifyPersistedTarget reports the scoped tab-read failure below.
+          }
+          result = await verifyPersistedTarget(provider, target, port);
+        }
+        if (
+          !isCurrentConnectionAttempt(
+            connectionRevision.current[provider],
+            attemptRevision,
+            reconnectEnabledRef.current[provider],
+          )
+        ) {
+          const currentTarget = savedRef.current[provider];
+          const stillIntended =
+            reconnectEnabledRef.current[provider] &&
+            currentTarget?.tabId === target.tabId &&
+            currentTarget.canonicalTarget === target.canonicalTarget;
+          if (!stillIntended && result.ok && port) {
+            await port.releaseConnector(result.tab.id, result.documentId);
+          }
+          return;
+        }
+        if (!result.ok) {
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: result.state,
+              message: connectionStatusLabel(result.state),
+              detail: `${result.stage}: ${result.error}`,
+              permissionRequest: result.permissionRequest,
+            },
+          }));
+          return;
+        }
+        setTabs((current) => {
+          const withoutTab = current.filter((tab) => tab.id !== result.tab.id);
+          return [...withoutTab, result.tab];
+        });
+        setSaved((current) => ({ ...current, [provider]: target }));
+        setSelected((current) => ({
+          ...current,
+          [provider]: String(target.tabId),
+        }));
+        setSelectionSaved((current) => ({ ...current, [provider]: true }));
+        setStates((current) => ({
           ...current,
           [provider]: {
-            status,
-            message: connectionStatusLabel(status),
-            detail: message,
+            status: "connected",
+            message: "Connected",
+            live: {
+              tab: result.tab,
+              documentId: result.documentId,
+              documentToken: result.documentToken,
+            },
           },
-        };
-      });
-    },
-    [states],
-  );
+        }));
+      } catch (error) {
+        if (
+          isCurrentConnectionAttempt(
+            connectionRevision.current[provider],
+            attemptRevision,
+            reconnectEnabledRef.current[provider],
+          )
+        ) {
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: "failed",
+              message: "Not connected",
+              detail: connectionWorkerFailureDetail(error),
+            },
+          }));
+        }
+      } finally {
+        if (
+          isCurrentConnectionAttempt(
+            connectionRevision.current[provider],
+            attemptRevision,
+            reconnectEnabledRef.current[provider],
+          )
+        ) {
+          setBusy(undefined);
+        }
+      }
+    })();
+    verificationTasksRef.current[provider] = { key, trigger, task };
+    try {
+      await task;
+    } finally {
+      if (verificationTasksRef.current[provider]?.task === task) {
+        delete verificationTasksRef.current[provider];
+      }
+    }
+  };
+  verifySavedRef.current = verifySavedConnection;
 
   useEffect(() => {
     if (!hasWorkerMessagingApi()) return;
@@ -141,35 +323,53 @@ export function ConnectionStatus() {
         try {
           const result = (await client.request("connections.getSelection", {
             provider,
-          })) as TargetMetadata | null;
-          if (active && result) {
-            setSaved((current) => ({ ...current, [provider]: result }));
-            // Persisted selection is metadata, never proof of a live connection.
-            setStates((current) => ({
-              ...current,
-              [provider]: {
-                status: "disconnected",
-                message: "Not connected",
-                detail:
-                  "Saved target · reconnect to verify its current identity.",
-              },
-            }));
-          }
+          })) as (TargetMetadata & { reconnectEnabled?: boolean }) | null;
+          return { provider, result };
         } catch {
-          // Local preview or a stopped worker remains a recoverable disconnected state.
+          return { provider, result: null };
         }
       }),
-    );
+    ).then(async (selections) => {
+      if (!active) return;
+      for (const { provider, result } of selections) {
+        if (!result) continue;
+        const target = {
+          tabId: result.tabId,
+          canonicalTarget: result.canonicalTarget,
+          reconnectEnabled: result.reconnectEnabled !== false,
+        };
+        reconnectEnabledRef.current[provider] = target.reconnectEnabled;
+        setSaved((current) => ({ ...current, [provider]: target }));
+        setSelected((current) => ({
+          ...current,
+          [provider]: String(target.tabId),
+        }));
+        setSelectionSaved((current) => ({ ...current, [provider]: true }));
+        if (target.reconnectEnabled) {
+          await verifySavedRef.current(provider, target, "dashboard-open");
+        } else {
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: "disconnected",
+              message: "Not connected",
+              detail:
+                "Manual disconnect is active. Choose Connect to verify this target again.",
+            },
+          }));
+        }
+      }
+    });
     return () => {
       active = false;
     };
   }, []);
 
   useEffect(() => {
-    if (typeof chrome === "undefined" || !chrome.tabs) return;
+    if (typeof chrome === "undefined") return;
     const onRemoved = (tabId: number) => {
       for (const provider of providers) {
-        if (states[provider].live?.tab.id === tabId) {
+        if (statesRef.current[provider].live?.tab.id === tabId) {
           invalidate(provider, "Disconnected · selected tab closed");
         }
       }
@@ -177,8 +377,11 @@ export function ConnectionStatus() {
     const onUpdated = (tabId: number, changeInfo: { url?: string }) => {
       if (!changeInfo.url) return;
       for (const provider of providers) {
-        const live = states[provider].live;
-        if (live?.tab.id === tabId && changeInfo.url !== live.tab.url) {
+        const live = statesRef.current[provider].live;
+        if (
+          live?.tab.id === tabId &&
+          !isSameProviderTargetUrl(live.tab, changeInfo.url)
+        ) {
           invalidate(
             provider,
             "Wrong target · the selected project or document changed. Reconnect to verify it.",
@@ -187,19 +390,58 @@ export function ConnectionStatus() {
         }
       }
     };
-    chrome.tabs.onRemoved.addListener(onRemoved);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    const onRuntimeMessage = (message: unknown) =>
-      handleWorkerRestart(message, (provider, status, detail) =>
-        invalidate(provider, detail, status),
-      );
+    chrome.tabs?.onRemoved.addListener(onRemoved);
+    chrome.tabs?.onUpdated.addListener(onUpdated);
+    const onRuntimeMessage = (message: unknown) => {
+      const event = readWorkerStartEvent(message);
+      if (!event || workerInstanceIdsRef.current.has(event.workerInstanceId)) {
+        return;
+      }
+      workerInstanceIdsRef.current.add(event.workerInstanceId);
+      if (workerInstanceIdsRef.current.size > 32) {
+        const oldest = workerInstanceIdsRef.current.values().next().value;
+        if (oldest) workerInstanceIdsRef.current.delete(oldest);
+      }
+      if (!isCurrentWorkerStart(event)) {
+        for (const provider of providers) {
+          if (!reconnectEnabledRef.current[provider]) continue;
+          connectionRevision.current[provider] += 1;
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: "stale-build",
+              message: "Outdated connector",
+              detail:
+                "The extension worker build or protocol changed. Reopen the dashboard before verifying this target.",
+            },
+          }));
+        }
+        return;
+      }
+      void (async () => {
+        for (const provider of providers) {
+          const target = savedRef.current[provider];
+          const action = workerStartAction(
+            Boolean(target),
+            reconnectEnabledRef.current[provider],
+          );
+          if (action === "verify" && target) {
+            await verifySavedRef.current(
+              provider,
+              target,
+              event.workerInstanceId,
+            );
+          }
+        }
+      })();
+    };
     chrome.runtime?.onMessage.addListener(onRuntimeMessage);
     return () => {
-      chrome.tabs.onRemoved.removeListener(onRemoved);
-      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs?.onRemoved.removeListener(onRemoved);
+      chrome.tabs?.onUpdated.removeListener(onUpdated);
       chrome.runtime?.onMessage.removeListener(onRuntimeMessage);
     };
-  }, [invalidate, states]);
+  }, []);
 
   const applyTabListing = (
     listing: Awaited<ReturnType<typeof listOpenProviderTabs>>,
@@ -318,6 +560,7 @@ export function ConnectionStatus() {
 
   const chooseTarget = async (provider: ProviderName, tabId: string) => {
     connectionRevision.current[provider] += 1;
+    reconnectEnabledRef.current[provider] = false;
     const revision = ++selectionRevision.current[provider];
     const previousLive = states[provider].live;
     if (previousLive) {
@@ -341,6 +584,7 @@ export function ConnectionStatus() {
     const tab = tabs.find((candidate) => candidate.id === Number(tabId));
     if (!tab || tab.provider !== provider) return;
     const metadata = { tabId: tab.id, canonicalTarget: tab.canonicalTarget };
+    savedRef.current = { ...savedRef.current, [provider]: metadata };
     setSaved((current) => ({ ...current, [provider]: metadata }));
     const previousSave = selectionSaveTasks.current[provider];
     const saveTask = (previousSave ?? Promise.resolve())
@@ -356,6 +600,16 @@ export function ConnectionStatus() {
           },
         );
         if (selectionRevision.current[provider] === revision) {
+          const selectedTarget = {
+            ...metadata,
+            reconnectEnabled: false,
+          };
+          reconnectEnabledRef.current[provider] = false;
+          savedRef.current = {
+            ...savedRef.current,
+            [provider]: selectedTarget,
+          };
+          setSaved((current) => ({ ...current, [provider]: selectedTarget }));
           setSelectionSaved((current) => ({ ...current, [provider]: true }));
           setStates((current) => ({
             ...current,
@@ -372,6 +626,8 @@ export function ConnectionStatus() {
       await saveTask;
     } catch (error) {
       if (selectionRevision.current[provider] === revision) {
+        reconnectEnabledRef.current[provider] = false;
+        savedRef.current = { ...savedRef.current, [provider]: undefined };
         setSelected((current) => ({ ...current, [provider]: "" }));
         setSaved((current) => ({ ...current, [provider]: undefined }));
         setStates((current) => ({
@@ -465,7 +721,12 @@ export function ConnectionStatus() {
             port,
           );
           if (connectionRevision.current[provider] !== attemptRevision) {
-            if (result.ok) {
+            const currentTarget = savedRef.current[provider];
+            const stillIntended =
+              reconnectEnabledRef.current[provider] &&
+              currentTarget?.tabId === tab.id &&
+              currentTarget.canonicalTarget === tab.canonicalTarget;
+            if (result.ok && !stillIntended) {
               await port.releaseConnector(result.tab.id, result.documentId);
             }
             return;
@@ -482,11 +743,29 @@ export function ConnectionStatus() {
             }));
             return;
           }
+          const reconnectWasEnabled = reconnectEnabledRef.current[provider];
+          reconnectEnabledRef.current[provider] = true;
+          let reconnectIntentError: string | undefined;
+          try {
+            const update = (await createChromeFoundationClient().request(
+              "connections.setReconnectIntent",
+              { provider, enabled: true },
+            )) as { updated?: boolean };
+            if (!update.updated) {
+              throw new Error("The selected target was not saved.");
+            }
+          } catch {
+            reconnectEnabledRef.current[provider] = reconnectWasEnabled;
+            reconnectIntentError =
+              "Reconnect intent could not be saved; this Connected status may need manual verification after the next worker restart.";
+          }
+          if (connectionRevision.current[provider] !== attemptRevision) return;
           setStates((current) => ({
             ...current,
             [provider]: {
               status: "connected",
               message: "Connected",
+              ...(reconnectIntentError ? { detail: reconnectIntentError } : {}),
               live: {
                 tab: result.tab,
                 documentId: result.documentId,
@@ -503,7 +782,11 @@ export function ConnectionStatus() {
             });
           }
         },
-        () => setBusy(undefined),
+        () => {
+          if (connectionRevision.current[provider] === attemptRevision) {
+            setBusy(undefined);
+          }
+        },
       );
     } catch {
       if (connectionRevision.current[provider] === attemptRevision) {
@@ -523,6 +806,7 @@ export function ConnectionStatus() {
     const request = states[provider].permissionRequest;
     if (!request) return;
 
+    const permissionRevision = ++connectionRevision.current[provider];
     setBusy(provider);
     setStates((current) => ({
       ...current,
@@ -543,6 +827,16 @@ export function ConnectionStatus() {
     }
     void permissionResult
       .then((granted) => {
+        if (connectionRevision.current[provider] !== permissionRevision) return;
+        const savedTarget = savedRef.current[provider];
+        if (granted && savedTarget && reconnectEnabledRef.current[provider]) {
+          void verifySavedRef.current(
+            provider,
+            savedTarget,
+            `permission-granted-${permissionRevision}`,
+          );
+          return;
+        }
         setStates((current) => ({
           ...current,
           [provider]: granted
@@ -562,6 +856,7 @@ export function ConnectionStatus() {
         }));
       })
       .catch(() => {
+        if (connectionRevision.current[provider] !== permissionRevision) return;
         setStates((current) => ({
           ...current,
           [provider]: {
@@ -573,11 +868,17 @@ export function ConnectionStatus() {
           },
         }));
       })
-      .finally(() => setBusy(undefined));
+      .finally(() => {
+        if (connectionRevision.current[provider] === permissionRevision) {
+          setBusy(undefined);
+        }
+      });
   };
 
   const disconnect = (provider: ProviderName) => {
     connectionRevision.current[provider] += 1;
+    const disconnectRevision = connectionRevision.current[provider];
+    reconnectEnabledRef.current[provider] = false;
     const live = states[provider].live;
     if (live) {
       void createChromeConnectionPort()?.releaseConnector(
@@ -589,6 +890,37 @@ export function ConnectionStatus() {
       ...current,
       [provider]: { status: "disconnected", message: "Not connected" },
     }));
+    void createChromeFoundationClient()
+      .request("connections.setReconnectIntent", { provider, enabled: false })
+      .then((value) => {
+        if (
+          connectionRevision.current[provider] !== disconnectRevision ||
+          (value as { updated?: boolean }).updated
+        ) {
+          return;
+        }
+        setStates((current) => ({
+          ...current,
+          [provider]: {
+            status: "disconnected",
+            message: "Not connected",
+            detail:
+              "Manual disconnect is active, but could not be saved for dashboard reopen.",
+          },
+        }));
+      })
+      .catch(() => {
+        if (connectionRevision.current[provider] !== disconnectRevision) return;
+        setStates((current) => ({
+          ...current,
+          [provider]: {
+            status: "disconnected",
+            message: "Not connected",
+            detail:
+              "Manual disconnect is active in this dashboard, but could not be saved for dashboard reopen.",
+          },
+        }));
+      });
   };
 
   return (
@@ -640,7 +972,9 @@ export function ConnectionStatus() {
             <div className={styles.providerConnectionTitle}>
               <span>{provider}</span>
               <strong aria-live="polite">
-                {connectionStatusLabel(state.status)}
+                {state.status === "pending"
+                  ? state.message
+                  : connectionStatusLabel(state.status)}
               </strong>
             </div>
             <label
@@ -675,7 +1009,10 @@ export function ConnectionStatus() {
                 onClick={() => void connect(provider)}
               >
                 {busy === provider
-                  ? "Connecting…"
+                  ? state.status === "pending" &&
+                    state.message === "Checking connection…"
+                    ? "Checking connection…"
+                    : "Connecting…"
                   : state.status === "connected"
                     ? "Reconnect"
                     : "Connect"}

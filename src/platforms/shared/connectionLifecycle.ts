@@ -1,37 +1,55 @@
-import { BUILD_ID } from "../../shared/buildInfo";
+import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import { FOUNDATION_WORKER_RESTARTED } from "../../shared/messages";
-import type { ProviderName } from "./contracts";
 
-const providers: readonly ProviderName[] = ["Flow", "Vids"];
+export type WorkerStartEvent = {
+  buildId: string;
+  workerInstanceId: string;
+  protocolVersion: number;
+};
 
-export function handleWorkerRestart(
+export function readWorkerStartEvent(
   message: unknown,
-  invalidate: (
-    provider: ProviderName,
-    status: "disconnected" | "stale-build",
-    message: string,
-  ) => void,
-): boolean {
+): WorkerStartEvent | undefined {
   if (
     !message ||
     typeof message !== "object" ||
     !("type" in message) ||
-    message.type !== FOUNDATION_WORKER_RESTARTED
+    message.type !== FOUNDATION_WORKER_RESTARTED ||
+    !("buildId" in message) ||
+    typeof message.buildId !== "string" ||
+    !("workerInstanceId" in message) ||
+    typeof message.workerInstanceId !== "string" ||
+    message.workerInstanceId.length === 0 ||
+    !("protocolVersion" in message) ||
+    typeof message.protocolVersion !== "number"
   ) {
-    return false;
+    return undefined;
   }
-  const workerBuildId =
-    "buildId" in message && typeof message.buildId === "string"
-      ? message.buildId
-      : "";
-  for (const provider of providers) {
-    invalidate(
-      provider,
-      workerBuildId === BUILD_ID ? "disconnected" : "stale-build",
-      workerBuildId === BUILD_ID
-        ? "Disconnected · extension worker restarted. Reconnect to verify the selected project."
-        : "Stale build · the extension worker build changed. Reopen this dashboard and reconnect.",
-    );
-  }
-  return true;
+  return {
+    buildId: message.buildId,
+    workerInstanceId: message.workerInstanceId,
+    protocolVersion: message.protocolVersion,
+  };
+}
+
+export function isCurrentWorkerStart(event: WorkerStartEvent): boolean {
+  return (
+    event.buildId === BUILD_ID && event.protocolVersion === PROTOCOL_VERSION
+  );
+}
+
+export function workerStartAction(
+  hasSavedTarget: boolean,
+  reconnectEnabled: boolean,
+): "verify" | "preserve_disconnected" | "no_target" {
+  if (!hasSavedTarget) return "no_target";
+  return reconnectEnabled ? "verify" : "preserve_disconnected";
+}
+
+export function isCurrentConnectionAttempt(
+  currentRevision: number,
+  attemptRevision: number,
+  reconnectEnabled: boolean,
+): boolean {
+  return currentRevision === attemptRevision && reconnectEnabled;
 }

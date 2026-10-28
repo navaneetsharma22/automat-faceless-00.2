@@ -20,6 +20,8 @@ export class FoundationClientError extends Error {
   }
 }
 
+export type FoundationClient = ReturnType<typeof createFoundationClient>;
+
 function makeId(): string {
   if (
     typeof crypto !== "undefined" &&

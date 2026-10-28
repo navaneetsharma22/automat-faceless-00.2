@@ -12,6 +12,7 @@ describe("extension repository boundaries", () => {
     expect(appDatabase.tables.map((table) => table.name).sort()).toEqual([
       "batches",
       "promptDrafts",
+      "promptItems",
       "selectedTargets",
       "workflows",
     ]);
@@ -41,13 +42,17 @@ describe("extension repository boundaries", () => {
       savedDraft,
     );
     expect(selected.verification).toBe("unverified");
+    expect(selected.reconnectEnabled).toBe(true);
+    expect(await repositories.setReconnectIntent("Vids", false)).toBe(true);
     expect(
       await repositories.markTargetVerified("Vids", selected.canonicalTarget),
     ).toBe(true);
     await repositories.markTargetsUnverified();
     expect(await repositories.getSelectedTarget("Vids")).toMatchObject({
       verification: "unverified",
+      reconnectEnabled: false,
     });
+    expect(await repositories.setReconnectIntent("Flow", false)).toBe(false);
   });
 
   it("stores only approved small theme preferences through the Chrome Storage boundary", async () => {

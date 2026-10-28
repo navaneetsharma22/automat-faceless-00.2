@@ -7,6 +7,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { SettingsConfirmation } from "./components/SettingsConfirmation";
 import { ToastHost, useToast } from "./components/ToastHost";
 import { BUILD_ID } from "../shared/buildInfo";
+import { createFoundationClient } from "../shared/messageClient";
 import { registerDashboardFocusResponder } from "./dashboardFocus";
 import { ImageImportPanel } from "./features/image-batch/ImportPanel";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
@@ -48,6 +49,18 @@ function Dashboard() {
   );
   const [videoImportSession] = useState(
     () => new ImportPreviewSession("video"),
+  );
+  const [batchClient] = useState(() =>
+    createFoundationClient({
+      sendMessage: (message) => {
+        if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+          return Promise.reject(
+            new Error("Extension messaging is unavailable."),
+          );
+        }
+        return chrome.runtime.sendMessage(message);
+      },
+    }),
   );
   const [videoWrapLines, setVideoWrapLines] = useState(false);
   const [videoEditorExpanded, setVideoEditorExpanded] = useState(false);
@@ -157,6 +170,7 @@ function Dashboard() {
           <div hidden={workspace !== "Images"}>
             <ImagesView
               session={imageImportSession}
+              persistenceClient={batchClient}
               confirmed={imageConfirmed}
               setConfirmed={setImageConfirmed}
             />
@@ -170,6 +184,7 @@ function Dashboard() {
           <div hidden={workspace !== "Videos"}>
             <VideosView
               session={videoImportSession}
+              persistenceClient={batchClient}
               wrapLines={videoWrapLines}
               setWrapLines={setVideoWrapLines}
               editorExpanded={videoEditorExpanded}
@@ -225,10 +240,12 @@ function workspaceSubtitle(workspace: Workspace) {
 
 function ImagesView({
   session,
+  persistenceClient,
   confirmed,
   setConfirmed,
 }: {
   session: ImportPreviewSession;
+  persistenceClient: ReturnType<typeof createFoundationClient>;
   confirmed: boolean;
   setConfirmed: (value: boolean) => void;
 }) {
@@ -248,6 +265,8 @@ function ImagesView({
         />
         <ImageImportPanel
           session={session}
+          workspaceId="default"
+          persistenceClient={persistenceClient}
           exampleSource={demoJson}
           wrapLines={wrapLines}
           setWrapLines={setWrapLines}
@@ -343,6 +362,7 @@ function ReferencesView({
 
 export function VideosView({
   session,
+  persistenceClient,
   wrapLines,
   setWrapLines,
   editorExpanded,
@@ -353,6 +373,7 @@ export function VideosView({
   setConfirmed,
 }: {
   session: ImportPreviewSession;
+  persistenceClient: ReturnType<typeof createFoundationClient>;
   wrapLines: boolean;
   setWrapLines: (wrap: boolean) => void;
   editorExpanded: boolean;
@@ -375,6 +396,8 @@ export function VideosView({
         />
         <VideoImportPanel
           session={session}
+          workspaceId="default"
+          persistenceClient={persistenceClient}
           exampleSource={demoVideoJson}
           wrapLines={wrapLines}
           setWrapLines={setWrapLines}

@@ -1,4 +1,120 @@
 import { z } from "zod";
+import { INPUT_POLICY } from "../domain/batches/inputPolicy";
+
+const promptSourceSchema = z
+  .string()
+  .max(INPUT_POLICY.maxBatchCodeUnits)
+  .refine(
+    (source) =>
+      new TextEncoder().encode(source).byteLength <=
+      INPUT_POLICY.maxBatchUtf8Bytes,
+    "Source exceeds the provisional total UTF-8 byte limit.",
+  );
+
+const workspaceIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+
+const promptMeasurementSchema = z
+  .object({
+    stringCodeUnits: z.number().int().nonnegative(),
+    utf8Bytes: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const sourceSpanSchema = z
+  .object({
+    start: z.number().int().nonnegative(),
+    end: z.number().int().positive(),
+  })
+  .strict()
+  .refine((span) => span.end >= span.start);
+
+export const PromptBatchInputSchema = z
+  .object({
+    workspaceId: workspaceIdSchema,
+    kind: z.enum(["image", "video"]),
+    sourceText: promptSourceSchema,
+  })
+  .strict();
+
+export const PromptBatchKeySchema = z
+  .object({ workspaceId: workspaceIdSchema, kind: z.enum(["image", "video"]) })
+  .strict();
+
+export const PromptItemRecordSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    batchId: z.string().min(1).max(256),
+    workspaceId: workspaceIdSchema,
+    kind: z.enum(["image", "video"]),
+    order: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(INPUT_POLICY.maxPromptCount - 1),
+    shotId: z
+      .string()
+      .regex(/^[1-9][0-9]*$/)
+      .optional(),
+    identitySource: z
+      .enum(["outer_label", "envelope", "body_shot_id"])
+      .optional(),
+    rawJsonBody: z
+      .string()
+      .min(2)
+      .max(INPUT_POLICY.maxPromptCodeUnits)
+      .refine(
+        (body) =>
+          new TextEncoder().encode(body).byteLength <=
+          INPUT_POLICY.maxPromptUtf8Bytes,
+      ),
+    sourceSpan: sourceSpanSchema,
+    measurement: promptMeasurementSchema,
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/),
+    createdAt: z.number().finite().nonnegative(),
+  })
+  .strict()
+  .refine(
+    (item) =>
+      item.measurement.stringCodeUnits === item.rawJsonBody.length &&
+      item.measurement.utf8Bytes ===
+        new TextEncoder().encode(item.rawJsonBody).byteLength,
+  );
+
+export const PromptBatchRecordSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    workflowId: workspaceIdSchema,
+    workspaceId: workspaceIdSchema,
+    kind: z.enum(["image", "video"]),
+    status: z.literal("draft"),
+    sourceText: promptSourceSchema,
+    sourceMode: z.enum([
+      "single_json_value",
+      "numbered_json_blocks",
+      "versioned_envelope",
+    ]),
+    orderedItemIds: z
+      .array(z.string().min(1).max(256))
+      .min(1)
+      .max(INPUT_POLICY.maxPromptCount),
+    total: promptMeasurementSchema,
+    updatedAt: z.number().finite().nonnegative(),
+  })
+  .strict();
+
+export const PromptBatchSnapshotSchema = z
+  .object({
+    batch: PromptBatchRecordSchema,
+    items: z
+      .array(PromptItemRecordSchema)
+      .min(1)
+      .max(INPUT_POLICY.maxPromptCount),
+  })
+  .strict();
 
 const requestBase = z
   .object({
@@ -28,6 +144,14 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ id: z.string().min(1).max(128) }).strict(),
   }),
   requestBase.extend({
+    type: z.literal("promptBatch.put"),
+    payload: PromptBatchInputSchema,
+  }),
+  requestBase.extend({
+    type: z.literal("promptBatch.get"),
+    payload: PromptBatchKeySchema,
+  }),
+  requestBase.extend({
     type: z.literal("connections.recordSelection"),
     payload: z
       .object({
@@ -40,6 +164,12 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   requestBase.extend({
     type: z.literal("connections.getSelection"),
     payload: z.object({ provider: z.enum(["Flow", "Vids"]) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("connections.setReconnectIntent"),
+    payload: z
+      .object({ provider: z.enum(["Flow", "Vids"]), enabled: z.boolean() })
+      .strict(),
   }),
   requestBase.extend({
     type: z.literal("preferences.getTheme"),

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILD_ID } from "../../src/shared/buildInfo";
 import {
   attachToSelectedTab,
+  isSameProviderTargetUrl,
   providerTabFromUrl,
+  verifyPersistedTarget,
 } from "../../src/platforms/shared/connection";
 import {
   createChromeConnectionPort,
@@ -20,8 +22,14 @@ import {
   type ProviderName,
   type ProviderTab,
 } from "../../src/platforms/shared/contracts";
-import { handleWorkerRestart } from "../../src/platforms/shared/connectionLifecycle";
+import {
+  isCurrentConnectionAttempt,
+  isCurrentWorkerStart,
+  readWorkerStartEvent,
+  workerStartAction,
+} from "../../src/platforms/shared/connectionLifecycle";
 import { FOUNDATION_WORKER_RESTARTED } from "../../src/shared/messages";
+import { PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import {
   connectionApiDiagnostic,
   getChromeExecutionContext,
@@ -176,6 +184,23 @@ describe("explicit read-only Flow/Vids attachment", () => {
       url: actualVidsUrl,
       canonicalTarget: "https://docs.google.com/videos/d/VIDEO_ID/edit",
     });
+    const selectedVids = providerTabFromUrl(
+      17,
+      "Vids document",
+      actualVidsUrl,
+    )!;
+    expect(
+      isSameProviderTargetUrl(
+        selectedVids,
+        "https://docs.google.com/videos/d/VIDEO_ID/edit?scene=other#scene=other",
+      ),
+    ).toBe(true);
+    expect(
+      isSameProviderTargetUrl(
+        selectedVids,
+        "https://docs.google.com/videos/d/DIFFERENT_ID/edit?scene=id.p",
+      ),
+    ).toBe(false);
     expect(
       providerTabFromUrl(11, "Vids home", "https://vids.google.com/"),
     ).toBeUndefined();
@@ -804,41 +829,82 @@ describe("explicit read-only Flow/Vids attachment", () => {
     expect(result).toMatchObject({ ok: false, state: "wrong-target" });
   });
 
-  it("invalidates in-memory Connected status after worker restart or build change", () => {
-    const invalidate = vi.fn();
+  it("recognizes a genuine worker start event once and rejects invalid or stale versions", () => {
+    const event = readWorkerStartEvent({
+      type: FOUNDATION_WORKER_RESTARTED,
+      buildId: BUILD_ID,
+      workerInstanceId: "worker-instance-1",
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    expect(event).toEqual({
+      buildId: BUILD_ID,
+      workerInstanceId: "worker-instance-1",
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    expect(isCurrentWorkerStart(event!)).toBe(true);
     expect(
-      handleWorkerRestart(
-        { type: FOUNDATION_WORKER_RESTARTED, buildId: BUILD_ID },
-        invalidate,
-      ),
-    ).toBe(true);
-    expect(invalidate).toHaveBeenCalledTimes(2);
-    expect(invalidate).toHaveBeenNthCalledWith(
-      1,
-      "Flow",
-      "disconnected",
-      expect.stringContaining("worker restarted"),
-    );
-    expect(invalidate).toHaveBeenNthCalledWith(
-      2,
-      "Vids",
-      "disconnected",
-      expect.stringContaining("worker restarted"),
-    );
+      isCurrentWorkerStart({ ...event!, buildId: "different-build" }),
+    ).toBe(false);
+    expect(
+      readWorkerStartEvent({
+        type: FOUNDATION_WORKER_RESTARTED,
+        buildId: BUILD_ID,
+        workerInstanceId: "worker-instance-1",
+        protocolVersion: PROTOCOL_VERSION - 1,
+      }),
+    ).toMatchObject({ protocolVersion: PROTOCOL_VERSION - 1 });
+    expect(readWorkerStartEvent({ type: "unrelated-event" })).toBeUndefined();
+    expect(
+      readWorkerStartEvent({
+        type: FOUNDATION_WORKER_RESTARTED,
+        buildId: BUILD_ID,
+        protocolVersion: PROTOCOL_VERSION,
+      }),
+    ).toBeUndefined();
+  });
 
-    invalidate.mockClear();
-    handleWorkerRestart(
-      { type: FOUNDATION_WORKER_RESTARTED, buildId: "different-build" },
-      invalidate,
-    );
-    expect(invalidate).toHaveBeenCalledWith(
+  it("schedules verification after a worker start without disconnecting manual choices", () => {
+    expect(workerStartAction(true, true)).toBe("verify");
+    expect(workerStartAction(true, false)).toBe("preserve_disconnected");
+    expect(workerStartAction(false, true)).toBe("no_target");
+    expect(isCurrentConnectionAttempt(7, 7, true)).toBe(true);
+    expect(isCurrentConnectionAttempt(8, 7, true)).toBe(false);
+    expect(isCurrentConnectionAttempt(7, 7, false)).toBe(false);
+  });
+
+  it("re-verifies only the persisted tab and blocks a changed or closed target", async () => {
+    const { port, tab, forbiddenTabActions } = makePort();
+    const result = await verifyPersistedTarget(
       "Flow",
-      "stale-build",
-      expect.stringContaining("Stale build"),
+      { tabId: tab.id, canonicalTarget: tab.canonicalTarget },
+      port,
     );
-    expect(handleWorkerRestart({ type: "unrelated-event" }, invalidate)).toBe(
-      false,
+    expect(result).toMatchObject({ ok: true, state: "connected" });
+    expect(port.getTab).toHaveBeenCalledWith(tab.id);
+    expect(port.injectConnector).toHaveBeenCalledOnce();
+    expectProviderUntouched(forbiddenTabActions);
+
+    const changed = makePort();
+    vi.mocked(changed.port.getTab).mockResolvedValueOnce(
+      makeTab(42, "Flow", "different-project"),
     );
+    const blocked = await verifyPersistedTarget(
+      "Flow",
+      { tabId: tab.id, canonicalTarget: tab.canonicalTarget },
+      changed.port,
+    );
+    expect(blocked).toMatchObject({ ok: false, state: "wrong-target" });
+    expect(changed.port.injectConnector).not.toHaveBeenCalled();
+
+    const closed = makePort();
+    vi.mocked(closed.port.getTab).mockResolvedValueOnce(undefined);
+    const closedResult = await verifyPersistedTarget(
+      "Flow",
+      { tabId: tab.id, canonicalTarget: tab.canonicalTarget },
+      closed.port,
+    );
+    expect(closedResult).toMatchObject({ ok: false, state: "wrong-target" });
+    expect(closed.port.injectConnector).not.toHaveBeenCalled();
   });
 
   it("keeps all provider page mutation and navigation methods unused", async () => {

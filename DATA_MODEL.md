@@ -1,6 +1,6 @@
 # Data Model and Identity
 
-Workflow/domain records remain proposed. P02.2 establishes only the extension-owned persistence boundary and initial draft/target metadata records described below.
+Workflow/domain records remain proposed. P02.2 established the initial extension-owned persistence boundary; P03.4 adds validated imported-batch persistence as described below.
 
 ## Core records
 
@@ -19,11 +19,14 @@ Workflow/domain records remain proposed. P02.2 establishes only the extension-ow
 | SceneBoundary        | clipId, shotId where established, name, start/end presentation times, provenance                          | Manifest builder     |
 | SplitVerification    | source identity, clip path/name, expected/observed frames and duration, audio check                       | Local companion      |
 
-P02.2 foundation records in `automat-faceless-app-v1`:
+Extension-owned records in `automat-faceless-app-v1` (Dexie schema version 2):
 
 - `PromptDraftRecord`: stable draft ID, `kind` (`image` or `video`), exact `rawText`, and update time. Storage does not parse, stringify, normalize line endings, or apply an inherited 12,000-character limit. Synthetic offline fixtures test transport and repository-boundary preservation; this does not establish provider prompt limits or unlimited transport capacity.
 - `SelectedTargetRecord`: provider, browser tab ID, canonical target key, update time, and `verification`. A newly stored selection is `unverified`; worker startup marks every saved target unverified. P02.3 keeps the persisted value as selection metadata; the UI's ephemeral Connected status is never persisted as proof. No offline mock result calls the repository verification operation.
-- `WorkflowRecord` and `BatchRecord` currently have only minimal foundation fields. No runnable generation batch or queue state is implemented in P02.2.
+- `PromptBatchRecord`: one saved imported source per `(workspaceId, kind)`, with exact `sourceText`, input mode, ordered item IDs, total measurements, and update time. P03.4 stores image and video batches independently and scopes them to a workspace. The current import screen uses the explicit local workspace ID `default` until workflow selection exists.
+- `PromptItemRecord`: deterministic item ID, batch/workspace/kind, order, canonical `shotId` and identity source when present, exact `rawJsonBody`, JavaScript `sourceSpan`, UTF-16 code-unit and UTF-8 byte measurements, SHA-256 content hash, and creation time. The hash is a supplemental integrity check; exact string equality remains required.
+- Prompt batch replacement stores the batch and its items in one IndexedDB read/write transaction. The additive schema upgrade adds the prompt item table without clearing existing draft, target, workflow, or batch tables. Saved records are reparsed and compared with their original source at readback.
+- `WorkflowRecord` and generation queue state remain minimal/not implemented. P03.4 persistence stores imported prompt batches only; it does not authorize provider actions.
 - Theme is a small preference in Chrome `storage.local`; prompt bodies and other larger app data do not go into Chrome Storage.
 
 ## Identity rules

@@ -6,16 +6,16 @@
 
 **USER_REPORTED_PASS:** The user confirmed both Flow and Vids passed reconnect without provider refresh/content changes, Disconnect → Connect, and successful connection verification after extension reload. The user also confirmed the toolbar action reuses the existing dashboard. These reports are not independently observed or automated verification.
 
-| Evidence item | Classification | Scope / limit |
-| --- | --- | --- |
-| Flow and Vids display Connected in the packaged dashboard | SCREENSHOT_EVIDENCE (user-supplied screenshots) | Screenshot evidence; no independent UI observation is claimed. |
-| Reconnect without provider refresh/content changes | USER_REPORTED_PASS — Flow and Vids | User report; not independently observed or automated. |
-| Disconnect → Connect | USER_REPORTED_PASS — Flow and Vids | User report; not independently observed or automated. |
-| Toolbar action reuses existing dashboard | USER_REPORTED_PASS | Dashboard-level user report. |
-| Extension reload followed by successful connection verification | USER_REPORTED_PASS — Flow and Vids | User report; not independently observed or automated. |
-| Vids content preservation | SCREENSHOT_EVIDENCE; USER_REPORTED_PASS | Shown empty-document test only. |
-| Generated-scene preservation | NOT_VERIFIED | No claim made. |
-| Separate worker-suspension test | NOT_VERIFIED | Extension reload result does not establish a worker-suspension test. |
+| Evidence item                                                   | Classification                                  | Scope / limit                                                        |
+| --------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------- |
+| Flow and Vids display Connected in the packaged dashboard       | SCREENSHOT_EVIDENCE (user-supplied screenshots) | Screenshot evidence; no independent UI observation is claimed.       |
+| Reconnect without provider refresh/content changes              | USER_REPORTED_PASS — Flow and Vids              | User report; not independently observed or automated.                |
+| Disconnect → Connect                                            | USER_REPORTED_PASS — Flow and Vids              | User report; not independently observed or automated.                |
+| Toolbar action reuses existing dashboard                        | USER_REPORTED_PASS                              | Dashboard-level user report.                                         |
+| Extension reload followed by successful connection verification | USER_REPORTED_PASS — Flow and Vids              | User report; not independently observed or automated.                |
+| Vids content preservation                                       | SCREENSHOT_EVIDENCE; USER_REPORTED_PASS         | Shown empty-document test only.                                      |
+| Generated-scene preservation                                    | NOT_VERIFIED                                    | No claim made.                                                       |
+| Separate worker-suspension test                                 | NOT_VERIFIED                                    | Extension reload result does not establish a worker-suspension test. |
 
 Chrome version was not supplied and is not recorded. P02.4 and Phase 02 are **DONE for the read-only connection scope** based on the offline evidence, screenshots, and user-reported checks above. The user evidence is not labeled LIVE_VERIFIED or as independent automation. Generation, provider prompt entry, OAuth, and downloads remain unimplemented; P00.2 representative prompt evidence remains pending; Phase 03 remains NOT_STARTED.
 
@@ -48,6 +48,18 @@ Browser-control availability was checked and returned no apps or browsers. Chrom
 Date: 28 October 2026  
 P02.3 evidence level: **OFFLINE_VERIFIED**  
 P02.4 implementation attempt: **PREPARED; live gate NOT_RUN**
+
+## P03 connection lifecycle integration fix — 28 October 2026
+
+The observed disconnected warning was caused by the service worker's startup signal. `src/background/index.ts` emits `FOUNDATION_WORKER_RESTARTED` each time the MV3 worker is evaluated after a genuine restart or wake. `ConnectionStatus` treated that signal as a command to invalidate both providers and release their connectors. Saving or loading a batch did not itself invalidate provider state; the batch request could coincide with a worker wake after idle time. Repeated delivery from one worker instance is now deduplicated by its instance ID.
+
+Connection state is owned in the dashboard component; the explicitly selected tab ID and canonical target are durable. Dashboard navigation keeps the connection panel mounted (views are switched in the app shell), so Images/Videos navigation and preview/save/load do not clear it. The runtime listeners now have stable effect lifetime and read current state through refs. On a real worker start or dashboard reopen, enabled saved targets enter **Checking connection…** and receive a bounded read-only handshake using the exact saved tab ID. Provider, tab, canonical identity, build, protocol, document, and read-only capability are checked by the existing no-refresh path. Closed, changed, unsupported, inaccessible, and permission-blocked targets remain visibly blocked; the code does not choose a substitute tab. A manual Disconnect persists `reconnectEnabled=false`; worker starts and dashboard reopen preserve that choice until the user explicitly connects again.
+
+Async attachment and verification results are guarded by per-provider revisions and current target/intent checks. A stale success cannot restore Connected after a newer selection or manual Disconnect, and a late connector is released when it no longer matches the user's current intent. Permission requests remain directly in the explicit click handler. Restart recovery does not replay prompt or generation operations. The additive database v3 schema preserves existing prompt batches and records the reconnect intent; no destructive migration was introduced.
+
+Regression evidence: `tests/unit/connections.test.ts` checks genuine/current versus malformed or stale worker events, exact persisted-target verification, changed/closed target blocking, and unused provider refresh/navigation/content mutation actions. `tests/unit/repositories.test.ts` checks that manual disconnect intent survives worker unverified marking. Prompt save/load integration tests check that selected target records remain intact. On 28 October 2026, the focused suites passed **4 files / 56 tests**; the full suite passed **12 files / 121 tests**; typecheck, lint, and formatting passed. Production build passed (Vite 8.3.5; 154 modules). Shared build ID: **`automat-faceless-0.1.0-mvrxsj68`** across the dashboard, worker, and connector. `git diff --check` is recorded after documentation updates.
+
+Browser-control inventory returned no apps or browsers. Packaged restart/reopen and provider handshake verification are **NOT_RUN**. The successful image/video save, dashboard reopen, load, and kind-isolation observations are recorded separately as **USER_REPORTED_PASS** in [prompt-preservation evidence](prompt-preservation.md); they are not independent browser verification. No provider settings, prompts, generation, or page refresh actions were performed for this integration fix.
 
 ## P02.4 verification attempt — 28 October 2026
 

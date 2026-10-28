@@ -1,6 +1,6 @@
 # P03 — Lossless large JSON import for both stages
 
-Status: **INCOMPLETE** — P03.1–P03.3 have offline evidence. Real production sample profiles remain EVIDENCE_PENDING; P03.4 is NOT_STARTED.
+Status: **INCOMPLETE** — P03.1–P03.4 have offline evidence. Real production sample profiles remain EVIDENCE_PENDING; packaged browser durability/UI verification is NOT_RUN.
 
 **Outcome:** Large image and video JSON batches become correct, stable, unchanged prompt items.
 
@@ -73,7 +73,7 @@ P03.3 implementation evidence (offline): Image and video panels use separate in-
 
 P03.3 tests cover independent drafts, preview count/IDs/provider-safe status, source preservation, stale previous results, late-result rejection, oversized file rejection before read, UTF-8/BOM handling, and the existing JSON editor controls. Five Node test-runner timings per fixture in the full suite (median/max, ms): IMAGE 10k 0.6/5.0, 25k 0.7/1.1, 50k 1.3/1.7, 100k 2.3/2.7; VIDEO 10k 0.3/0.3, 25k 0.7/0.8, 50k 1.2/6.4, 100k 2.4/3.1. These are importer timings in Node, not browser UI responsiveness evidence. Browser/theme/narrow-layout inspection is NOT_RUN because no browser surface was available. P00.2 production samples remain EVIDENCE_PENDING.
 
-Checks on 28 October 2026: focused UI/importer regressions — PASS (3 files / 17 tests); full suite — PASS (11 files / 100 tests); typecheck, lint, changed-file Prettier, production build (Vite 8.3.5 / 154 modules), and `git diff --check` — PASS. Shared build ID: `automat-faceless-0.1.0-mvru6149`. P03.4 remains NOT_STARTED.
+Checks on 28 October 2026: focused UI/importer regressions — PASS (3 files / 17 tests); full suite at that handoff — PASS (11 files / 100 tests); typecheck, lint, changed-file Prettier, production build (Vite 8.3.5 / 154 modules), and `git diff --check` — PASS. Shared build ID: `automat-faceless-0.1.0-mvru6149`. P03.4 was NOT_STARTED at that handoff; its later evidence is recorded below.
 
 ### P03.4 — Verify exact data preservation through storage and messages
 
@@ -86,9 +86,19 @@ Start in these files:
 
 Acceptance: Import -> schema -> repository -> message retains each complete raw body for image and video kinds, including long nested JSON. No twelve-thousand-character assumption is copied.
 
+P03.4 implementation evidence (offline): The import panel exposes explicit **Save validated batch** and **Load saved batch** actions. Saving is enabled only for a successful current revision; edited/stale previews cannot be saved. Loading a batch asks before replacing a nonempty unsaved draft, verifies the request has not become stale while awaiting the worker, restores the original input source, and validates it again. Image/video batches use separate `(workspaceId, kind)` keys; the current dashboard supplies its explicit `default` import workspace.
+
+The dashboard sends only extension-internal `promptBatch.put/get` messages. The worker accepts these only from the exact packaged dashboard URL after request schema, protocol, build, request ID, kind, and workspace checks. The worker re-runs the P03.2 importer. The repository revalidates centralized source/prompt/count/complexity budgets, writes the exact source and ordered item records in one Dexie transaction across `batches` and `promptItems`, and retains JavaScript source offsets, canonical shot identities/order, measurements, and supplemental SHA-256 digests. Replacement failure rolls back both tables. Readback is revalidated at the repository boundary by importing stored source again and comparing every raw body, span, identity, measurement, order, and digest. No prompt body is sent to provider content scripts or logged.
+
+Regression evidence compares exact strings directly. All eight P03.1 fixtures passed through the actual importer, schemas, repository methods, worker handler, JSON-cloned message envelope, and readback: image/video bodies at 10k, 25k, 50k, and 100k JavaScript code units, including LF/CRLF, decimal arrays, nested structures, escaped strings, Hindi, and emoji. The historical 1,260,163-code-unit / 1,652,165-byte fixture also passed for both kinds. Numbered blocks, top-level arrays, and versioned envelopes preserve body order and canonical IDs. Additional tests reject policy overflow, schema-invalid input, corrupted saved data, and failed messages; a partial item write is rolled back while the previous saved batch remains intact.
+
+Evidence limits: the message handler and repository are production source exercised offline, but Chrome runtime serialization is represented by JSON cloning and IndexedDB is represented by a transactional in-memory table adapter with rollback behavior. These mocks do not prove actual Chrome message capacity or browser IndexedDB durability. Browser inventory returned no apps/browsers, so packaged save, dashboard reopen, and exact readback UI checks are **NOT_RUN**. No provider page was accessed. Manual packaged retest: (1) load the built extension and open its dashboard; (2) in Images and Videos separately, validate and save a known JSON source; (3) close/reopen the dashboard, choose **Load saved batch**, and compare the complete editor text with the original; (4) create an unsaved edit and confirm loading requires a replacement decision; (5) repeat with a long CRLF fixture. Keep this test inside the extension dashboard and away from provider actions.
+
+Full verification on 28 October 2026: focused preservation/UI/repository/message suite **PASS** (4 files / 38 tests); full suite **PASS** (12 files / 119 tests); typecheck, lint, changed-file Prettier, production build (Vite 8.3.5 / 154 modules), source/dist manifest equality, shared build ID consistency, and `git diff --check` **PASS**. Shared build ID: `automat-faceless-0.1.0-mvrutblo`. P00.2 real production samples remain **EVIDENCE_PENDING**. P03.4 is **OFFLINE_VERIFIED** only; P03 remains **INCOMPLETE**.
+
 ## Phase gate
 
-P03 is INCOMPLETE. P03.1–P03.3 provide offline contract, fixture, scanner, importer, and UI source/test evidence only. Browser rendering, persistence, real sample, and provider evidence remain incomplete; P03.4 is NOT_STARTED.
+P03 is INCOMPLETE. P03.1–P03.4 have offline contract, fixture, scanner, importer, UI, schema, repository, and worker-message evidence. Browser rendering/durability, real sample, and provider evidence remain incomplete; P00.2 is pending.
 
 ## Notes
 
@@ -96,9 +106,9 @@ P03 is INCOMPLETE. P03.1–P03.3 provide offline contract, fixture, scanner, imp
 - A top-level array is a prompt unless an explicit supported batch envelope says otherwise.
 - Do not silently JSON.stringify parsed objects for provider submission.
 
-## Deferred next subphase (not started)
+## Phase 04 boundary
 
-P03.4 remains NOT_STARTED. Do not begin it until separately requested.
+P03.4 is complete to its offline evidence boundary. Phase 04 remains NOT_STARTED and was not started in this task.
 
 ## Completion report
 

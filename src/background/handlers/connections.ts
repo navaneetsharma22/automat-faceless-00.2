@@ -9,6 +9,7 @@ import type {
   ExtensionRepositories,
   ChromePreferenceRepository,
 } from "../../storage/repositories";
+import { PromptBatchValidationError } from "../../storage/repositories";
 
 export type ExtensionMessageSender = {
   id?: string;
@@ -78,6 +79,44 @@ async function dispatch(
       }
       return record;
     }
+    case "promptBatch.put":
+      try {
+        return await dependencies.repositories.savePromptBatch(request.payload);
+      } catch (error) {
+        if (error instanceof PromptBatchValidationError) {
+          throw new FoundationOperationError(
+            "invalid_request",
+            "batch_validation_failed",
+            "The prompt batch failed validation and was not saved.",
+          );
+        }
+        throw error;
+      }
+    case "promptBatch.get": {
+      try {
+        const snapshot = await dependencies.repositories.getPromptBatch(
+          request.payload.workspaceId,
+          request.payload.kind,
+        );
+        if (!snapshot) {
+          throw new FoundationOperationError(
+            "not_found",
+            "batch_not_found",
+            "No saved prompt batch exists for this workspace and kind.",
+          );
+        }
+        return snapshot;
+      } catch (error) {
+        if (error instanceof PromptBatchValidationError) {
+          throw new FoundationOperationError(
+            "storage_failure",
+            "saved_batch_invalid",
+            "The saved prompt batch failed integrity validation.",
+          );
+        }
+        throw error;
+      }
+    }
     case "connections.recordSelection": {
       const record = await dependencies.repositories.recordSelectedTarget(
         request.payload,
@@ -86,6 +125,7 @@ async function dispatch(
         provider: record.provider,
         tabId: record.tabId,
         verification: record.verification,
+        reconnectEnabled: record.reconnectEnabled,
       };
     }
     case "connections.getSelection":
@@ -94,6 +134,13 @@ async function dispatch(
           request.payload.provider,
         )) ?? null
       );
+    case "connections.setReconnectIntent":
+      return {
+        updated: await dependencies.repositories.setReconnectIntent(
+          request.payload.provider,
+          request.payload.enabled,
+        ),
+      };
     case "preferences.getTheme":
       return { theme: await dependencies.preferences.getTheme() };
     case "preferences.setTheme":

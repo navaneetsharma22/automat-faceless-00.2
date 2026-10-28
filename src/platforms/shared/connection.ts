@@ -77,6 +77,18 @@ export function providerTabFromUrl(
   }
 }
 
+export function isSameProviderTargetUrl(
+  selected: Pick<ProviderTab, "id" | "title" | "provider" | "canonicalTarget">,
+  rawUrl: string | undefined,
+): boolean {
+  const current = providerTabFromUrl(selected.id, selected.title, rawUrl);
+  return Boolean(
+    current &&
+      current.provider === selected.provider &&
+      current.canonicalTarget === selected.canonicalTarget,
+  );
+}
+
 export function attachToSelectedTab(
   provider: ProviderName,
   selected: ProviderTab,
@@ -91,6 +103,36 @@ export function attachToSelectedTab(
   });
   attachmentTasks.set(key, task);
   return task;
+}
+
+export async function verifyPersistedTarget(
+  provider: ProviderName,
+  target: { tabId: number; canonicalTarget: string },
+  port: ConnectionPort,
+): Promise<ConnectionResult> {
+  let selected: ProviderTab | undefined;
+  try {
+    selected = await port.getTab(target.tabId);
+  } catch {
+    return failed(
+      "failed",
+      "Chrome could not read the previously selected tab. The target was not changed.",
+      "target_validation",
+    );
+  }
+  if (
+    !selected ||
+    selected.provider !== provider ||
+    selected.id !== target.tabId ||
+    selected.canonicalTarget !== target.canonicalTarget
+  ) {
+    return failed(
+      "wrong-target",
+      "The previously selected tab is closed or no longer matches its saved project. Select it again to reconnect.",
+      "target_validation",
+    );
+  }
+  return attachToSelectedTab(provider, selected, port);
 }
 
 async function attach(
