@@ -165,6 +165,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.connectionActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
 .connectionLabel {
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);

@@ -7,6 +7,7 @@ import { Notice } from "./components/Notice";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { SettingsConfirmation } from "./components/SettingsConfirmation";
 import { ToastHost, useToast } from "./components/ToastHost";
+import { BUILD_ID } from "../shared/buildInfo";
 import styles from "./Dashboard.module.css";
 import {
   type DownloadPreviewState,
@@ -179,22 +180,18 @@ function Dashboard() {
             </summary>
             <div className={styles.advancedContent}>
               <p>
-                This is a visual-only P01.3 demonstration. No import parsing,
-                queue, pairing, provider automation, OAuth, downloads, or scene
-                splitting is active.
+                Workspace assets and progress remain P01.3 demo data. The
+                connection panel is the source of current read-only target
+                status; it does not indicate generation capability.
               </p>
               <dl>
                 <div>
-                  <dt>Flow</dt>
-                  <dd>Not connected</dd>
-                </div>
-                <div>
-                  <dt>Vids</dt>
-                  <dd>Not connected</dd>
-                </div>
-                <div>
                   <dt>Build state</dt>
-                  <dd>Local UI preview</dd>
+                  <dd>{BUILD_ID}</dd>
+                </div>
+                <div>
+                  <dt>Provider actions</dt>
+                  <dd>Generation unavailable</dd>
                 </div>
               </dl>
             </div>

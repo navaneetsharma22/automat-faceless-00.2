@@ -1,3 +1,14 @@
 *.md
 /phases/
 node_modules/
+
+# Keep only the actively maintained project/status decisions visible to Git.
+!ARCHITECTURE.md
+!DATA_MODEL.md
+!PROJECT_STATUS.md
+!TECH_STACK.md
+!/phases/
+/phases/*
+!/phases/PHASE_02_FOUNDATION.md
+!docs/evidence/connection-proof.md
+!docs/evidence/connection-preservation.md

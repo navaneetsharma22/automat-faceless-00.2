@@ -3,9 +3,21 @@
   "name": "Automat Faceless",
   "version": "0.1.0",
   "description": "Automat Faceless extension baseline",
+  "minimum_chrome_version": "106",
+  "permissions": ["storage"],
   "optional_permissions": ["tabs", "scripting"],
   "optional_host_permissions": [
     "https://labs.google/*",
     "https://vids.google.com/*"
-  ]
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Automat Faceless"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  }
 }
