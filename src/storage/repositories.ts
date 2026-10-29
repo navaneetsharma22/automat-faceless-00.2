@@ -264,6 +264,7 @@ export class ExtensionRepositories {
     const record: SelectedTargetRecord = {
       ...input,
       verification: "unverified",
+      verificationBinding: undefined,
       reconnectEnabled: false,
       updatedAt: this.now(),
     };
@@ -314,17 +315,21 @@ export class ExtensionRepositories {
     });
   }
 
-  // Kept inside the extension-owned repository for a later fresh handshake.
-  async markTargetVerified(
-    provider: SelectedTargetRecord["provider"],
-    canonicalTarget: string,
+  async recordTargetVerification(
+    binding: NonNullable<SelectedTargetRecord["verificationBinding"]>,
   ): Promise<boolean> {
     return this.tables.transaction(["selectedTargets"], async () => {
-      const current = await this.tables.selectedTargets.get(provider);
-      if (!current || current.canonicalTarget !== canonicalTarget) return false;
+      const current = await this.tables.selectedTargets.get(binding.provider);
+      if (
+        !current ||
+        current.tabId !== binding.tabId ||
+        current.canonicalTarget !== binding.canonicalTarget
+      )
+        return false;
       await this.tables.selectedTargets.put({
         ...current,
         verification: "verified",
+        verificationBinding: binding,
         updatedAt: this.now(),
       });
       return true;
@@ -744,8 +749,7 @@ export class ExtensionRepositories {
         session.sessionId !== parsedEvent.data.sessionId ||
         parsedEvent.data.attemptId !== current.attemptId ||
         !current.resultBaseline ||
-        (!current.settingsConfirmation.declaredVariantCount &&
-          !structuralEvent)
+        (!current.settingsConfirmation.declaredVariantCount && !structuralEvent)
       ) {
         throw new FlowImageObservationRejectedError("session_not_active");
       }
@@ -787,7 +791,8 @@ export class ExtensionRepositories {
         parsedEvent.data,
         input.receivedAt,
       );
-      const structuralKind = "kind" in parsedEvent.data ? parsedEvent.data.kind : null;
+      const structuralKind =
+        "kind" in parsedEvent.data ? parsedEvent.data.kind : null;
       const structuralObservations = structuralEvent
         ? [
             ...(current.structuralObservations ?? []),
@@ -799,7 +804,9 @@ export class ExtensionRepositories {
         (structuralObservations.length > 64 ||
           JSON.stringify(structuralObservations).length > 512_000)
       ) {
-        throw new FlowImageObservationRejectedError("observation_evidence_limit");
+        throw new FlowImageObservationRejectedError(
+          "observation_evidence_limit",
+        );
       }
       if (reduction.outcome.status === "unknown" && !structuralEvent) {
         throw new FlowImageObservationRejectedError(

@@ -37,6 +37,11 @@ import type {
   ProviderName,
   ProviderTab,
 } from "../../platforms/shared/contracts";
+import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
+import {
+  CONNECTION_CAPABILITY,
+  CONNECTOR_PROTOCOL_VERSION,
+} from "../../platforms/shared/contracts";
 import { useToast } from "./ToastHost";
 import styles from "../Dashboard.module.css";
 
@@ -85,6 +90,34 @@ function connectionFailureDetail(
   result: Extract<ConnectionResult, { ok: false }>,
 ): string {
   return `${result.stage}: ${result.error}${result.handshakeDiagnostics ? formatHandshakeDiagnostics(result.handshakeDiagnostics) : ""}`;
+}
+
+async function persistConnectionVerification(
+  result: Extract<ConnectionResult, { ok: true }>,
+): Promise<void> {
+  const response = (await createChromeFoundationClient().request(
+    "connections.recordVerification",
+    {
+      provider: result.tab.provider,
+      tabId: result.tab.id,
+      canonicalTarget: result.tab.canonicalTarget,
+      projectId: result.tab.projectId,
+      frameId: 0,
+      documentId: result.documentId,
+      documentToken: result.documentToken,
+      extensionBuildId: BUILD_ID,
+      extensionProtocolVersion: PROTOCOL_VERSION,
+      connectorBuildId: BUILD_ID,
+      connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+      capability: CONNECTION_CAPABILITY,
+    },
+  )) as { recorded?: boolean; reason?: string | null };
+  if (!response.recorded) {
+    throw new Error(
+      response.reason ??
+        "The current document verification could not be saved.",
+    );
+  }
 }
 
 const initialStates = (): Record<ProviderName, ProviderState> => ({
@@ -259,6 +292,15 @@ export function ConnectionStatus() {
           }));
           return;
         }
+        await persistConnectionVerification(result);
+        if (
+          !isCurrentConnectionAttempt(
+            connectionRevision.current[provider],
+            attemptRevision,
+            reconnectEnabledRef.current[provider],
+          )
+        )
+          return;
         setTabs((current) => {
           const withoutTab = current.filter((tab) => tab.id !== result.tab.id);
           return [...withoutTab, result.tab];
@@ -753,6 +795,8 @@ export function ConnectionStatus() {
             }));
             return;
           }
+          await persistConnectionVerification(result);
+          if (connectionRevision.current[provider] !== attemptRevision) return;
           const reconnectWasEnabled = reconnectEnabledRef.current[provider];
           reconnectEnabledRef.current[provider] = true;
           let reconnectIntentError: string | undefined;

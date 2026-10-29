@@ -20,6 +20,21 @@ export type SelectedTargetRecord = {
   tabId: number;
   canonicalTarget: string;
   verification: "unverified" | "verified";
+  verificationBinding?: {
+    provider: "Flow" | "Vids";
+    tabId: number;
+    canonicalTarget: string;
+    projectId: string;
+    frameId: 0;
+    documentId: string;
+    documentToken: string;
+    extensionBuildId: string;
+    extensionProtocolVersion: number;
+    connectorBuildId: string;
+    connectorProtocolVersion: number;
+    capability: "read-only-connection-v1";
+    verifiedAt: number;
+  };
   reconnectEnabled?: boolean;
   updatedAt: number;
 };

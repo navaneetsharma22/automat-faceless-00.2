@@ -49,22 +49,90 @@ export function createFlowImageReadinessCheck(
 ): () => Promise<unknown> {
   return async () => {
     const selected = await repositories.getSelectedTarget("Flow");
-    const target =
-      selected?.verification === "verified"
-        ? flowTabFromUrl(
-            selected.tabId,
-            selected.canonicalTarget,
-            selected.canonicalTarget,
-          )
-        : undefined;
-    if (!target || typeof chrome === "undefined" || !chrome.scripting) {
-      return {
-        status: "blocked",
-        gates: { selectedTarget: "missing_or_unverified" },
-        attemptsCreated: 0,
-        confirmationConsumed: false,
-      };
-    }
+    const blocked = (
+      reason: string,
+      message: string,
+      gates: Record<string, string>,
+    ) => ({
+      status: "blocked",
+      reason,
+      message,
+      gates,
+      attemptsCreated: 0,
+      confirmationConsumed: false,
+      productionReceiptCreated: false,
+    });
+    if (!selected)
+      return blocked(
+        "no_selected_target",
+        "Select an already open Flow project in Connections, then connect it.",
+        { selectedTarget: "absent" },
+      );
+    const verification = selected.verificationBinding;
+    if (!verification && selected.verification !== "verified")
+      return blocked(
+        "saved_target_unverified",
+        "The Flow project is saved but has no successful connection record. Choose Connect in Connections.",
+        { selectedTarget: "saved_unverified", verification: "binding_missing" },
+      );
+    if (!verification)
+      return blocked(
+        "verification_binding_missing",
+        "Reconnect to Flow so the extension can save a document-bound verification.",
+        { verification: "binding_missing" },
+      );
+    const target = flowTabFromUrl(
+      selected.tabId,
+      selected.canonicalTarget,
+      selected.canonicalTarget,
+    );
+    if (!target)
+      return blocked(
+        "selected_target_invalid",
+        "Select a supported Flow project URL in Connections, then connect it.",
+        { selectedTarget: "route_unrecognized" },
+      );
+    if (
+      verification.provider !== "Flow" ||
+      verification.tabId !== selected.tabId ||
+      verification.canonicalTarget !== selected.canonicalTarget ||
+      verification.projectId !== target.projectId
+    )
+      return blocked(
+        "verification_selection_mismatch",
+        "The saved verification belongs to a different Flow tab or project. Select the intended project and connect again.",
+        { verification: "selection_mismatch" },
+      );
+    if (
+      verification.extensionBuildId !== BUILD_ID ||
+      verification.connectorBuildId !== BUILD_ID
+    )
+      return blocked(
+        "verification_stale_build",
+        "The verification came from another extension or connector build. Reconnect with the currently loaded package.",
+        { verification: "stale_build" },
+      );
+    if (
+      verification.extensionProtocolVersion !== PROTOCOL_VERSION ||
+      verification.connectorProtocolVersion !== 1
+    )
+      return blocked(
+        "verification_stale_protocol",
+        "The verification uses an older connection protocol. Reconnect using the current extension package.",
+        { verification: "stale_protocol" },
+      );
+    if (verification.capability !== "read-only-connection-v1")
+      return blocked(
+        "verification_capability_missing",
+        "The selected connection did not confirm the required read-only capability. Connect to a supported Flow project.",
+        { verification: "capability_missing" },
+      );
+    if (typeof chrome === "undefined" || !chrome.scripting)
+      return blocked(
+        "readiness_capability_missing",
+        "Chrome document inspection is unavailable. Open the packaged extension dashboard and check its scripting permission.",
+        { capability: "scripting_unavailable" },
+      );
     const url = new URL(target.canonicalTarget);
     const projectId =
       url.hostname === "flow.google.com"
@@ -73,12 +141,11 @@ export function createFlowImageReadinessCheck(
           )?.[1]
         : /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(url.pathname)?.[1];
     if (!projectId)
-      return {
-        status: "blocked",
-        gates: { selectedTarget: "route_unrecognized" },
-        attemptsCreated: 0,
-        confirmationConsumed: false,
-      };
+      return blocked(
+        "selected_target_invalid",
+        "Select a supported Flow project URL in Connections, then connect it.",
+        { selectedTarget: "route_unrecognized" },
+      );
     let bound: chrome.scripting.InjectionResult[];
     try {
       bound = await chrome.scripting.executeScript({
@@ -86,28 +153,33 @@ export function createFlowImageReadinessCheck(
         func: () => ({ href: location.href, top: window.top === window }),
       });
     } catch {
-      return {
-        status: "blocked",
-        gates: { transport: "document_unavailable" },
-        attemptsCreated: 0,
-        confirmationConsumed: false,
-      };
+      return blocked(
+        "verification_transport_unavailable",
+        "Chrome could not inspect the selected Flow document. Check its access and reconnect without refreshing the provider page.",
+        { transport: "document_unavailable" },
+      );
     }
     const document = bound[0];
     if (
       !document?.documentId ||
+      document.documentId !== verification.documentId ||
       document.frameId !== 0 ||
       document.result?.top !== true ||
       flowTabFromUrl(target.id, "", document.result.href)?.canonicalTarget !==
         target.canonicalTarget
     ) {
-      return {
-        status: "blocked",
-        gates: { documentBinding: "stale_or_changed" },
-        attemptsCreated: 0,
-        confirmationConsumed: false,
-      };
+      return blocked(
+        "verification_stale_document",
+        "The Flow document changed since Connections verified it. Reconnect to the currently selected project.",
+        { documentBinding: "stale_or_changed" },
+      );
     }
+    if (selected.verification !== "verified")
+      return blocked(
+        "saved_target_unverified",
+        "The saved Flow connection must be freshly rechecked after worker startup. Choose Connect in Connections.",
+        { selectedTarget: "saved_unverified" },
+      );
     const bindingTarget = {
       tabId: target.id,
       documentIds: [document.documentId],
@@ -124,12 +196,11 @@ export function createFlowImageReadinessCheck(
         installed[0]?.frameId !== 0 ||
         !installed[0]?.result
       ) {
-        return {
-          status: "blocked",
-          gates: { analyzerInstall: "document_changed_or_failed" },
-          attemptsCreated: 0,
-          confirmationConsumed: false,
-        };
+        return blocked(
+          "readiness_analyzer_unavailable",
+          "The read-only Flow workspace check could not attach to the verified document. Reconnect and retry.",
+          { analyzerInstall: "document_changed_or_failed" },
+        );
       }
       const checked = await chrome.scripting.executeScript({
         target: bindingTarget,
@@ -257,26 +328,44 @@ export function createFlowImageReadinessCheck(
         checked[0]?.documentId !== document.documentId ||
         checked[0]?.frameId !== 0
       )
+        return blocked(
+          "verification_stale_document",
+          "The Flow document changed during readiness inspection. Reconnect and run the no-Generate check again.",
+          { documentBinding: "changed_during_check" },
+        );
+      const result = checked[0]?.result as Record<string, unknown> | undefined;
+      if (result?.status === "blocked")
         return {
-          status: "blocked",
-          gates: { documentBinding: "changed_during_check" },
+          ...result,
+          reason:
+            typeof result.reason === "string" && result.reason
+              ? result.reason
+              : "readiness_capture_blocked",
+          message:
+            typeof result.message === "string" && result.message
+              ? result.message
+              : "The read-only Flow capture could not establish a complete stable baseline. Resolve the reported capture gate and retry.",
           attemptsCreated: 0,
           confirmationConsumed: false,
+          productionReceiptCreated: false,
         };
       return {
-        ...(checked[0]?.result as object),
+        ...(result ?? {
+          status: "blocked",
+          reason: "readiness_result_missing",
+          message: "No readiness result was returned.",
+        }),
         documentBound: true,
         attemptsCreated: 0,
         confirmationConsumed: false,
         productionReceiptCreated: false,
       };
     } catch {
-      return {
-        status: "blocked",
-        gates: { observerTransport: "execute_script_failed" },
-        attemptsCreated: 0,
-        confirmationConsumed: false,
-      };
+      return blocked(
+        "readiness_transport_failed",
+        "Chrome could not complete the read-only observer check. Confirm extension access, reconnect, and retry.",
+        { observerTransport: "execute_script_failed" },
+      );
     }
   };
 }

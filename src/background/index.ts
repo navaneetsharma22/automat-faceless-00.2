@@ -13,6 +13,11 @@ import {
   ChromePreferenceRepository,
   ExtensionRepositories,
 } from "../storage/repositories";
+import { providerTabFromUrl } from "../platforms/shared/connection";
+import {
+  CONNECTION_CAPABILITY,
+  CONNECTOR_PROTOCOL_VERSION,
+} from "../platforms/shared/contracts";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -49,6 +54,61 @@ chrome.runtime.onMessage.addListener(
     flowImageGenerateOnce,
     flowImageReadiness,
     flowImageObservation: flowImageObservation.handle,
+    recordConnectionVerification: async (binding) => {
+      if (
+        binding.extensionBuildId !== BUILD_ID ||
+        binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+        binding.connectorBuildId !== BUILD_ID ||
+        binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
+        binding.capability !== CONNECTION_CAPABILITY
+      )
+        return { recorded: false, reason: "verification_metadata_mismatch" };
+      const target = providerTabFromUrl(
+        binding.tabId,
+        binding.canonicalTarget,
+        binding.canonicalTarget,
+      );
+      if (
+        !target ||
+        target.provider !== binding.provider ||
+        target.projectId !== binding.projectId
+      )
+        return { recorded: false, reason: "verification_selection_mismatch" };
+      try {
+        const tab = await chrome.tabs.get(binding.tabId);
+        if (
+          !tab.url ||
+          providerTabFromUrl(binding.tabId, "", tab.url)?.canonicalTarget !==
+            binding.canonicalTarget
+        )
+          return { recorded: false, reason: "verification_selection_mismatch" };
+        const current = await chrome.scripting.executeScript({
+          target: { tabId: binding.tabId, frameIds: [0] },
+          func: () => ({ top: window.top === window, href: location.href }),
+        });
+        const document = current[0];
+        if (
+          document?.frameId !== 0 ||
+          document.documentId !== binding.documentId ||
+          document.result?.top !== true ||
+          providerTabFromUrl(binding.tabId, "", document.result.href)
+            ?.canonicalTarget !== binding.canonicalTarget
+        )
+          return { recorded: false, reason: "verification_stale_document" };
+      } catch {
+        return {
+          recorded: false,
+          reason: "verification_transport_unavailable",
+        };
+      }
+      return {
+        recorded: await repositories.recordTargetVerification({
+          ...binding,
+          verifiedAt: Date.now(),
+        }),
+        reason: null,
+      };
+    },
   }),
 );
 registerDashboardAction(chrome);

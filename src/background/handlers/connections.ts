@@ -35,6 +35,12 @@ export type FoundationDependencies = {
     message: unknown,
     sender: ExtensionMessageSender,
   ) => Promise<unknown>;
+  recordConnectionVerification?: (
+    input: Extract<
+      AppRequest,
+      { type: "connections.recordVerification" }
+    >["payload"],
+  ) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -143,6 +149,15 @@ async function dispatch(
         reconnectEnabled: record.reconnectEnabled,
       };
     }
+    case "connections.recordVerification":
+      if (!dependencies.recordConnectionVerification) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "connection_verification_unavailable",
+          "Connection verification could not be persisted. Reconnect to the selected provider project.",
+        );
+      }
+      return dependencies.recordConnectionVerification(request.payload);
     case "connections.getSelection":
       return (
         (await dependencies.repositories.getSelectedTarget(

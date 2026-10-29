@@ -26,6 +26,20 @@ export type RequestPayloads = {
     tabId: number;
     canonicalTarget: string;
   };
+  "connections.recordVerification": {
+    provider: "Flow" | "Vids";
+    tabId: number;
+    canonicalTarget: string;
+    projectId: string;
+    frameId: 0;
+    documentId: string;
+    documentToken: string;
+    extensionBuildId: string;
+    extensionProtocolVersion: number;
+    connectorBuildId: string;
+    connectorProtocolVersion: number;
+    capability: "read-only-connection-v1";
+  };
   "connections.getSelection": { provider: "Flow" | "Vids" };
   "connections.setReconnectIntent": {
     provider: "Flow" | "Vids";
@@ -69,6 +83,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "promptBatch.put": 30_000,
   "promptBatch.get": 30_000,
   "connections.recordSelection": 5000,
+  "connections.recordVerification": 5000,
   "connections.getSelection": 5000,
   "connections.setReconnectIntent": 5000,
   "flow.prompt.fill": 20_000,
