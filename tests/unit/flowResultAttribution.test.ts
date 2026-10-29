@@ -371,6 +371,55 @@ describe("P05.1 Flow result baseline and conservative attribution", () => {
     ).toBe(false);
   });
 
+  it("stores deduplicated populated tile candidates as incomplete and non-attributable baseline evidence", () => {
+    const baseline = captureFlowResultBaseline(
+      {
+        kind: "flow_rendered_tile_candidates",
+        workspaceTag: "flow-project-page",
+        renderedTileCount: 2,
+        candidateIds: ["c".repeat(64)],
+        candidateMultiplicity: [
+          { candidateId: "c".repeat(64), renderedCopies: 2 },
+        ],
+        repeatedCandidateCount: 1,
+        unidentifiedImageCount: 0,
+        unrelatedImageCount: 1,
+        virtualized: true,
+        loadingSignalCount: 0,
+        captureGaps: [],
+        capturedAt: 123,
+      },
+      binding,
+      provenance,
+      2,
+    );
+    expect(baseline.completeness).toBe("incomplete");
+    expect(baseline.existingResultIdentities).toEqual([]);
+    expect(baseline.observation).toMatchObject({
+      profile: "flow_rendered_tile_candidates",
+      candidateMultiplicity: [
+        { candidateId: "c".repeat(64), renderedCopies: 2 },
+      ],
+      virtualized: true,
+    });
+    expect(
+      flowResultBaselineMatchesProfile(baseline, {
+        kind: "flow_rendered_tile_candidates",
+        renderedTileCount: 2,
+        candidateIds: ["c".repeat(64)],
+        candidateMultiplicity: [
+          { candidateId: "c".repeat(64), renderedCopies: 2 },
+        ],
+        repeatedCandidateCount: 1,
+        unidentifiedImageCount: 0,
+        unrelatedImageCount: 1,
+        virtualized: true,
+        loadingSignalCount: 0,
+        captureGaps: [],
+      }),
+    ).toBe(true);
+  });
+
   it("keeps historical attempts without P05.1 result baseline readable", () => {
     const hash = "b".repeat(64);
     const record = {

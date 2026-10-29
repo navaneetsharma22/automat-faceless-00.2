@@ -142,6 +142,13 @@ export function ImportPanel({
   const [flowGenerateResult, setFlowGenerateResult] = useState<
     FlowGenerateOutcomeMessage | undefined
   >();
+  const [flowReadinessPending, setFlowReadinessPending] = useState(false);
+  const [flowReadinessExportStatus, setFlowReadinessExportStatus] = useState<
+    string | undefined
+  >();
+  const [flowReadinessResult, setFlowReadinessResult] = useState<
+    Record<string, unknown> | undefined
+  >();
   const fileRequest = useRef(0);
   const lastToastId = useRef(0);
   const label = kind === "image" ? "Image" : "Video";
@@ -549,6 +556,111 @@ export function ImportPanel({
     }
   };
 
+  const checkFlowReadiness = async () => {
+    if (kind !== "image" || flowReadinessPending) return;
+    setFlowReadinessPending(true);
+    setFlowReadinessResult(undefined);
+    try {
+      const report = await persistenceClient.request(
+        "flow.image.checkReadiness",
+        {},
+      );
+      if (report && typeof report === "object")
+        setFlowReadinessResult(report as Record<string, unknown>);
+      else
+        setFlowReadinessResult({
+          status: "blocked",
+          reason: "invalid_worker_response",
+        });
+    } catch {
+      setFlowReadinessResult({
+        status: "blocked",
+        reason: "readiness_request_failed",
+      });
+    } finally {
+      setFlowReadinessPending(false);
+    }
+  };
+
+  const copyFlowReadiness = async () => {
+    if (!flowReadinessResult) return;
+    const sanitized = {
+      diagnostic: "flow-readiness-no-generate-v1",
+      status: flowReadinessResult.status ?? "unknown",
+      reason: flowReadinessResult.reason ?? null,
+      gates: flowReadinessResult.gates ?? null,
+      profile: flowReadinessResult.profile ?? null,
+      listenerRoots: flowReadinessResult.listenerRoots ?? null,
+      listenersAttached: flowReadinessResult.listenersAttached ?? false,
+      stableBaseline: flowReadinessResult.stableBaseline ?? false,
+      renderedTileCount: flowReadinessResult.renderedTileCount ?? null,
+      distinctCandidateCount:
+        flowReadinessResult.distinctCandidateCount ?? null,
+      repeatedCandidateCount:
+        flowReadinessResult.repeatedCandidateCount ?? null,
+      unidentifiedImageCount:
+        flowReadinessResult.unidentifiedImageCount ?? null,
+      unrelatedImageCount: flowReadinessResult.unrelatedImageCount ?? null,
+      virtualized: flowReadinessResult.virtualized ?? null,
+      loadingSignalCount: flowReadinessResult.loadingSignalCount ?? null,
+      captureGaps: flowReadinessResult.captureGaps ?? [],
+      inventoryComplete: false,
+      providerIdentityVerified: false,
+      terminalSemanticsSupported: false,
+      attemptsCreated: 0,
+      confirmationConsumed: false,
+      productionReceiptCreated: false,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(sanitized, null, 2));
+      setFlowReadinessExportStatus("copied");
+    } catch {
+      setFlowReadinessExportStatus("clipboard_unavailable");
+    }
+  };
+
+  const downloadFlowReadiness = () => {
+    if (!flowReadinessResult) return;
+    const report = {
+      diagnostic: "flow-readiness-no-generate-v1",
+      status: flowReadinessResult.status ?? "unknown",
+      reason: flowReadinessResult.reason ?? null,
+      gates: flowReadinessResult.gates ?? null,
+      profile: flowReadinessResult.profile ?? null,
+      listenerRoots: flowReadinessResult.listenerRoots ?? null,
+      listenersAttached: flowReadinessResult.listenersAttached ?? false,
+      stableBaseline: flowReadinessResult.stableBaseline ?? false,
+      renderedTileCount: flowReadinessResult.renderedTileCount ?? null,
+      distinctCandidateCount:
+        flowReadinessResult.distinctCandidateCount ?? null,
+      repeatedCandidateCount:
+        flowReadinessResult.repeatedCandidateCount ?? null,
+      unidentifiedImageCount:
+        flowReadinessResult.unidentifiedImageCount ?? null,
+      unrelatedImageCount: flowReadinessResult.unrelatedImageCount ?? null,
+      virtualized: flowReadinessResult.virtualized ?? null,
+      loadingSignalCount: flowReadinessResult.loadingSignalCount ?? null,
+      captureGaps: flowReadinessResult.captureGaps ?? [],
+      inventoryComplete: false,
+      providerIdentityVerified: false,
+      terminalSemanticsSupported: false,
+      attemptsCreated: 0,
+      confirmationConsumed: false,
+      productionReceiptCreated: false,
+    };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(report, null, 2)], {
+        type: "application/json",
+      }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `flow-readiness-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setFlowReadinessExportStatus("downloaded");
+  };
+
   return (
     <div
       className={styles.importPanel}
@@ -606,6 +718,50 @@ export function ImportPanel({
       </div>
       {kind === "image" ? (
         <div className={styles.sourceActions}>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={flowReadinessPending || flowGeneratePending}
+            loading={flowReadinessPending}
+            loadingLabel="Checking Flow readiness…"
+            onClick={() => void checkFlowReadiness()}
+          >
+            Check Flow readiness (no Generate)
+          </Button>
+          <p className={styles.subtleText}>
+            Point-in-time read-only scope and observer check. It does not
+            authorize Generate or change attempts/settings confirmation.
+          </p>
+          {flowReadinessResult ? (
+            <>
+              <Notice
+                kind={
+                  flowReadinessResult.status === "ready" ? "success" : "warning"
+                }
+              >
+                {`Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${String(flowReadinessResult.reason ?? "none")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory and identity remain incomplete/unverified; terminal completion is unsupported.`}
+              </Notice>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void copyFlowReadiness()}
+              >
+                Copy sanitized readiness report
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={downloadFlowReadiness}
+              >
+                Download sanitized readiness JSON
+              </Button>
+              {flowReadinessExportStatus ? (
+                <p className={styles.subtleText}>
+                  Report export: {flowReadinessExportStatus}.
+                </p>
+              ) : null}
+            </>
+          ) : null}
           <Button
             type="button"
             variant="secondary"

@@ -45,6 +45,35 @@ function createHarness() {
 }
 
 describe("extension message protocol", () => {
+  it("runs the no-Generate Flow readiness action without invoking generation or repository mutations", async () => {
+    const { repositories, preferences } = createHarness();
+    const generate = vi.fn(async () => ({ state: "dispatched" }));
+    const readiness = vi.fn(async () => ({
+      status: "blocked",
+      reason: "unsupported_baseline_profile",
+    }));
+    const listener = createConnectionMessageListener(extensionId, {
+      repositories,
+      preferences,
+      flowImageGenerateOnce: generate,
+      flowImageReadiness: readiness,
+    });
+    const response = await new Promise<AppResponse>((resolve) => {
+      listener(
+        makeRequest("flow.image.checkReadiness", {}, "readiness-check"),
+        dashboardSender,
+        resolve,
+      );
+    });
+    expect(response).toMatchObject({
+      ok: true,
+      data: { status: "blocked", reason: "unsupported_baseline_profile" },
+    });
+    expect(readiness).toHaveBeenCalledTimes(1);
+    expect(generate).not.toHaveBeenCalled();
+    expect(await repositories.getAllFlowImageAttempts()).toEqual([]);
+  });
+
   it("correlates concurrent asynchronous responses by request ID", async () => {
     const { repositories, transport } = createHarness();
     vi.spyOn(repositories, "savePromptDraft").mockImplementation(

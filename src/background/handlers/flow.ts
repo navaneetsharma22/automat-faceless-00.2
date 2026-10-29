@@ -41,6 +41,245 @@ import {
 } from "../../storage/repositories";
 import type { ProviderTab } from "../../platforms/shared/contracts";
 import { createFlowObservationInjection } from "../../platforms/flow/observationProducer";
+import { flowWorkspaceScopeAnalyzer } from "../../platforms/flow/workspaceScope";
+
+/** A separate read-only scope/listener check; it creates no attempt or receipt. */
+export function createFlowImageReadinessCheck(
+  repositories: ExtensionRepositories,
+): () => Promise<unknown> {
+  return async () => {
+    const selected = await repositories.getSelectedTarget("Flow");
+    const target =
+      selected?.verification === "verified"
+        ? flowTabFromUrl(
+            selected.tabId,
+            selected.canonicalTarget,
+            selected.canonicalTarget,
+          )
+        : undefined;
+    if (!target || typeof chrome === "undefined" || !chrome.scripting) {
+      return {
+        status: "blocked",
+        gates: { selectedTarget: "missing_or_unverified" },
+        attemptsCreated: 0,
+        confirmationConsumed: false,
+      };
+    }
+    const url = new URL(target.canonicalTarget);
+    const projectId =
+      url.hostname === "flow.google.com"
+        ? /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/?$/.exec(
+            url.pathname,
+          )?.[1]
+        : /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(url.pathname)?.[1];
+    if (!projectId)
+      return {
+        status: "blocked",
+        gates: { selectedTarget: "route_unrecognized" },
+        attemptsCreated: 0,
+        confirmationConsumed: false,
+      };
+    let bound: chrome.scripting.InjectionResult[];
+    try {
+      bound = await chrome.scripting.executeScript({
+        target: { tabId: target.id, frameIds: [0] },
+        func: () => ({ href: location.href, top: window.top === window }),
+      });
+    } catch {
+      return {
+        status: "blocked",
+        gates: { transport: "document_unavailable" },
+        attemptsCreated: 0,
+        confirmationConsumed: false,
+      };
+    }
+    const document = bound[0];
+    if (
+      !document?.documentId ||
+      document.frameId !== 0 ||
+      document.result?.top !== true ||
+      flowTabFromUrl(target.id, "", document.result.href)?.canonicalTarget !==
+        target.canonicalTarget
+    ) {
+      return {
+        status: "blocked",
+        gates: { documentBinding: "stale_or_changed" },
+        attemptsCreated: 0,
+        confirmationConsumed: false,
+      };
+    }
+    const bindingTarget = {
+      tabId: target.id,
+      documentIds: [document.documentId],
+    };
+    try {
+      const installed = await chrome.scripting.executeScript({
+        target: bindingTarget,
+        world: "ISOLATED",
+        func: flowWorkspaceScopeAnalyzer,
+        args: [target.canonicalTarget, projectId, true],
+      });
+      if (
+        installed[0]?.documentId !== document.documentId ||
+        installed[0]?.frameId !== 0 ||
+        !installed[0]?.result
+      ) {
+        return {
+          status: "blocked",
+          gates: { analyzerInstall: "document_changed_or_failed" },
+          attemptsCreated: 0,
+          confirmationConsumed: false,
+        };
+      }
+      const checked = await chrome.scripting.executeScript({
+        target: bindingTarget,
+        world: "ISOLATED",
+        func: async (canonicalTarget: string, expectedProjectId: string) => {
+          const key = "__AUTOMAT_FLOW_WORKSPACE_SCOPE_ANALYZER_V1__";
+          const analyzer = (
+            globalThis as typeof globalThis & {
+              [key]?: (
+                target: string,
+                projectId: string,
+              ) => Promise<{
+                status: string;
+                reason?: string;
+                profile: string;
+                captureGaps: string[];
+                project: Element;
+                roots: Array<Document | ShadowRoot | Element>;
+                tiles: HTMLElement[];
+                candidateIds: string[];
+                candidateMultiplicity: Array<{
+                  candidateId: string;
+                  renderedCopies: number;
+                }>;
+                repeatedCandidateCount: number;
+                unidentifiedImageCount: number;
+                unrelatedImageCount: number;
+                virtualized: boolean;
+                loadingSignalCount: number;
+              }>;
+            }
+          )[key];
+          if (!analyzer)
+            return { status: "blocked", reason: "analyzer_unavailable" };
+          const before = await analyzer(canonicalTarget, expectedProjectId);
+          if (before.status !== "ready")
+            return {
+              status: "blocked",
+              reason: before.status,
+              profile: before.profile,
+              captureGaps: before.captureGaps,
+            };
+          const records: MutationRecord[] = [];
+          let resourceEvent = false;
+          const roots: Array<Document | ShadowRoot | Element> = [
+            before.project,
+            ...before.roots.filter((root: Node) => root instanceof ShadowRoot),
+          ];
+          const observers: MutationObserver[] = [];
+          const onResource = (event: Event) => {
+            const target = event.target;
+            if (
+              target instanceof HTMLImageElement &&
+              before.tiles.some((tile: Element) => tile.contains(target))
+            )
+              resourceEvent = true;
+          };
+          try {
+            for (const root of roots) {
+              const observer = new MutationObserver((items) =>
+                records.push(...items),
+              );
+              observer.observe(root, {
+                subtree: true,
+                childList: true,
+                attributes: true,
+                characterData: true,
+              });
+              observers.push(observer);
+              root.addEventListener("load", onResource, true);
+              root.addEventListener("error", onResource, true);
+            }
+            const second = await analyzer(canonicalTarget, expectedProjectId);
+            for (const observer of observers)
+              records.push(...observer.takeRecords());
+            const stable =
+              second.status === "ready" &&
+              records.length === 0 &&
+              !resourceEvent &&
+              before.profile === second.profile &&
+              JSON.stringify(before.candidateMultiplicity) ===
+                JSON.stringify(second.candidateMultiplicity) &&
+              before.tiles.length === second.tiles.length &&
+              before.loadingSignalCount === second.loadingSignalCount;
+            return {
+              status: stable ? "ready" : "blocked",
+              reason: stable
+                ? null
+                : second.status !== "ready"
+                  ? second.status
+                  : "baseline_changed_during_arm",
+              profile: before.profile,
+              listenerRoots: roots.length,
+              listenersAttached: observers.length === roots.length,
+              stableBaseline: stable,
+              renderedTileCount: before.tiles.length,
+              distinctCandidateCount: before.candidateIds.length,
+              repeatedCandidateCount: before.repeatedCandidateCount,
+              unidentifiedImageCount: before.unidentifiedImageCount,
+              unrelatedImageCount: before.unrelatedImageCount,
+              virtualized: before.virtualized,
+              loadingSignalCount: before.loadingSignalCount,
+              captureGaps: before.captureGaps,
+              inventoryComplete: false,
+              providerIdentityVerified: false,
+              terminalSemanticsSupported: false,
+            };
+          } catch {
+            return {
+              status: "blocked",
+              reason: "observer_arm_failed",
+              listenersAttached: false,
+            };
+          } finally {
+            observers.forEach((observer) => observer.disconnect());
+            roots.forEach((root) => {
+              root.removeEventListener("load", onResource, true);
+              root.removeEventListener("error", onResource, true);
+            });
+          }
+        },
+        args: [target.canonicalTarget, projectId],
+      });
+      if (
+        checked[0]?.documentId !== document.documentId ||
+        checked[0]?.frameId !== 0
+      )
+        return {
+          status: "blocked",
+          gates: { documentBinding: "changed_during_check" },
+          attemptsCreated: 0,
+          confirmationConsumed: false,
+        };
+      return {
+        ...(checked[0]?.result as object),
+        documentBound: true,
+        attemptsCreated: 0,
+        confirmationConsumed: false,
+        productionReceiptCreated: false,
+      };
+    } catch {
+      return {
+        status: "blocked",
+        gates: { observerTransport: "execute_script_failed" },
+        attemptsCreated: 0,
+        confirmationConsumed: false,
+      };
+    }
+  };
+}
 
 type FlowSettingsConfirmation = {
   confirmationId: string;
@@ -81,7 +320,10 @@ export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
     tabId: number,
     binding: FlowImageObservationArmBinding,
   ) => Promise<
-    | { status: "started"; receipt: import("../../domain/jobs/results").FlowImageObservationArmReceipt }
+    | {
+        status: "started";
+        receipt: import("../../domain/jobs/results").FlowImageObservationArmReceipt;
+      }
     | { status: "unsupported" }
     | "started"
     | "unsupported"
@@ -142,36 +384,56 @@ export function createChromeFlowImageGenerateOncePort(
   };
   const readBoundFrame = async (tabId: number) =>
     bindBrowserDocument(tabId, await readFlowDocumentBinding(base, tabId));
+  const installScopeAnalyzer = async (
+    tabId: number,
+    binding: FlowImageObservationArmBinding,
+  ) => {
+    if (!chrome.scripting?.executeScript) return false;
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, documentIds: [binding.documentId] },
+      world: "ISOLATED",
+      func: flowWorkspaceScopeAnalyzer,
+      args: [binding.canonicalTarget, binding.projectId, true],
+    });
+    const result = results[0];
+    const diagnostic = result?.result as
+      { status?: string; captureGaps?: string[] } | undefined;
+    return Boolean(
+      result?.documentId === binding.documentId &&
+      result.frameId === binding.senderFrameId &&
+      diagnostic?.status === "ready" &&
+      diagnostic.captureGaps?.length === 0,
+    );
+  };
   const parseArmReceipt = (
     result: chrome.scripting.InjectionResult<unknown> | undefined,
     binding: FlowImageObservationArmBinding,
-  ): import("../../domain/jobs/results").FlowImageObservationArmReceipt | undefined => {
-    const receipt = result?.result as
-      | Record<string, unknown>
-      | undefined;
+  ):
+    | import("../../domain/jobs/results").FlowImageObservationArmReceipt
+    | undefined => {
+    const receipt = result?.result as Record<string, unknown> | undefined;
     if (!result || !receipt) return undefined;
     const validBinding = Boolean(
       result.documentId === binding.documentId &&
-        result.frameId === binding.senderFrameId &&
-        receipt.status === "armed" &&
-        receipt.attemptId === binding.attemptId &&
-        receipt.sessionId === binding.sessionId &&
-        receipt.projectId === binding.projectId &&
-        receipt.tabId === binding.tabId &&
-        receipt.frameId === binding.frameId &&
-        receipt.documentId === binding.documentId &&
-        receipt.sourceHash === binding.sourceHash &&
-        receipt.sourceSnapshotId === binding.sourceSnapshotId &&
-        receipt.sourceBaselineFingerprint ===
-          binding.sourceBaselineFingerprint &&
-        receipt.buildId === binding.buildId &&
-        receipt.protocolVersion === binding.protocolVersion &&
-        typeof receipt.captureFingerprint === "string" &&
-        /^[0-9a-f]{64}$/.test(receipt.captureFingerprint) &&
-        typeof receipt.listenerRoots === "number" &&
-        receipt.listenerRoots > 0 &&
-        receipt.baseline !== null &&
-        typeof receipt.baseline === "object",
+      result.frameId === binding.senderFrameId &&
+      receipt.status === "armed" &&
+      receipt.attemptId === binding.attemptId &&
+      receipt.sessionId === binding.sessionId &&
+      receipt.projectId === binding.projectId &&
+      receipt.tabId === binding.tabId &&
+      receipt.frameId === binding.frameId &&
+      receipt.documentId === binding.documentId &&
+      receipt.sourceHash === binding.sourceHash &&
+      receipt.sourceSnapshotId === binding.sourceSnapshotId &&
+      receipt.sourceBaselineFingerprint === binding.sourceBaselineFingerprint &&
+      receipt.buildId === binding.buildId &&
+      receipt.protocolVersion === binding.protocolVersion &&
+      typeof receipt.captureFingerprint === "string" &&
+      /^[0-9a-f]{64}$/.test(receipt.captureFingerprint) &&
+      typeof receipt.listenerRoots === "number" &&
+      receipt.listenerRoots > 0 &&
+      receipt.baseline !== null &&
+      typeof receipt.baseline === "object",
     );
     if (!validBinding) return undefined;
     const baseline = FlowStructuralSnapshotSchema.safeParse(receipt.baseline);
@@ -188,13 +450,23 @@ export function createChromeFlowImageGenerateOncePort(
         tileCount: baseline.data.tiles.length,
         mediaCandidateCount: baseline.data.mediaCandidates.length,
         identityCandidateCount: baseline.data.identityCandidates.length,
+        identityCandidatesTruncated: baseline.data.identityCandidatesTruncated,
         unidentifiedImageCount: baseline.data.unidentifiedImageCount,
         lifecycleSignalCount: baseline.data.lifecycleSignals.length,
         resourceEventCount: baseline.data.resourceEvents.length,
         captureGaps: baseline.data.captureGaps,
       },
     });
-    return armReceipt.success ? armReceipt.data : undefined;
+    if (!armReceipt.success) return undefined;
+    const capturedBaseline = baseline.data;
+    if (
+      !capturedBaseline.completeForRenderedScope ||
+      capturedBaseline.captureGaps.length > 0 ||
+      capturedBaseline.unidentifiedImageCount > 0 ||
+      capturedBaseline.identityCandidatesTruncated
+    )
+      return undefined;
+    return armReceipt.data;
   };
   return {
     ...base,
@@ -210,19 +482,32 @@ export function createChromeFlowImageGenerateOncePort(
       activateFlowImageGenerate(base, tabId, position.x, position.y),
     productionObservationSupported: true,
     startObservation: async (tabId, binding) => {
-      if (tabId !== binding.tabId || !chrome.scripting?.executeScript) return "unsupported";
+      if (tabId !== binding.tabId || !chrome.scripting?.executeScript)
+        return "unsupported";
       try {
+        if (!(await installScopeAnalyzer(tabId, binding))) return "unsupported";
         const results = await chrome.scripting.executeScript(
           createFlowObservationInjection(binding, "arm"),
         );
-        const receipt = parseArmReceipt(results[0], binding);
-        return receipt ? { status: "started", receipt } : { status: "unsupported" };
+        const armResult = results[0];
+        const receipt = parseArmReceipt(armResult, binding);
+        if (receipt) return { status: "started", receipt };
+        if (
+          (armResult?.result as { status?: string } | undefined)?.status ===
+          "armed"
+        ) {
+          await chrome.scripting.executeScript(
+            createFlowObservationInjection(binding, "stop"),
+          );
+        }
+        return { status: "unsupported" };
       } catch {
         return "unsupported";
       }
     },
     activateObservation: async (tabId, binding) => {
-      if (tabId !== binding.tabId || !chrome.scripting?.executeScript) return "unsupported";
+      if (tabId !== binding.tabId || !chrome.scripting?.executeScript)
+        return "unsupported";
       try {
         const results = await chrome.scripting.executeScript(
           createFlowObservationInjection(binding, "activate"),
@@ -230,7 +515,8 @@ export function createChromeFlowImageGenerateOncePort(
         const result = results[0];
         return result?.documentId === binding.documentId &&
           result.frameId === binding.senderFrameId &&
-          (result.result as { status?: string; sequence?: number } | undefined)?.status === "active" &&
+          (result.result as { status?: string; sequence?: number } | undefined)
+            ?.status === "active" &&
           (result.result as { sequence?: number } | undefined)?.sequence === 1
           ? "started"
           : "unsupported";
@@ -239,7 +525,8 @@ export function createChromeFlowImageGenerateOncePort(
       }
     },
     resumeObservation: async (tabId, binding) => {
-      if (tabId !== binding.tabId || !chrome.scripting?.executeScript) return "unsupported";
+      if (tabId !== binding.tabId || !chrome.scripting?.executeScript)
+        return "unsupported";
       try {
         const results = await chrome.scripting.executeScript(
           createFlowObservationInjection(binding, "resume"),
@@ -247,7 +534,8 @@ export function createChromeFlowImageGenerateOncePort(
         const result = results[0];
         return result?.documentId === binding.documentId &&
           result.frameId === binding.senderFrameId &&
-          (result.result as { status?: string } | undefined)?.status === "resumed"
+          (result.result as { status?: string } | undefined)?.status ===
+            "resumed"
           ? "resumed"
           : "unsupported";
       } catch {
@@ -777,30 +1065,32 @@ export function createFlowImageGenerateOnce(
         deadlineAt: now() + 5 * 60_000,
         maxEvents: 64,
         profileSupport: observationProfileSupport,
-        status: observationProfileSupport !== "unsupported"
-          ? ("arming" as const)
-          : ("unsupported" as const),
+        status:
+          observationProfileSupport !== "unsupported"
+            ? ("arming" as const)
+            : ("unsupported" as const),
         lastSequence: 0,
         reconciliationCount: 0,
       };
-      const resultOutcome = observationProfileSupport !== "unsupported"
-        ? {
-            status: "awaiting_evidence" as const,
-            declaredVariantCount:
-              input.settingsConfirmation.declaredVariantCount,
-            observedSucceededCount: 0,
-            observedFailedCount: 0,
-            updatedAt: now(),
-          }
-        : {
-            status: "unknown" as const,
-            reason: "live_profile_unsupported" as const,
-            declaredVariantCount:
-              input.settingsConfirmation.declaredVariantCount,
-            observedSucceededCount: 0,
-            observedFailedCount: 0,
-            updatedAt: now(),
-          };
+      const resultOutcome =
+        observationProfileSupport !== "unsupported"
+          ? {
+              status: "awaiting_evidence" as const,
+              declaredVariantCount:
+                input.settingsConfirmation.declaredVariantCount,
+              observedSucceededCount: 0,
+              observedFailedCount: 0,
+              updatedAt: now(),
+            }
+          : {
+              status: "unknown" as const,
+              reason: "live_profile_unsupported" as const,
+              declaredVariantCount:
+                input.settingsConfirmation.declaredVariantCount,
+              observedSucceededCount: 0,
+              observedFailedCount: 0,
+              updatedAt: now(),
+            };
       const buttonId = discovery.buttonObjectId!;
       currentStage = "preflight";
       if (!(await currentFlowBinding(port, selected, target, frame))) {
@@ -878,7 +1168,8 @@ export function createFlowImageGenerateOnce(
           provider: attempt.provider,
           projectId: attempt.projectId,
           canonicalTarget:
-            attempt.settingsConfirmation.canonicalTarget ?? selected.canonicalTarget,
+            attempt.settingsConfirmation.canonicalTarget ??
+            selected.canonicalTarget,
           tabId: attempt.tabId,
           frameId: attempt.frameId,
           loaderId: attempt.loaderId,
@@ -892,26 +1183,40 @@ export function createFlowImageGenerateOnce(
           protocolVersion: attempt.protocolVersion,
         };
         observationArmBinding = armBinding;
-        const armed = await port.startObservation(
-          attempt.tabId,
-          armBinding,
-        );
-        const armReceipt =
+        const armed = await port.startObservation(attempt.tabId, armBinding);
+        const armReceiptResult =
           typeof armed === "object" && armed.status === "started"
-            ? armed.receipt
+            ? FlowImageObservationArmReceiptSchema.safeParse(armed.receipt)
             : undefined;
+        const armReceipt =
+          armReceiptResult?.success === true
+            ? armReceiptResult.data
+            : undefined;
+        const armReceiptMatchesAttempt = Boolean(
+          armReceipt &&
+          armReceipt.sourceBaselineFingerprint ===
+            armBinding.sourceBaselineFingerprint &&
+          armReceipt.listenerRootCount > 0 &&
+          armReceipt.baseline.completeForRenderedScope &&
+          armReceipt.baseline.captureGaps.length === 0 &&
+          armReceipt.baseline.unidentifiedImageCount === 0 &&
+          !armReceipt.baseline.identityCandidatesTruncated,
+        );
+        observationArmed =
+          armed === "started" ||
+          (typeof armed === "object" && armed.status === "started");
         if (
           (armed !== "started" &&
             !(typeof armed === "object" && armed.status === "started")) ||
-          (observationSession.profileSupport === "production_observation_only" &&
-            !armReceipt)
+          (observationSession.profileSupport ===
+            "production_observation_only" &&
+            !armReceiptMatchesAttempt)
         ) {
           return failBefore(
             "observation_start_unsupported",
             "The bound Flow observer could not start. Generate was not activated.",
           );
         }
-        observationArmed = true;
         attempt =
           await dependencies.repositories.updateFlowImageObservationSession({
             attemptId: attempt.attemptId,

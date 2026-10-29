@@ -69,6 +69,46 @@ const flowImageObservationSchema = z.discriminatedUnion("profile", [
     .strict(),
   z
     .object({
+      profile: z.literal("flow_rendered_tile_candidates"),
+      profileVersion: z.literal(1),
+      renderedTileCount: z.number().int().positive().max(100),
+      candidateIds: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(500),
+      candidateMultiplicity: z
+        .array(
+          z
+            .object({
+              candidateId: z.string().regex(/^[0-9a-f]{64}$/),
+              renderedCopies: z.number().int().positive().max(1000),
+            })
+            .strict(),
+        )
+        .max(500),
+      repeatedCandidateCount: z.number().int().nonnegative().max(10_000),
+      unidentifiedImageCount: z.number().int().nonnegative().max(1000),
+      unrelatedImageCount: z.number().int().nonnegative().max(10_000),
+      virtualized: z.boolean(),
+      loadingSignalCount: z.number().int().nonnegative().max(10_000),
+      captureGaps: z.array(z.string().min(1).max(64)).max(16),
+    })
+    .strict()
+    .superRefine((observation, context) => {
+      const uniqueIds = new Set(observation.candidateIds);
+      const multiplicityIds = observation.candidateMultiplicity.map(
+        (candidate) => candidate.candidateId,
+      );
+      if (
+        uniqueIds.size !== observation.candidateIds.length ||
+        multiplicityIds.length !== uniqueIds.size ||
+        multiplicityIds.some((candidateId) => !uniqueIds.has(candidateId))
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "rendered_candidate_baseline_must_be_deduplicated",
+        });
+      }
+    }),
+  z
+    .object({
       profile: z.literal("flow_labelled_results_region"),
       profileVersion: z.literal(1),
       regionLabel: z
@@ -107,6 +147,7 @@ export const FlowImageObservationArmReceiptSchema = z
         tileCount: z.number().int().nonnegative().max(100),
         mediaCandidateCount: z.number().int().nonnegative().max(500),
         identityCandidateCount: z.number().int().nonnegative().max(500),
+        identityCandidatesTruncated: z.boolean().default(false),
         unidentifiedImageCount: z.number().int().nonnegative().max(1000),
         lifecycleSignalCount: z.number().int().nonnegative().max(500),
         resourceEventCount: z.number().int().nonnegative().max(100),
@@ -197,7 +238,9 @@ const FlowStructuralMediaCandidateSchema = z
 
 const FlowStructuralIdentityCandidateSchema = z
   .object({
-    carrierToken: z.string().regex(/^(?:tile|media|marker|identity)-[0-9]{1,6}$/),
+    carrierToken: z
+      .string()
+      .regex(/^(?:tile|media|marker|identity)-[0-9]{1,6}$/),
     carrierTag: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
     carrierRelation: z.enum(["tile", "descendant", "ancestor"]),
     attributeName: z.string().regex(/^[a-z][a-z0-9:_-]{0,63}$/),
@@ -267,13 +310,18 @@ const FlowStructuralLifecycleSignalSchema = z
       "alert",
     ]),
     scope: z.enum(["project", "tile"]),
-    tileToken: z.string().regex(/^tile-[0-9]{1,6}$/).nullable(),
+    tileToken: z
+      .string()
+      .regex(/^tile-[0-9]{1,6}$/)
+      .nullable(),
     visible: z.boolean(),
     evidence: z.array(FlowStructuralMarkerEvidenceSchema).max(12),
   })
   .strict()
   .refine((marker) =>
-    marker.scope === "tile" ? marker.tileToken !== null : marker.tileToken === null,
+    marker.scope === "tile"
+      ? marker.tileToken !== null
+      : marker.tileToken === null,
   );
 
 export const FlowStructuralSnapshotSchema = z
@@ -290,7 +338,10 @@ export const FlowStructuralSnapshotSchema = z
         z
           .object({
             mediaToken: z.string().regex(/^media-[0-9]{1,6}$/),
-            tileToken: z.string().regex(/^tile-[0-9]{1,6}$/).nullable(),
+            tileToken: z
+              .string()
+              .regex(/^tile-[0-9]{1,6}$/)
+              .nullable(),
             type: z.enum(["load", "error"]),
             complete: z.boolean(),
             naturalWidth: z.number().int().nonnegative().max(100_000),
@@ -518,12 +569,14 @@ export const FlowImageResultBaselineSchema = z
           "provider_database_emptiness_not_proven",
           "provider_result_identity_contract_not_live_verified",
           "result_card_identity_not_observed",
+          "rendered_candidate_identity_unverified",
+          "rendered_tile_inventory_incomplete",
           "media_count_is_not_unique_asset_count",
           "closed_shadow_roots_and_other_documents_not_inspected",
         ]),
       )
       .min(1)
-      .max(6),
+      .max(8),
   })
   .strict()
   .refine(
@@ -684,7 +737,9 @@ export function flowImageResultBaselineFingerprintInput(
   return stableJson(baseline);
 }
 
-export function flowStructuralSnapshotFingerprintInput(snapshot: unknown): string {
+export function flowStructuralSnapshotFingerprintInput(
+  snapshot: unknown,
+): string {
   return stableJson(snapshot);
 }
 
@@ -735,11 +790,11 @@ export function reduceFlowImageObservation(
     return unknown(
       !bindingMatches
         ? "binding_changed"
-      : event.kind === "observer_lost"
-        ? "observation_lost"
-        : event.kind === "observer_timed_out"
-          ? "observation_timeout"
-          : "ownership_ambiguous",
+        : event.kind === "observer_lost"
+          ? "observation_lost"
+          : event.kind === "observer_timed_out"
+            ? "observation_timeout"
+            : "ownership_ambiguous",
     );
   }
   const declaration = baseline.variantDeclaration;
@@ -909,12 +964,27 @@ export function flowResultBaselineMatchesProfile(
         visibleResultCardCount: 0;
         loadingMarkerCount: 0;
       }
-    | { regionLabel: string; mediaCount: number },
+    | { regionLabel: string; mediaCount: number }
+    | {
+        kind: "flow_rendered_tile_candidates";
+        renderedTileCount: number;
+        candidateIds: string[];
+        candidateMultiplicity: Array<{
+          candidateId: string;
+          renderedCopies: number;
+        }>;
+        repeatedCandidateCount: number;
+        unidentifiedImageCount: number;
+        unrelatedImageCount: number;
+        virtualized: boolean;
+        loadingSignalCount: number;
+        captureGaps: string[];
+      },
 ): boolean {
   if (!baseline) return false;
   const parsed = FlowImageResultBaselineSchema.safeParse(baseline);
   if (!parsed.success) return false;
-  if ("kind" in profile) {
+  if ("kind" in profile && profile.kind === "flow_empty_workspace_ui") {
     return (
       parsed.data.observation.profile === "flow_empty_workspace_ui" &&
       parsed.data.observation.markerCount === profile.markerCount &&
@@ -922,6 +992,32 @@ export function flowResultBaselineMatchesProfile(
       parsed.data.observation.visibleResultCardCount ===
         profile.visibleResultCardCount &&
       parsed.data.observation.loadingMarkerCount === profile.loadingMarkerCount
+    );
+  }
+  if ("kind" in profile && profile.kind === "flow_rendered_tile_candidates") {
+    const observation = parsed.data.observation;
+    if (observation.profile !== "flow_rendered_tile_candidates") return false;
+    const sorted = (
+      entries: Array<{ candidateId: string; renderedCopies: number }>,
+    ) =>
+      [...entries]
+        .sort((left, right) =>
+          left.candidateId.localeCompare(right.candidateId),
+        )
+        .map((entry) => `${entry.candidateId}:${entry.renderedCopies}`)
+        .join("|");
+    return (
+      observation.renderedTileCount === profile.renderedTileCount &&
+      JSON.stringify([...observation.candidateIds].sort()) ===
+        JSON.stringify([...profile.candidateIds].sort()) &&
+      observation.repeatedCandidateCount === profile.repeatedCandidateCount &&
+      observation.unidentifiedImageCount === profile.unidentifiedImageCount &&
+      observation.unrelatedImageCount === profile.unrelatedImageCount &&
+      observation.virtualized === profile.virtualized &&
+      observation.loadingSignalCount === profile.loadingSignalCount &&
+      observation.captureGaps.join("|") === profile.captureGaps.join("|") &&
+      sorted(observation.candidateMultiplicity) ===
+        sorted(profile.candidateMultiplicity)
     );
   }
   return (

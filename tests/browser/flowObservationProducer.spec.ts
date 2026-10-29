@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { flowImageObservationProducer } from "../../src/platforms/flow/observationProducer";
+import { flowWorkspaceScopeAnalyzer } from "../../src/platforms/flow/workspaceScope";
+import { flowImageRuntimeExpression } from "../../src/platforms/flow/images";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -16,6 +18,19 @@ test("production isolated-world producer binds, records structural candidates, a
     route.fulfill({ status: 200, contentType: "text/html", body: fixture }),
   );
   await page.goto("https://flow.google.com/project/synthetic-project");
+  await page.evaluate(
+    ({ source }) => {
+      const analyzer = (0, eval)(`(${source})`) as (
+        ...args: unknown[]
+      ) => Promise<unknown>;
+      return analyzer(
+        "https://flow.google.com/project/synthetic-project",
+        "synthetic-project",
+        true,
+      );
+    },
+    { source: flowWorkspaceScopeAnalyzer.toString() },
+  );
   const binding = {
     workspaceId: "default",
     batchId: "import:default:image",
@@ -203,6 +218,158 @@ test("production isolated-world producer binds, records structural candidates, a
   expect(loss?.snapshot.captureGaps).toContain("project_binding_changed");
 });
 
+test("shared workspace resolver records populated rendered baseline without identity claims", async ({
+  page,
+}) => {
+  const fixture = await readFile(fixturePath, "utf8");
+  await page.route("https://flow.google.com/**", (route) =>
+    route.fulfill({ status: 200, contentType: "text/html", body: fixture }),
+  );
+  await page.goto("https://flow.google.com/project/synthetic-project");
+  const source = flowWorkspaceScopeAnalyzer.toString();
+  const analyze = () =>
+    page.evaluate(
+      async ({ source }) => {
+        const analyzer = (0, eval)(`(${source})`) as (
+          target?: string,
+          projectId?: string,
+        ) => Promise<{
+          status: string;
+          profile: string;
+          candidateIds: string[];
+          candidateMultiplicity: Array<{
+            candidateId: string;
+            renderedCopies: number;
+          }>;
+          repeatedCandidateCount: number;
+          unrelatedImageCount: number;
+          virtualized: boolean;
+          loadingSignalCount: number;
+          captureGaps: string[];
+        }>;
+        return analyzer(
+          "https://flow.google.com/project/synthetic-project",
+          "synthetic-project",
+        );
+      },
+      { source },
+    );
+  await page.evaluate(() => {
+    const project = document.querySelector("flow-project-page")!;
+    const original = project.querySelector("flow-image-tile")!;
+    project
+      .querySelector("flow-tile-container")!
+      .append(original.cloneNode(true));
+    const unrelated = document.createElement("img");
+    project.append(unrelated);
+  });
+  const populated = await analyze();
+  expect(populated).toMatchObject({
+    status: "ready",
+    profile: "populated_tiles",
+    repeatedCandidateCount: 1,
+    unrelatedImageCount: 1,
+    virtualized: true,
+    captureGaps: [],
+  });
+  expect(
+    populated.candidateMultiplicity.map((entry) => entry.renderedCopies).sort(),
+  ).toEqual([1, 2]);
+  expect(populated.candidateIds).toHaveLength(2);
+  const discovery = await page.evaluate(async (expression) => {
+    return (0, eval)(expression) as Promise<{
+      observation: string;
+      baseline?: {
+        kind?: string;
+        candidateIds?: string[];
+        candidateMultiplicity?: Array<{ renderedCopies: number }>;
+      };
+    }>;
+  }, flowImageRuntimeExpression("synthetic prompt text must not be returned"));
+  expect(discovery.observation).toBe("ready");
+  expect(discovery.baseline?.kind).toBe("flow_rendered_tile_candidates");
+  expect(discovery.baseline?.candidateIds).toEqual(populated.candidateIds);
+  expect(
+    discovery.baseline?.candidateMultiplicity
+      ?.map((entry) => entry.renderedCopies)
+      .sort(),
+  ).toEqual([1, 2]);
+  await page.evaluate(() => {
+    const loading = document.createElement("div");
+    loading.setAttribute("data-state", "loading");
+    loading.style.height = "2px";
+    document.querySelector("flow-project-page")!.append(loading);
+  });
+  expect(await analyze()).toMatchObject({
+    status: "workspace_busy",
+    loadingSignalCount: 1,
+  });
+  await page.evaluate(() =>
+    document
+      .querySelector("flow-project-page")!
+      .append(document.createElement("flow-project-page")),
+  );
+  expect(await analyze()).toMatchObject({ status: "project_ambiguous" });
+});
+
+test("shared workspace resolver distinguishes the supported empty marker and refuses a changed project route", async ({
+  page,
+}) => {
+  const emptyFixture = `<!doctype html><style>flow-project-page,flow-base-prompt-box,flow-rich-text-editor{display:block}div[contenteditable]{height:20px}</style><flow-project-page><flow-base-prompt-box><flow-rich-text-editor><div contenteditable="true" role="textbox"></div></flow-rich-text-editor></flow-base-prompt-box><div style="height:10px">Start creating or drop media</div></flow-project-page>`;
+  await page.route("https://flow.google.com/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: emptyFixture,
+    }),
+  );
+  await page.goto("https://flow.google.com/project/synthetic-project");
+  const source = flowWorkspaceScopeAnalyzer.toString();
+  const result = await page.evaluate(
+    async ({ source }) => {
+      const analyzer = (0, eval)(`(${source})`) as (
+        target?: string,
+        projectId?: string,
+      ) => Promise<{ status: string; profile: string; candidateIds: string[] }>;
+      return analyzer(
+        "https://flow.google.com/project/synthetic-project",
+        "synthetic-project",
+      );
+    },
+    { source },
+  );
+  expect(result).toMatchObject({
+    status: "ready",
+    profile: "empty_marker",
+    candidateIds: [],
+  });
+  const discovery = await page.evaluate(async (expression) => {
+    return (0, eval)(expression) as Promise<{
+      observation: string;
+      baseline?: { kind?: string };
+    }>;
+  }, flowImageRuntimeExpression(""));
+  expect(discovery).toMatchObject({
+    observation: "ready",
+    baseline: { kind: "flow_empty_workspace_ui" },
+  });
+  const changed = await page.evaluate(
+    async ({ source }) => {
+      history.pushState({}, "", "/project/other-project");
+      const analyzer = (0, eval)(`(${source})`) as (
+        target?: string,
+        projectId?: string,
+      ) => Promise<{ status: string }>;
+      return analyzer(
+        "https://flow.google.com/project/synthetic-project",
+        "synthetic-project",
+      );
+    },
+    { source },
+  );
+  expect(changed.status).toBe("not_flow_route");
+});
+
 test("production observer refuses an ambiguous project/composer context without emitting evidence", async ({
   page,
 }) => {
@@ -211,6 +378,19 @@ test("production observer refuses an ambiguous project/composer context without 
     route.fulfill({ status: 200, contentType: "text/html", body: fixture }),
   );
   await page.goto("https://flow.google.com/project/synthetic-project");
+  await page.evaluate(
+    ({ source }) => {
+      const analyzer = (0, eval)(`(${source})`) as (
+        ...args: unknown[]
+      ) => Promise<unknown>;
+      return analyzer(
+        "https://flow.google.com/project/synthetic-project",
+        "synthetic-project",
+        true,
+      );
+    },
+    { source: flowWorkspaceScopeAnalyzer.toString() },
+  );
   const binding = {
     workspaceId: "default",
     batchId: "import:default:image",
@@ -263,6 +443,19 @@ test("production observer refuses a baseline that mutates while listeners are ar
     route.fulfill({ status: 200, contentType: "text/html", body: fixture }),
   );
   await page.goto("https://flow.google.com/project/synthetic-project");
+  await page.evaluate(
+    ({ source }) => {
+      const analyzer = (0, eval)(`(${source})`) as (
+        ...args: unknown[]
+      ) => Promise<unknown>;
+      return analyzer(
+        "https://flow.google.com/project/synthetic-project",
+        "synthetic-project",
+        true,
+      );
+    },
+    { source: flowWorkspaceScopeAnalyzer.toString() },
+  );
   const binding = {
     workspaceId: "default",
     batchId: "import:default:image",
@@ -303,16 +496,17 @@ test("production observer refuses a baseline that mutates while listeners are ar
       };
       const subtle = crypto.subtle;
       const digest = subtle.digest.bind(subtle);
-      let mutated = false;
+      let digestCalls = 0;
       Object.defineProperty(subtle, "digest", {
         configurable: true,
         value: async (...args: Parameters<SubtleCrypto["digest"]>) => {
           const result = await digest(...args);
-          if (!mutated) {
-            mutated = true;
+          digestCalls += 1;
+          if (digestCalls === 3) {
             document
               .querySelector("flow-image-tile")
-              ?.setAttribute("data-state", "loading");
+              ?.querySelector("img")
+              ?.setAttribute("data-media-id", "recycled-candidate");
           }
           return result;
         },

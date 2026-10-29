@@ -251,6 +251,46 @@ export const FlowImageAttemptRecordSchema = z
             capturedAt: z.number().finite().nonnegative(),
           })
           .strict(),
+        z
+          .object({
+            kind: z.literal("flow_rendered_tile_candidates"),
+            workspaceTag: z.literal("flow-project-page"),
+            renderedTileCount: z.number().int().positive().max(100),
+            candidateIds: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(500),
+            candidateMultiplicity: z
+              .array(
+                z
+                  .object({
+                    candidateId: z.string().regex(/^[0-9a-f]{64}$/),
+                    renderedCopies: z.number().int().positive().max(1000),
+                  })
+                  .strict(),
+              )
+              .max(500),
+            repeatedCandidateCount: z.number().int().nonnegative().max(10_000),
+            unidentifiedImageCount: z.number().int().nonnegative().max(1000),
+            unrelatedImageCount: z.number().int().nonnegative().max(10_000),
+            virtualized: z.boolean(),
+            loadingSignalCount: z.number().int().nonnegative().max(10_000),
+            captureGaps: z.array(z.string().min(1).max(64)).max(16),
+            capturedAt: z.number().finite().nonnegative(),
+          })
+          .strict()
+          .superRefine((baseline, context) => {
+            const ids = new Set(baseline.candidateIds);
+            if (
+              ids.size !== baseline.candidateIds.length ||
+              baseline.candidateMultiplicity.length !== ids.size ||
+              baseline.candidateMultiplicity.some(
+                (candidate) => !ids.has(candidate.candidateId),
+              )
+            ) {
+              context.addIssue({
+                code: "custom",
+                message: "rendered_candidate_baseline_must_be_deduplicated",
+              });
+            }
+          }),
       ])
       .optional(),
     resultBaseline: FlowImageResultBaselineSchema.optional(),
@@ -413,6 +453,10 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
         settingsConfirmation: FlowSettingsConfirmationSchema,
       })
       .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.image.checkReadiness"),
+    payload: z.object({}).strict(),
   }),
   requestBase.extend({
     type: z.literal("preferences.getTheme"),

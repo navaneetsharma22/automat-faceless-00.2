@@ -20,9 +20,29 @@ export type FlowEmptyWorkspaceBaseline = {
   capturedAt: number;
 };
 
+export type FlowRenderedTileCandidateBaseline = {
+  kind: "flow_rendered_tile_candidates";
+  workspaceTag: "flow-project-page";
+  renderedTileCount: number;
+  candidateIds: string[];
+  candidateMultiplicity: Array<{
+    candidateId: string;
+    renderedCopies: number;
+  }>;
+  repeatedCandidateCount: number;
+  unidentifiedImageCount: number;
+  unrelatedImageCount: number;
+  virtualized: boolean;
+  loadingSignalCount: number;
+  captureGaps: string[];
+  capturedAt: number;
+};
+
 /** P04 UI observations are retained without claiming result identity. */
 export type FlowImageBaseline =
-  FlowImageGalleryBaseline | FlowEmptyWorkspaceBaseline;
+  | FlowImageGalleryBaseline
+  | FlowEmptyWorkspaceBaseline
+  | FlowRenderedTileCandidateBaseline;
 
 export type FlowResultBaselineBinding = FlowImageResultBaseline["binding"];
 
@@ -36,7 +56,10 @@ export function captureFlowResultBaseline(
   provenance: { buildId: string; protocolVersion: number },
   declaredVariantCount?: number,
 ): FlowImageResultBaseline {
-  const emptyProfile = "kind" in profile;
+  const isEmpty =
+    "kind" in profile && profile.kind === "flow_empty_workspace_ui";
+  const isPopulated =
+    "kind" in profile && profile.kind === "flow_rendered_tile_candidates";
   const baseline: FlowImageResultBaseline = {
     schemaVersion: 1,
     binding,
@@ -46,7 +69,7 @@ export function captureFlowResultBaseline(
       buildId: provenance.buildId,
       protocolVersion: provenance.protocolVersion,
     },
-    observation: emptyProfile
+    observation: isEmpty
       ? {
           profile: "flow_empty_workspace_ui",
           profileVersion: 1,
@@ -57,19 +80,44 @@ export function captureFlowResultBaseline(
           visibleResultCardCount: profile.visibleResultCardCount,
           loadingMarkerCount: profile.loadingMarkerCount,
         }
-      : {
-          profile: "flow_labelled_results_region",
-          profileVersion: 1,
-          regionLabel: profile.regionLabel,
-          observedMediaCount: profile.mediaCount,
-        },
-    completeness: emptyProfile
-      ? "complete_for_observed_empty_ui"
-      : "incomplete",
+      : isPopulated
+        ? {
+            profile: "flow_rendered_tile_candidates",
+            profileVersion: 1,
+            renderedTileCount: profile.renderedTileCount,
+            candidateIds: profile.candidateIds,
+            candidateMultiplicity: profile.candidateMultiplicity,
+            repeatedCandidateCount: profile.repeatedCandidateCount,
+            unidentifiedImageCount: profile.unidentifiedImageCount,
+            unrelatedImageCount: profile.unrelatedImageCount,
+            virtualized: profile.virtualized,
+            loadingSignalCount: profile.loadingSignalCount,
+            captureGaps: profile.captureGaps,
+          }
+        : "regionLabel" in profile
+          ? {
+              profile: "flow_labelled_results_region",
+              profileVersion: 1,
+              regionLabel: profile.regionLabel,
+              observedMediaCount: profile.mediaCount,
+            }
+          : {
+              profile: "flow_labelled_results_region",
+              profileVersion: 1,
+              regionLabel: "unknown",
+              observedMediaCount: 0,
+            },
+    completeness: isEmpty ? "complete_for_observed_empty_ui" : "incomplete",
     existingResultIdentities: [],
     excludedObservations: {
-      count: emptyProfile ? 0 : profile.mediaCount,
-      reasons: emptyProfile
+      count: isEmpty
+        ? 0
+        : isPopulated
+          ? profile.candidateIds.length
+          : "mediaCount" in profile
+            ? profile.mediaCount
+            : 0,
+      reasons: isEmpty
         ? []
         : [
             "stable_provider_identity_unavailable",
@@ -84,19 +132,27 @@ export function captureFlowResultBaseline(
             count: declaredVariantCount,
             source: "validated_settings_confirmation",
           },
-    limitations: emptyProfile
+    limitations: isEmpty
       ? [
           "selected_workspace_scope_only",
           "provider_database_emptiness_not_proven",
           "provider_result_identity_contract_not_live_verified",
           "closed_shadow_roots_and_other_documents_not_inspected",
         ]
-      : [
-          "provider_result_identity_contract_not_live_verified",
-          "result_card_identity_not_observed",
-          "media_count_is_not_unique_asset_count",
-          "closed_shadow_roots_and_other_documents_not_inspected",
-        ],
+      : isPopulated
+        ? [
+            "provider_result_identity_contract_not_live_verified",
+            "result_card_identity_not_observed",
+            "rendered_candidate_identity_unverified",
+            "rendered_tile_inventory_incomplete",
+            "closed_shadow_roots_and_other_documents_not_inspected",
+          ]
+        : [
+            "provider_result_identity_contract_not_live_verified",
+            "result_card_identity_not_observed",
+            "media_count_is_not_unique_asset_count",
+            "closed_shadow_roots_and_other_documents_not_inspected",
+          ],
   };
   return FlowImageResultBaselineSchema.parse(baseline);
 }

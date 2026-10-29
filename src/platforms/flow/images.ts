@@ -1,6 +1,8 @@
 import { flowComposerRuntime, readFlowEditorRuntime } from "./composer";
 import type { FlowPromptEntryPort } from "./promptEntry";
 import type { FlowImageBaseline } from "./observer";
+import { flowWorkspaceScopeAnalyzer } from "./workspaceScope";
+import type { FlowWorkspaceScopeAnalysis } from "./workspaceScope";
 
 export type FlowDocumentBinding = {
   frameId: string;
@@ -39,8 +41,45 @@ export async function flowImageRuntime(
   mode: "inspect" | "button" = "inspect",
   composerRuntime = flowComposerRuntime,
   readText = readFlowEditorRuntime,
+  scopeRuntime?: () => Promise<FlowWorkspaceScopeAnalysis>,
 ): Promise<FlowGenerateDiscovery | HTMLElement | null> {
-  const editor = composerRuntime("", true, readText);
+  let sharedScope: FlowWorkspaceScopeAnalysis | undefined;
+  if (scopeRuntime) {
+    try {
+      sharedScope = await scopeRuntime();
+    } catch {
+      sharedScope = undefined;
+    }
+  }
+  const editor = sharedScope
+    ? sharedScope.status === "ready" ||
+      sharedScope.status === "workspace_busy" ||
+      sharedScope.status === "baseline_ambiguous"
+      ? sharedScope.editor
+      : null
+    : composerRuntime("", true, readText);
+  if (sharedScope && !editor) {
+    return {
+      composer:
+        sharedScope.status === "project_ambiguous" ||
+        sharedScope.status === "composer_ambiguous"
+          ? "ambiguous"
+          : sharedScope.status === "project_missing" ||
+              sharedScope.status === "composer_missing"
+            ? "missing"
+            : "unsupported",
+      exactPrompt: false,
+      actualCodeUnits: 0,
+      generate: "missing",
+      observation:
+        sharedScope.status === "document_scan_truncated" ||
+        sharedScope.status === "project_scan_truncated" ||
+        sharedScope.status === "tile_scan_truncated"
+          ? "unsupported"
+          : "missing",
+      generationAvailable: false,
+    };
+  }
   if (!(editor instanceof HTMLElement)) {
     const rawDiscovery = composerRuntime("", false, readText);
     const discovery =
@@ -86,7 +125,7 @@ export async function flowImageRuntime(
     };
   }
   const boundary = richEditor
-    ? richBoundary
+    ? (sharedScope?.composer ?? richBoundary)
     : editor.closest<HTMLElement>(
         'form, [role="form"], [role="group"], [role="region"], [data-composer]',
       );
@@ -157,6 +196,62 @@ export async function flowImageRuntime(
       actualCodeUnits: 0,
       generate: "missing",
       observation: "missing",
+      generationAvailable: false,
+    };
+  }
+  if (sharedScope) {
+    const baselineAt = Date.now();
+    const baseline: FlowImageBaseline | undefined =
+      sharedScope.profile === "populated_tiles"
+        ? {
+            kind: "flow_rendered_tile_candidates",
+            workspaceTag: "flow-project-page",
+            renderedTileCount: sharedScope.tiles.length,
+            candidateIds: sharedScope.candidateIds,
+            candidateMultiplicity: sharedScope.candidateMultiplicity,
+            repeatedCandidateCount: sharedScope.repeatedCandidateCount,
+            unidentifiedImageCount: sharedScope.unidentifiedImageCount,
+            unrelatedImageCount: sharedScope.unrelatedImageCount,
+            virtualized: sharedScope.virtualized,
+            loadingSignalCount: sharedScope.loadingSignalCount,
+            captureGaps: sharedScope.captureGaps,
+            capturedAt: baselineAt,
+          }
+        : sharedScope.profile === "empty_marker"
+          ? {
+              kind: "flow_empty_workspace_ui",
+              workspaceTag: "flow-project-page",
+              markerPhrase: "Start creating or drop media",
+              markerCount: 1,
+              visibleMediaCount: 0,
+              visibleResultCardCount: 0,
+              loadingMarkerCount: 0,
+              capturedAt: baselineAt,
+            }
+          : sharedScope.profile === "labelled_region"
+            ? {
+                regionLabel: "Generated results",
+                mediaCount: sharedScope.labelledRegionMediaCount,
+                capturedAt: baselineAt,
+              }
+            : undefined;
+    return {
+      composer: "identified",
+      exactPrompt: currentText === expectedText,
+      actualCodeUnits: currentText.length,
+      generate,
+      observation:
+        sharedScope.status === "workspace_busy" ||
+        sharedScope.status === "incomplete_capture"
+          ? "unsupported"
+          : sharedScope.status === "ready" && baseline
+            ? "ready"
+            : sharedScope.status === "project_ambiguous" ||
+                sharedScope.status === "composer_ambiguous" ||
+                sharedScope.status === "baseline_ambiguous"
+              ? "ambiguous"
+              : "unsupported",
+      ...(baseline ? { baseline } : {}),
       generationAvailable: false,
     };
   }
@@ -364,7 +459,7 @@ export function flowImageRuntimeExpression(
   expectedText: string,
   mode: "inspect" | "button" = "inspect",
 ): string {
-  return `(${flowImageRuntime.toString()})(${JSON.stringify(expectedText)},${JSON.stringify(mode)},(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}))`;
+  return `(${flowImageRuntime.toString()})(${JSON.stringify(expectedText)},${JSON.stringify(mode)},(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}),async()=>(${flowWorkspaceScopeAnalyzer.toString()})())`;
 }
 
 function sameFlowImageBaseline(
@@ -373,17 +468,50 @@ function sameFlowImageBaseline(
 ): boolean {
   if (!current) return false;
   if ("kind" in current || "kind" in expected) {
-    return (
-      "kind" in current &&
-      "kind" in expected &&
-      current.kind === expected.kind &&
-      current.workspaceTag === expected.workspaceTag &&
-      current.markerPhrase === expected.markerPhrase &&
-      current.markerCount === expected.markerCount &&
-      current.visibleMediaCount === expected.visibleMediaCount &&
-      current.visibleResultCardCount === expected.visibleResultCardCount &&
-      current.loadingMarkerCount === expected.loadingMarkerCount
-    );
+    if (
+      !("kind" in current && "kind" in expected) ||
+      current.kind !== expected.kind
+    )
+      return false;
+    if (
+      current.kind === "flow_empty_workspace_ui" &&
+      expected.kind === current.kind
+    ) {
+      return (
+        current.workspaceTag === expected.workspaceTag &&
+        current.markerPhrase === expected.markerPhrase &&
+        current.markerCount === expected.markerCount &&
+        current.visibleMediaCount === expected.visibleMediaCount &&
+        current.visibleResultCardCount === expected.visibleResultCardCount &&
+        current.loadingMarkerCount === expected.loadingMarkerCount
+      );
+    }
+    if (
+      current.kind === "flow_rendered_tile_candidates" &&
+      expected.kind === current.kind
+    ) {
+      const sorted = (
+        entries: Array<{ candidateId: string; renderedCopies: number }>,
+      ) =>
+        [...entries]
+          .sort((left, right) =>
+            left.candidateId.localeCompare(right.candidateId),
+          )
+          .map((entry) => `${entry.candidateId}:${entry.renderedCopies}`)
+          .join("|");
+      return (
+        current.renderedTileCount === expected.renderedTileCount &&
+        current.repeatedCandidateCount === expected.repeatedCandidateCount &&
+        current.unidentifiedImageCount === expected.unidentifiedImageCount &&
+        current.unrelatedImageCount === expected.unrelatedImageCount &&
+        current.virtualized === expected.virtualized &&
+        current.loadingSignalCount === expected.loadingSignalCount &&
+        current.captureGaps.join("|") === expected.captureGaps.join("|") &&
+        sorted(current.candidateMultiplicity) ===
+          sorted(expected.candidateMultiplicity)
+      );
+    }
+    return false;
   }
   return (
     current.regionLabel === expected.regionLabel &&

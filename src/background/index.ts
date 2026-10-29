@@ -2,6 +2,7 @@ import { createConnectionMessageListener } from "./handlers/connections";
 import {
   createChromeFlowImageGenerateOncePort,
   createFlowImageGenerateOnceForWorker,
+  createFlowImageReadinessCheck,
   createSavedFlowPromptEntry,
 } from "./handlers/flow";
 import { createFlowImageObservationHandler } from "./handlers/observations";
@@ -24,6 +25,7 @@ const flowImageGenerateOnce = createFlowImageGenerateOnceForWorker(
   repositories,
   flowPort,
 );
+const flowImageReadiness = createFlowImageReadinessCheck(repositories);
 const flowImageObservation = createFlowImageObservationHandler({
   extensionId: chrome.runtime.id,
   repositories,
@@ -45,6 +47,7 @@ chrome.runtime.onMessage.addListener(
     ready: workerReady,
     flowPromptEntry,
     flowImageGenerateOnce,
+    flowImageReadiness,
     flowImageObservation: flowImageObservation.handle,
   }),
 );

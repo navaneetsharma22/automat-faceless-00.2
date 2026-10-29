@@ -44,6 +44,7 @@ export type RequestPayloads = {
       declaredVariantCount: number;
     };
   };
+  "flow.image.checkReadiness": Record<string, never>;
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };
 };
@@ -72,6 +73,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "connections.setReconnectIntent": 5000,
   "flow.prompt.fill": 20_000,
   "flow.image.generateOnce": 30_000,
+  "flow.image.checkReadiness": 15_000,
   "preferences.getTheme": 3000,
   "preferences.setTheme": 3000,
 };

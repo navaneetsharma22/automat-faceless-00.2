@@ -96,6 +96,14 @@ function makePort(
     observationProfileSupported?: boolean;
     productionObservationSupported?: boolean;
     omitProductionArmReceipt?: boolean;
+    productionArmSourceBaselineMismatch?: boolean;
+    productionArmListenerRoots?: number;
+    productionArmBaselineOverrides?: {
+      completeForRenderedScope?: boolean;
+      unidentifiedImageCount?: number;
+      identityCandidatesTruncated?: boolean;
+      captureGaps?: string[];
+    };
   } = {},
 ) {
   const selected = options.selection ?? {
@@ -153,19 +161,25 @@ function makePort(
           status: "started",
           receipt: {
             capturedAt: 1_050,
-            sourceBaselineFingerprint: "b".repeat(64),
+            sourceBaselineFingerprint:
+              options.productionArmSourceBaselineMismatch
+                ? "c".repeat(64)
+                : (binding as { sourceBaselineFingerprint: string })
+                    .sourceBaselineFingerprint,
             captureFingerprint: "a".repeat(64),
-            listenerRootCount: 1,
+            listenerRootCount: options.productionArmListenerRoots ?? 1,
             baseline: {
               completeForRenderedScope: true,
               virtualized: false,
               tileCount: 0,
               mediaCandidateCount: 0,
               identityCandidateCount: 0,
+              identityCandidatesTruncated: false,
               unidentifiedImageCount: 0,
               lifecycleSignalCount: 0,
               resourceEventCount: 0,
               captureGaps: [],
+              ...options.productionArmBaselineOverrides,
             },
           },
         };
@@ -544,6 +558,76 @@ describe("P04 durable Flow image Generate attempt", () => {
     });
     expect(test.fixture.activations).toBe(0);
     expect(attempt?.observationSession?.armReceipt).toBeUndefined();
+    expect(test.fixture.lifecycle).toContain("stop_observation");
+  });
+
+  it.each([
+    ["incomplete rendered baseline", { completeForRenderedScope: false }],
+    ["baseline capture gaps", { captureGaps: ["project_scan_truncated"] }],
+    ["unidentified images", { unidentifiedImageCount: 1 }],
+    ["truncated identity candidates", { identityCandidatesTruncated: true }],
+  ])(
+    "refuses production activation with %s in the arm receipt",
+    async (_label, baselineOverrides) => {
+      const test = await setup({
+        productionObservationSupported: true,
+        productionArmBaselineOverrides: baselineOverrides,
+      });
+
+      const result = await test.generate(test.payload);
+      const [attempt] = await test.repositories.getAllFlowImageAttempts();
+
+      expect(result).toMatchObject({
+        state: "failed-before-dispatch",
+        failureStage: "observer",
+        code: "observation_start_unsupported",
+        activationCount: 0,
+      });
+      expect(test.fixture.activations).toBe(0);
+      expect(attempt?.state).toBe("failed-before-dispatch");
+      expect(attempt?.observationSession?.armReceipt).toBeUndefined();
+      expect(test.fixture.lifecycle).not.toContain("activate");
+      expect(test.fixture.lifecycle).toContain("stop_observation");
+    },
+  );
+
+  it("refuses production activation when the arm receipt reports no attached listeners", async () => {
+    const test = await setup({
+      productionObservationSupported: true,
+      productionArmListenerRoots: 0,
+    });
+
+    const result = await test.generate(test.payload);
+    const [attempt] = await test.repositories.getAllFlowImageAttempts();
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      code: "observation_start_unsupported",
+      activationCount: 0,
+    });
+    expect(test.fixture.activations).toBe(0);
+    expect(attempt?.state).toBe("failed-before-dispatch");
+    expect(test.fixture.lifecycle).toContain("stop_observation");
+  });
+
+  it("refuses production activation when the arm receipt source baseline does not match the attempt", async () => {
+    const test = await setup({
+      productionObservationSupported: true,
+      productionArmSourceBaselineMismatch: true,
+    });
+
+    const result = await test.generate(test.payload);
+    const [attempt] = await test.repositories.getAllFlowImageAttempts();
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      failureStage: "observer",
+      code: "observation_start_unsupported",
+      activationCount: 0,
+    });
+    expect(test.fixture.activations).toBe(0);
+    expect(attempt?.state).toBe("failed-before-dispatch");
+    expect(test.fixture.lifecycle).toContain("stop_observation");
   });
 
   it("leaves a changed baseline before dispatch failed closed with no baseline-bound intent", async () => {

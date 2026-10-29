@@ -30,6 +30,7 @@ export type FoundationDependencies = {
   flowImageGenerateOnce?: (
     input: Extract<AppRequest, { type: "flow.image.generateOnce" }>["payload"],
   ) => Promise<unknown>;
+  flowImageReadiness?: () => Promise<unknown>;
   flowImageObservation?: (
     message: unknown,
     sender: ExtensionMessageSender,
@@ -173,6 +174,15 @@ async function dispatch(
         );
       }
       return dependencies.flowImageGenerateOnce(request.payload);
+    case "flow.image.checkReadiness":
+      if (!dependencies.flowImageReadiness) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "flow_readiness_unavailable",
+          "Flow readiness inspection is unavailable in this worker context.",
+        );
+      }
+      return dependencies.flowImageReadiness();
     case "preferences.getTheme":
       return { theme: await dependencies.preferences.getTheme() };
     case "preferences.setTheme":

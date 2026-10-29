@@ -57,6 +57,7 @@ test("dashboard inspection exports the durable arm receipt and structural eviden
           tileCount: 0,
           mediaCandidateCount: 0,
           identityCandidateCount: 0,
+          identityCandidatesTruncated: false,
           unidentifiedImageCount: 0,
           lifecycleSignalCount: 0,
           resourceEventCount: 0,

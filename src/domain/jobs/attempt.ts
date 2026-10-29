@@ -47,6 +47,23 @@ export type FlowImageAttemptBaseline =
       visibleResultCardCount: 0;
       loadingMarkerCount: 0;
       capturedAt: number;
+    }
+  | {
+      kind: "flow_rendered_tile_candidates";
+      workspaceTag: "flow-project-page";
+      renderedTileCount: number;
+      candidateIds: string[];
+      candidateMultiplicity: Array<{
+        candidateId: string;
+        renderedCopies: number;
+      }>;
+      repeatedCandidateCount: number;
+      unidentifiedImageCount: number;
+      unrelatedImageCount: number;
+      virtualized: boolean;
+      loadingSignalCount: number;
+      captureGaps: string[];
+      capturedAt: number;
     };
 
 export type FlowImageAttemptRecord = {
