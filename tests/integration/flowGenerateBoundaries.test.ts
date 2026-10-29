@@ -95,6 +95,7 @@ function makePort(
     observationArm?: "started" | "unsupported" | "failed";
     observationProfileSupported?: boolean;
     productionObservationSupported?: boolean;
+    omitProductionArmReceipt?: boolean;
   } = {},
 ) {
   const selected = options.selection ?? {
@@ -146,6 +147,29 @@ function makePort(
       observationBindings.push(binding);
       if (options.observationArm === "failed")
         throw new Error("fixture observer start failed");
+      if (options.productionObservationSupported) {
+        if (options.omitProductionArmReceipt) return "started";
+        return {
+          status: "started",
+          receipt: {
+            capturedAt: 1_050,
+            sourceBaselineFingerprint: "b".repeat(64),
+            captureFingerprint: "a".repeat(64),
+            listenerRootCount: 1,
+            baseline: {
+              completeForRenderedScope: true,
+              virtualized: false,
+              tileCount: 0,
+              mediaCandidateCount: 0,
+              identityCandidateCount: 0,
+              unidentifiedImageCount: 0,
+              lifecycleSignalCount: 0,
+              resourceEventCount: 0,
+              captureGaps: [],
+            },
+          },
+        };
+      }
       return options.observationArm ?? "started";
     },
     stopObservation: async () => {
@@ -472,12 +496,20 @@ describe("P04 durable Flow image Generate attempt", () => {
     const test = await setup({ productionObservationSupported: true });
     const result = await test.generate(test.payload);
     expect(result.state).toBe("dispatched");
+    const [attempt] = await test.repositories.getAllFlowImageAttempts();
+    expect(attempt?.observationSession?.armReceipt).toMatchObject({
+      capturedAt: 1_050,
+      sourceBaselineFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      captureFingerprint: "a".repeat(64),
+      listenerRootCount: 1,
+      baseline: { completeForRenderedScope: true, tileCount: 0 },
+    });
     expect(test.fixture.lifecycle.indexOf("start_observation")).toBeLessThan(
       test.fixture.lifecycle.indexOf("activate_observation"),
     );
-    expect(
-      test.fixture.lifecycle.indexOf("activate_observation"),
-    ).toBeLessThan(test.fixture.lifecycle.indexOf("activate"));
+    expect(test.fixture.lifecycle.indexOf("activate_observation")).toBeLessThan(
+      test.fixture.lifecycle.indexOf("activate"),
+    );
     expect(test.fixture.observationBindings[0]).toMatchObject({
       attemptId: "attempt-1",
       projectId: selectedTab.projectId,
@@ -496,6 +528,22 @@ describe("P04 durable Flow image Generate attempt", () => {
       buildId: BUILD_ID,
       protocolVersion: PROTOCOL_VERSION,
     });
+  });
+
+  it("refuses production activation when an observer arm receipt is missing", async () => {
+    const test = await setup({
+      productionObservationSupported: true,
+      omitProductionArmReceipt: true,
+    });
+    const result = await test.generate(test.payload);
+    const [attempt] = await test.repositories.getAllFlowImageAttempts();
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      code: "observation_start_unsupported",
+      activationCount: 0,
+    });
+    expect(test.fixture.activations).toBe(0);
+    expect(attempt?.observationSession?.armReceipt).toBeUndefined();
   });
 
   it("leaves a changed baseline before dispatch failed closed with no baseline-bound intent", async () => {
@@ -964,7 +1012,7 @@ describe("P04 durable Flow image Generate attempt", () => {
             }
           : {}),
         buildId: "test-build",
-        protocolVersion: 3,
+        protocolVersion: 4,
         settingsConfirmation: {
           confirmationId: `restart-confirm-${state}`,
           confirmedAt: at,

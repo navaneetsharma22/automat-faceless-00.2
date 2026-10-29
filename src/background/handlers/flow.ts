@@ -24,6 +24,8 @@ import {
 import { flowImagePromptSnapshotId } from "../../domain/batches/flowImagePromptSnapshot";
 import {
   flowImageResultBaselineFingerprintInput,
+  FlowImageObservationArmReceiptSchema,
+  FlowStructuralSnapshotSchema,
   flowResultBaselineMatchesAttempt,
   flowResultBaselineMatchesProfile,
   type FlowImageObservationArmBinding,
@@ -78,7 +80,12 @@ export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
   startObservation: (
     tabId: number,
     binding: FlowImageObservationArmBinding,
-  ) => Promise<"started" | "unsupported">;
+  ) => Promise<
+    | { status: "started"; receipt: import("../../domain/jobs/results").FlowImageObservationArmReceipt }
+    | { status: "unsupported" }
+    | "started"
+    | "unsupported"
+  >;
   stopObservation: (
     tabId: number,
     binding: FlowImageObservationArmBinding,
@@ -135,17 +142,18 @@ export function createChromeFlowImageGenerateOncePort(
   };
   const readBoundFrame = async (tabId: number) =>
     bindBrowserDocument(tabId, await readFlowDocumentBinding(base, tabId));
-  const matchesArmReceipt = (
+  const parseArmReceipt = (
     result: chrome.scripting.InjectionResult<unknown> | undefined,
     binding: FlowImageObservationArmBinding,
-  ) => {
+  ): import("../../domain/jobs/results").FlowImageObservationArmReceipt | undefined => {
     const receipt = result?.result as
       | Record<string, unknown>
       | undefined;
-    return Boolean(
-      result?.documentId === binding.documentId &&
+    if (!result || !receipt) return undefined;
+    const validBinding = Boolean(
+      result.documentId === binding.documentId &&
         result.frameId === binding.senderFrameId &&
-        receipt?.status === "armed" &&
+        receipt.status === "armed" &&
         receipt.attemptId === binding.attemptId &&
         receipt.sessionId === binding.sessionId &&
         receipt.projectId === binding.projectId &&
@@ -165,6 +173,28 @@ export function createChromeFlowImageGenerateOncePort(
         receipt.baseline !== null &&
         typeof receipt.baseline === "object",
     );
+    if (!validBinding) return undefined;
+    const baseline = FlowStructuralSnapshotSchema.safeParse(receipt.baseline);
+    if (!baseline.success || typeof receipt.capturedAt !== "number")
+      return undefined;
+    const armReceipt = FlowImageObservationArmReceiptSchema.safeParse({
+      capturedAt: receipt.capturedAt,
+      sourceBaselineFingerprint: receipt.sourceBaselineFingerprint,
+      captureFingerprint: receipt.captureFingerprint,
+      listenerRootCount: receipt.listenerRoots,
+      baseline: {
+        completeForRenderedScope: baseline.data.completeForRenderedScope,
+        virtualized: baseline.data.virtualized,
+        tileCount: baseline.data.tiles.length,
+        mediaCandidateCount: baseline.data.mediaCandidates.length,
+        identityCandidateCount: baseline.data.identityCandidates.length,
+        unidentifiedImageCount: baseline.data.unidentifiedImageCount,
+        lifecycleSignalCount: baseline.data.lifecycleSignals.length,
+        resourceEventCount: baseline.data.resourceEvents.length,
+        captureGaps: baseline.data.captureGaps,
+      },
+    });
+    return armReceipt.success ? armReceipt.data : undefined;
   };
   return {
     ...base,
@@ -185,7 +215,8 @@ export function createChromeFlowImageGenerateOncePort(
         const results = await chrome.scripting.executeScript(
           createFlowObservationInjection(binding, "arm"),
         );
-        return matchesArmReceipt(results[0], binding) ? "started" : "unsupported";
+        const receipt = parseArmReceipt(results[0], binding);
+        return receipt ? { status: "started", receipt } : { status: "unsupported" };
       } catch {
         return "unsupported";
       }
@@ -865,7 +896,16 @@ export function createFlowImageGenerateOnce(
           attempt.tabId,
           armBinding,
         );
-        if (armed !== "started") {
+        const armReceipt =
+          typeof armed === "object" && armed.status === "started"
+            ? armed.receipt
+            : undefined;
+        if (
+          (armed !== "started" &&
+            !(typeof armed === "object" && armed.status === "started")) ||
+          (observationSession.profileSupport === "production_observation_only" &&
+            !armReceipt)
+        ) {
           return failBefore(
             "observation_start_unsupported",
             "The bound Flow observer could not start. Generate was not activated.",
@@ -877,6 +917,7 @@ export function createFlowImageGenerateOnce(
             attemptId: attempt.attemptId,
             sessionId: observationSession.sessionId,
             sessionStatus: "active",
+            ...(armReceipt ? { armReceipt } : {}),
           });
         const activated = await port.activateObservation(
           attempt.tabId,

@@ -56,6 +56,7 @@ export async function flowImageObservationProducer(
       nextTile: 1,
       nextMedia: 1,
       nextMarker: 1,
+      nextIdentity: 1,
       sequence: 0,
       active: false,
       stopped: false,
@@ -107,6 +108,7 @@ export async function flowImageObservationProducer(
       );
       return {
         status: "armed",
+        capturedAt: Date.now(),
         attemptId: binding.attemptId,
         sessionId: binding.sessionId,
         projectId: binding.projectId,
@@ -179,7 +181,7 @@ type StructuralSnapshot = {
   completeForRenderedScope: boolean;
   virtualized: boolean;
   unidentifiedImageCount: number;
-  tiles: Array<{ tileToken: string; visible: boolean }>;
+  tiles: Array<{ tileToken: string; tag: "flow-image-tile"; visible: boolean }>;
   mediaCandidates: Array<{
     candidateId: string;
     mediaToken: string;
@@ -189,12 +191,23 @@ type StructuralSnapshot = {
     naturalWidth: number;
     naturalHeight: number;
   }>;
+  identityCandidates: Array<{
+    carrierToken: string;
+    carrierTag: string;
+    carrierRelation: "tile" | "descendant" | "ancestor";
+    attributeName: string;
+    category: string;
+    candidateId: string;
+  }>;
+  identityCandidatesTruncated: boolean;
   lifecycleSignals: Array<{
     markerToken: string;
+    markerTag: string;
     markerKind: string;
     scope: "project" | "tile";
     tileToken: string | null;
     visible: boolean;
+    evidence: Array<{ attributeName: string; signal: string }>;
   }>;
   captureGaps: string[];
   resourceEvents: Array<{
@@ -212,10 +225,14 @@ type ObserverState = {
   document: Document;
   project: Element;
   roots: Map<Document | ShadowRoot | Element, { observer: MutationObserver; listener: EventListener }>;
-  nodeTokens: WeakMap<Element, string>;
+  nodeTokens: WeakMap<
+    Element,
+    Partial<Record<"tile" | "media" | "marker" | "identity", string>>
+  >;
   nextTile: number;
   nextMedia: number;
   nextMarker: number;
+  nextIdentity: number;
   sequence: number;
   active: boolean;
   stopped: boolean;
@@ -388,12 +405,54 @@ async function captureSnapshot(
   const gaps = new Set<string>();
   const tiles = context.tiles.map((tile) => ({
     tileToken: token(state, tile, "tile"),
+    tag: "flow-image-tile" as const,
     visible: visible(tile),
   }));
   const tileElements = new Map(
     context.tiles.map((tile) => [tile, token(state, tile, "tile")]),
   );
   const mediaCandidates: StructuralSnapshot["mediaCandidates"] = [];
+  const identityCandidates: StructuralSnapshot["identityCandidates"] = [];
+  let identityCandidatesTruncated = false;
+  const identityCarriers = new Set<Element>();
+  for (const tile of context.tiles) {
+    identityCarriers.add(tile);
+    for (const element of scanRoots(tile).elements) identityCarriers.add(element);
+    for (const ancestor of composedPath(tile)) {
+      if (ancestor === context.project) break;
+      if (ancestor !== tile) identityCarriers.add(ancestor);
+    }
+  }
+  for (const carrier of identityCarriers) {
+    const relation = context.tiles.includes(carrier)
+      ? "tile"
+      : context.tiles.some((tile) => composedPath(tile).includes(carrier))
+        ? "ancestor"
+        : "descendant";
+    for (const attribute of Array.from(carrier.attributes)) {
+      const name = attribute.name.toLowerCase();
+      if (!isIdentityAttribute(name) || /account|profile|user|tier|billing|avatar/i.test(name)) continue;
+      const value = attribute.value.trim();
+      if (!value || value.length > 256 || /https?:\/\/|www\.|[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(value)) {
+        gaps.add("identity_candidate_excluded");
+        continue;
+      }
+      if (identityCandidates.length >= 500) {
+        identityCandidatesTruncated = true;
+        gaps.add("identity_candidates_truncated");
+        break;
+      }
+      identityCandidates.push({
+        carrierToken: token(state, carrier, "identity"),
+        carrierTag: carrier.localName,
+        carrierRelation: relation,
+        attributeName: name,
+        category: identityCategory(name),
+        candidateId: await hashText(value),
+      });
+    }
+    if (identityCandidatesTruncated) break;
+  }
   let unidentifiedImageCount = 0;
   for (const tile of context.tiles) {
     const tileScan = scanRoots(tile);
@@ -431,18 +490,21 @@ async function captureSnapshot(
   const lifecycleSignals: StructuralSnapshot["lifecycleSignals"] = [];
   const relevantElements = [context.project, ...context.projectScan.elements];
   for (const element of relevantElements) {
-    const kinds = markerKinds(element);
-    if (!kinds.length) continue;
+    const evidence = markerEvidence(element);
+    if (!evidence.length) continue;
+    const kinds = markerKinds(evidence);
     const nearestTile = composedPath(element).find(
       (node) => node.localName === "flow-image-tile" && tileElements.has(node),
     );
     for (const kind of kinds) {
       lifecycleSignals.push({
         markerToken: token(state, element, "marker"),
+        markerTag: element.localName,
         markerKind: kind,
         scope: nearestTile ? "tile" : "project",
         tileToken: nearestTile ? tileElements.get(nearestTile)! : null,
         visible: visible(element),
+        evidence,
       });
       if (lifecycleSignals.length > 500) throw new Error("marker_limit");
     }
@@ -457,33 +519,102 @@ async function captureSnapshot(
     unidentifiedImageCount,
     tiles,
     mediaCandidates,
+    identityCandidates,
+    identityCandidatesTruncated,
     resourceEvents: state.resourceEvents.splice(0, 100),
     lifecycleSignals,
     captureGaps: [...gaps].slice(0, 16),
   };
 }
 
-function markerKinds(element: Element): string[] {
-  const kinds = new Set<string>();
+function markerEvidence(
+  element: Element,
+): Array<{ attributeName: string; signal: string }> {
+  const evidence = new Map<string, { attributeName: string; signal: string }>();
+  const add = (attributeName: string, signal: string) => {
+    evidence.set(`${attributeName}:${signal}`, { attributeName, signal });
+  };
   const role = element.getAttribute("role");
-  const metadata = `${element.getAttribute("data-state") ?? ""} ${element.getAttribute("data-testid") ?? ""} ${element.getAttribute("class") ?? ""}`;
-  if (role === "progressbar") kinds.add("progressbar");
-  if (role === "status") kinds.add("status");
-  if (role === "alert") kinds.add("alert");
-  if (element.getAttribute("aria-busy") === "true") kinds.add("busy");
-  if (element.getAttribute("data-loading") === "true" || /loading|spinner|pending|progress/i.test(metadata)) kinds.add("loading");
-  if (/generating|processing/i.test(metadata)) kinds.add("processing");
-  if (/complete|completed|finished|success|ready|done/i.test(metadata)) kinds.add("completed_candidate");
-  if (element.hasAttribute("data-error") || /error|failed|failure|blocked|rejected/i.test(metadata)) kinds.add("error_candidate");
+  if (role === "progressbar" || role === "status" || role === "alert")
+    add("role", role);
+  if (element.getAttribute("aria-busy") === "true") add("aria-busy", "busy");
+  if (element.getAttribute("data-loading") === "true") add("data-loading", "loading");
+  if (element.hasAttribute("data-error")) add("data-error", "error");
+  const words = [
+    "loading", "spinner", "pending", "progress", "generating", "processing",
+    "complete", "completed", "finished", "success", "ready", "done", "error",
+    "failed", "failure", "blocked", "rejected",
+  ];
+  for (const name of ["data-state", "data-testid", "class"] as const) {
+    const value = element.getAttribute(name) ?? "";
+    for (const word of words)
+      if (value.toLowerCase().includes(word)) add(name, word);
+  }
+  return [...evidence.values()].slice(0, 12);
+}
+
+function markerKinds(
+  evidence: Array<{ attributeName: string; signal: string }>,
+): string[] {
+  const kinds = new Set<string>();
+  for (const signal of evidence.map((entry) => entry.signal)) {
+    if (["progressbar", "status", "alert", "busy", "loading"].includes(signal))
+      kinds.add(signal);
+    if (["generating", "processing"].includes(signal)) kinds.add("processing");
+    if (["complete", "completed", "finished", "success", "ready", "done"].includes(signal))
+      kinds.add("completed_candidate");
+    if (["error", "failed", "failure", "blocked", "rejected"].includes(signal))
+      kinds.add("error_candidate");
+  }
   return [...kinds];
 }
 
-function token(state: ObserverState, element: Element, kind: "tile" | "media" | "marker"): string {
-  let value = state.nodeTokens.get(element);
+function isIdentityAttribute(name: string): boolean {
+  return (
+    /^(?:id|data-[a-z0-9_-]*(?:id|key|uuid|asset|result|group|variant|generation|creation|media|image|output)[a-z0-9_-]*)$/i.test(
+      name,
+    ) ||
+    name === "data-testid" ||
+    name === "aria-labelledby" ||
+    name === "aria-describedby" ||
+    name === "aria-owns"
+  );
+}
+
+function identityCategory(name: string): string {
+  if (name === "id") return "dom_element_id_not_asset_proof";
+  if (["aria-labelledby", "aria-describedby", "aria-owns"].includes(name))
+    return "accessibility_reference_not_asset_proof";
+  if (name === "data-testid") return "test_or_dom_identifier_not_asset_proof";
+  if (/asset|media|image/i.test(name))
+    return "provider_asset_identity_candidate_unverified";
+  if (/variant/i.test(name))
+    return "provider_variant_identity_candidate_unverified";
+  if (/group|generation|creation/i.test(name))
+    return "provider_group_identity_candidate_unverified";
+  if (/result|output/i.test(name))
+    return "provider_result_identity_candidate_unverified";
+  return "other_data_identity_candidate_unverified";
+}
+
+function token(
+  state: ObserverState,
+  element: Element,
+  kind: "tile" | "media" | "marker" | "identity",
+): string {
+  const values = state.nodeTokens.get(element) ?? {};
+  let value = values[kind];
   if (!value) {
-    const index = kind === "tile" ? state.nextTile++ : kind === "media" ? state.nextMedia++ : state.nextMarker++;
+    const index = kind === "tile"
+      ? state.nextTile++
+      : kind === "media"
+        ? state.nextMedia++
+        : kind === "marker"
+          ? state.nextMarker++
+          : state.nextIdentity++;
     value = `${kind}-${index}`;
-    state.nodeTokens.set(element, value);
+    values[kind] = value;
+    state.nodeTokens.set(element, values);
   }
   return value;
 }

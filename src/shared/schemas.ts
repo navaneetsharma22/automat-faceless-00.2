@@ -9,6 +9,7 @@ import {
   FlowImageObservationOutcomeSchema,
   FlowImageObservationReceiptSchema,
   FlowImageObservationSessionSchema,
+  FlowStructuralObservationEventSchema,
   FlowImageResultLinkSchema,
   flowProviderResultIdentityKey,
   flowResultBaselineMatchesAttempt,
@@ -258,6 +259,10 @@ export const FlowImageAttemptRecordSchema = z
     observationReceipts: z
       .array(FlowImageObservationReceiptSchema)
       .max(128)
+      .optional(),
+    structuralObservations: z
+      .array(FlowStructuralObservationEventSchema)
+      .max(64)
       .optional(),
     resultOutcome: FlowImageObservationOutcomeSchema.optional(),
     events: z.array(flowImageAttemptEventSchema).min(1).max(24),

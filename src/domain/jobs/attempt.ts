@@ -3,6 +3,7 @@ import type {
   FlowImageObservationSession,
   FlowImageResultBaseline,
   FlowImageResultLink,
+  FlowStructuralObservationEvent,
 } from "./results";
 
 export const FLOW_IMAGE_ATTEMPT_STATES = [
@@ -91,6 +92,8 @@ export type FlowImageAttemptRecord = {
     fingerprint: string;
     receivedAt: number;
   }>;
+  /** Bounded page-derived structural payloads retained for read-only review. */
+  structuralObservations?: FlowStructuralObservationEvent[];
   resultOutcome?: FlowImageObservationOutcome;
   events: FlowImageAttemptEvent[];
   createdAt: number;

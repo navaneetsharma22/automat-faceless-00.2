@@ -94,6 +94,31 @@ const variantDeclarationSchema = z.discriminatedUnion("status", [
     .strict(),
 ]);
 
+export const FlowImageObservationArmReceiptSchema = z
+  .object({
+    capturedAt: z.number().finite().nonnegative(),
+    sourceBaselineFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    captureFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    listenerRootCount: z.number().int().positive().max(256),
+    baseline: z
+      .object({
+        completeForRenderedScope: z.boolean(),
+        virtualized: z.boolean(),
+        tileCount: z.number().int().nonnegative().max(100),
+        mediaCandidateCount: z.number().int().nonnegative().max(500),
+        identityCandidateCount: z.number().int().nonnegative().max(500),
+        unidentifiedImageCount: z.number().int().nonnegative().max(1000),
+        lifecycleSignalCount: z.number().int().nonnegative().max(500),
+        resourceEventCount: z.number().int().nonnegative().max(100),
+        captureGaps: z.array(z.string().min(1).max(64)).max(16),
+      })
+      .strict(),
+  })
+  .strict();
+export type FlowImageObservationArmReceipt = z.infer<
+  typeof FlowImageObservationArmReceiptSchema
+>;
+
 export const FlowImageObservationSessionSchema = z
   .object({
     sessionId: z.string().uuid(),
@@ -117,6 +142,7 @@ export const FlowImageObservationSessionSchema = z
     ]),
     lastSequence: z.number().int().nonnegative(),
     reconciliationCount: z.number().int().nonnegative().max(3),
+    armReceipt: FlowImageObservationArmReceiptSchema.optional(),
   })
   .strict()
   .refine((session) => session.deadlineAt > session.startedAt);
@@ -152,6 +178,7 @@ export type FlowImageObservationArmBinding = {
 const FlowStructuralTileSnapshotSchema = z
   .object({
     tileToken: z.string().regex(/^tile-[0-9]{1,6}$/),
+    tag: z.literal("flow-image-tile"),
     visible: z.boolean(),
   })
   .strict();
@@ -168,9 +195,67 @@ const FlowStructuralMediaCandidateSchema = z
   })
   .strict();
 
+const FlowStructuralIdentityCandidateSchema = z
+  .object({
+    carrierToken: z.string().regex(/^(?:tile|media|marker|identity)-[0-9]{1,6}$/),
+    carrierTag: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    carrierRelation: z.enum(["tile", "descendant", "ancestor"]),
+    attributeName: z.string().regex(/^[a-z][a-z0-9:_-]{0,63}$/),
+    category: z.enum([
+      "dom_element_id_not_asset_proof",
+      "accessibility_reference_not_asset_proof",
+      "test_or_dom_identifier_not_asset_proof",
+      "provider_asset_identity_candidate_unverified",
+      "provider_variant_identity_candidate_unverified",
+      "provider_group_identity_candidate_unverified",
+      "provider_result_identity_candidate_unverified",
+      "other_data_identity_candidate_unverified",
+    ]),
+    candidateId: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+
+const FlowStructuralMarkerEvidenceSchema = z
+  .object({
+    attributeName: z.enum([
+      "role",
+      "aria-busy",
+      "data-loading",
+      "data-error",
+      "data-state",
+      "data-testid",
+      "class",
+    ]),
+    signal: z.enum([
+      "progressbar",
+      "status",
+      "alert",
+      "busy",
+      "loading",
+      "spinner",
+      "pending",
+      "progress",
+      "generating",
+      "processing",
+      "complete",
+      "completed",
+      "finished",
+      "success",
+      "ready",
+      "done",
+      "error",
+      "failed",
+      "failure",
+      "blocked",
+      "rejected",
+    ]),
+  })
+  .strict();
+
 const FlowStructuralLifecycleSignalSchema = z
   .object({
     markerToken: z.string().regex(/^marker-[0-9]{1,6}$/),
+    markerTag: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
     markerKind: z.enum([
       "loading",
       "processing",
@@ -184,19 +269,22 @@ const FlowStructuralLifecycleSignalSchema = z
     scope: z.enum(["project", "tile"]),
     tileToken: z.string().regex(/^tile-[0-9]{1,6}$/).nullable(),
     visible: z.boolean(),
+    evidence: z.array(FlowStructuralMarkerEvidenceSchema).max(12),
   })
   .strict()
   .refine((marker) =>
     marker.scope === "tile" ? marker.tileToken !== null : marker.tileToken === null,
   );
 
-const FlowStructuralSnapshotSchema = z
+export const FlowStructuralSnapshotSchema = z
   .object({
     completeForRenderedScope: z.boolean(),
     virtualized: z.boolean(),
     unidentifiedImageCount: z.number().int().nonnegative().max(1000),
     tiles: z.array(FlowStructuralTileSnapshotSchema).max(100),
     mediaCandidates: z.array(FlowStructuralMediaCandidateSchema).max(500),
+    identityCandidates: z.array(FlowStructuralIdentityCandidateSchema).max(500),
+    identityCandidatesTruncated: z.boolean(),
     resourceEvents: z
       .array(
         z
@@ -221,6 +309,8 @@ const FlowStructuralSnapshotSchema = z
           "event_limit_reached",
           "duration_limit_reached",
           "media_identity_missing",
+          "identity_candidate_excluded",
+          "identity_candidates_truncated",
           "observer_detached",
           "document_binding_changed",
           "project_binding_changed",

@@ -37,7 +37,7 @@ test("production isolated-world producer binds, records structural candidates, a
     deadlineAt: Date.now() + 30_000,
     maxEvents: 12,
     buildId: "fixture-build",
-    protocolVersion: 3,
+    protocolVersion: 4,
   };
   const arm = await page.evaluate(
     ({ source, binding }) => {
@@ -91,6 +91,7 @@ test("production isolated-world producer binds, records structural candidates, a
 
   await page.evaluate(() => {
     const tile = document.createElement("flow-image-tile");
+    tile.setAttribute("data-generation-group-id", "fixture-private-group-id");
     const marker = document.createElement("div");
     marker.setAttribute("data-state", "loading");
     const image = document.createElement("img");
@@ -121,14 +122,22 @@ test("production isolated-world producer binds, records structural candidates, a
                   candidateId: string;
                   tileToken: string;
                 }>;
+                identityCandidates: Array<{
+                  attributeName: string;
+                  category: string;
+                  candidateId: string;
+                  carrierRelation: string;
+                }>;
                 resourceEvents: Array<{
                   type: string;
                   tileToken: string | null;
                 }>;
                 lifecycleSignals: Array<{
                   markerKind: string;
+                  markerTag: string;
                   scope: string;
                   tileToken: string | null;
+                  evidence: Array<{ attributeName: string; signal: string }>;
                 }>;
               };
               results?: unknown;
@@ -144,12 +153,26 @@ test("production isolated-world producer binds, records structural candidates, a
   );
   expect(changed).toBeDefined();
   expect(changed?.snapshot.lifecycleSignals).toContainEqual(
-    expect.objectContaining({ markerKind: "loading", scope: "tile" }),
+    expect.objectContaining({
+      markerKind: "loading",
+      markerTag: "div",
+      scope: "tile",
+      evidence: [{ attributeName: "data-state", signal: "loading" }],
+    }),
+  );
+  expect(changed?.snapshot.identityCandidates).toContainEqual(
+    expect.objectContaining({
+      attributeName: "data-generation-group-id",
+      category: "provider_group_identity_candidate_unverified",
+      carrierRelation: "tile",
+      candidateId: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }),
   );
   expect(changed?.snapshot.resourceEvents).toContainEqual(
     expect.objectContaining({ type: "load", tileToken: expect.any(String) }),
   );
   expect(JSON.stringify(changed)).not.toContain("fixture-private-media-id");
+  expect(JSON.stringify(changed)).not.toContain("fixture-private-group-id");
   expect(changed).not.toHaveProperty("results");
 
   await page.evaluate(() =>
@@ -209,7 +232,7 @@ test("production observer refuses an ambiguous project/composer context without 
     deadlineAt: Date.now() + 30_000,
     maxEvents: 12,
     buildId: "fixture-build",
-    protocolVersion: 3,
+    protocolVersion: 4,
   };
   const result = await page.evaluate(
     ({ source, binding }) => {
@@ -261,7 +284,7 @@ test("production observer refuses a baseline that mutates while listeners are ar
     deadlineAt: Date.now() + 30_000,
     maxEvents: 12,
     buildId: "fixture-build",
-    protocolVersion: 3,
+    protocolVersion: 4,
   };
   const result = await page.evaluate(
     async ({ source, binding }) => {

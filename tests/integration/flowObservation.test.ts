@@ -297,7 +297,7 @@ async function structuralEvent(
     completeForRenderedScope: true,
     virtualized: true,
     unidentifiedImageCount: 0,
-    tiles: [{ tileToken: "tile-1", visible: true }],
+    tiles: [{ tileToken: "tile-1", tag: "flow-image-tile", visible: true }],
     mediaCandidates: [
       {
         candidateId: "a".repeat(64),
@@ -309,14 +309,18 @@ async function structuralEvent(
         naturalHeight: 768,
       },
     ],
+    identityCandidates: [],
+    identityCandidatesTruncated: false,
     resourceEvents: [],
     lifecycleSignals: [
       {
         markerToken: "marker-1",
+        markerTag: "div",
         markerKind: "loading",
         scope: "tile",
         tileToken: "tile-1",
         visible: true,
+        evidence: [{ attributeName: "data-state", signal: "loading" }],
       },
     ],
     captureGaps: [],
@@ -355,6 +359,17 @@ describe("P05.2 attempt-bound Flow observation", () => {
       fixture.attempt.attemptId,
     );
     expect(stored?.observationReceipts).toHaveLength(1);
+    expect(stored?.structuralObservations).toHaveLength(1);
+    expect(
+      stored?.structuralObservations?.[0]?.snapshot.mediaCandidates,
+    ).toHaveLength(1);
+    expect(
+      stored?.structuralObservations?.[0]?.snapshot.lifecycleSignals[0],
+    ).toMatchObject({
+      scope: "tile",
+      tileToken: "tile-1",
+      evidence: [{ attributeName: "data-state", signal: "loading" }],
+    });
     expect(stored?.resultLinks).toEqual([]);
     expect(stored?.resultOutcome).toMatchObject({
       status: "unknown",

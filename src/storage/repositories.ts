@@ -788,6 +788,19 @@ export class ExtensionRepositories {
         input.receivedAt,
       );
       const structuralKind = "kind" in parsedEvent.data ? parsedEvent.data.kind : null;
+      const structuralObservations = structuralEvent
+        ? [
+            ...(current.structuralObservations ?? []),
+            parsedEvent.data as import("../domain/jobs/results").FlowStructuralObservationEvent,
+          ]
+        : current.structuralObservations;
+      if (
+        structuralObservations &&
+        (structuralObservations.length > 64 ||
+          JSON.stringify(structuralObservations).length > 512_000)
+      ) {
+        throw new FlowImageObservationRejectedError("observation_evidence_limit");
+      }
       if (reduction.outcome.status === "unknown" && !structuralEvent) {
         throw new FlowImageObservationRejectedError(
           reduction.outcome.reason ?? "observation_ambiguous",
@@ -831,6 +844,7 @@ export class ExtensionRepositories {
         resultLinks: reduction.links,
         resultOutcome: reduction.outcome,
         observationReceipts: [...(current.observationReceipts ?? []), receipt],
+        ...(structuralObservations ? { structuralObservations } : {}),
         events: current.events,
         updatedAt: input.receivedAt,
       };
@@ -860,6 +874,9 @@ export class ExtensionRepositories {
     >["status"];
     resultOutcome?: FlowImageAttemptRecord["resultOutcome"];
     reconciliationCount?: number;
+    armReceipt?: NonNullable<
+      FlowImageAttemptRecord["observationSession"]
+    >["armReceipt"];
   }): Promise<FlowImageAttemptRecord> {
     return this.tables.transaction(["flowImageAttempts"], async () => {
       const current = await this.tables.flowImageAttempts.get(input.attemptId);
@@ -874,6 +891,7 @@ export class ExtensionRepositories {
         ...current,
         observationSession: {
           ...current.observationSession,
+          ...(input.armReceipt ? { armReceipt: input.armReceipt } : {}),
           ...(input.sessionStatus ? { status: input.sessionStatus } : {}),
           ...(input.reconciliationCount !== undefined
             ? { reconciliationCount: input.reconciliationCount }

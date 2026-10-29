@@ -1,7 +1,7 @@
 # Flow populated-results evidence and P05.3 collection
 
 Date: 29 October 2026  
-Status: **USER-COLLECTED STATIC TILE STRUCTURE REVIEWED; LIFECYCLE RECORDER PREPARED**. No new generation was authorized or performed.
+Status: **USER-COLLECTED STATIC TILE STRUCTURE REVIEWED; PRODUCTION STRUCTURAL OBSERVER AND READ-ONLY ATTEMPT INSPECTOR OFFLINE-VERIFIED**. Live identity/terminal semantics remain unsupported; no new generation was authorized or performed.
 
 ## Evidence reviewed
 
@@ -134,3 +134,39 @@ The P05.2 receipt handler validates sender extension/tab/frame/document/session,
 **Fixture evidence:** browser tests execute the serialized production producer against a local Flow-shaped DOM and exercise exact-document arm, stable baseline acknowledgement, activation snapshot ordering, tile-scoped lifecycle and media observations, privacy hashing, no result links, wrong-project refusal, baseline mutation refusal, and project-change observer loss. These fixtures validate machinery only. They do not establish Flow's production identity or terminal contracts. Static/user evidence still establishes only that two observed tiles had separate `data-media-id` candidates and images loaded; it does not establish cross-run identity stability, output/group/variant semantics, terminal success/error rules, or attempt ownership.
 
 **Operational boundary:** the production structural observer and durable unknown-outcome receipt path are implemented and offline fixture-verified. Production terminal attribution remains unsupported. `data-media-id` is not yet proven to identify a logical output or variant; broad structural markers are not terminal rules. A separately authorized controlled test is still needed to observe provider-defined result identity and authoritative terminal success/error evidence correlated with the durable attempt/source/document, and to confirm the declared variant mapping. No live Generate, provider refresh/navigation, historical settlement, lock release, queue advancement, or Phase 05 completion occurred.
+
+## P05.3 bounded evidence readback and live acceptance preparation — 29 October 2026
+
+Review found that the first production observer implementation discarded its arm receipt after validation and stored only observation fingerprints/sequences, not the structural payloads. A packaged dashboard user therefore could not inspect what the observer actually saw. The offline implementation now persists a bounded arm receipt in the attempt session and up to 64 structural observations, with a 512,000-character aggregate payload ceiling. The initial ordered snapshot is stored before Generate can proceed. Storage-cap or validation failure leaves the outcome unknown and blocks the action where it occurs before dispatch.
+
+The arm receipt contains its capture time and fingerprint, source-baseline fingerprint, number of listener roots, and baseline summary: rendered tile/media/identity/lifecycle/resource counts, virtualized state, rendered-scope completeness, unidentified-image count, and capture-gap codes. The attempt itself retains the joined attempt/session/project/tab/frame/loader/document/build/protocol/source binding. The read-only inspector reports the document and loader as hashes and masks project/candidate identities consistently.
+
+The bounded producer capture now includes:
+
+- `flow-image-tile` tokens and rendered visibility;
+- each descendant image's hashed `data-media-id` candidate, media token, owning tile token, visibility, `complete`, and natural dimensions;
+- up to 500 identity-attribute candidates on tiles, descendants, and composed ancestors up to the project boundary, with carrier tag/token, tile/descendant/ancestor relation, attribute name, category, and SHA-256 pseudonym. DOM IDs, accessibility references, and test identifiers are explicitly categorized as non-asset proof. Account/profile/user-like attribute names, URL/email-like values, empty values, and values over 256 characters are excluded; exclusions/truncation make the scope incomplete;
+- each recognized lifecycle candidate's tag, tile/project scope, visibility, fixed marker category, contributing attribute name, and matched allowlisted keyword. Full attribute values and page text are not retained. Image load/error events carry media/tile tokens and supporting resource dimensions;
+- ordered snapshot IDs/fingerprints, virtualized/incomplete flags, and bounded capture-gap codes for source/project/document changes, unsupported or missing identities, truncation, timeout, detach, and delivery failure.
+
+These records can show whether the same masked candidate recurs across DOM nodes/tiles, where candidate attributes occur, and which fixed state words/attributes changed during the captured interval. They cannot establish that a candidate is an asset, logical output, group, or variant. The matched lifecycle keywords remain evidence candidates; they cannot establish provider terminal-success/error semantics. Unrecognized state signals are intentionally omitted and broad structure never becomes a completion rule. A valid structural recording therefore still has `resultOutcome.status = unknown` and zero result links.
+
+### Read-only packaged-dashboard inspection
+
+The dashboard currently has no built-in attempt-inspection panel. Use the one-shot [read-only attempt inspector](../../tools/diagnostics/flow-observation-readonly.js) from DevTools Console on the packaged extension dashboard page. Set `attemptId` to the ID displayed by the dashboard attempt result, paste/run once, then export the full named result `window.__FLOW_P053_OBSERVATION_INSPECTION__`. The script checks that the existing database is present, aborts if opening would trigger an upgrade, and uses only a readonly transaction on `flowImageAttempts`. It returns the arm receipt, exact attempt/session/build/protocol/source binding, hashed browser-document/loader/project identifiers, attempt failure codes, ordered durable receipts and full bounded structural snapshots, capture gaps, and outcome reason. Identity values remain SHA-256 pseudonyms in the export so equal provider candidates can be compared within and across reports; raw values stay excluded. It omits prompt bodies, canonical/raw URLs, raw project/document/provider identity values, account data, credentials, and storage writes. `copy(JSON.stringify(window.__FLOW_P053_OBSERVATION_INSPECTION__, null, 2))` exports the full JSON if the automatic copy is unavailable. This is a post-test storage inspection, not a live recorder.
+
+### One later controlled-test checklist
+
+This checklist is preparation only; it does not authorize a Generate action.
+
+1. Build and load the current workspace `dist` package. Confirm the worker startup log reports the same build ID as the packaged build. Use the already selected Flow project tab; do not refresh or navigate it.
+2. Confirm there is a distinct unused saved source item and a fresh manual settings confirmation bound to that project with the user-declared variant count. Confirm existing attempts do not block it. Keep every historical attempt and lock unchanged.
+3. Before any Generate authorization, verify the dashboard preflight is eligible and the production arm receipt is persisted: source-baseline fingerprint present, browser document/frame binding matches the attempt, listener roots are nonzero, baseline is complete for the rendered scope, no capture gaps/truncation, and the selected project owns one verified composer. If any check fails, stop before Generate.
+4. If separately authorized, perform exactly one guarded attempt. Do not use the manual Console lifecycle recorder. The production observer arms before activation; let the bounded observer run or stop it explicitly if the test becomes unsafe.
+5. Read the exact attempt ID from the dashboard response and run the one-shot inspector on the packaged dashboard. Export the complete named JSON.
+6. First assess **structural-observation verification**: arm receipt binding, ordered sequence starting at 1, durable snapshot payloads, candidate/tile relationships, lifecycle evidence, image resource events, capture gaps, observer/session status, and no hidden truncation/storage failure. Any binding mismatch, gap, missing receipt, or unknown outcome stays unresolved.
+7. Assess **terminal-completion acceptance separately**. Current producer output cannot pass this gate. It requires independently established Flow semantics for candidate identity and group/variant mapping plus authoritative terminal success/error evidence tied to this same attempt/source/document. Image load, positive dimensions, marker removal, appearance, count, or elapsed time do not qualify.
+
+Exact evidence to export: the full `flow-observation-readonly-v1` JSON; dashboard attempt response showing attempt ID/action state/activation count; user-confirmed declared variant count and the exact source hash/code-unit count; package build ID; and (if available without changing the provider page) a screenshot of the already displayed completed/error card structure. Do not include prompt text, raw URLs, media URLs, account data, or credentials. Keep terminal completion marked **unverified** unless authoritative semantics and attempt attribution are established.
+
+The updated observer, persisted arm receipt/snapshots, exporter, and checklist were checked offline. No Generate, provider refresh/navigation, attempt settlement, lock release, queue advancement, or historical record modification occurred. See the current verification/package ID and fixture results in `PROJECT_STATUS.md`.
