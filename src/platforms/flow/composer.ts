@@ -12,159 +12,168 @@ export type FlowComposerDiscovery = {
   state: FlowComposerState;
   candidateCount: number;
   editorKind?: FlowEditorKind;
+  profile?: "semantic-container" | "flow-rich-text";
+  textReadback?: "value" | "dom-block-lines";
   boundaryRole?: string;
   boundaryLabel?: string;
   placeholderObserved?: boolean;
+  diagnostic?:
+    | "no_eligible_owned_editor"
+    | "multiple_eligible_editors"
+    | "unverified_contenteditable"
+    | "composer_media_present"
+    | "editor_representation_unsupported"
+    | "unverified_empty_editor";
   methodCompatible: boolean;
   currentText?: string;
 };
 
-const FLOW_PLACEHOLDER = "what do you want to create?";
-
-/**
- * Runs in the selected Flow top-frame document. These semantic signals are
- * selector candidates only; they are not verified against the live provider.
- */
 export function inspectFlowComposer(
   expectedText: string,
 ): FlowComposerDiscovery {
-  const allEditors = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      'textarea, input:not([type]), input[type="text"], input[type="search"], [contenteditable="true"], [role="textbox"]',
-    ),
-  );
-  const candidates = allEditors
-    .map((editor) => ({ editor, boundary: composerBoundary(editor) }))
-    .filter(
-      (entry): entry is { editor: HTMLElement; boundary: HTMLElement } =>
-        Boolean(entry.boundary) && isVisibleAndEnabled(entry.editor),
-    )
-    .filter(({ editor, boundary }) => !isSearchControl(editor, boundary))
-    .filter(({ editor, boundary }) => isComposerCandidate(editor, boundary));
-
-  if (candidates.length === 0) {
-    return {
-      state: "missing",
-      candidateCount: 0,
-      methodCompatible: false,
-    };
-  }
-  if (candidates.length > 1) {
-    return {
-      state: "ambiguous",
-      candidateCount: candidates.length,
-      methodCompatible: false,
-    };
-  }
-
-  const { editor, boundary } = candidates[0]!;
-  const editorKind = kindOf(editor);
-  if (!editorKind || editorKind === "contenteditable") {
-    return {
-      state: "unsupported",
-      candidateCount: 1,
-      editorKind,
-      boundaryRole:
-        boundary.getAttribute("role") ?? boundary.tagName.toLowerCase(),
-      boundaryLabel: accessibleName(boundary),
-      placeholderObserved: hasObservedPlaceholder(editor),
-      methodCompatible: false,
-    };
-  }
-
-  const currentText = readEditorText(editor, editorKind);
-  const state = classifyFlowEditorText(
-    editor,
-    editorKind,
-    currentText,
-    expectedText,
-  );
-  return {
-    state,
-    candidateCount: 1,
-    editorKind,
-    boundaryRole:
-      boundary.getAttribute("role") ?? boundary.tagName.toLowerCase(),
-    boundaryLabel: accessibleName(boundary),
-    placeholderObserved: hasObservedPlaceholder(editor),
-    methodCompatible: true,
-    currentText,
-  };
+  return flowComposerRuntime(expectedText, false) as FlowComposerDiscovery;
 }
 
-/** Used by CDP Runtime.evaluate to obtain a remote reference to the unique editor. */
 export function findFlowComposerEditor(): HTMLElement | null {
-  const inspected = inspectFlowComposer("");
-  if (inspected.candidateCount !== 1 || !inspected.methodCompatible)
-    return null;
-  const editor = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      'textarea, input:not([type]), input[type="text"], input[type="search"], [contenteditable="true"], [role="textbox"]',
-    ),
-  )
-    .filter(isVisibleAndEnabled)
-    .filter((candidate) => {
-      const boundary = composerBoundary(candidate);
-      return Boolean(
-        boundary &&
-        !isSearchControl(candidate, boundary) &&
-        isComposerCandidate(candidate, boundary),
-      );
-    });
-  return editor.length === 1 ? editor[0]! : null;
+  return flowComposerRuntime("", true) as HTMLElement | null;
 }
 
-/** Standalone serializable function used by CDP Runtime.evaluate. */
+/** Fixed logical-text adapter, shared by preflight and immediate/settled reads.
+ * Text nodes are untouched; each direct P/DIV line boundary represents one LF.
+ * No expected source is available here. Unsupported markup fails closed. */
+export function readFlowEditorRuntime(editor: HTMLElement): string {
+  const tag = editor.tagName.toLowerCase();
+  if (tag === "textarea" || tag === "input") {
+    return (editor as HTMLInputElement | HTMLTextAreaElement).value;
+  }
+  let visited = 0;
+  const inline = (node: Node, depth: number): string => {
+    if (++visited > 10_000 || depth > 64)
+      throw new Error("unsupported_editor_representation");
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
+    if (
+      !(node instanceof HTMLElement) ||
+      node.matches(
+        "[hidden], [inert], [aria-hidden='true'], [contenteditable='false']",
+      )
+    ) {
+      throw new Error("unsupported_editor_representation");
+    }
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility !== "visible")
+      throw new Error("unsupported_editor_representation");
+    if (node.tagName === "BR") return "\n";
+    if (node.tagName !== "SPAN")
+      throw new Error("unsupported_editor_representation");
+    return Array.from(node.childNodes)
+      .map((child) => inline(child, depth + 1))
+      .join("");
+  };
+  const line = (node: HTMLElement): string => {
+    // A sole BR is the browser's empty-line caret artifact, not a text rewrite.
+    if (node.childNodes.length === 1 && node.firstChild?.nodeName === "BR")
+      return "";
+    return Array.from(node.childNodes)
+      .map((child) => inline(child, 0))
+      .join("");
+  };
+  const children = Array.from(editor.childNodes);
+  const block = (node: Node) =>
+    node instanceof HTMLElement && ["P", "DIV"].includes(node.tagName);
+  if (children.some(block)) {
+    if (!children.every(block))
+      throw new Error("unsupported_editor_representation");
+    return children
+      .map((child) => {
+        const element = child as HTMLElement;
+        if (
+          element.matches(
+            "[hidden], [inert], [aria-hidden='true'], [contenteditable='false']",
+          )
+        )
+          throw new Error("unsupported_editor_representation");
+        const style = getComputedStyle(element);
+        if (style.display === "none" || style.visibility !== "visible")
+          throw new Error("unsupported_editor_representation");
+        return line(element);
+      })
+      .join("\n");
+  }
+  return line(editor);
+}
+
+/** Serializable runtime. Custom host tags derive from the user's masked DOM
+ * report. Actual Flow insertion/readback remains a separate live gate. */
 export function flowComposerRuntime(
   expectedText: string,
   returnEditor = false,
+  readText = readFlowEditorRuntime,
 ): FlowComposerDiscovery | HTMLElement | null {
   const placeholderText = "what do you want to create?";
   const labelOf = (element: HTMLElement) => {
     const direct =
       element.getAttribute("aria-label") ?? element.getAttribute("title") ?? "";
     if (direct.trim()) return direct.trim();
-    const labelledBy = element.getAttribute("aria-labelledby");
-    return labelledBy
-      ? labelledBy
-          .split(/\s+/)
-          .map((id) => document.getElementById(id)?.textContent ?? "")
-          .join(" ")
-          .trim()
-      : "";
+    return (element.getAttribute("aria-labelledby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ")
+      .trim();
+  };
+  const richBoundary = (editor: HTMLElement) => {
+    if (
+      editor.tagName.toLowerCase() !== "div" ||
+      editor.getAttribute("contenteditable") !== "true" ||
+      editor.getAttribute("role") !== "textbox"
+    )
+      return null;
+    const rich = editor.closest("flow-rich-text-editor");
+    const box = editor.closest<HTMLElement>("flow-base-prompt-box");
+    return rich && box && rich.closest("flow-base-prompt-box") === box
+      ? box
+      : null;
   };
   const boundaryOf = (editor: HTMLElement) => {
+    const rich = richBoundary(editor);
+    if (rich) return rich;
     const boundary = editor.closest<HTMLElement>(
       'form, [role="form"], [role="group"], [role="region"], [data-composer]',
     );
     if (!boundary) return null;
-    const role = boundary.getAttribute("role")?.toLowerCase() ?? "";
-    const label = labelOf(boundary).toLowerCase();
-    const testId = (boundary.getAttribute("data-testid") ?? "").toLowerCase();
-    const owner = /prompt|composer|create/.test(`${label} ${testId}`);
-    return owner &&
-      Boolean(
-        role ||
-        boundary.tagName.toLowerCase() === "form" ||
-        boundary.hasAttribute("data-composer"),
-      )
+    return /prompt|composer|create/i.test(
+      `${labelOf(boundary)} ${boundary.getAttribute("data-testid") ?? ""}`,
+    )
       ? boundary
       : null;
   };
-  const visible = (element: HTMLElement) => {
+  const visibleEnabled = (editor: HTMLElement) => {
     if (
-      !element.isConnected ||
-      element.matches(":disabled, [disabled], [aria-disabled='true']") ||
-      element.closest("[hidden], [inert], [aria-hidden='true']")
+      !editor.isConnected ||
+      editor.matches(":disabled, [disabled], [readonly]") ||
+      editor.closest(
+        "[hidden], [inert], [aria-hidden='true'], [aria-disabled='true'], [aria-readonly='true'], [disabled]",
+      ) ||
+      ((editor.tagName.toLowerCase() === "input" ||
+        editor.tagName.toLowerCase() === "textarea") &&
+        (editor as HTMLInputElement | HTMLTextAreaElement).readOnly)
     )
       return false;
-    const style = getComputedStyle(element);
-    return (
-      style.display !== "none" &&
-      style.visibility !== "hidden" &&
-      style.visibility !== "collapse" &&
-      element.getClientRects().length > 0
-    );
+    for (
+      let ancestor: HTMLElement | null = editor;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      const style = getComputedStyle(ancestor);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse"
+      ) {
+        return false;
+      }
+    }
+    return editor.getClientRects().length > 0;
   };
   const kind = (editor: HTMLElement): FlowEditorKind | undefined => {
     const tag = editor.tagName.toLowerCase();
@@ -178,29 +187,28 @@ export function flowComposerRuntime(
       ? "contenteditable"
       : undefined;
   };
-  const editors = Array.from(
+  const candidates = Array.from(
     document.querySelectorAll<HTMLElement>(
       'textarea, input:not([type]), input[type="text"], input[type="search"], [contenteditable="true"], [role="textbox"]',
     ),
-  );
-  const candidates = editors.filter((editor) => {
+  ).filter((editor) => {
     const boundary = boundaryOf(editor);
-    if (!boundary || !visible(editor)) return false;
-    const type =
-      editor.tagName.toLowerCase() === "input"
-        ? (editor as HTMLInputElement).type.toLowerCase()
-        : "";
+    if (!boundary || !visibleEnabled(editor) || !kind(editor)) return false;
     const words =
       `${labelOf(editor)} ${editor.getAttribute("placeholder") ?? ""} ${labelOf(boundary)}`.toLowerCase();
     if (
-      type === "search" ||
-      editor.closest('[role="search"]') ||
+      (editor.tagName.toLowerCase() === "input" &&
+        (editor as HTMLInputElement).type === "search") ||
+      editor.closest(
+        '[role="search"], flow-search-bar, flow-navigation-header',
+      ) ||
       /\bsearch\b/.test(words)
     )
       return false;
-    if (!kind(editor)) return false;
-    const owner = /prompt|composer|create/.test(
-      `${labelOf(editor)} ${labelOf(boundary)} ${(boundary.getAttribute("data-testid") ?? "").toLowerCase()}`,
+    if (richBoundary(editor))
+      return /prompt|composer|create/i.test(labelOf(editor));
+    const owner = /prompt|composer|create/i.test(
+      `${labelOf(editor)} ${labelOf(boundary)} ${boundary.getAttribute("data-testid") ?? ""}`,
     );
     const placeholder = (
       editor.getAttribute("placeholder") ??
@@ -212,56 +220,95 @@ export function flowComposerRuntime(
       (placeholder === placeholderText || /prompt|composer/.test(words))
     );
   });
-  if (returnEditor) {
-    return candidates.length === 1 ? candidates[0]! : null;
-  }
-  if (candidates.length === 0)
-    return { state: "missing", candidateCount: 0, methodCompatible: false };
-  if (candidates.length > 1)
+  if (candidates.length !== 1) {
+    if (returnEditor) return null;
     return {
-      state: "ambiguous",
+      state: candidates.length === 0 ? "missing" : "ambiguous",
       candidateCount: candidates.length,
+      diagnostic:
+        candidates.length === 0
+          ? "no_eligible_owned_editor"
+          : "multiple_eligible_editors",
       methodCompatible: false,
     };
+  }
   const editor = candidates[0]!;
   const editorKind = kind(editor)!;
-  if (editorKind === "contenteditable") {
-    const boundary = boundaryOf(editor)!;
+  const boundary = boundaryOf(editor)!;
+  const profile = richBoundary(editor)
+    ? "flow-rich-text"
+    : "semantic-container";
+  const mediaPresent = Boolean(
+    boundary.querySelector("img, video, audio, canvas, iframe, object, embed"),
+  );
+  if (
+    (editorKind === "contenteditable" && profile !== "flow-rich-text") ||
+    mediaPresent
+  ) {
+    if (returnEditor) return null;
     return {
       state: "unsupported",
       candidateCount: 1,
       editorKind,
-      boundaryRole:
-        boundary.getAttribute("role") ?? boundary.tagName.toLowerCase(),
-      boundaryLabel: labelOf(boundary),
-      placeholderObserved:
-        (
-          editor.getAttribute("placeholder") ??
-          editor.getAttribute("data-placeholder") ??
-          ""
-        ).toLowerCase() === placeholderText,
+      profile,
+      diagnostic: mediaPresent
+        ? "composer_media_present"
+        : "unverified_contenteditable",
       methodCompatible: false,
     };
   }
-  const currentText = (editor as HTMLInputElement | HTMLTextAreaElement).value;
-  const state: FlowComposerState =
-    expectedText.length === 0
-      ? currentText.length === 0
-        ? "empty"
-        : "conflict"
-      : currentText === expectedText
+  let currentText: string;
+  try {
+    currentText = readText(editor);
+  } catch {
+    if (returnEditor) return null;
+    return {
+      state: "unsupported",
+      candidateCount: 1,
+      editorKind,
+      profile,
+      diagnostic: "editor_representation_unsupported",
+      methodCompatible: false,
+    };
+  }
+  const paragraph = editor.firstElementChild;
+  if (
+    profile === "flow-rich-text" &&
+    currentText === "" &&
+    !(
+      editor.childNodes.length === 1 &&
+      paragraph?.tagName === "P" &&
+      paragraph.childNodes.length === 1 &&
+      paragraph.firstChild?.nodeName === "BR"
+    )
+  ) {
+    if (returnEditor) return null;
+    return {
+      state: "unsupported",
+      candidateCount: 1,
+      editorKind,
+      profile,
+      diagnostic: "unverified_empty_editor",
+      methodCompatible: false,
+    };
+  }
+  if (returnEditor) return editor;
+  return {
+    state:
+      currentText === expectedText && expectedText.length > 0
         ? "already-matching"
         : currentText.length === 0
           ? "empty"
-          : "conflict";
-  const boundary = boundaryOf(editor)!;
-  return {
-    state,
+          : "conflict",
     candidateCount: 1,
     editorKind,
+    profile,
+    textReadback:
+      editorKind === "contenteditable" ? "dom-block-lines" : "value",
     boundaryRole:
-      boundary.getAttribute("role") ?? boundary.tagName.toLowerCase(),
-    boundaryLabel: labelOf(boundary),
+      profile === "flow-rich-text"
+        ? "flow-base-prompt-box"
+        : (boundary.getAttribute("role") ?? boundary.tagName.toLowerCase()),
     placeholderObserved:
       (
         editor.getAttribute("placeholder") ??
@@ -273,150 +320,45 @@ export function flowComposerRuntime(
   };
 }
 
+export function flowComposerRuntimeExpression(
+  expectedText: string,
+  returnEditor = false,
+): string {
+  // Pass dependencies positionally: production minification may rename bindings.
+  return `(${flowComposerRuntime.toString()})(${JSON.stringify(expectedText)},${returnEditor},(${readFlowEditorRuntime.toString()}))`;
+}
+
 export function classifyFlowEditorText(
-  editor: HTMLElement,
-  kind: FlowEditorKind,
+  _editor: HTMLElement,
+  _kind: FlowEditorKind,
   currentText: string,
   expectedText: string,
 ): FlowComposerState {
   if (expectedText.length === 0) return "conflict";
   if (currentText === expectedText) return "already-matching";
-  if (currentText.length === 0 || isVerifiedEmptyArtifact(editor, kind)) {
-    return "empty";
-  }
-  return "conflict";
+  return currentText.length === 0 ? "empty" : "conflict";
 }
 
 export function readEditorText(
   editor: HTMLElement,
   kind: FlowEditorKind,
 ): string {
-  if (kind === "textarea" || kind === "text-input") {
-    return (editor as HTMLInputElement | HTMLTextAreaElement).value;
-  }
-  return editor.textContent ?? "";
+  return kind === "contenteditable"
+    ? readFlowEditorRuntime(editor)
+    : (editor as HTMLInputElement | HTMLTextAreaElement).value;
 }
 
 export function kindOf(editor: HTMLElement): FlowEditorKind | undefined {
-  const tagName = editor.tagName.toLowerCase();
-  if (tagName === "textarea") return "textarea";
-  if (tagName === "input") {
-    const inputType = (editor as HTMLInputElement).type.toLowerCase();
-    if (inputType === "text" || inputType === "search") return "text-input";
-    return undefined;
-  }
-  if (
-    editor.getAttribute("contenteditable") === "true" &&
+  const tag = editor.tagName.toLowerCase();
+  if (tag === "textarea") return "textarea";
+  if (tag === "input")
+    return ["text", "search"].includes(
+      (editor as HTMLInputElement).type.toLowerCase(),
+    )
+      ? "text-input"
+      : undefined;
+  return editor.getAttribute("contenteditable") === "true" &&
     editor.getAttribute("role") === "textbox"
-  ) {
-    return "contenteditable";
-  }
-  return undefined;
-}
-
-function composerBoundary(editor: HTMLElement): HTMLElement | null {
-  const boundary = editor.closest<HTMLElement>(
-    'form, [role="form"], [role="group"], [role="region"], [data-composer]',
-  );
-  if (!boundary) return null;
-  const role = boundary.getAttribute("role")?.toLowerCase() ?? "";
-  const label = accessibleName(boundary).toLowerCase();
-  const testId = (boundary.getAttribute("data-testid") ?? "").toLowerCase();
-  const stableOwner = /prompt|composer|create/.test(`${label} ${testId}`);
-  const semanticContainer =
-    role === "form" ||
-    role === "group" ||
-    role === "region" ||
-    boundary.tagName.toLowerCase() === "form" ||
-    boundary.hasAttribute("data-composer");
-  return stableOwner && semanticContainer ? boundary : null;
-}
-
-function accessibleName(element: HTMLElement): string {
-  const direct =
-    element.getAttribute("aria-label") ?? element.getAttribute("title") ?? "";
-  if (direct.trim()) return direct.trim();
-  const labelledBy = element.getAttribute("aria-labelledby");
-  if (!labelledBy) return "";
-  return labelledBy
-    .split(/\s+/)
-    .map((id) => document.getElementById(id)?.textContent ?? "")
-    .join(" ")
-    .trim();
-}
-
-function isComposerCandidate(
-  editor: HTMLElement,
-  boundary: HTMLElement,
-): boolean {
-  const name =
-    `${accessibleName(editor)} ${accessibleName(boundary)}`.toLowerCase();
-  const placeholder = (editor.getAttribute("placeholder") ?? "").toLowerCase();
-  const dataPlaceholder = (
-    editor.getAttribute("data-placeholder") ?? ""
-  ).toLowerCase();
-  const hasComposerSemantics = /prompt|composer|create/.test(name);
-  const hasObservedPlaceholder =
-    placeholder === FLOW_PLACEHOLDER || dataPlaceholder === FLOW_PLACEHOLDER;
-  // The screenshot placeholder is a corroborating signal, never the sole one.
-  return (
-    hasComposerSemantics &&
-    (hasObservedPlaceholder || /prompt|composer/.test(name))
-  );
-}
-
-function hasObservedPlaceholder(editor: HTMLElement): boolean {
-  return (
-    (editor.getAttribute("placeholder") ?? "").toLowerCase() ===
-      FLOW_PLACEHOLDER ||
-    (editor.getAttribute("data-placeholder") ?? "").toLowerCase() ===
-      FLOW_PLACEHOLDER
-  );
-}
-
-function isSearchControl(editor: HTMLElement, boundary: HTMLElement): boolean {
-  const inputType =
-    editor.tagName.toLowerCase() === "input"
-      ? (editor as HTMLInputElement).type.toLowerCase()
-      : "";
-  const searchOwner = editor.closest('[role="search"], form[role="search"]');
-  const words =
-    `${accessibleName(editor)} ${editor.getAttribute("placeholder") ?? ""} ${accessibleName(boundary)}`.toLowerCase();
-  return (
-    inputType === "search" || Boolean(searchOwner) || /\bsearch\b/.test(words)
-  );
-}
-
-function isVisibleAndEnabled(editor: HTMLElement): boolean {
-  if (
-    !editor.isConnected ||
-    editor.matches(":disabled, [disabled], [aria-disabled='true']") ||
-    editor.closest("[hidden], [inert], [aria-hidden='true']")
-  ) {
-    return false;
-  }
-  const style = getComputedStyle(editor);
-  return (
-    style.display !== "none" &&
-    style.visibility !== "hidden" &&
-    style.visibility !== "collapse" &&
-    editor.getClientRects().length > 0
-  );
-}
-
-function isVerifiedEmptyArtifact(
-  editor: HTMLElement,
-  kind: FlowEditorKind,
-): boolean {
-  if (kind !== "contenteditable") return false;
-  if (editor.textContent?.trim()) return false;
-  const children = Array.from(editor.children);
-  if (children.length === 0) return true;
-  return children.every((child) => {
-    if (child.tagName.toLowerCase() === "br") return true;
-    if (child.textContent?.trim()) return false;
-    return Array.from(child.children).every(
-      (nested) => nested.tagName.toLowerCase() === "br",
-    );
-  });
+    ? "contenteditable"
+    : undefined;
 }

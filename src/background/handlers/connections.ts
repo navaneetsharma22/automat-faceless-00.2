@@ -20,7 +20,10 @@ export type FoundationDependencies = {
   repositories: ExtensionRepositories;
   preferences: ChromePreferenceRepository;
   ready?: Promise<void>;
-  flowPromptEntry?: (sourceText: string) => Promise<unknown>;
+  flowPromptEntry?: (input: {
+    workspaceId: string;
+    promptHash: string;
+  }) => Promise<unknown>;
   flowImageGenerateOnce?: (
     input: Extract<AppRequest, { type: "flow.image.generateOnce" }>["payload"],
   ) => Promise<unknown>;
@@ -153,7 +156,7 @@ async function dispatch(
           "Flow prompt entry is unavailable in this extension context.",
         );
       }
-      return dependencies.flowPromptEntry(request.payload.sourceText);
+      return dependencies.flowPromptEntry(request.payload);
     case "flow.image.generateOnce":
       if (!dependencies.flowImageGenerateOnce) {
         throw new FoundationOperationError(

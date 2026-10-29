@@ -64,109 +64,13 @@ The user-reported build is `automat-faceless-0.1.0-mvs32n3j`. Existing P04.2 off
 
 ### Minimal read-only diagnostic for the user's existing session
 
-Keep the currently selected Flow project open; do not refresh, navigate, or change settings. In the existing packaged dashboard, record the Advanced details **Build state** and the selected Flow project/tab label plus current connection status. On that same Flow tab, open DevTools Console and run the following read-only inventory. It reports only URL path and DOM metadata, never editor text. It does not prove extension tab/document binding or entry readiness; return its JSON output so those remaining bindings can be checked before any fill action.
+Use [`tools/diagnostics/flow-composer-readonly.js`](../../tools/diagnostics/flow-composer-readonly.js). This replaces the earlier metadata snippet, which emitted raw labels and URL metadata. The current diagnostic emits only structure, allowlisted attribute values, fixed semantic flags, and current discovery rejection codes. It never reads editor values or serializes DOM nodes. Accessible label text is used privately to compute fixed signal flags; label text, test-ID values, prompt/page content, credentials, account data, and URLs are excluded from the JSON.
 
-```js
-(() => {
-  const name = (el) =>
-    el.getAttribute("aria-label") || el.getAttribute("title") || "";
-  const visible = (el) => {
-    const s = getComputedStyle(el);
-    return (
-      el.isConnected &&
-      !el.matches(":disabled,[disabled],[aria-disabled='true']") &&
-      !el.closest("[hidden],[inert],[aria-hidden='true']") &&
-      s.display !== "none" &&
-      s.visibility !== "hidden" &&
-      s.visibility !== "collapse" &&
-      el.getClientRects().length > 0
-    );
-  };
-  const editors = [
-    ...document.querySelectorAll(
-      'textarea,input:not([type]),input[type="text"],input[type="search"],[contenteditable="true"],[role="textbox"]',
-    ),
-  ];
-  const candidates = editors.map((el) => {
-    const boundary = el.closest(
-      'form,[role="form"],[role="group"],[role="region"],[data-composer]',
-    );
-    const ownerText = `${name(el)} ${name(boundary || document.createElement("div"))} ${boundary?.getAttribute("data-testid") || ""}`;
-    const owner = /prompt|composer|create/i.test(ownerText);
-    const boundaryRole =
-      boundary?.getAttribute("role") || boundary?.tagName.toLowerCase() || null;
-    const buttons = boundary
-      ? [...boundary.querySelectorAll('button,[role="button"]')]
-      : [];
-    const generate = buttons.filter((button) =>
-      /^(generate|generate image|create image)$/i.test(
-        name(button) || button.textContent.trim().replace(/\s+/g, " "),
-      ),
-    );
-    const value =
-      el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement
-        ? el.value
-        : "";
-    return {
-      visible: visible(el),
-      ownerSignal: owner,
-      editorTag: el.tagName.toLowerCase(),
-      inputType: el instanceof HTMLInputElement ? el.type : null,
-      role: el.getAttribute("role"),
-      ariaLabel: name(el),
-      placeholder: el.getAttribute("placeholder"),
-      contenteditable: el.getAttribute("contenteditable"),
-      disabled: el.matches(":disabled,[disabled]"),
-      readOnly:
-        el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement
-          ? el.readOnly
-          : null,
-      boundaryTag: boundary?.tagName.toLowerCase() || null,
-      boundaryRole,
-      boundaryLabel: boundary ? name(boundary) : null,
-      boundaryTestId: boundary?.getAttribute("data-testid") || null,
-      currentTextPresent: value.length > 0,
-      currentTextCodeUnits: value.length,
-      generateControls: generate.map((button) => ({
-        label: name(button) || button.textContent.trim().replace(/\s+/g, " "),
-        visible: visible(button),
-        disabled: button.matches(":disabled,[disabled],[aria-disabled='true']"),
-      })),
-      mediaElementsInBoundary: boundary
-        ? boundary.querySelectorAll("img,video").length
-        : null,
-    };
-  });
-  return {
-    origin: location.origin,
-    path: location.pathname,
-    title: document.title,
-    topFrame: window.top === window,
-    readyState: document.readyState,
-    candidateCount: candidates.filter((c) => c.visible && c.ownerSignal).length,
-    candidates,
-    labelledResultsRegions: [
-      ...document.querySelectorAll(
-        'main [aria-label],[role="region"][aria-label],[role="list"][aria-label]',
-      ),
-    ]
-      .filter(
-        (el) =>
-          visible(el) &&
-          /^(generated results|image results|results gallery)$/i.test(
-            el.getAttribute("aria-label") || "",
-          ),
-      )
-      .map((el) => ({
-        label: el.getAttribute("aria-label"),
-        visibleMediaCount: [...el.querySelectorAll("img,video")].filter(visible)
-          .length,
-      })),
-  };
-})();
-```
+1. Keep the existing explicitly selected Flow tab open. Open DevTools Console on that same tab and select its top-frame context. Do not refresh or navigate it.
+2. Open the diagnostic file locally, copy its entire contents, paste into the Console, and run once. It performs no focus, click, input, event, storage, network, or provider operation.
+3. Copy the returned JSON string using DevTools' **Copy string contents**. Return that JSON and the packaged dashboard's build ID as plain text. Do not send an Elements/outerHTML dump or the Console's unrelated messages.
 
-Diagnostic output is **NOT_COLLECTED** because no browser surface was available. Candidate metadata from this snippet would still need comparison with a live extension target/frame binding and the app's target-bound settings confirmation. No fill or Generate action is authorized by this diagnostic alone.
+`viewportBand` only helps identify the top search and bottom composer in the report; it is never a selection or entry strategy. The report compares the existing runtime's query, nearest owner boundary, visibility/enabled checks, search exclusion, editor type, and prompt signals. It also reports ancestor structure, read-only state, and known editor marker presence. `truncated=true`, iframe/shadow counts, and `topFrame=false` limit what can be concluded. Diagnostic output remains **NOT_COLLECTED**; current extension tab/document binding must still be verified separately. Wait for the report before changing discovery or invoking fill.
 
 ## P04.3 pause — connection compatibility correction
 
@@ -179,3 +83,55 @@ P04.3 remains **PAUSED / NOT_RUN**. The confirmed source-level cause was a dupli
 Both layers now use one strict parser. The account index is retained only in the canonical route target; the original tab URL and manually selected tab are preserved. The P04 settings confirmation now binds to that canonical target. Handshake details expose only per-field states, and an additive connector capability does not remove the required read-only capability or grant new authority. Attempt snapshots, saved prompt batches, and non-replay behavior were not changed.
 
 Final local verification: Vitest **16 files / 162 tests PASS** and local synthetic Playwright **12 tests PASS**; typecheck, lint, Prettier, build, manifest consistency, and standalone connector packaging **PASS**. Current packaged dashboard/worker/connector build ID: **`automat-faceless-0.1.0-mvs8v92s`**. The build ID is not confirmed as loaded in the user's Chrome profile. No Flow/Vids tab, prompt, settings, fill action, Generate control, or provider outcome was accessed. A packaged read-only retest remains **NOT_RUN**; see [connection proof](connection-proof.md#account-prefixed-flow-correction-verification---28-october-2026). Do not resume P04.3 until that retest succeeds.
+
+## Current P04.3 discovery failure - 28 October 2026
+
+This entry supersedes the earlier connection-blocked handoff. **USER_REPORTED_PASS:** Flow and Vids now connect after the shared route-parser correction. **USER_REPORTED_FAIL:** the explicit live fill-only action stopped at `composer-discovery` with `composer=missing`, `connectorReachable=yes`, `methodCompatible=no`, `inputMethod=none`, expected **15,889 code units**, actual length unavailable, and fill not verified. Expected source SHA-256 is `f452ef3df4f0e7281560c52f980378df7f3cbfbc1b461353be1e46294a664a8b`; this is the assistant-generated, user-approved intended-use image sample. The current saved-source read/hash was not independently observed in this turn. Actual length unavailable does not establish truncation or a text mismatch.
+
+**SCREENSHOT_EVIDENCE:** the supplied views show the bottom "What do you want to create?" composer and a separate top search field. They do not establish the editor type, editable attributes, ownership boundary, enabled state, or actual DOM compatibility. No activation count, exact source equality, or settled readback is inferred from the screenshots.
+
+**SOURCE_REVIEWED:** `promptEntry.ts` executes the standalone `flowComposerRuntime` from `composer.ts`. `missing` means zero candidates survive its filters, without reporting which filter failed. Current requirements are:
+
+- The element must match the runtime's textarea/text-input/search-input/explicit-contenteditable/textbox query. Other editable representations are not queried.
+- Its nearest `form`, form/group/region role, or `data-composer` boundary must have a prompt/composer/create signal in its accessible name or test ID. A nearest unlabelled boundary is rejected even when a higher ancestor is labelled. `data-composer` alone does not satisfy the owner signal.
+- It must be connected, enabled, outside hidden/inert/aria-hidden ancestry, CSS-visible, and have client rectangles. Search type, search-role ancestry, or a search word in the relevant names excludes it.
+- A recognized kind is required. A non-native editor needs exactly `contenteditable="true"` and `role="textbox"`; otherwise it can be filtered out as `missing`. A contenteditable that survives discovery is still `unsupported` because its exact entry/readback method has not been implemented and verified.
+- The editor/boundary must supply a composer owner signal plus the exact placeholder attribute or a prompt/composer name signal. A visible descendant placeholder is not examined by the current runtime.
+
+These requirements explain the rejection paths, but the actual live editor's failed requirement is **UNKNOWN pending DOM evidence**. The top search field remains intentionally excluded; selecting the first textbox or using screenshot position is not an accepted fix.
+
+**Agent access check:** browser inventory returned `apps=[]`, `browsers=[]`. Native `sky.list_apps()` failed with `Computer Use native pipe is unavailable`, OS error 2. No selected Chrome tab DOM could be inspected. The new [read-only diagnostic](#minimal-read-only-diagnostic-for-the-users-existing-session) is prepared; its output is **NOT_COLLECTED**. Discovery changes and regression fixtures based on actual DOM structure are **BLOCKED** until that report is supplied. No speculative application change was made.
+
+Current packaged build remains **`automat-faceless-0.1.0-mvs8v92s`**; no new build was generated for the diagnostic/documentation handoff. Diagnostic `node --check`, focused ESLint, changed-file Prettier, and `git diff --check` **PASS**. Static inspection confirmed one shared packaged build ID, source/packaged manifest equality, and no import/export statements in the standalone connector. No application tests or build were rerun because discovery/entry code was not changed. Existing synthetic fixture results above remain historical and do not establish current Flow compatibility. Actual loaded identities, successful unique-composer discovery, exact immediate/settled live readback, and live fill remain unverified. P04.3 remains **INCOMPLETE / BLOCKED awaiting DOM evidence**. No Generate input was issued by the agent; P04.4 and P05 remain **NOT_STARTED**.
+
+The current action is to run the read-only diagnostic once and return its JSON plus dashboard build ID. A fill-only retest becomes appropriate only after evidence supports a discovery/entry fix and its checks pass: keep the same selected project and manual settings, verify the approved source identity, explicitly invoke **Inspect and fill Flow prompt (no Generate)** once, and record immediate/settled measurements. Stop on conflict, partial entry, mismatch, or lost binding; do not repeat the action or activate Generate.
+
+## User-supplied Flow DOM diagnostic - 29 October 2026
+
+The user supplied JSON from `flow-composer-readonly-v1` and reported the loaded dashboard build ID as **`automat-faceless-0.1.0-mvs8v92s`**. This is user-provided diagnostic/build evidence; the dashboard, worker, connector, browser tab, and frame identities were not independently inspected. The report says `topFrame=true`, `readyState=complete`, `candidateCount=4`, `iframeCount=3`, `openShadowHostCount=0`, `truncated=false`, and `currentRuntimeMatchesInReport=0`.
+
+Candidate 3 is the relevant visible composer-shaped candidate: a `div` with `role="textbox"` and `contenteditable="true"`, under `flow-rich-text-editor` and `flow-base-prompt-box`. It has `nameSignals=["create"]`, so it passes the diagnostic's owner-signal test, but its `currentBoundary` is null because none of its ancestors matches the runtime's boundary selector (`form`, form/group/region role, or `[data-composer]`). It is also rejected for `missing_prompt_signal`: `create` counts for ownership, while prompt matching requires the exact known placeholder or a prompt/composer name signal. Even if discovery were broadened, `currentMethodBlock="contenteditable_entry_not_implemented"` means the current exact-fill path cannot safely enter this editor. These are concrete source-level blockers; they do not establish which change, if any, is safe without the DOM/application contract review.
+
+Candidate 1 is rejected for `no_current_boundary`, `missing_composer_owner_signal`, and `missing_prompt_signal`; its ancestry places it under `flow-editable-text` in the navigation header, not a recognized prompt boundary. Candidate 2 is explicitly rejected as `search_control` and must remain excluded. Candidate 4 is CSS-hidden, has no client rects, and lacks boundary/owner/prompt signals; it is not a usable visible editor. The JSON exposes structure and fixed signals only, so no raw labels or editor values are inferred.
+
+No selector or entry-method change, build, provider-tab refresh/navigation, prompt fill, or Generate action was performed. P04.3 remains **INCOMPLETE**; the actual loaded runtime identities and live fill/readback remain unverified. The demo assets and progress remain P01.3 and unchanged.
+
+## P04.3 offline compatibility implementation — 29 October 2026
+
+The diagnostic evidence above was used to implement a bounded compatibility profile for exactly the reported custom-host nesting: `flow-base-prompt-box` contains `flow-rich-text-editor`, which contains a `div` with `contenteditable="true"` and `role="textbox"`. The editable needs a prompt/composer/create accessible-name signal within that specific profile. A `create` signal on a generic textbox, the top search field, and the navigation title do not qualify. Hidden, disabled/read-only, unsupported markup, and multiple matching editors fail closed.
+
+The fill-only request now carries workspace ID and prompt hash rather than an editable body. The worker reads the saved one-item image batch, checks item identity/hash/length/UTF-8 measurement, persists and revalidates the existing content-addressed write-once Flow image source snapshot, and passes that exact body into the debugger entry routine. The routine revalidates the selected tab/project and top-frame frame/loader before input, focuses the uniquely bound editable, verifies it is still the same editor and empty, then sends one `Input.insertText`. Existing exact text is verified without insertion; other nonempty content is left unchanged. A mismatch, uncertain input, target/document change, or unstable readback blocks the panel's next automatic attempt.
+
+For this structure, readback preserves text nodes exactly, maps `<br>` to LF, and maps each direct `<p>` or `<div>` line block to one LF separator. A single `<p><br></p>` is the evidenced empty caret structure. Unsupported nested markup is rejected. Immediate readback and three equal settled samples must each exactly equal the original saved source; no trimming, parsing/stringifying, newline normalization, synthetic-only events, repeated insertion, or long sleep is used. CDP `Input.insertText` was verified in local Chromium, not against Flow's managed editor.
+
+**OFFLINE_VERIFIED / LOCAL_BROWSER_FIXTURES_VERIFIED:** Vitest **6 files / 82 tests PASS**, including immutable source snapshot and document-change guards. Local Playwright Chromium **23 tests PASS** against the synthetic DOM structure derived from the diagnostic. The approved dinosaur JSON read back as **15,889 code units / 16,013 UTF-8 bytes**, SHA-256 `f452ef3df4f0e7281560c52f980378df7f3cbfbc1b461353be1e46294a664a8b`. Nested multiline JSON with Unicode, escapes, decimal arrays, and blank lines also matched exactly. A CRLF fixture's browser representation mismatch was reported without normalization or retry. Local fixtures count zero click/submit and contain no `Input.dispatchMouseEvent` Generate activation. All these results are fixture evidence only.
+
+Typecheck and lint **PASS**. Prettier check **PASS** for changed source, test, fixture, evidence, and phase-card files; `PROJECT_STATUS.md` retains its existing non-Prettier table formatting, so only `git diff --check` is claimed for that status ledger. Production build **PASS** (Vite 8.3.5, 163 modules); the standalone connector remains import/export-free and the built manifest matches `public/manifest.json`. Dashboard, worker, and connector share build ID **`automat-faceless-0.1.0-mvsx7anc`**. Vitest **6 files / 82 tests PASS**; local Chromium **23 tests PASS**. No provider tab was refreshed/navigated or replaced; no provider settings, saved batches, or P01.3 demo data were changed; no Generate or P04.4/P05 action occurred. Actual Flow fill/readback and user-loaded package identity remain **NOT_RUN / unverified**.
+
+### User-run fill-only retest
+
+1. Keep the same existing Flow project tab open; do not refresh or navigate it. Confirm the dashboard shows the newly packaged build ID recorded in `PROJECT_STATUS.md` and that the selected Flow tab/project is still the intended target.
+2. Confirm the existing validated image item is still one item and matches the saved source; leave the manually selected Flow settings unchanged and confirm them in the dashboard if the existing attestation is no longer current.
+3. Invoke **Inspect and fill Flow prompt (no Generate)** once. Wait for the terminal fill-only status. Do not click Generate.
+4. Record the returned outcome/stage/code, build ID, expected/actual code units and UTF-8 bytes, expected/actual hash, immediate/settled match flags, stable-readback flag, and editor-replaced flag. Do not include the JSON body or account-sensitive page details.
+5. If the result says already matching, require exact stable readback and `inputMethod=none`. If it says filled, require exact immediate and settled matches and stable readback. On mismatch, partial/uncertain input, unsupported markup, or target/document change, stop and inspect manually; do not retry, overwrite, or activate Generate.

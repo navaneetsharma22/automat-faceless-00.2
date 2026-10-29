@@ -5,6 +5,8 @@ import {
 } from "../../src/storage/repositories";
 import { appDatabase } from "../../src/storage/db";
 import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
+import { flowImagePromptSnapshotId } from "../../src/domain/batches/flowImagePromptSnapshot";
+import { sha256Hex } from "../../src/storage/repositories";
 
 describe("extension repository boundaries", () => {
   it("declares the fresh extension-owned Dexie namespace and foundation tables", () => {
@@ -68,6 +70,43 @@ describe("extension repository boundaries", () => {
     await repository.setTheme("dark");
     expect(await repository.getTheme()).toBe("dark");
     expect(values).toEqual({ theme: "dark" });
+  });
+
+  it("keeps content-addressed Flow image source snapshots immutable", async () => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+      () => 100,
+    );
+    const source = '{"shot_id":"01","text":"preserve  \\n exact"}';
+    const hash = await sha256Hex(source);
+    const snapshot = {
+      snapshotId: flowImagePromptSnapshotId("item-01", hash),
+      workspaceId: "workspace-01",
+      batchId: "batch-01",
+      itemId: "item-01",
+      promptHash: hash,
+      rawJsonBody: source,
+      promptCodeUnits: source.length,
+      promptUtf8Bytes: new TextEncoder().encode(source).byteLength,
+      createdAt: 100,
+    };
+    await repositories.saveFlowImagePromptSnapshot(snapshot);
+    await repositories.saveFlowImagePromptSnapshot({
+      ...snapshot,
+      createdAt: 200,
+    });
+    expect(
+      await repositories.getFlowImagePromptSnapshot(snapshot.snapshotId),
+    ).toEqual(snapshot);
+    await expect(
+      repositories.saveFlowImagePromptSnapshot({
+        ...snapshot,
+        workspaceId: "workspace-02",
+      }),
+    ).rejects.toThrow("immutable Flow image prompt snapshot");
+    expect(
+      await repositories.getFlowImagePromptSnapshot(snapshot.snapshotId),
+    ).toEqual(snapshot);
   });
 
   it("treats a pre-lifecycle saved target as eligible for fresh verification", async () => {

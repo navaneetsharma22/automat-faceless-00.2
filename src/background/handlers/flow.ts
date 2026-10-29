@@ -714,6 +714,62 @@ export function createFlowPromptEntry(
   };
 }
 
+export function createSavedFlowPromptEntry(
+  repositories: ExtensionRepositories,
+  port = createChromeFlowPromptEntryPort(repositories),
+): (input: {
+  workspaceId: string;
+  promptHash: string;
+}) => Promise<FlowPromptEntryResult> {
+  return async ({ workspaceId, promptHash }) => {
+    const batch = await repositories.getPromptBatch(workspaceId, "image");
+    if (!batch || batch.items.length !== 1) {
+      throw new Error("flow_saved_single_prompt_required");
+    }
+    const item = batch.items[0]!;
+    if (
+      item.workspaceId !== workspaceId ||
+      item.batchId !== batch.batch.id ||
+      item.kind !== "image" ||
+      item.contentHash !== promptHash ||
+      item.rawJsonBody.length !== item.measurement.stringCodeUnits ||
+      new TextEncoder().encode(item.rawJsonBody).byteLength !==
+        item.measurement.utf8Bytes ||
+      (await sha256Hex(item.rawJsonBody)) !== promptHash
+    ) {
+      throw new Error("flow_saved_prompt_changed");
+    }
+    const snapshot = {
+      snapshotId: flowImagePromptSnapshotId(item.id, promptHash),
+      workspaceId,
+      batchId: batch.batch.id,
+      itemId: item.id,
+      promptHash,
+      rawJsonBody: item.rawJsonBody,
+      promptCodeUnits: item.measurement.stringCodeUnits,
+      promptUtf8Bytes: item.measurement.utf8Bytes,
+      createdAt: Date.now(),
+    };
+    await repositories.saveFlowImagePromptSnapshot(snapshot);
+    const saved = await repositories.getFlowImagePromptSnapshot(
+      snapshot.snapshotId,
+    );
+    if (
+      !saved ||
+      saved.workspaceId !== workspaceId ||
+      saved.batchId !== batch.batch.id ||
+      saved.itemId !== item.id ||
+      saved.promptHash !== promptHash ||
+      saved.promptCodeUnits !== item.measurement.stringCodeUnits ||
+      saved.promptUtf8Bytes !== item.measurement.utf8Bytes ||
+      saved.rawJsonBody !== item.rawJsonBody
+    ) {
+      throw new Error("flow_immutable_source_unavailable");
+    }
+    return enterFlowPrompt(saved.rawJsonBody, port);
+  };
+}
+
 export function createFlowImageGenerateOnceForWorker(
   repositories: ExtensionRepositories,
 ): (input: FlowImageGenerateOnceInput) => Promise<FlowImageGenerateOnceResult> {

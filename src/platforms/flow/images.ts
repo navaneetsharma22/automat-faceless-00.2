@@ -1,4 +1,4 @@
-import { flowComposerRuntime } from "./composer";
+import { flowComposerRuntime, readFlowEditorRuntime } from "./composer";
 import type { FlowPromptEntryPort } from "./promptEntry";
 
 export type FlowDocumentBinding = {
@@ -28,10 +28,12 @@ export type FlowGenerateDiscovery = {
 export function flowImageRuntime(
   expectedText: string,
   mode: "inspect" | "button" = "inspect",
+  composerRuntime = flowComposerRuntime,
+  readText = readFlowEditorRuntime,
 ): FlowGenerateDiscovery | HTMLElement | null {
-  const editor = flowComposerRuntime("", true);
+  const editor = composerRuntime("", true, readText);
   if (!(editor instanceof HTMLElement)) {
-    const rawDiscovery = flowComposerRuntime("", false);
+    const rawDiscovery = composerRuntime("", false, readText);
     const discovery =
       rawDiscovery && !(rawDiscovery instanceof HTMLElement)
         ? rawDiscovery
@@ -50,13 +52,17 @@ export function flowImageRuntime(
       generationAvailable: false,
     };
   }
-  if (
-    !(
-      editor instanceof HTMLInputElement ||
-      editor instanceof HTMLTextAreaElement
-    ) ||
-    (editor instanceof HTMLInputElement && editor.type !== "text")
-  ) {
+  const nativeEditor =
+    editor instanceof HTMLTextAreaElement ||
+    (editor instanceof HTMLInputElement && editor.type === "text");
+  const richHost = editor.closest("flow-rich-text-editor");
+  const richBoundary = editor.closest<HTMLElement>("flow-base-prompt-box");
+  const richEditor =
+    editor instanceof HTMLDivElement &&
+    editor.getAttribute("contenteditable") === "true" &&
+    editor.getAttribute("role") === "textbox" &&
+    Boolean(richHost && richBoundary && richHost.closest("flow-base-prompt-box") === richBoundary);
+  if (!nativeEditor && !richEditor) {
     return {
       composer: "unsupported",
       exactPrompt: false,
@@ -66,9 +72,11 @@ export function flowImageRuntime(
       generationAvailable: false,
     };
   }
-  const boundary = editor.closest<HTMLElement>(
-    'form, [role="form"], [role="group"], [role="region"], [data-composer]',
-  );
+  const boundary = richEditor
+    ? richBoundary
+    : editor.closest<HTMLElement>(
+        'form, [role="form"], [role="group"], [role="region"], [data-composer]',
+      );
   if (!boundary) {
     return {
       composer: "unsupported",
@@ -132,10 +140,19 @@ export function flowImageRuntime(
         : "ready";
   const region =
     regionCandidates.length === 1 ? regionCandidates[0]! : undefined;
-  const currentText =
-    editor instanceof HTMLInputElement || editor instanceof HTMLTextAreaElement
-      ? editor.value
-      : "";
+  let currentText: string;
+  try {
+    currentText = readText(editor);
+  } catch {
+    return {
+      composer: "unsupported",
+      exactPrompt: false,
+      actualCodeUnits: 0,
+      generate: "missing",
+      observation: "missing",
+      generationAvailable: false,
+    };
+  }
   return {
     composer: "identified",
     exactPrompt: currentText === expectedText,
@@ -159,7 +176,7 @@ export function flowImageRuntimeExpression(
   expectedText: string,
   mode: "inspect" | "button" = "inspect",
 ): string {
-  return `(function(){const flowComposerRuntime=${flowComposerRuntime.toString()};return (${flowImageRuntime.toString()})(${JSON.stringify(expectedText)}, ${JSON.stringify(mode)});})()`;
+  return `(${flowImageRuntime.toString()})(${JSON.stringify(expectedText)},${JSON.stringify(mode)},(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}))`;
 }
 
 export type FlowImagePagePort = Pick<

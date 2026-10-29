@@ -95,6 +95,9 @@ export function ImportPanel({
         firstDifferenceOffset?: number;
         mismatchCategory?: string;
         inputMethod?: string;
+        editorKind?: string;
+        composerProfile?: string;
+        textReadback?: string;
         fillVerified?: boolean;
         generationAvailable?: false;
       }
@@ -415,7 +418,8 @@ export function ImportPanel({
     setFlowEntryResult(undefined);
     try {
       const rawResult = await persistenceClient.request("flow.prompt.fill", {
-        sourceText: item.rawBody,
+        workspaceId,
+        promptHash: await sha256Hex(item.rawBody),
       });
       if (!rawResult || typeof rawResult !== "object") {
         throw new Error("Flow entry returned an invalid status.");
@@ -700,6 +704,9 @@ export function ImportPanel({
               : "",
             flowEntryResult.composer
               ? `Connector reachable: ${flowEntryResult.connectorReachable ? "yes" : "no"}; composer: ${flowEntryResult.composer}; entry method compatible: ${flowEntryResult.methodCompatible ? "yes" : "no"}.`
+              : "",
+            flowEntryResult.textReadback
+              ? `Editor: ${flowEntryResult.editorKind}; profile: ${flowEntryResult.composerProfile}; readback: ${flowEntryResult.textReadback}.`
               : "",
             flowEntryResult.expectedSha256
               ? `Expected SHA-256 ${flowEntryResult.expectedSha256}; actual ${flowEntryResult.actualSha256 ?? "unavailable"}.`

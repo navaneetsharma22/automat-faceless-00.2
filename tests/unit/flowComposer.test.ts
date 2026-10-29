@@ -68,5 +68,11 @@ describe("Flow composer editor classification", () => {
     expect(
       classifyFlowEditorText(content, "contenteditable", "keep", "{}"),
     ).toBe("conflict");
+    expect(classifyFlowEditorText(empty, "contenteditable", " ", "{}")).toBe(
+      "conflict",
+    );
+    expect(classifyFlowEditorText(empty, "contenteditable", "\n", "{}")).toBe(
+      "conflict",
+    );
   });
 });

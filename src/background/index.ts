@@ -1,8 +1,7 @@
 import { createConnectionMessageListener } from "./handlers/connections";
 import {
   createFlowImageGenerateOnceForWorker,
-  createChromeFlowPromptEntryPort,
-  createFlowPromptEntry,
+  createSavedFlowPromptEntry,
 } from "./handlers/flow";
 import { registerDashboardAction } from "./openDashboard";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
@@ -22,9 +21,7 @@ const workerReady = Promise.all([
   repositories.reconcileInterruptedFlowImageAttempts(),
 ]).then(() => undefined);
 void workerReady.catch(() => undefined);
-const flowPromptEntry = createFlowPromptEntry(
-  createChromeFlowPromptEntryPort(repositories),
-);
+const flowPromptEntry = createSavedFlowPromptEntry(repositories);
 const flowImageGenerateOnce =
   createFlowImageGenerateOnceForWorker(repositories);
 

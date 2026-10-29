@@ -31,7 +31,7 @@ export type RequestPayloads = {
     provider: "Flow" | "Vids";
     enabled: boolean;
   };
-  "flow.prompt.fill": { sourceText: string };
+  "flow.prompt.fill": { workspaceId: string; promptHash: string };
   "flow.image.generateOnce": {
     workspaceId: string;
     promptHash: string;

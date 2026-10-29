@@ -1,6 +1,6 @@
 # P04 — One long image JSON: entry and one Generate
 
-Status: **INCOMPLETE — P04.1 OFFLINE_VERIFIED / LOCAL_BROWSER_FIXTURES_VERIFIED; P04.2 OFFLINE_VERIFIED / LOCAL_BROWSER_FIXTURES_VERIFIED; P04.3 live verification NOT_RUN (stopped before target readiness); P04.4 NOT_STARTED.** Real Flow DOM compatibility, live entry, and provider outcome remain unverified.
+Status: **INCOMPLETE — P04.1/P04.2 remain offline/local-fixture verified; the P04.3 evidence-backed discovery and fill-only compatibility fix is implemented and offline/local-fixture verified; live Flow fill is NOT_RUN; P04.4 NOT_STARTED.** The user reports Flow/Vids connection success after the route fix. Actual live editor behavior, exact live fill/readback, and provider outcome remain unverified. Stop this task before live generation.
 
 **Outcome:** The extension can enter one actual long JSON in the correct Flow composer and activate Generate once.
 
@@ -34,7 +34,7 @@ Start in these files:
 
 Acceptance: Read-only discovery is distinguished from readiness. Long JSON fill/readback uses a demonstrated editor path; no Generate is performed during fill-only tests.
 
-P04.1 implementation summary: The shared canonical Flow parser now accepts the account-prefixed `/u/{number}/project/{projectId}` route and preserves it in canonical identity; the original tab URL is retained unchanged. `composer.ts` excludes search controls, requires a unique visible/enabled editor within a semantically owned composer boundary, and distinguishes missing/ambiguous/unsupported discovery from method compatibility. Placeholder text is not sufficient by itself. Textareas and text inputs are the only currently supported entry targets. Contenteditable candidates are blocked because local browser evidence did not demonstrate exact newline preservation for that representation. All selectors are candidate signals pending a user-run read-only inspection of the real Flow DOM.
+P04.1 implementation summary: The shared canonical Flow parser now accepts the account-prefixed `/u/{number}/project/{projectId}` route and preserves it in canonical identity; the original tab URL is retained unchanged. `composer.ts` excludes search controls, requires one visible/enabled editor, and distinguishes missing/ambiguous/unsupported discovery from method compatibility. P04.3 extends fill-only support to the exact evidenced `flow-base-prompt-box` > `flow-rich-text-editor` > `div[contenteditable=true][role=textbox]` structure; arbitrary contenteditables remain unsupported, and `create` alone is not enough outside that host pair. The approved 15,889-code-unit sample and multiline/Unicode cases passed local Chromium insertion and exact readback. Flow's live DOM/editor behavior remains pending user retest.
 
 The image import panel now offers **Inspect and fill Flow prompt (no Generate)** only for one successful current image JSON validation and the user's manual Flow settings confirmation. The worker validates the dashboard message/build/protocol, selected Flow record, live tab route, and top-frame document loader, then attaches CDP to that selected tab. It rechecks selection and document binding before input and after asynchronous work. Existing exact text is stable-read without insertion; different text conflicts without mutation; verified empty textarea input uses one `Input.insertText` command. A timeout or uncertain input is not retried, and the panel blocks subsequent automatic attempts for that mounted session. Generate/submit commands do not exist in this handler.
 
@@ -54,42 +54,7 @@ Final offline checks: `npm run typecheck`, `npm run lint`, changed-file Prettier
 
 ### Read-only Flow DOM inspection handoff
 
-No actual Flow DOM was inspected in this task. If a user later wants to provide the missing read-only evidence, open the already-selected Flow project without refreshing or navigating it, open DevTools Console, and run a read-only metadata inspection such as:
-
-```js
-Array.from(
-  document.querySelectorAll(
-    'textarea, input, [contenteditable="true"], [role="textbox"]',
-  ),
-).map((el) => {
-  const r = el.getBoundingClientRect();
-  const style = getComputedStyle(el);
-  const owner = el.closest(
-    'form, [role="form"], [role="group"], [role="region"], [data-composer]',
-  );
-  return {
-    tag: el.tagName,
-    role: el.getAttribute("role"),
-    type: el.getAttribute("type"),
-    ariaLabel: el.getAttribute("aria-label"),
-    placeholder:
-      el.getAttribute("placeholder") ?? el.getAttribute("data-placeholder"),
-    contenteditable: el.getAttribute("contenteditable"),
-    disabled: el.matches(':disabled, [disabled], [aria-disabled="true"]'),
-    visible:
-      r.width > 0 &&
-      r.height > 0 &&
-      style.visibility === "visible" &&
-      style.display !== "none",
-    ownerTag: owner?.tagName,
-    ownerRole: owner?.getAttribute("role"),
-    ownerLabel: owner?.getAttribute("aria-label"),
-    textLength: "value" in el ? el.value.length : (el.textContent ?? "").length,
-  };
-});
-```
-
-Share only the returned metadata, not prompt text. The procedure does not focus, click, type, submit, or alter page state. This evidence is still **NOT_RUN**.
+No actual Flow DOM was inspected in this task. The current handoff uses the bounded, masked [`flow-composer-readonly.js`](../tools/diagnostics/flow-composer-readonly.js) diagnostic and [its instructions](../docs/evidence/flow-one-image.md#minimal-read-only-diagnostic-for-the-users-existing-session). It reports structure and fixed rejection/signal codes without editor values, raw labels, account data, or URLs. This supersedes the older raw-attribute snippet. Diagnostic output is **NOT_COLLECTED**; do not implement a DOM-specific fix or repeat fill until the report is available.
 
 At this P04.1 handoff, live Flow composer discovery/fill and actual editor framework readback are **NOT_RUN**. No browser version or live build/project evidence is claimed. Provider prompt-size acceptance and generation remain unverified. P04.2, P04.3, and P04.4 remain **NOT_STARTED**; Phase 04 remains **INCOMPLETE**.
 
@@ -123,6 +88,14 @@ Start in these files:
 - PROJECT_STATUS.md
 
 Acceptance: Record the actual user-representative JSON profile, build/project, exact readback, one activation and observed provider outcome. Do not replay an uncertain result.
+
+### P04.3 offline compatibility implementation — 29 October 2026
+
+The user-supplied read-only diagnostic identifies the unique candidate shape used by this fix. Discovery accepts a contenteditable only when it is a `div[contenteditable="true"][role="textbox"]` nested in both `flow-rich-text-editor` and the same `flow-base-prompt-box`. Within that observed structure, a prompt/composer/create signal on the editable qualifies ownership; a `create` signal by itself on an arbitrary textbox does not. Search/navigation, hidden, disabled/read-only, unsupported representations, and multiple eligible editors remain excluded or blocked.
+
+Fill-only entry uses the existing debugger binding and one CDP `Input.insertText` command after explicit focus and fresh target/frame/editor/source checks. The worker loads the one-item saved image batch, verifies its hash and measurements, writes/reads a content-addressed immutable source snapshot, then enters that exact body. The reader maps text nodes verbatim, `<br>` to LF, and direct `<p>`/`<div>` blocks to LF separators; unsupported markup fails closed. No trim, JSON rewrite, line-ending normalization, per-character loop, synthetic-only input path, overwrite, or automatic retry is used. Immediate and three-sample settled readback must match exactly. P04.2 continues to reject this contenteditable for Generate, so this compatibility path cannot activate Generate.
+
+Local evidence on 29 October 2026: focused Vitest **6 files / 82 tests PASS**; local Playwright Chromium **23 tests PASS**; typecheck, lint, formatting, production build, standalone connector/shared build-ID checks, and `git diff --check` **PASS**. The local observed-structure fixture entered the approved source exactly (**15,889 code units / 16,013 UTF-8 bytes / SHA-256 `f452ef3df4f0e7281560c52f980378df7f3cbfbc1b461353be1e46294a664a8b`**), plus multiline Unicode/escaped/nested JSON. The local CRLF case remains an explicit mismatch and is not normalized. Fixture verification does not establish actual Flow framework behavior. No provider tab was refreshed or navigated, no settings or saved batch changed, and no Generate input was sent. Follow the user-run fill-only procedure in [the latest Flow evidence](../docs/evidence/flow-one-image.md#p043-offline-compatibility-implementation--29-october-2026); P04.3 live fill/readback remains **NOT_RUN** and P04.4 remains **NOT_STARTED**.
 
 ### P04.4 — Prove bounded pre-input and post-input failure attribution
 

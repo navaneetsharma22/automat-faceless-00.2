@@ -1,0 +1,65 @@
+<!doctype html>
+<!-- Synthetic labels/content; host tags and ancestor shape derive from the
+     user-run flow-composer-readonly-v1 report. This is not captured Flow HTML. -->
+<html lang="en">
+  <head>
+    <style>
+      flow-navigation-header,
+      flow-search-bar,
+      flow-base-prompt-box,
+      flow-rich-text-editor {
+        display: block;
+      }
+      [contenteditable] {
+        min-height: 40px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <flow-navigation-header
+      ><nav>
+        <span
+          ><flow-editable-text
+            ><div>
+              <input
+                type="text"
+                aria-label="Synthetic project name"
+              /></div></flow-editable-text
+        ></span></nav
+    ></flow-navigation-header>
+    <header>
+      <flow-search-bar
+        ><div>
+          <div>
+            <button type="button">Synthetic search control</button>
+            <input type="text" aria-label="Search synthetic media" />
+          </div></div
+      ></flow-search-bar>
+    </header>
+    <flow-base-prompt-box
+      ><div>
+        <flow-border-glow></flow-border-glow>
+        <div>
+          <flow-rich-text-editor
+            ><span></span>
+            <div>
+              <!-- prettier-ignore -->
+              <div contenteditable="true" role="textbox" aria-label="Create synthetic fixture content"><p><br></p></div></div
+          ></flow-rich-text-editor>
+          <div></div>
+        </div>
+        <div>
+          <button type="button">Synthetic add</button
+          ><button type="button">Synthetic settings</button
+          ><button type="button">Synthetic submit</button>
+        </div>
+      </div></flow-base-prompt-box
+    >
+    <div>
+      <div></div>
+      <div></div>
+      <textarea style="display: none"></textarea>
+    </div>
+  </body>
+</html>

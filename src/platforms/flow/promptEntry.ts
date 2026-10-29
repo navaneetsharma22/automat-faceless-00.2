@@ -1,6 +1,10 @@
 import { importPromptBatch } from "../../domain/batches/importBatch";
 import { sha256Hex } from "../../storage/repositories";
-import { flowComposerRuntime, type FlowComposerDiscovery } from "./composer";
+import {
+  flowComposerRuntimeExpression,
+  readFlowEditorRuntime,
+  type FlowComposerDiscovery,
+} from "./composer";
 import { flowTabFromUrl, sameFlowDocument } from "./connection";
 import type { ProviderTab } from "../shared/contracts";
 
@@ -33,6 +37,9 @@ export type FlowPromptEntryResult = {
   fillVerified: boolean;
   generationAvailable: false;
   inputMethod: "CDP Input.insertText" | "none";
+  editorKind?: FlowComposerDiscovery["editorKind"];
+  composerProfile?: FlowComposerDiscovery["profile"];
+  textReadback?: FlowComposerDiscovery["textReadback"];
   expectedCodeUnits: number;
   actualCodeUnits?: number;
   expectedUtf8Bytes: number;
@@ -83,6 +90,7 @@ export async function enterFlowPrompt(
   const startedAt = now();
   const expectedBytes = new TextEncoder().encode(rawJsonBody).byteLength;
   const expectedSha256 = await sha256Hex(rawJsonBody);
+  let editorMetadata: Partial<FlowPromptEntryResult> = {};
   const result = (
     overrides: Partial<FlowPromptEntryResult>,
   ): FlowPromptEntryResult => ({
@@ -100,6 +108,7 @@ export async function enterFlowPrompt(
     expectedUtf8Bytes: expectedBytes,
     expectedSha256,
     elapsedMs: Math.max(0, now() - startedAt),
+    ...editorMetadata,
     ...overrides,
   });
 
@@ -206,6 +215,11 @@ export async function enterFlowPrompt(
       deadline,
       now,
     );
+    editorMetadata = {
+      editorKind: inspected.editorKind,
+      composerProfile: inspected.profile,
+      textReadback: inspected.textReadback,
+    };
     const composer =
       inspected.state === "missing"
         ? "missing"
@@ -220,10 +234,16 @@ export async function enterFlowPrompt(
         code: `composer_${composer}`,
         message:
           composer === "missing"
-            ? "A supported Flow prompt composer was not found."
+            ? "No unique supported Flow composer passed ownership, editor type, visibility and enabled-state checks. Search/navigation fields are excluded."
             : composer === "ambiguous"
               ? "More than one Flow prompt composer matched; choose a supported composer before filling."
-              : "The Flow prompt editor does not support the implemented entry method.",
+              : inspected.diagnostic === "composer_media_present"
+                ? "The composer contains media or embedded content. It was left unchanged."
+                : inspected.diagnostic === "editor_representation_unsupported"
+                  ? "The Flow editor uses unsupported text markup. No input was sent."
+                  : inspected.diagnostic === "unverified_empty_editor"
+                    ? "The Flow editor's empty paragraph structure has not passed exact local insertion checks. No input was sent; report the read-only editor structure."
+                    : "This contenteditable is outside the observed Flow rich-editor host profile. No compatible entry method was selected.",
         connectorReachable,
         composer,
       });
@@ -297,25 +317,27 @@ export async function enterFlowPrompt(
         now,
       );
       const comparison = await compareText(rawJsonBody, settled.text);
+      const verified = comparison.equal && settled.stable;
       return result({
-        outcome: comparison.equal ? "already-matching" : "readback-mismatch",
+        outcome: verified ? "already-matching" : "readback-mismatch",
         stage: "settled-readback",
-        code: comparison.equal
+        code: verified
           ? "already_matching_verified"
           : "already_matching_changed",
-        message: comparison.equal
+        message: verified
           ? "The Flow editor already contained this exact prompt and remained stable. No text was inserted."
           : "The Flow editor changed during settled readback; no text was inserted.",
         connectorReachable,
         composer: "identified",
         methodCompatible: true,
-        fillVerified: comparison.equal,
+        fillVerified: verified,
         inputMethod: "none",
         actualCodeUnits: settled.text.length,
         actualUtf8Bytes: new TextEncoder().encode(settled.text).byteLength,
         actualSha256: await sha256Hex(settled.text),
-        immediateMatch: comparison.equal,
+        immediateMatch: true,
         settledMatch: comparison.equal,
+        stableReadback: settled.stable,
         firstDifferenceOffset: comparison.firstDifferenceOffset,
         mismatchCategory: comparison.mismatchCategory,
         editorReplaced: false,
@@ -339,8 +361,7 @@ export async function enterFlowPrompt(
       "Runtime.callFunctionOn",
       {
         objectId: editorObjectId,
-        functionDeclaration:
-          "function(){ if (!this.isConnected) return false; this.focus(); return this.isConnected && document.activeElement === this; }",
+        functionDeclaration: `function(){ if (!this.isConnected || (${flowComposerRuntimeExpression("", true)}) !== this) return false; this.focus(); return this.isConnected && document.activeElement === this; }`,
         returnByValue: true,
         awaitPromise: false,
       },
@@ -437,17 +458,19 @@ export async function enterFlowPrompt(
       });
     }
     const replaced = settled.replaced;
+    const verified = immediate.equal && comparison.equal && settled.stable;
+    const mismatch = immediate.equal ? comparison : immediate;
     return result({
-      outcome: comparison.equal ? "filled" : "readback-mismatch",
+      outcome: verified ? "filled" : "readback-mismatch",
       stage: "settled-readback",
-      code: comparison.equal ? "fill_verified" : "readback_mismatch",
-      message: comparison.equal
-        ? "Flow accepted the text and settled readback matched exactly. Generate remains unavailable."
+      code: verified ? "fill_verified" : "readback_mismatch",
+      message: verified
+        ? "Immediate and settled editor readback matched exactly. Generate remains unavailable."
         : "The editor text did not match the submitted prompt exactly. Do not retry automatically.",
       connectorReachable,
       composer: "identified",
       methodCompatible: true,
-      fillVerified: comparison.equal,
+      fillVerified: verified,
       inputMethod: "CDP Input.insertText",
       actualCodeUnits: settled.text.length,
       actualUtf8Bytes: new TextEncoder().encode(settled.text).byteLength,
@@ -455,8 +478,8 @@ export async function enterFlowPrompt(
       immediateMatch: immediate.equal,
       settledMatch: comparison.equal,
       stableReadback: settled.stable,
-      firstDifferenceOffset: comparison.firstDifferenceOffset,
-      mismatchCategory: comparison.mismatchCategory,
+      firstDifferenceOffset: mismatch.firstDifferenceOffset,
+      mismatchCategory: mismatch.mismatchCategory,
       editorReplaced: replaced,
       elapsedMs: Math.max(0, now() - startedAt),
     });
@@ -527,7 +550,7 @@ function runtimeExpression(
   expectedText: string,
   returnEditor: boolean,
 ): string {
-  return `(${flowComposerRuntime.toString()})(${JSON.stringify(expectedText)}, ${returnEditor})`;
+  return flowComposerRuntimeExpression(expectedText, returnEditor);
 }
 
 async function readTopFrame(
@@ -622,8 +645,7 @@ async function readEditorObject(
     "Runtime.callFunctionOn",
     {
       objectId,
-      functionDeclaration:
-        "function(){ if (!this.isConnected) return { connected:false, text:'' }; const tag=this.tagName.toLowerCase(); return { connected:true, text:tag==='textarea'||tag==='input'?this.value:(this.textContent||'') }; }",
+      functionDeclaration: `function(){ if (!this.isConnected) return { connected:false, text:'' }; return { connected:true, text:(${readFlowEditorRuntime.toString()})(this) }; }`,
       returnByValue: true,
       awaitPromise: false,
     },

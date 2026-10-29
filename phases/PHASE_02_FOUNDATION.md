@@ -1,6 +1,6 @@
 # P02 — Toolchain, MV3 foundation and platform connections
 
-Status: **INCOMPLETE pending account-prefixed Flow packaged-browser retest.** P02.1–P02.3 remain OFFLINE_VERIFIED. P02.4's prior screenshots and USER_REPORTED_PASS checks remain recorded for their tested sessions/builds. The later account-prefixed Flow mismatch has an OFFLINE_VERIFIED source fix; the live retest is NOT_RUN and is not claimed as passed.
+Status: **DONE for the read-only connection scope; corrected Flow/Vids connections USER_REPORTED_PASS.** P02.1–P02.3 retain their offline evidence. The user reports both providers connect after the shared account-prefixed route fix, superseding the earlier pending retest. Prior screenshots and user checks retain their tested scope; actual loaded runtime identities are not independently observed. The subsequent P04.3 composer-discovery failure remains a separate entry-readiness blocker.
 
 **Outcome:** The new dashboard and worker connect read-only to the intended Flow/Vids targets with visible build identity.
 

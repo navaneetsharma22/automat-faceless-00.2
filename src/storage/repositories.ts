@@ -186,6 +186,12 @@ export function createDexieRepositoryDatabase(
             database.flowImagePromptSnapshots,
             operation,
           );
+        case "flowImagePromptSnapshots":
+          return database.transaction(
+            "rw",
+            database.flowImagePromptSnapshots,
+            operation,
+          );
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -568,6 +574,43 @@ export class ExtensionRepositories {
       throw new FlowImagePromptSnapshotValidationError();
     }
     return snapshot;
+  }
+
+  async saveFlowImagePromptSnapshot(
+    snapshot: FlowImagePromptSnapshotRecord,
+  ): Promise<void> {
+    if (
+      snapshot.snapshotId !==
+        flowImagePromptSnapshotId(snapshot.itemId, snapshot.promptHash) ||
+      !FlowImagePromptSnapshotRecordSchema.safeParse(snapshot).success ||
+      (await sha256Hex(snapshot.rawJsonBody)) !== snapshot.promptHash ||
+      snapshot.rawJsonBody.length !== snapshot.promptCodeUnits ||
+      new TextEncoder().encode(snapshot.rawJsonBody).byteLength !==
+        snapshot.promptUtf8Bytes
+    ) {
+      throw new FlowImagePromptSnapshotValidationError();
+    }
+    await this.tables.transaction(["flowImagePromptSnapshots"], async () => {
+      const existing = await this.tables.flowImagePromptSnapshots.get(
+        snapshot.snapshotId,
+      );
+      if (existing) {
+        if (
+          !FlowImagePromptSnapshotRecordSchema.safeParse(existing).success ||
+          existing.workspaceId !== snapshot.workspaceId ||
+          existing.batchId !== snapshot.batchId ||
+          existing.itemId !== snapshot.itemId ||
+          existing.promptHash !== snapshot.promptHash ||
+          existing.promptCodeUnits !== snapshot.promptCodeUnits ||
+          existing.promptUtf8Bytes !== snapshot.promptUtf8Bytes ||
+          existing.rawJsonBody !== snapshot.rawJsonBody
+        ) {
+          throw new FlowImagePromptSnapshotConflictError();
+        }
+        return;
+      }
+      await this.tables.flowImagePromptSnapshots.add(snapshot);
+    });
   }
 
   async transitionFlowImageAttempt(input: {
