@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createFlowImageObservationHandler } from "../../src/background/handlers/observations";
 import {
+  flowImageResultBaselineFingerprintInput,
   reduceFlowImageObservation,
+  flowStructuralSnapshotFingerprintInput,
+  type FlowStructuralObservationEvent,
   type FlowImageObservationEvent,
 } from "../../src/domain/jobs/results";
 import { flowImageAttemptActiveKey } from "../../src/domain/jobs/attempt";
@@ -19,7 +22,11 @@ const documentId = "fixture-document";
 const sessionId = "d7a5ea61-9721-4a65-8485-798f2f4e0c11";
 const prompt = '{"shot_id":"01","scene":"offline fixture"}';
 
-async function makeFixture(variantCount = 2) {
+async function makeFixture(
+  variantCount = 2,
+  profileSupport: "fixture_supported" | "production_observation_only" =
+    "fixture_supported",
+) {
   const repositories = new ExtensionRepositories(
     createMemoryRepositoryDatabase(),
     () => 2_000,
@@ -138,7 +145,7 @@ async function makeFixture(variantCount = 2) {
     startedAt: 1_030,
     deadlineAt: 100_000,
     maxEvents: 8,
-    profileSupport: "fixture_supported" as const,
+    profileSupport,
     status: "active" as const,
     lastSequence: 0,
     reconciliationCount: 0,
@@ -197,6 +204,8 @@ async function makeFixture(variantCount = 2) {
       senderFrameId: 0,
       url: canonicalTarget,
     }),
+    resumeObservation: async () => "resumed",
+    stopObservation: async () => undefined,
   };
   const handler = createFlowImageObservationHandler({
     extensionId: "fixture-extension",
@@ -258,7 +267,7 @@ function result(
 
 async function send(
   fixture: Awaited<ReturnType<typeof makeFixture>>,
-  observation: FlowImageObservationEvent,
+  observation: FlowImageObservationEvent | FlowStructuralObservationEvent,
 ) {
   return fixture.handler.handle(
     {
@@ -276,7 +285,111 @@ async function send(
   );
 }
 
+async function structuralEvent(
+  attempt: FlowImageAttemptRecord,
+  sequence: number,
+  kind: FlowStructuralObservationEvent["kind"] = "structural_snapshot",
+): Promise<FlowStructuralObservationEvent> {
+  const snapshot: FlowStructuralObservationEvent["snapshot"] = {
+    completeForRenderedScope: true,
+    virtualized: true,
+    unidentifiedImageCount: 0,
+    tiles: [{ tileToken: "tile-1", visible: true }],
+    mediaCandidates: [
+      {
+        candidateId: "a".repeat(64),
+        mediaToken: "media-1",
+        tileToken: "tile-1",
+        visible: true,
+        complete: true,
+        naturalWidth: 1376,
+        naturalHeight: 768,
+      },
+    ],
+    resourceEvents: [],
+    lifecycleSignals: [
+      {
+        markerToken: "marker-1",
+        markerKind: "loading",
+        scope: "tile",
+        tileToken: "tile-1",
+        visible: true,
+      },
+    ],
+    captureGaps: [],
+  };
+  const sourceBaselineFingerprint = await sha256Hex(
+    flowImageResultBaselineFingerprintInput(attempt.resultBaseline!),
+  );
+  return {
+    kind,
+    attemptId: attempt.attemptId,
+    sessionId,
+    observationId: `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
+    sequence,
+    observedAt: 1_060 + sequence,
+    profile: "flow_tile_candidate_structure_v1",
+    binding: attempt.resultBaseline!.binding,
+    sourceBaselineFingerprint,
+    captureFingerprint: await sha256Hex(
+      flowStructuralSnapshotFingerprintInput(snapshot),
+    ),
+    snapshot,
+  };
+}
+
 describe("P05.2 attempt-bound Flow observation", () => {
+  it("durably records production structural observations as unknown without result links", async () => {
+    const fixture = await makeFixture(2, "production_observation_only");
+    const observation = await structuralEvent(fixture.attempt, 1);
+    const accepted = await send(fixture, observation);
+    expect(accepted).toMatchObject({
+      accepted: true,
+      duplicate: false,
+      outcome: "unknown",
+    });
+    const stored = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect(stored?.observationReceipts).toHaveLength(1);
+    expect(stored?.resultLinks).toEqual([]);
+    expect(stored?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "ownership_ambiguous",
+      declaredVariantCount: 2,
+    });
+    expect(await send(fixture, observation)).toMatchObject({
+      accepted: true,
+      duplicate: true,
+    });
+  });
+
+  it("turns production observer detach and timeout into explicit unknown outcomes", async () => {
+    const detached = await makeFixture(1, "production_observation_only");
+    expect(
+      await send(detached, await structuralEvent(detached.attempt, 1, "observer_lost")),
+    ).toMatchObject({ accepted: true, outcome: "unknown" });
+    expect(
+      (await detached.repositories.getFlowImageAttempt(detached.attempt.attemptId))
+        ?.observationSession?.status,
+    ).toBe("lost");
+
+    const timedOut = await makeFixture(1, "production_observation_only");
+    expect(
+      await send(
+        timedOut,
+        await structuralEvent(timedOut.attempt, 1, "observer_timed_out"),
+      ),
+    ).toMatchObject({ accepted: true, outcome: "unknown" });
+    expect(
+      (await timedOut.repositories.getFlowImageAttempt(timedOut.attempt.attemptId))
+        ?.observationSession?.status,
+    ).toBe("timed_out");
+    expect(
+      (await timedOut.repositories.getFlowImageAttempt(timedOut.attempt.attemptId))
+        ?.resultOutcome,
+    ).toMatchObject({ status: "unknown", reason: "observation_timeout" });
+  });
   it("keeps a declared x1 pending through processing and completes on one terminal identity", async () => {
     const fixture = await makeFixture(1);
     expect(

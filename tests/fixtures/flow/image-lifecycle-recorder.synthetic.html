@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- Synthetic fixture only. IDs, lifecycle signals, and media are invented. -->
+<html lang="en">
+  <head>
+    <style>
+      flow-project-page,
+      flow-base-prompt-box,
+      flow-rich-text-editor,
+      cdk-virtual-scroll-viewport,
+      flow-grid-tile-container,
+      flow-tile-container,
+      flow-image-tile {
+        display: block;
+      }
+      flow-project-page,
+      flow-image-tile {
+        padding: 8px;
+      }
+      img {
+        width: 24px;
+        height: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <flow-project-page>
+      <flow-base-prompt-box>
+        <flow-rich-text-editor>
+          <div contenteditable="true" role="textbox" aria-label="Prompt">
+            synthetic prompt text must not be returned
+          </div>
+        </flow-rich-text-editor>
+      </flow-base-prompt-box>
+      <cdk-virtual-scroll-viewport>
+        <flow-grid-tile-container role="group">
+          <flow-tile-container>
+            <flow-image-tile>
+              <img data-media-id="synthetic-media-one" alt="private one" />
+            </flow-image-tile>
+            <flow-image-tile>
+              <img data-media-id="synthetic-media-two" alt="private two" />
+            </flow-image-tile>
+          </flow-tile-container>
+        </flow-grid-tile-container>
+      </cdk-virtual-scroll-viewport>
+    </flow-project-page>
+  </body>
+</html>

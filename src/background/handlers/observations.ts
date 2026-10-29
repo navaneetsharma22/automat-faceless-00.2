@@ -1,6 +1,8 @@
 import { flowTabFromUrl } from "../../platforms/flow/connection";
 import type { FlowImageGenerateOncePort } from "./flow";
 import {
+  flowImageResultBaselineFingerprintInput,
+  flowStructuralSnapshotFingerprintInput,
   FlowImageObservationMessageSchema,
   flowImageObservationFingerprintInput,
   flowResultBaselineMatchesAttempt,
@@ -129,9 +131,26 @@ export function createFlowImageObservationHandler(
     for (const attempt of attempts) {
       const session = attempt.observationSession;
       if (
+        session?.status === "lost" &&
+        attempt.state === "uncertain" &&
+        attempt.resultOutcome?.reason === "observation_lost" &&
+        session.profileSupport === "production_observation_only"
+      ) {
+        try {
+          await dependencies.port.stopObservation(
+            attempt.tabId,
+            await observationArmBinding(attempt),
+          );
+        } catch {
+          // The durable outcome stays unknown when the old document is gone.
+        }
+        unknown += 1;
+        continue;
+      }
+      if (
         !session ||
         session.status !== "active" ||
-        session.profileSupport !== "fixture_supported" ||
+        session.profileSupport === "unsupported" ||
         (attempt.state !== "dispatched" && attempt.state !== "uncertain")
       ) {
         continue;
@@ -155,6 +174,18 @@ export function createFlowImageObservationHandler(
         continue;
       }
       try {
+        if (session.profileSupport === "production_observation_only") {
+          const binding = await observationArmBinding(attempt);
+          const resumed = await dependencies.port.resumeObservation(
+            attempt.tabId,
+            binding,
+          );
+          if (resumed !== "resumed") {
+            await setUnknown(attempt, "observation_lost");
+            unknown += 1;
+            continue;
+          }
+        }
         await dependencies.repositories.updateFlowImageObservationSession({
           attemptId: attempt.attemptId,
           sessionId: session.sessionId,
@@ -208,15 +239,26 @@ export function createFlowImageObservationHandler(
         attemptId: event.attemptId,
       };
     const session = attempt.observationSession;
+    const structural = "kind" in event;
     if (
       !session ||
       session.status !== "active" ||
-      session.profileSupport !== "fixture_supported" ||
-      !dependencies.allowSyntheticProfile
+      (session.profileSupport === "fixture_supported" &&
+        (!dependencies.allowSyntheticProfile || structural)) ||
+      (session.profileSupport === "production_observation_only" &&
+        !structural) ||
+      session.profileSupport === "unsupported"
     ) {
       return {
         accepted: false,
         code: "live_observation_profile_unsupported",
+        attemptId: attempt.attemptId,
+      };
+    }
+    if (attempt.buildId !== message.buildId || attempt.protocolVersion !== message.protocolVersion) {
+      return {
+        accepted: false,
+        code: "attempt_build_binding_mismatch",
         attemptId: attempt.attemptId,
       };
     }
@@ -232,11 +274,40 @@ export function createFlowImageObservationHandler(
         attemptId: attempt.attemptId,
       };
     }
+    if (
+      structural &&
+      (!attempt.resultBaseline ||
+        event.sourceBaselineFingerprint !==
+          (await sha256Hex(
+            flowImageResultBaselineFingerprintInput(attempt.resultBaseline),
+          )) ||
+        event.captureFingerprint !==
+          (await sha256Hex(
+            flowStructuralSnapshotFingerprintInput(event.snapshot),
+          )))
+    ) {
+      await setUnknown(attempt, "binding_changed");
+      return {
+        accepted: false,
+        code: "observation_source_baseline_mismatch",
+        attemptId: attempt.attemptId,
+      };
+    }
     if (now() >= session.deadlineAt) {
       await setUnknown(attempt, "observation_timeout");
       return {
         accepted: false,
         code: "observation_timeout",
+        attemptId: attempt.attemptId,
+      };
+    }
+    if (
+      event.observedAt < session.startedAt ||
+      event.observedAt > now() + 5_000
+    ) {
+      return {
+        accepted: false,
+        code: "observation_time_out_of_range",
         attemptId: attempt.attemptId,
       };
     }
@@ -287,4 +358,37 @@ export function createFlowImageObservationHandler(
   };
 
   return { handle, resumeReadOnlyAfterWorkerRestart };
+}
+
+async function observationArmBinding(
+  attempt: FlowImageAttemptRecord,
+): Promise<import("../../domain/jobs/results").FlowImageObservationArmBinding> {
+  const baseline = attempt.resultBaseline;
+  if (!baseline || !attempt.documentId || attempt.senderFrameId === undefined)
+    throw new Error("observation_binding_missing");
+  return {
+    workspaceId: attempt.workspaceId,
+    batchId: attempt.batchId,
+    itemId: attempt.itemId,
+    sourceHash: attempt.promptHash,
+    sourceSnapshotId: attempt.sourceSnapshotId,
+    sourceBaselineFingerprint: await sha256Hex(
+      flowImageResultBaselineFingerprintInput(baseline),
+    ),
+    attemptId: attempt.attemptId,
+    provider: "Flow",
+    projectId: attempt.projectId,
+    canonicalTarget: attempt.settingsConfirmation.canonicalTarget ?? "",
+    tabId: attempt.tabId,
+    frameId: attempt.frameId,
+    loaderId: attempt.loaderId,
+    documentId: attempt.documentId,
+    senderFrameId: attempt.senderFrameId,
+    sessionId: attempt.observationSession!.sessionId,
+    startedAt: attempt.observationSession!.startedAt,
+    deadlineAt: attempt.observationSession!.deadlineAt,
+    maxEvents: attempt.observationSession!.maxEvents,
+    buildId: attempt.buildId,
+    protocolVersion: attempt.protocolVersion,
+  };
 }

@@ -23,8 +23,10 @@ import {
 } from "../../domain/jobs/attempt";
 import { flowImagePromptSnapshotId } from "../../domain/batches/flowImagePromptSnapshot";
 import {
+  flowImageResultBaselineFingerprintInput,
   flowResultBaselineMatchesAttempt,
   flowResultBaselineMatchesProfile,
+  type FlowImageObservationArmBinding,
 } from "../../domain/jobs/results";
 import { captureFlowResultBaseline } from "../../platforms/flow/observer";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
@@ -36,6 +38,7 @@ import {
   sha256Hex,
 } from "../../storage/repositories";
 import type { ProviderTab } from "../../platforms/shared/contracts";
+import { createFlowObservationInjection } from "../../platforms/flow/observationProducer";
 
 type FlowSettingsConfirmation = {
   confirmationId: string;
@@ -72,6 +75,23 @@ export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
     pressAttempted: boolean;
     releaseAttempted: boolean;
   }>;
+  startObservation: (
+    tabId: number,
+    binding: FlowImageObservationArmBinding,
+  ) => Promise<"started" | "unsupported">;
+  stopObservation: (
+    tabId: number,
+    binding: FlowImageObservationArmBinding,
+  ) => Promise<void>;
+  activateObservation: (
+    tabId: number,
+    binding: FlowImageObservationArmBinding,
+  ) => Promise<"started" | "unsupported">;
+  resumeObservation: (
+    tabId: number,
+    binding: FlowImageObservationArmBinding,
+  ) => Promise<"resumed" | "unsupported">;
+  productionObservationSupported?: boolean;
 };
 
 export function createChromeFlowImageGenerateOncePort(
@@ -115,6 +135,37 @@ export function createChromeFlowImageGenerateOncePort(
   };
   const readBoundFrame = async (tabId: number) =>
     bindBrowserDocument(tabId, await readFlowDocumentBinding(base, tabId));
+  const matchesArmReceipt = (
+    result: chrome.scripting.InjectionResult<unknown> | undefined,
+    binding: FlowImageObservationArmBinding,
+  ) => {
+    const receipt = result?.result as
+      | Record<string, unknown>
+      | undefined;
+    return Boolean(
+      result?.documentId === binding.documentId &&
+        result.frameId === binding.senderFrameId &&
+        receipt?.status === "armed" &&
+        receipt.attemptId === binding.attemptId &&
+        receipt.sessionId === binding.sessionId &&
+        receipt.projectId === binding.projectId &&
+        receipt.tabId === binding.tabId &&
+        receipt.frameId === binding.frameId &&
+        receipt.documentId === binding.documentId &&
+        receipt.sourceHash === binding.sourceHash &&
+        receipt.sourceSnapshotId === binding.sourceSnapshotId &&
+        receipt.sourceBaselineFingerprint ===
+          binding.sourceBaselineFingerprint &&
+        receipt.buildId === binding.buildId &&
+        receipt.protocolVersion === binding.protocolVersion &&
+        typeof receipt.captureFingerprint === "string" &&
+        /^[0-9a-f]{64}$/.test(receipt.captureFingerprint) &&
+        typeof receipt.listenerRoots === "number" &&
+        receipt.listenerRoots > 0 &&
+        receipt.baseline !== null &&
+        typeof receipt.baseline === "object",
+    );
+  };
   return {
     ...base,
     captureFrame: captureBoundFrame,
@@ -127,6 +178,57 @@ export function createChromeFlowImageGenerateOncePort(
       inspectFlowImageButton(base, tabId, button),
     activate: (tabId, position) =>
       activateFlowImageGenerate(base, tabId, position.x, position.y),
+    productionObservationSupported: true,
+    startObservation: async (tabId, binding) => {
+      if (tabId !== binding.tabId || !chrome.scripting?.executeScript) return "unsupported";
+      try {
+        const results = await chrome.scripting.executeScript(
+          createFlowObservationInjection(binding, "arm"),
+        );
+        return matchesArmReceipt(results[0], binding) ? "started" : "unsupported";
+      } catch {
+        return "unsupported";
+      }
+    },
+    activateObservation: async (tabId, binding) => {
+      if (tabId !== binding.tabId || !chrome.scripting?.executeScript) return "unsupported";
+      try {
+        const results = await chrome.scripting.executeScript(
+          createFlowObservationInjection(binding, "activate"),
+        );
+        const result = results[0];
+        return result?.documentId === binding.documentId &&
+          result.frameId === binding.senderFrameId &&
+          (result.result as { status?: string; sequence?: number } | undefined)?.status === "active" &&
+          (result.result as { sequence?: number } | undefined)?.sequence === 1
+          ? "started"
+          : "unsupported";
+      } catch {
+        return "unsupported";
+      }
+    },
+    resumeObservation: async (tabId, binding) => {
+      if (tabId !== binding.tabId || !chrome.scripting?.executeScript) return "unsupported";
+      try {
+        const results = await chrome.scripting.executeScript(
+          createFlowObservationInjection(binding, "resume"),
+        );
+        const result = results[0];
+        return result?.documentId === binding.documentId &&
+          result.frameId === binding.senderFrameId &&
+          (result.result as { status?: string } | undefined)?.status === "resumed"
+          ? "resumed"
+          : "unsupported";
+      } catch {
+        return "unsupported";
+      }
+    },
+    stopObservation: async (tabId, binding) => {
+      if (tabId !== binding.tabId || !chrome.scripting?.executeScript) return;
+      await chrome.scripting
+        .executeScript(createFlowObservationInjection(binding, "stop"))
+        .catch(() => undefined);
+    },
   };
 }
 
@@ -187,6 +289,8 @@ export function createFlowImageGenerateOnce(
     let pressAttempted = false;
     let releaseAttempted = false;
     let currentStage: FlowImageAttemptStage = "preparation";
+    let observationArmed = false;
+    let observationArmBinding: FlowImageObservationArmBinding | undefined;
 
     const response = (
       state: FlowImageGenerateOnceResult["state"],
@@ -222,6 +326,12 @@ export function createFlowImageGenerateOnce(
       message: string,
       failureStage = currentStage,
     ): Promise<FlowImageGenerateOnceResult> => {
+      if (observationArmed && attempt && observationArmBinding) {
+        await port
+          .stopObservation(attempt.tabId, observationArmBinding)
+          .catch(() => undefined);
+        observationArmed = false;
+      }
       let failureRecordPersisted = !attempt;
       if (attempt && !activationStarted) {
         const expected = attempt.state;
@@ -242,6 +352,25 @@ export function createFlowImageGenerateOnce(
                   method: "none",
                   code,
                 },
+                ...(attempt.observationSession &&
+                (attempt.observationSession.status === "arming" ||
+                  attempt.observationSession.status === "active")
+                  ? {
+                      observationSession: {
+                        ...attempt.observationSession,
+                        status: "closed" as const,
+                      },
+                      resultOutcome: {
+                        status: "unknown" as const,
+                        reason: "observation_not_started" as const,
+                        declaredVariantCount:
+                          attempt.settingsConfirmation.declaredVariantCount,
+                        observedSucceededCount: 0,
+                        observedFailedCount: 0,
+                        updatedAt: now(),
+                      },
+                    }
+                  : {}),
               });
             failureRecordPersisted = true;
           } catch {
@@ -604,6 +733,11 @@ export function createFlowImageGenerateOnce(
         },
         input.settingsConfirmation.declaredVariantCount,
       );
+      const observationProfileSupport = dependencies.observationProfileSupported
+        ? ("fixture_supported" as const)
+        : port.productionObservationSupported
+          ? ("production_observation_only" as const)
+          : ("unsupported" as const);
       const observationSession = {
         sessionId: makeObservationSessionId(),
         documentId: frame.documentId,
@@ -611,16 +745,14 @@ export function createFlowImageGenerateOnce(
         startedAt: now(),
         deadlineAt: now() + 5 * 60_000,
         maxEvents: 64,
-        profileSupport: dependencies.observationProfileSupported
-          ? ("fixture_supported" as const)
-          : ("unsupported" as const),
-        status: dependencies.observationProfileSupported
-          ? ("active" as const)
+        profileSupport: observationProfileSupport,
+        status: observationProfileSupport !== "unsupported"
+          ? ("arming" as const)
           : ("unsupported" as const),
         lastSequence: 0,
         reconciliationCount: 0,
       };
-      const resultOutcome = dependencies.observationProfileSupported
+      const resultOutcome = observationProfileSupport !== "unsupported"
         ? {
             status: "awaiting_evidence" as const,
             declaredVariantCount:
@@ -697,6 +829,65 @@ export function createFlowImageGenerateOnce(
           "result_baseline_binding_mismatch",
           "The persisted result baseline no longer matches this attempt and observation profile. No Generate input was sent.",
         );
+      }
+
+      if (observationSession.profileSupport !== "unsupported") {
+        currentStage = "observer";
+        const sourceBaselineFingerprint = await sha256Hex(
+          flowImageResultBaselineFingerprintInput(attempt.resultBaseline!),
+        );
+        const armBinding: FlowImageObservationArmBinding = {
+          workspaceId: attempt.workspaceId,
+          batchId: attempt.batchId,
+          itemId: attempt.itemId,
+          sourceHash: attempt.promptHash,
+          sourceSnapshotId: attempt.sourceSnapshotId,
+          sourceBaselineFingerprint,
+          attemptId: attempt.attemptId,
+          provider: attempt.provider,
+          projectId: attempt.projectId,
+          canonicalTarget:
+            attempt.settingsConfirmation.canonicalTarget ?? selected.canonicalTarget,
+          tabId: attempt.tabId,
+          frameId: attempt.frameId,
+          loaderId: attempt.loaderId,
+          documentId: attempt.documentId!,
+          senderFrameId: attempt.senderFrameId!,
+          sessionId: observationSession.sessionId,
+          startedAt: observationSession.startedAt,
+          deadlineAt: observationSession.deadlineAt,
+          maxEvents: observationSession.maxEvents,
+          buildId: attempt.buildId,
+          protocolVersion: attempt.protocolVersion,
+        };
+        observationArmBinding = armBinding;
+        const armed = await port.startObservation(
+          attempt.tabId,
+          armBinding,
+        );
+        if (armed !== "started") {
+          return failBefore(
+            "observation_start_unsupported",
+            "The bound Flow observer could not start. Generate was not activated.",
+          );
+        }
+        observationArmed = true;
+        attempt =
+          await dependencies.repositories.updateFlowImageObservationSession({
+            attemptId: attempt.attemptId,
+            sessionId: observationSession.sessionId,
+            sessionStatus: "active",
+          });
+        const activated = await port.activateObservation(
+          attempt.tabId,
+          armBinding,
+        );
+        if (activated !== "started") {
+          return failBefore(
+            "observation_activation_unsupported",
+            "The bound Flow observer could not deliver its baseline. Generate was not activated.",
+          );
+        }
       }
 
       currentStage = "observer";

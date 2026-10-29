@@ -102,8 +102,19 @@ export const FlowImageObservationSessionSchema = z
     startedAt: z.number().finite().nonnegative(),
     deadlineAt: z.number().finite().nonnegative(),
     maxEvents: z.number().int().positive().max(128),
-    profileSupport: z.enum(["unsupported", "fixture_supported"]),
-    status: z.enum(["active", "unsupported", "lost", "timed_out", "closed"]),
+    profileSupport: z.enum([
+      "unsupported",
+      "fixture_supported",
+      "production_observation_only",
+    ]),
+    status: z.enum([
+      "arming",
+      "active",
+      "unsupported",
+      "lost",
+      "timed_out",
+      "closed",
+    ]),
     lastSequence: z.number().int().nonnegative(),
     reconciliationCount: z.number().int().nonnegative().max(3),
   })
@@ -111,6 +122,138 @@ export const FlowImageObservationSessionSchema = z
   .refine((session) => session.deadlineAt > session.startedAt);
 export type FlowImageObservationSession = z.infer<
   typeof FlowImageObservationSessionSchema
+>;
+
+/** Complete immutable binding passed to an observer after attempt persistence. */
+export type FlowImageObservationArmBinding = {
+  workspaceId: string;
+  batchId: string;
+  itemId: string;
+  sourceHash: string;
+  sourceSnapshotId: string;
+  sourceBaselineFingerprint: string;
+  attemptId: string;
+  provider: "Flow";
+  projectId: string;
+  canonicalTarget: string;
+  tabId: number;
+  frameId: string;
+  loaderId: string;
+  documentId: string;
+  senderFrameId: number;
+  sessionId: string;
+  startedAt: number;
+  deadlineAt: number;
+  maxEvents: number;
+  buildId: string;
+  protocolVersion: number;
+};
+
+const FlowStructuralTileSnapshotSchema = z
+  .object({
+    tileToken: z.string().regex(/^tile-[0-9]{1,6}$/),
+    visible: z.boolean(),
+  })
+  .strict();
+
+const FlowStructuralMediaCandidateSchema = z
+  .object({
+    candidateId: z.string().regex(/^[0-9a-f]{64}$/),
+    mediaToken: z.string().regex(/^media-[0-9]{1,6}$/),
+    tileToken: z.string().regex(/^tile-[0-9]{1,6}$/),
+    visible: z.boolean(),
+    complete: z.boolean(),
+    naturalWidth: z.number().int().nonnegative().max(100_000),
+    naturalHeight: z.number().int().nonnegative().max(100_000),
+  })
+  .strict();
+
+const FlowStructuralLifecycleSignalSchema = z
+  .object({
+    markerToken: z.string().regex(/^marker-[0-9]{1,6}$/),
+    markerKind: z.enum([
+      "loading",
+      "processing",
+      "completed_candidate",
+      "error_candidate",
+      "busy",
+      "progressbar",
+      "status",
+      "alert",
+    ]),
+    scope: z.enum(["project", "tile"]),
+    tileToken: z.string().regex(/^tile-[0-9]{1,6}$/).nullable(),
+    visible: z.boolean(),
+  })
+  .strict()
+  .refine((marker) =>
+    marker.scope === "tile" ? marker.tileToken !== null : marker.tileToken === null,
+  );
+
+const FlowStructuralSnapshotSchema = z
+  .object({
+    completeForRenderedScope: z.boolean(),
+    virtualized: z.boolean(),
+    unidentifiedImageCount: z.number().int().nonnegative().max(1000),
+    tiles: z.array(FlowStructuralTileSnapshotSchema).max(100),
+    mediaCandidates: z.array(FlowStructuralMediaCandidateSchema).max(500),
+    resourceEvents: z
+      .array(
+        z
+          .object({
+            mediaToken: z.string().regex(/^media-[0-9]{1,6}$/),
+            tileToken: z.string().regex(/^tile-[0-9]{1,6}$/).nullable(),
+            type: z.enum(["load", "error"]),
+            complete: z.boolean(),
+            naturalWidth: z.number().int().nonnegative().max(100_000),
+            naturalHeight: z.number().int().nonnegative().max(100_000),
+          })
+          .strict(),
+      )
+      .max(100),
+    lifecycleSignals: z.array(FlowStructuralLifecycleSignalSchema).max(500),
+    captureGaps: z
+      .array(
+        z.enum([
+          "document_scan_truncated",
+          "project_scan_truncated",
+          "tile_scan_truncated",
+          "event_limit_reached",
+          "duration_limit_reached",
+          "media_identity_missing",
+          "observer_detached",
+          "document_binding_changed",
+          "project_binding_changed",
+          "capture_failed",
+        ]),
+      )
+      .max(16),
+  })
+  .strict();
+
+/** Page-derived structural evidence only. It cannot contain result links or terminal claims. */
+export const FlowStructuralObservationEventSchema = z
+  .object({
+    kind: z.enum([
+      "structural_snapshot",
+      "observer_lost",
+      "observer_timed_out",
+    ]),
+    attemptId: z.string().min(1).max(128),
+    sessionId: z.string().uuid(),
+    observationId: z.string().uuid(),
+    sequence: z.number().int().positive(),
+    observedAt: z.number().finite().nonnegative(),
+    profile: z.literal("flow_tile_candidate_structure_v1"),
+    binding: flowResultBindingSchema,
+    sourceBaselineFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    captureFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    snapshot: FlowStructuralSnapshotSchema,
+  })
+  .strict();
+
+export type FlowStructuralObservationEvent = z.infer<
+  typeof FlowStructuralObservationEventSchema
 >;
 
 export const FlowImageResultLinkSchema = z
@@ -160,6 +303,7 @@ export const FlowImageObservationOutcomeSchema = z
         "observation_timeout",
         "binding_changed",
         "event_limit_reached",
+        "observation_not_started",
       ])
       .optional(),
     declaredVariantCount: z.number().int().positive().max(100).optional(),
@@ -181,7 +325,7 @@ export const FlowImageObservationReceiptSchema = z
   })
   .strict();
 
-export const FlowImageObservationEventSchema = z
+const FlowImageTerminalObservationEventSchema = z
   .object({
     attemptId: z.string().min(1).max(128),
     sessionId: z.string().uuid(),
@@ -221,6 +365,14 @@ export const FlowImageObservationEventSchema = z
   })
   .strict();
 export type FlowImageObservationEvent = z.infer<
+  typeof FlowImageTerminalObservationEventSchema
+>;
+
+export const FlowImageObservationEventSchema = z.union([
+  FlowImageTerminalObservationEventSchema,
+  FlowStructuralObservationEventSchema,
+]);
+export type FlowImageAnyObservationEvent = z.infer<
   typeof FlowImageObservationEventSchema
 >;
 
@@ -436,8 +588,18 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export function flowImageResultBaselineFingerprintInput(
+  baseline: FlowImageResultBaseline,
+): string {
+  return stableJson(baseline);
+}
+
+export function flowStructuralSnapshotFingerprintInput(snapshot: unknown): string {
+  return stableJson(snapshot);
+}
+
 export function flowImageObservationFingerprintInput(
-  event: FlowImageObservationEvent,
+  event: FlowImageAnyObservationEvent,
 ): string {
   return stableJson(event);
 }
@@ -473,6 +635,23 @@ export function reduceFlowImageObservation(
   }
   const baseline = parsedBaseline.data;
   const event = parsedEvent.data;
+  if ("kind" in event) {
+    const bindingMatches =
+      event.attemptId === baseline.binding.attemptId &&
+      Object.entries(baseline.binding).every(
+        ([key, value]) =>
+          event.binding[key as keyof typeof event.binding] === value,
+      );
+    return unknown(
+      !bindingMatches
+        ? "binding_changed"
+      : event.kind === "observer_lost"
+        ? "observation_lost"
+        : event.kind === "observer_timed_out"
+          ? "observation_timeout"
+          : "ownership_ambiguous",
+    );
+  }
   const declaration = baseline.variantDeclaration;
   if (
     declaredVariantCount === undefined ||

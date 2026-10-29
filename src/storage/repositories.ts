@@ -32,7 +32,7 @@ import {
 import {
   FlowImageObservationEventSchema,
   reduceFlowImageObservation,
-  type FlowImageObservationEvent,
+  type FlowImageAnyObservationEvent,
 } from "../domain/jobs/results";
 
 export type PromptDraftInput = Pick<
@@ -708,7 +708,7 @@ export class ExtensionRepositories {
 
   async recordFlowImageObservation(input: {
     attemptId: string;
-    event: FlowImageObservationEvent;
+    event: FlowImageAnyObservationEvent;
     fingerprint: string;
     receivedAt: number;
   }): Promise<{
@@ -719,6 +719,7 @@ export class ExtensionRepositories {
     if (!parsedEvent.success || !/^[0-9a-f]{64}$/.test(input.fingerprint)) {
       throw new FlowImageObservationRejectedError("invalid_observation");
     }
+    const structuralEvent = "kind" in parsedEvent.data;
     const receipt: NonNullable<
       FlowImageAttemptRecord["observationReceipts"]
     >[number] = {
@@ -734,13 +735,17 @@ export class ExtensionRepositories {
       }
       const session = current.observationSession;
       if (
-        (current.state !== "dispatched" && current.state !== "uncertain") ||
+        (current.state !== "dispatch-intent" &&
+          current.state !== "dispatched" &&
+          current.state !== "uncertain") ||
+        (current.state === "dispatch-intent" && !structuralEvent) ||
         !session ||
         session.status !== "active" ||
         session.sessionId !== parsedEvent.data.sessionId ||
         parsedEvent.data.attemptId !== current.attemptId ||
         !current.resultBaseline ||
-        !current.settingsConfirmation.declaredVariantCount
+        (!current.settingsConfirmation.declaredVariantCount &&
+          !structuralEvent)
       ) {
         throw new FlowImageObservationRejectedError("session_not_active");
       }
@@ -782,16 +787,20 @@ export class ExtensionRepositories {
         parsedEvent.data,
         input.receivedAt,
       );
-      if (reduction.outcome.status === "unknown") {
+      const structuralKind = "kind" in parsedEvent.data ? parsedEvent.data.kind : null;
+      if (reduction.outcome.status === "unknown" && !structuralEvent) {
         throw new FlowImageObservationRejectedError(
           reduction.outcome.reason ?? "observation_ambiguous",
         );
       }
       const terminalInventory =
+        !structuralEvent &&
         reduction.links.length ===
           current.settingsConfirmation.declaredVariantCount &&
         reduction.links.every((link) => link.status !== "processing");
       const closeSession =
+        structuralKind === "observer_lost" ||
+        structuralKind === "observer_timed_out" ||
         reduction.outcome.status === "complete" ||
         reduction.outcome.status === "failed" ||
         (reduction.outcome.status === "partial_error" && terminalInventory) ||
@@ -808,7 +817,16 @@ export class ExtensionRepositories {
         observationSession: {
           ...session,
           lastSequence: parsedEvent.data.sequence,
-          ...(closeSession ? { status: "closed" as const } : {}),
+          ...(closeSession
+            ? {
+                status:
+                  structuralKind === "observer_lost"
+                    ? ("lost" as const)
+                    : structuralKind === "observer_timed_out"
+                      ? ("timed_out" as const)
+                      : ("closed" as const),
+              }
+            : {}),
         },
         resultLinks: reduction.links,
         resultOutcome: reduction.outcome,
@@ -917,6 +935,38 @@ export class ExtensionRepositories {
                   : "worker_restart_before_dispatch",
             },
           ],
+          ...(nextState === "uncertain" &&
+          current.observationSession &&
+          (current.observationSession.status === "arming" ||
+            current.observationSession.status === "active")
+            ? {
+                observationSession: {
+                  ...current.observationSession,
+                  status:
+                    current.observationSession.status === "arming"
+                      ? ("closed" as const)
+                      : ("lost" as const),
+                },
+                resultOutcome: {
+                  status: "unknown" as const,
+                  reason:
+                    current.observationSession.status === "arming"
+                      ? ("observation_not_started" as const)
+                      : ("observation_lost" as const),
+                  ...(current.settingsConfirmation.declaredVariantCount
+                    ? {
+                        declaredVariantCount:
+                          current.settingsConfirmation.declaredVariantCount,
+                      }
+                    : {}),
+                  observedSucceededCount:
+                    current.resultOutcome?.observedSucceededCount ?? 0,
+                  observedFailedCount:
+                    current.resultOutcome?.observedFailedCount ?? 0,
+                  updatedAt: at,
+                },
+              }
+            : {}),
           updatedAt: at,
         };
         if (!FlowImageAttemptRecordSchema.safeParse(next).success) {

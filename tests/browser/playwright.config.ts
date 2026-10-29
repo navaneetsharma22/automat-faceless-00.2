@@ -24,6 +24,8 @@ export default defineConfig({
     "flowGenerateOnce.spec.ts",
     "flowPopulatedResultsDiagnostic.spec.ts",
     "flowImageTileDiagnostic.spec.ts",
+    "flowImageLifecycleRecorder.spec.ts",
+    "flowObservationProducer.spec.ts",
   ],
   reporter: "list",
   use: {

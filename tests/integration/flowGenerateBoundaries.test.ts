@@ -13,8 +13,10 @@ import {
 import { flowImagePromptSnapshotId } from "../../src/domain/batches/flowImagePromptSnapshot";
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import { activateFlowImageGenerate } from "../../src/platforms/flow/images";
+import { createFlowObservationInjection } from "../../src/platforms/flow/observationProducer";
 import type { FlowPromptEntryPort } from "../../src/platforms/flow/promptEntry";
 import { createFoundationClient } from "../../src/shared/messageClient";
+import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import type { FlowSettingsConfirmation } from "../../src/shared/schemas";
 import {
   ChromePreferenceRepository,
@@ -90,6 +92,9 @@ function makePort(
       releaseAttempted: boolean;
     };
     postDispatchReadFailure?: boolean;
+    observationArm?: "started" | "unsupported" | "failed";
+    observationProfileSupported?: boolean;
+    productionObservationSupported?: boolean;
   } = {},
 ) {
   const selected = options.selection ?? {
@@ -99,6 +104,8 @@ function makePort(
   const tab = options.target ?? selectedTab;
   const liveFrame = options.frame ?? frame;
   const calls: string[] = [];
+  const lifecycle: string[] = [];
+  const observationBindings: unknown[] = [];
   let activations = 0;
   let activationReturned = false;
   const port = {
@@ -123,6 +130,7 @@ function makePort(
       options.baselineChangesDuringRecheck ? false : (options.recheck ?? true),
     buttonPosition: async () => options.position ?? { x: 10, y: 20 },
     activate: async () => {
+      lifecycle.push("activate");
       activations += 1;
       activationReturned = true;
       return (
@@ -133,6 +141,22 @@ function makePort(
         }
       );
     },
+    startObservation: async (_tabId: number, binding: unknown) => {
+      lifecycle.push("start_observation");
+      observationBindings.push(binding);
+      if (options.observationArm === "failed")
+        throw new Error("fixture observer start failed");
+      return options.observationArm ?? "started";
+    },
+    stopObservation: async () => {
+      lifecycle.push("stop_observation");
+    },
+    activateObservation: async () => {
+      lifecycle.push("activate_observation");
+      return "started";
+    },
+    resumeObservation: async () => "resumed",
+    productionObservationSupported: options.productionObservationSupported,
   } as unknown as FlowPromptEntryPort & {
     captureFrame: () => Promise<typeof frame>;
     readFrame: () => Promise<typeof frame>;
@@ -144,6 +168,8 @@ function makePort(
       pressAttempted: boolean;
       releaseAttempted: boolean;
     }>;
+    startObservation: (tabId: number, binding: unknown) => Promise<string>;
+    stopObservation: () => Promise<void>;
   };
   return {
     port,
@@ -151,6 +177,9 @@ function makePort(
     get activations() {
       return activations;
     },
+    lifecycle,
+    observationBindings,
+    observationProfileSupported: options.observationProfileSupported,
   };
 }
 
@@ -189,6 +218,7 @@ async function setup(options: Parameters<typeof makePort>[0] = {}) {
     fillPrompt,
     now: () => 1_100,
     createAttemptId: () => `attempt-${++id}`,
+    observationProfileSupported: fixture.observationProfileSupported,
   });
   const preferences = new ChromePreferenceRepository({
     get: async () => ({}),
@@ -229,6 +259,41 @@ async function setup(options: Parameters<typeof makePort>[0] = {}) {
 }
 
 describe("P04 durable Flow image Generate attempt", () => {
+  it("targets the exact browser document and isolated frame for observation injection", () => {
+    const injection = createFlowObservationInjection(
+      {
+        workspaceId: "default",
+        batchId: "batch-1",
+        itemId: "item-1",
+        sourceHash: "a".repeat(64),
+        sourceSnapshotId: "snapshot-1",
+        sourceBaselineFingerprint: "b".repeat(64),
+        attemptId: "attempt-1",
+        provider: "Flow",
+        projectId: selectedTab.projectId,
+        canonicalTarget: selectedTab.canonicalTarget,
+        tabId: selectedTab.id,
+        frameId: "frame-1",
+        loaderId: "loader-1",
+        documentId: "browser-document-1",
+        senderFrameId: 0,
+        sessionId: "d7a5ea61-9721-4a65-8485-798f2f4e0c11",
+        startedAt: 10,
+        deadlineAt: 20,
+        maxEvents: 64,
+        buildId: BUILD_ID,
+        protocolVersion: PROTOCOL_VERSION,
+      },
+      "arm",
+    );
+    expect(injection.target).toEqual({
+      tabId: selectedTab.id,
+      documentIds: ["browser-document-1"],
+    });
+    expect(injection.world).toBe("ISOLATED");
+    expect(injection.args[1]).toBe("arm");
+  });
+
   it("persists context, verifies exact fill, and dispatches one mouse pair", async () => {
     const test = await setup();
     const result = (await test.client.request(
@@ -320,20 +385,45 @@ describe("P04 durable Flow image Generate attempt", () => {
   });
 
   it("has the bound result baseline durably stored before the activation call", async () => {
-    const test = await setup();
+    const test = await setup({ observationProfileSupported: true });
     const activate = test.fixture.port.activate.bind(test.fixture.port);
     let stateAtActivation: string | undefined;
     let resultBaselineAtActivation: unknown;
+    let sessionStatusAtActivation: string | undefined;
     test.fixture.port.activate = async (...args) => {
       const attempt = (await test.repositories.getAllFlowImageAttempts())[0];
       stateAtActivation = attempt?.state;
       resultBaselineAtActivation = attempt?.resultBaseline;
+      sessionStatusAtActivation = attempt?.observationSession?.status;
       return activate(...args);
     };
 
     const result = await test.generate(test.payload);
     expect(result.state).toBe("dispatched");
     expect(stateAtActivation).toBe("dispatch-intent");
+    expect(sessionStatusAtActivation).toBe("active");
+    expect(test.fixture.lifecycle.indexOf("start_observation")).toBeLessThan(
+      test.fixture.lifecycle.indexOf("activate"),
+    );
+    expect(test.fixture.observationBindings[0]).toMatchObject({
+      workspaceId: "default",
+      batchId: test.saved.batch.id,
+      itemId: test.saved.items[0]?.id,
+      sourceHash: await sha256Hex(prompt),
+      sourceSnapshotId: flowImagePromptSnapshotId(
+        test.saved.items[0]!.id,
+        await sha256Hex(prompt),
+      ),
+      attemptId: "attempt-1",
+      provider: "Flow",
+      projectId: selectedTab.projectId,
+      tabId: selectedTab.id,
+      frameId: frame.frameId,
+      loaderId: frame.loaderId,
+      documentId: frame.documentId,
+      senderFrameId: frame.senderFrameId,
+      sessionId: expect.any(String),
+    });
     expect(resultBaselineAtActivation).toMatchObject({
       binding: {
         attemptId: "attempt-1",
@@ -351,6 +441,60 @@ describe("P04 durable Flow image Generate attempt", () => {
         count: 2,
         source: "validated_settings_confirmation",
       },
+    });
+  });
+
+  it("fails closed before activation when the bound observer cannot arm", async () => {
+    const test = await setup({
+      observationProfileSupported: true,
+      observationArm: "unsupported",
+    });
+
+    const result = await test.generate(test.payload);
+    const [attempt] = await test.repositories.getAllFlowImageAttempts();
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      failureStage: "observer",
+      code: "observation_start_unsupported",
+      activationCount: 0,
+    });
+    expect(test.fixture.activations).toBe(0);
+    expect(attempt?.state).toBe("failed-before-dispatch");
+    expect(attempt?.observationSession?.status).toBe("closed");
+    expect(attempt?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "observation_not_started",
+    });
+  });
+
+  it("arms the production observation-only profile before input and binds it to the immutable baseline", async () => {
+    const test = await setup({ productionObservationSupported: true });
+    const result = await test.generate(test.payload);
+    expect(result.state).toBe("dispatched");
+    expect(test.fixture.lifecycle.indexOf("start_observation")).toBeLessThan(
+      test.fixture.lifecycle.indexOf("activate_observation"),
+    );
+    expect(
+      test.fixture.lifecycle.indexOf("activate_observation"),
+    ).toBeLessThan(test.fixture.lifecycle.indexOf("activate"));
+    expect(test.fixture.observationBindings[0]).toMatchObject({
+      attemptId: "attempt-1",
+      projectId: selectedTab.projectId,
+      canonicalTarget: selectedTab.canonicalTarget,
+      tabId: selectedTab.id,
+      frameId: frame.frameId,
+      documentId: frame.documentId,
+      senderFrameId: 0,
+      sourceHash: await sha256Hex(prompt),
+      sourceSnapshotId: flowImagePromptSnapshotId(
+        test.saved.items[0]!.id,
+        await sha256Hex(prompt),
+      ),
+      sessionId: expect.any(String),
+      sourceBaselineFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      buildId: BUILD_ID,
+      protocolVersion: PROTOCOL_VERSION,
     });
   });
 
@@ -795,6 +939,30 @@ describe("P04 durable Flow image Generate attempt", () => {
         tabId: selectedTab.id,
         frameId: frame.frameId,
         loaderId: frame.loaderId,
+        ...(state === "dispatch-intent"
+          ? {
+              documentId: "restart-document",
+              senderFrameId: 0,
+              observationSession: {
+                sessionId: "9b80278c-4d61-4b30-8589-6f76c34115e4",
+                documentId: "restart-document",
+                senderFrameId: 0,
+                startedAt: at,
+                deadlineAt: at + 60_000,
+                maxEvents: 64,
+                profileSupport: "fixture_supported" as const,
+                status: "arming" as const,
+                lastSequence: 0,
+                reconciliationCount: 0,
+              },
+              resultOutcome: {
+                status: "awaiting_evidence" as const,
+                observedSucceededCount: 0,
+                observedFailedCount: 0,
+                updatedAt: at,
+              },
+            }
+          : {}),
         buildId: "test-build",
         protocolVersion: 3,
         settingsConfirmation: {
@@ -841,6 +1009,14 @@ describe("P04 durable Flow image Generate attempt", () => {
     expect(
       records.find((a) => a.attemptId === "restart-dispatch-intent")?.state,
     ).toBe("uncertain");
+    expect(
+      records.find((a) => a.attemptId === "restart-dispatch-intent")
+        ?.observationSession?.status,
+    ).toBe("closed");
+    expect(
+      records.find((a) => a.attemptId === "restart-dispatch-intent")
+        ?.resultOutcome,
+    ).toMatchObject({ status: "unknown", reason: "observation_not_started" });
     expect(
       records.find((a) => a.attemptId === "restart-dispatched")?.state,
     ).toBe("dispatched");
