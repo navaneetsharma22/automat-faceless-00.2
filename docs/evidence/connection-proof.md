@@ -2,7 +2,7 @@
 
 ## Current route compatibility correction — 28 October 2026
 
-Current status: **route/capability correction OFFLINE_VERIFIED; account-prefixed Flow browser retest NOT_RUN**. The earlier P02.4 screenshots and USER_REPORTED_PASS checks remain evidence of those prior tested sessions/builds. A later user-reported failure on a manually authenticated Flow tab at `/u/1/project/{projectId}` reopened the account-prefixed route compatibility gate. No Flow/Vids tab was inspected, changed, refreshed, or navigated during this correction.
+Current status: **route/capability correction OFFLINE_VERIFIED; corrected Flow/Vids connections USER_REPORTED_PASS**. The user now reports both providers connect after the shared parser fix. Loaded build/document identities were not independently observed. Earlier screenshots and browser reports retain their tested scope; historical pending-retest entries below are superseded by this user report. The subsequent P04.3 composer-discovery failure is an entry-readiness issue and does not establish a handshake failure. No provider tab was inspected or acted on by the agent in this follow-up.
 
 ### Confirmed source-level mismatch
 
@@ -207,3 +207,7 @@ The safe diagnostic line compares selected and response provider/origin/project-
 Final automated verification: Vitest **16 files / 162 tests PASS**; local synthetic Playwright fixtures **12 PASS**; typecheck, lint, Prettier, production build, manifest comparison, standalone connector check, and `git diff --check` **PASS**. The connector is emitted as a classic script with no imports/exports. Manifest source and packaged copies match. Shared packaged build ID: **`automat-faceless-0.1.0-mvs8v92s`**. A prior sandboxed Node child-process launch returned Windows `spawn EPERM`; the project's Playwright and Vitest commands completed through the permitted local execution method. These are offline and synthetic results, not live browser verification.
 
 **Live retest: NOT_RUN.** Retest by leaving the user's chosen existing Flow `/u/1/project/...` tab open, reopening/reloading only the extension if its package must be updated, opening the dashboard, explicitly selecting that exact listed tab, and clicking Connect. If it fails, report the masked field-state diagnostics. Do not refresh/navigate/replace the provider tab, switch accounts, fill a prompt, change settings, or Generate. For Vids, select the user's existing accessible tab only if it matches one of the supported documented routes. P04.3 remains paused until the Flow route has a successful packaged retest; no generation attempt was made.
+
+### Subsequent user connection report
+
+**USER_REPORTED_PASS:** the user reports Flow and Vids now connect successfully after the shared route-parser fix. This supersedes the pending user connection-retest gate above; it is not independent runtime inspection. The loaded build ID and browser document/connector identity were not supplied in this report. The user then reported a fill-only `composer-discovery` failure before text entry; see [current P04.3 evidence](flow-one-image.md#current-p043-discovery-failure---28-october-2026). The shared account-prefixed route contract is preserved. No application connection change or provider action was made in this follow-up.
