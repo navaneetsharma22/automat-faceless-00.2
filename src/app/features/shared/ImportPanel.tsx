@@ -18,6 +18,7 @@ import {
   type SavedSourceExportDetails,
 } from "./savedSourceExport";
 import styles from "./ImportPanel.module.css";
+import { flowReadinessReasonLabel } from "./flowReadinessPresentation";
 
 type ExampleConfirmation =
   | { type: "example"; revision: number }
@@ -745,7 +746,7 @@ export function ImportPanel({
                   flowReadinessResult.status === "ready" ? "success" : "warning"
                 }
               >
-                {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${String(flowReadinessResult.reason ?? "readiness_result_unavailable")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory and identity remain incomplete/unverified; terminal completion is unsupported.`}
+                {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory and identity remain incomplete/unverified; terminal completion is unsupported.`}
               </Notice>
               <Button
                 type="button"
