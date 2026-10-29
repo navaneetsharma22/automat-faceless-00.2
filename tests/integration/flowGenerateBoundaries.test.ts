@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createFlowImageGenerateOnce } from "../../src/background/handlers/flow";
+import {
+  flowGenerateResponseLostOutcome,
+  formatFlowGenerateOutcome,
+} from "../../src/app/features/shared/ImportPanel";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
 import {
   flowImageAttemptActiveKey,
@@ -81,6 +85,7 @@ function makePort(
       pressAttempted: boolean;
       releaseAttempted: boolean;
     };
+    postDispatchReadFailure?: boolean;
   } = {},
 ) {
   const selected = options.selection ?? {
@@ -91,6 +96,7 @@ function makePort(
   const liveFrame = options.frame ?? frame;
   const calls: string[] = [];
   let activations = 0;
+  let activationReturned = false;
   const port = {
     getSelection: async () => selected,
     getTab: async () => tab,
@@ -103,12 +109,17 @@ function makePort(
       return {};
     },
     captureFrame: async () => liveFrame,
-    readFrame: async () => liveFrame,
+    readFrame: async () => {
+      if (activationReturned && options.postDispatchReadFailure)
+        throw new Error("fixture observation unavailable");
+      return liveFrame;
+    },
     inspectGenerate: async () => options.generated ?? discovery(),
     recheckGenerate: async () => options.recheck ?? true,
     buttonPosition: async () => options.position ?? { x: 10, y: 20 },
     activate: async () => {
       activations += 1;
+      activationReturned = true;
       return (
         options.activation ?? {
           complete: true,
@@ -212,7 +223,7 @@ async function setup(options: Parameters<typeof makePort>[0] = {}) {
   };
 }
 
-describe("P04.2 durable Flow image Generate attempt", () => {
+describe("P04 durable Flow image Generate attempt", () => {
   it("persists context, verifies exact fill, and dispatches one mouse pair", async () => {
     const test = await setup();
     const result = (await test.client.request(
@@ -302,6 +313,47 @@ describe("P04.2 durable Flow image Generate attempt", () => {
     expect(currentBatch?.items[0]?.rawJsonBody).toBe(replacement);
     expect(attempt.promptHash).toBe(await sha256Hex(prompt));
     expect(attempt.promptHash).not.toBe(await sha256Hex(replacement));
+  });
+
+  it("does not let a replaced shot at the same batch position collide with the active source lock", async () => {
+    const test = await setup();
+    const first = await test.generate(test.payload);
+    const replacement = '{"shot_id":"02","scene":"SYNTHETIC shot two"}';
+    const replaced = await test.repositories.savePromptBatch({
+      workspaceId: "default",
+      kind: "image",
+      sourceText: replacement,
+    });
+    const replacementHash = await sha256Hex(replacement);
+    const replacementPayload = {
+      workspaceId: "default",
+      promptHash: replacementHash,
+      settingsConfirmation: {
+        ...settingsConfirmation,
+        confirmationId: "confirm-shot-two",
+      },
+    };
+
+    expect(first.state).toBe("dispatched");
+    expect(replaced.items[0]?.id).toBe(test.saved.items[0]?.id);
+    expect(replaced.items[0]?.shotId).toBe("2");
+    expect(replaced.items[0]?.contentHash).toBe(replacementHash);
+
+    const second = await test.generate(replacementPayload);
+    const attempts = await test.repositories.getAllFlowImageAttempts();
+    expect(second).toMatchObject({
+      state: "dispatched",
+      activationCount: 1,
+      providerOutcome: "unverified",
+    });
+    expect(test.fixture.activations).toBe(2);
+    expect(attempts).toHaveLength(2);
+    expect(attempts.map((attempt) => attempt.shotId)).toEqual(["1", "2"]);
+    expect(attempts[0]?.promptHash).not.toBe(attempts[1]?.promptHash);
+    expect(attempts[0]?.sourceSnapshotId).not.toBe(
+      attempts[1]?.sourceSnapshotId,
+    );
+    expect(attempts[0]?.activeKey).not.toBe(attempts[1]?.activeKey);
   });
 
   it("blocks Generate when the attempt's immutable source snapshot is unavailable", async () => {
@@ -591,7 +643,11 @@ describe("P04.2 durable Flow image Generate attempt", () => {
       return transition(input);
     };
     const result = await test.generate(test.payload);
-    expect(result.state).toBe("uncertain");
+    expect(result).toMatchObject({
+      state: "uncertain",
+      failureStage: "storage",
+      providerOutcome: "unknown",
+    });
     expect(result.activationCount).toBe(1);
     expect((await test.repositories.getAllFlowImageAttempts())[0]?.state).toBe(
       "dispatch-intent",
@@ -732,5 +788,179 @@ describe("P04.2 durable Flow image Generate attempt", () => {
       (await test.repositories.getAllFlowImageAttempts())[0]?.events.at(-1)
         ?.method,
     ).toBe("none");
+  });
+
+  it("keeps preparation, preflight, and observer failures distinct with zero activation", async () => {
+    const prep = await setup();
+    const prepGenerate = createFlowImageGenerateOnce({
+      repositories: prep.repositories,
+      port: prep.fixture.port as never,
+      fillPrompt: async () => {
+        throw new Error("private fixture failure detail");
+      },
+      now: () => 1_100,
+      createAttemptId: () => "prep-failure",
+    });
+    const prepResult = await prepGenerate(prep.payload);
+    expect(prepResult).toMatchObject({
+      state: "failed-before-dispatch",
+      failureStage: "preparation",
+      providerOutcome: "not_started",
+      code: "preparation_failed",
+      activationCount: 0,
+    });
+    expect(prepResult.message).not.toContain("private fixture");
+    expect(prep.fixture.activations).toBe(0);
+
+    const preflight = await setup({
+      generated: discovery({ composer: "missing" }),
+    });
+    const preflightResult = await preflight.generate(preflight.payload);
+    expect(preflightResult).toMatchObject({
+      state: "failed-before-dispatch",
+      failureStage: "preflight",
+      code: "composer_missing",
+      activationCount: 0,
+    });
+    expect(preflight.fixture.activations).toBe(0);
+
+    const observer = await setup({
+      generated: discovery({ observation: "missing" }),
+    });
+    const observerResult = await observer.generate(observer.payload);
+    expect(observerResult).toMatchObject({
+      state: "failed-before-dispatch",
+      failureStage: "observer",
+      code: "observation_missing",
+      activationCount: 0,
+    });
+    expect(observer.fixture.activations).toBe(0);
+    const stored = await observer.repositories.getAllFlowImageAttempts();
+    expect(stored[0]?.state).toBe("failed-before-dispatch");
+    expect(stored[0]?.events.at(-1)?.stage).toBe("observer");
+  });
+
+  it("classifies dispatch-intent persistence failure as storage before input", async () => {
+    const test = await setup();
+    const transition = test.repositories.transitionFlowImageAttempt.bind(
+      test.repositories,
+    );
+    test.repositories.transitionFlowImageAttempt = async (input) => {
+      if (input.next === "dispatch-intent")
+        throw new Error("controlled storage failure");
+      return transition(input);
+    };
+    const result = await test.generate(test.payload);
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      failureStage: "storage",
+      providerOutcome: "not_started",
+      activationCount: 0,
+    });
+    expect(test.fixture.activations).toBe(0);
+    expect((await test.repositories.getAllFlowImageAttempts())[0]?.state).toBe(
+      "failed-before-dispatch",
+    );
+  });
+
+  it("keeps partial input and lost CDP acknowledgement uncertain with absent evidence", async () => {
+    const partial = await setup({
+      activation: {
+        complete: false,
+        pressAttempted: true,
+        releaseAttempted: false,
+      },
+    });
+    const partialResult = await partial.generate(partial.payload);
+    expect(partialResult).toMatchObject({
+      state: "uncertain",
+      failureStage: "dispatch",
+      providerOutcome: "unknown",
+      activationCount: 1,
+      pressAttempted: true,
+      releaseAttempted: false,
+    });
+
+    const lost = await setup();
+    const port = lost.fixture.port as unknown as {
+      activate: () => Promise<unknown>;
+    };
+    port.activate = async () => {
+      throw new Error("CDP channel closed");
+    };
+    const lostResult = await lost.generate(lost.payload);
+    expect(lostResult).toMatchObject({
+      state: "uncertain",
+      failureStage: "dispatch",
+      providerOutcome: "unknown",
+      code: "activation_result_unknown",
+    });
+    expect(lostResult).not.toHaveProperty("activationCount");
+    expect(lostResult).not.toHaveProperty("pressAttempted");
+    expect(lostResult).not.toHaveProperty("releaseAttempted");
+    expect((await lost.repositories.getAllFlowImageAttempts())[0]?.state).toBe(
+      "uncertain",
+    );
+    const visible = formatFlowGenerateOutcome(lostResult);
+    expect(visible).toContain("Provider outcome: unknown");
+    expect(visible).toContain("Activation-pair attempts: unknown");
+    expect(visible).toContain("Press: unknown; release: unknown");
+  });
+
+  it("retains sent input as uncertain when post-dispatch observation is unavailable", async () => {
+    const test = await setup({ postDispatchReadFailure: true });
+    const result = await test.generate(test.payload);
+    expect(result).toMatchObject({
+      state: "uncertain",
+      failureStage: "observer",
+      providerOutcome: "unknown",
+      code: "post_dispatch_observation_unavailable",
+      activationCount: 1,
+      pressAttempted: true,
+      releaseAttempted: true,
+    });
+    const stored = (await test.repositories.getAllFlowImageAttempts())[0];
+    expect(stored?.state).toBe("uncertain");
+    expect(stored?.events.at(-1)?.stage).toBe("observer");
+    expect(test.fixture.activations).toBe(1);
+    const visible = formatFlowGenerateOutcome(result);
+    expect(visible).toContain("Provider outcome: unknown");
+    expect(visible).toContain("Action state: uncertain");
+  });
+
+  it("reports response loss as unknown while durable dispatched state remains non-replayable", async () => {
+    const test = await setup();
+    const workerResult = await test.generate(test.payload);
+    const responseLostClient = createFoundationClient(
+      { sendMessage: async () => Promise.reject(new Error("channel closed")) },
+      { timeoutMs: { "flow.image.generateOnce": 5 } },
+    );
+    await expect(
+      responseLostClient.request("flow.image.generateOnce", test.payload),
+    ).rejects.toMatchObject({ code: "worker_request_failed" });
+
+    const uiOutcome = flowGenerateResponseLostOutcome();
+    expect(uiOutcome).toMatchObject({
+      state: "uncertain",
+      failureStage: "dispatch",
+      providerOutcome: "unknown",
+      code: "response_unknown",
+    });
+    expect(formatFlowGenerateOutcome(uiOutcome)).toContain(
+      "Activation-pair attempts: unknown",
+    );
+    expect((await test.repositories.getAllFlowImageAttempts())[0]?.state).toBe(
+      "dispatched",
+    );
+    expect(workerResult).toMatchObject({
+      state: "dispatched",
+      providerOutcome: "unverified",
+      activationCount: 1,
+    });
+    expect(test.fixture.activations).toBe(1);
+    expect((await test.generate(test.payload)).code).toBe(
+      "attempt_already_active",
+    );
+    expect(test.fixture.activations).toBe(1);
   });
 });

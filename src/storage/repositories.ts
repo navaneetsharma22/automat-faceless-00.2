@@ -24,6 +24,7 @@ import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnap
 import {
   canTransitionFlowImageAttempt,
   flowImageAttemptActiveKey,
+  isBlockingFlowImageAttempt,
   type FlowImageAttemptEvent,
   type FlowImageAttemptRecord,
   type FlowImageAttemptState,
@@ -106,6 +107,17 @@ export class FlowImagePromptSnapshotConflictError extends Error {
     );
     this.name = "FlowImagePromptSnapshotConflictError";
   }
+}
+
+function isSameBlockingImageSource(
+  existing: FlowImageAttemptRecord,
+  candidate: FlowImageAttemptRecord,
+): boolean {
+  return (
+    isBlockingFlowImageAttempt(existing) &&
+    existing.itemId === candidate.itemId &&
+    existing.promptHash === candidate.promptHash
+  );
 }
 
 export type Theme = "light" | "dark";
@@ -479,7 +491,10 @@ export class ExtensionRepositories {
     const record: FlowImageAttemptRecord = {
       ...attemptInput,
       sourceSnapshotId: sourceSnapshot.snapshotId,
-      activeKey: flowImageAttemptActiveKey(attemptInput.itemId),
+      activeKey: flowImageAttemptActiveKey(
+        attemptInput.itemId,
+        attemptInput.promptHash,
+      ),
     };
     if (
       sourceSnapshot.workspaceId !== record.workspaceId ||
@@ -505,7 +520,9 @@ export class ExtensionRepositories {
         async () => {
           const existing = await this.tables.flowImageAttempts.toArray();
           if (
-            existing.some((attempt) => attempt.activeKey === record.activeKey)
+            existing.some((attempt) =>
+              isSameBlockingImageSource(attempt, record),
+            )
           ) {
             throw new ActiveFlowImageAttemptError();
           }
@@ -544,7 +561,7 @@ export class ExtensionRepositories {
       if (error instanceof DOMException && error.name === "ConstraintError") {
         const existing = await this.tables.flowImageAttempts.toArray();
         if (
-          existing.some((attempt) => attempt.activeKey === record.activeKey)
+          existing.some((attempt) => isSameBlockingImageSource(attempt, record))
         ) {
           throw new ActiveFlowImageAttemptError();
         }

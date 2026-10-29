@@ -23,6 +23,37 @@ type ExampleConfirmation =
   | { type: "example"; revision: number }
   | { type: "file"; revision: number; file: File };
 
+export type FlowGenerateOutcomeMessage = {
+  state?: string;
+  failureStage?: string;
+  providerOutcome?: string;
+  attemptId?: string;
+  code?: string;
+  message?: string;
+  pressAttempted?: boolean;
+  releaseAttempted?: boolean;
+  activationCount?: number;
+};
+
+export function formatFlowGenerateOutcome(
+  result: FlowGenerateOutcomeMessage,
+): string {
+  const evidence = (value: boolean | undefined) =>
+    value === undefined ? "unknown" : value ? "sent or uncertain" : "not sent";
+  return `Action state: ${result.state ?? "unknown"}. Failure stage: ${result.failureStage ?? "unknown"}. Code: ${result.code ?? "unavailable"}. Provider outcome: ${result.providerOutcome ?? "unknown"}. ${result.message ?? "The Generate attempt did not complete."} Activation-pair attempts: ${result.activationCount === undefined ? "unknown" : result.activationCount}. Press: ${evidence(result.pressAttempted)}; release: ${evidence(result.releaseAttempted)}.${result.attemptId ? ` Attempt ${result.attemptId}.` : ""}`;
+}
+
+export function flowGenerateResponseLostOutcome(): FlowGenerateOutcomeMessage {
+  return {
+    state: "uncertain",
+    failureStage: "dispatch",
+    providerOutcome: "unknown",
+    code: "response_unknown",
+    message:
+      "The worker response was lost or invalid. Dispatch status and provider outcome are unknown; inspect the durable attempt before continuing. This action will not retry.",
+  };
+}
+
 export type ImportPanelProps = {
   kind: PromptKind;
   session: ImportPreviewSession;
@@ -109,16 +140,7 @@ export function ImportPanel({
   const [flowGenerateRequiresReview, setFlowGenerateRequiresReview] =
     useState(false);
   const [flowGenerateResult, setFlowGenerateResult] = useState<
-    | {
-        state?: string;
-        attemptId?: string;
-        code?: string;
-        message?: string;
-        pressAttempted?: boolean;
-        releaseAttempted?: boolean;
-        activationCount?: number;
-      }
-    | undefined
+    FlowGenerateOutcomeMessage | undefined
   >();
   const fileRequest = useRef(0);
   const lastToastId = useRef(0);
@@ -482,6 +504,8 @@ export function ImportPanel({
       if (session.getSnapshot().revision !== current.revision) {
         setFlowGenerateResult({
           state: "failed-before-dispatch",
+          failureStage: "preparation",
+          providerOutcome: "not_started",
           code: "draft_changed_before_request",
           message:
             "The image draft changed before dispatch. No Generate action was sent.",
@@ -501,7 +525,15 @@ export function ImportPanel({
       }
       const result = rawResult as NonNullable<typeof flowGenerateResult>;
       setFlowGenerateResult(result);
-      if (result.state === "dispatched" || result.state === "uncertain") {
+      if (
+        result.state === "dispatched" ||
+        result.state === "uncertain" ||
+        (result.state === "blocked" &&
+          [
+            "preparation_persist_failed",
+            "pre_dispatch_failure_record_failed",
+          ].includes(result.code ?? ""))
+      ) {
         setFlowGenerateRequiresReview(true);
       } else if (
         result.code === "attempt_already_active" ||
@@ -509,16 +541,9 @@ export function ImportPanel({
       ) {
         setFlowGenerateLockConfirmationId(confirmation.confirmationId);
       }
-    } catch (error) {
+    } catch {
       setFlowGenerateRequiresReview(true);
-      setFlowGenerateResult({
-        state: "uncertain",
-        code: "response_unknown",
-        message:
-          error instanceof Error
-            ? `${error.message} Check the attempt status before continuing; the action will not retry.`
-            : "The worker response is unknown. Check the attempt status before continuing; the action will not retry.",
-      });
+      setFlowGenerateResult(flowGenerateResponseLostOutcome());
     } finally {
       setFlowGeneratePending(false);
     }
@@ -667,8 +692,8 @@ export function ImportPanel({
       ) : null}
       {flowGeneratePending ? (
         <Notice kind="info">
-          Preparing the saved prompt and checking the selected Flow document.
-          Generate has not been dispatched yet.
+          Preparing the saved prompt and checking the selected Flow document. No
+          Generate input has been sent at this point.
         </Notice>
       ) : null}
       {flowGenerateResult ? (
@@ -683,7 +708,7 @@ export function ImportPanel({
                   : "error"
           }
         >
-          {`${flowGenerateResult.state ?? "Attempt"}: ${flowGenerateResult.message ?? "The Generate attempt did not complete."} Activation pair attempts: ${flowGenerateResult.activationCount ?? 0}. Press: ${flowGenerateResult.pressAttempted ? "sent or uncertain" : "not sent"}; release: ${flowGenerateResult.releaseAttempted ? "sent or uncertain" : "not sent"}.${flowGenerateResult.attemptId ? ` Attempt ${flowGenerateResult.attemptId}.` : ""}`}
+          {formatFlowGenerateOutcome(flowGenerateResult)}
         </Notice>
       ) : null}
       {flowGenerateRequiresReview ||
@@ -691,7 +716,9 @@ export function ImportPanel({
         flowSettingsConfirmation?.confirmationId ? (
         <p className={styles.subtleText}>
           {flowGenerateRequiresReview
-            ? "This attempt is dispatched or uncertain. Do not activate Generate again; inspect its durable attempt status first."
+            ? flowGenerateResult?.state === "blocked"
+              ? "No Generate input was reported, but durable attempt state needs review. Do not activate again until you inspect the stored attempt."
+              : "This attempt is dispatched or uncertain. Do not activate Generate again; inspect its durable attempt status first."
             : "This settings confirmation was already used. Reconfirm the manual settings before starting another attempt."}
         </p>
       ) : null}

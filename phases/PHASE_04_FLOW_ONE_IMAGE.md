@@ -1,6 +1,8 @@
 # P04 — One long image JSON: entry and one Generate
 
-Status: **INCOMPLETE — P04.1/P04.2 and P04.3 discovery/fill/dispatch compatibility are offline/local-fixture verified; live fill/readback, Generate label, progress, completed dinosaur image, and dashboard `dispatched` state are USER_REPORTED screenshot evidence. The dashboard screenshot reports one activation-pair attempt; runtime/storage evidence was not independently inspected. Automatic result attribution remains unverified; P04.4 NOT_STARTED.** The user reports Flow/Vids connection success after the route fix. Provider acceptance and automatic result attribution are not independently verified. No live Generate was performed by the agent.
+Status: **INCOMPLETE — P04.1/P04.2 and P04.3 compatibility are offline/local-fixture verified; P04.4 failure attribution is OFFLINE_VERIFIED. Live fill/readback, Generate label, progress, completed dinosaur image, and dashboard `dispatched` state are USER_REPORTED screenshot evidence, including one activation-pair attempt. Attempt `54589885-74c8-4088-beeb-e41f7fda9341` is screenshot evidence only; runtime/storage evidence was not independently inspected. Automatic result attribution remains unverified.** The user reports Flow/Vids connection success after the route fix. Provider acceptance and automatic result attribution are not independently verified. No live Generate was performed by the agent.
+
+**Latest P04 evidence (29 October 2026):** the user-provided screenshots for the second live test report exact immediate/settled readback of 3,321 code units, source SHA-256 `bfed2a90b794a8b5de8e644a203d7a09ea73b999dc509808a7c9fbd6ee4301cb`, and attempt `5344f4f1-7277-452b-9e1e-d863b70d7a12` as `dispatched` / `activation_pair_sent`, with one activation-pair attempt and provider outcome `unverified`. They show manually selected `x2` and two completed Flow images. Press/release evidence remains uncertain as displayed. These screenshots do not independently verify runtime/storage, link the images to the attempt, or establish automatic terminal attribution. Preserve both attempts; P04 remains **INCOMPLETE** and P05 **NOT_STARTED**.
 
 **Outcome:** The extension can enter one actual long JSON in the correct Flow composer and activate Generate once.
 
@@ -113,9 +115,23 @@ Start in these files:
 
 Acceptance: Preparation/preflight/observer/dispatch/storage failure stages stay distinct. Missing historic evidence remains absent; feedback arrives immediately.
 
+P04.4 implementation summary: Worker results carry a fixed failure stage and separate action state from provider outcome. Pre-input failures retain `not_started`; successful input dispatch is reported as provider outcome `unverified`; partial input, lost acknowledgements, post-input observation/storage failure, and response loss retain `unknown`/`uncertain` and remain replay-blocking. Activation counts and press/release values are omitted when unobserved. The worker performs a fresh selected-document binding check after a complete input pair; it does not infer provider acceptance or result completion. UI pending feedback is set before awaited hashing/worker work, outcome text labels action/provider state separately, and unknown evidence is shown as unknown. A storage failure while persisting a pre-input failure blocks the action pending durable-state review.
+
+P04.4 offline verification: focused boundary integration **24 tests PASS**; full Vitest **16 files / 172 tests PASS**; typecheck, lint, formatting, normal production build, manifest comparison, standalone connector/shared build identity, and `git diff --check` **PASS**. Packaged build ID: **`automat-faceless-0.1.0-mvt4oxfr`**. The user-provided screenshot identifies attempt `54589885-74c8-4088-beeb-e41f7fda9341`; it was not read or modified in storage. No live provider interaction was performed. P04.4 is **OFFLINE_VERIFIED**; live behavior remains unverified.
+
+### Active-attempt identity collision follow-up — 29 October 2026
+
+Source inspection confirmed that position-based item IDs could be reused after replacing one shot's JSON with another at the same batch position, while the active-attempt key contained only the item ID. The active key now includes the exact source hash. Repository checks also compare item ID plus exact source hash, preserving same-source and legacy-attempt duplicate blocking while allowing a genuinely changed source at the same position. Integration coverage exercises replacing shot 01 with shot 02 while the first attempt is still active.
+
+Focused boundary integration **25 tests PASS**; full Vitest **16 files / 173 tests PASS**; typecheck, lint, formatting, production build, manifest equality, standalone connector/shared build IDs, and `git diff --check` **PASS**. Local package ID: **`automat-faceless-0.1.0-mvt58224`**. The historical attempt's project/item/shot/source hash/snapshot/state, the current selected provider project/workspace, and whether shot 02 is saved and selected were not available for independent inspection. Attempt `54589885-74c8-4088-beeb-e41f7fda9341` remains user-provided screenshot evidence only and was not changed. No provider page was accessed and Generate was not activated. See [the identity collision evidence](../docs/evidence/flow-one-image.md#p04-active-attempt-identity-collision-follow-up--29-october-2026). Phase 04 remains **INCOMPLETE**; do not reset or replay the historical attempt.
+
+### Second live test — user-reported screenshot evidence — 29 October 2026
+
+The user-provided screenshots report exact immediate and settled editor readback of **3,321 code units** with SHA-256 `bfed2a90b794a8b5de8e644a203d7a09ea73b999dc509808a7c9fbd6ee4301cb`. Attempt `5344f4f1-7277-452b-9e1e-d863b70d7a12` is shown as action state `dispatched`, code `activation_pair_sent`, one activation-pair attempt, and provider outcome `unverified`. Screenshots show manually selected `x2` and two completed Flow images. Press/release evidence remains uncertain as displayed; no missing acknowledgement is inferred. This is screenshot evidence, not independently verified runtime or stored attempt/result linkage. The images are not automatically attributed to the attempt. Preserve the attempt. P04 remains **INCOMPLETE**; P05 remains **NOT_STARTED**.
+
 ## Phase gate
 
-One-shot entry/dispatch proof passes. G-IMAGE-ONE is fully closed only after P05 also proves attributable terminal completion.
+One-shot entry/dispatch proof has offline/local-fixture evidence and user-reported screenshots, but no independently observed live runtime/storage evidence. G-IMAGE-ONE is fully closed only after P05 proves attributable terminal completion. P04.4 offline verification does not close that gate; P05 remains unstarted.
 
 ## Notes
 

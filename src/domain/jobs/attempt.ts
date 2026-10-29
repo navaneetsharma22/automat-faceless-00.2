@@ -9,8 +9,16 @@ export const FLOW_IMAGE_ATTEMPT_STATES = [
 
 export type FlowImageAttemptState = (typeof FLOW_IMAGE_ATTEMPT_STATES)[number];
 
+export type FlowImageAttemptStage =
+  | "preparation"
+  | "preflight"
+  | "observer"
+  | "dispatch"
+  | "storage"
+  | "recovery";
+
 export type FlowImageAttemptEvent = {
-  stage: "preparation" | "verification" | "dispatch" | "recovery";
+  stage: FlowImageAttemptStage | "verification";
   at: number;
   method: "none" | "CDP Input.insertText" | "CDP Input.dispatchMouseEvent";
   code?: string;
@@ -92,6 +100,11 @@ export function isBlockingFlowImageAttempt(
   return attempt.state !== "failed-before-dispatch";
 }
 
-export function flowImageAttemptActiveKey(itemId: string): string {
-  return `flow-image:${itemId}`;
+export function flowImageAttemptActiveKey(
+  itemId: string,
+  promptHash?: string,
+): string {
+  return promptHash
+    ? `flow-image:${itemId}:${promptHash}`
+    : `flow-image:${itemId}`;
 }

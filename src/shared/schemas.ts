@@ -153,7 +153,15 @@ export const FlowImagePromptSnapshotRecordSchema = z
 
 const flowImageAttemptEventSchema = z
   .object({
-    stage: z.enum(["preparation", "verification", "dispatch", "recovery"]),
+    stage: z.enum([
+      "preparation",
+      "verification",
+      "preflight",
+      "observer",
+      "dispatch",
+      "storage",
+      "recovery",
+    ]),
     at: z.number().finite().nonnegative(),
     method: z.enum([
       "none",
@@ -245,12 +253,16 @@ export const FlowImageAttemptRecordSchema = z
   .refine(
     (attempt) =>
       attempt.activeKey === undefined ||
+      attempt.activeKey ===
+        flowImageAttemptActiveKey(attempt.itemId, attempt.promptHash) ||
       attempt.activeKey === flowImageAttemptActiveKey(attempt.itemId),
   )
   .refine((attempt) =>
     attempt.state === "failed-before-dispatch"
       ? attempt.activeKey === undefined
-      : attempt.activeKey === flowImageAttemptActiveKey(attempt.itemId),
+      : attempt.activeKey ===
+          flowImageAttemptActiveKey(attempt.itemId, attempt.promptHash) ||
+        attempt.activeKey === flowImageAttemptActiveKey(attempt.itemId),
   );
 
 export const FlowSettingsConfirmationSchema = z

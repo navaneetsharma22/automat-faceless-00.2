@@ -18,6 +18,7 @@ import {
 } from "../../platforms/flow/images";
 import {
   flowImageAttemptActiveKey,
+  type FlowImageAttemptStage,
   type FlowImageAttemptRecord,
 } from "../../domain/jobs/attempt";
 import { flowImagePromptSnapshotId } from "../../domain/batches/flowImagePromptSnapshot";
@@ -112,12 +113,14 @@ type FlowImageGenerateOnceDependencies = {
 
 type FlowImageGenerateOnceResult = {
   state: "dispatched" | "failed-before-dispatch" | "uncertain" | "blocked";
+  failureStage?: FlowImageAttemptStage;
+  providerOutcome: "not_started" | "unknown" | "unverified";
   attemptId?: string;
   code: string;
   message: string;
-  pressAttempted: boolean;
-  releaseAttempted: boolean;
-  activationCount: number;
+  pressAttempted?: boolean;
+  releaseAttempted?: boolean;
+  activationCount?: number;
   generationAvailable: true;
 };
 
@@ -132,28 +135,46 @@ export function createFlowImageGenerateOnce(
     let attached = false;
     let attachedTabId: number | undefined;
     let activationStarted = false;
+    let activationObserved = false;
     let pressAttempted = false;
     let releaseAttempted = false;
+    let currentStage: FlowImageAttemptStage = "preparation";
 
     const response = (
       state: FlowImageGenerateOnceResult["state"],
       code: string,
       message: string,
+      failureStage = currentStage,
     ): FlowImageGenerateOnceResult => ({
       state,
+      ...(state === "dispatched" ? {} : { failureStage }),
+      providerOutcome:
+        state === "dispatched"
+          ? "unverified"
+          : state === "uncertain"
+            ? "unknown"
+            : "not_started",
       ...(attempt ? { attemptId: attempt.attemptId } : {}),
       code,
       message,
-      pressAttempted,
-      releaseAttempted,
-      activationCount: pressAttempted ? 1 : 0,
+      ...(!activationStarted
+        ? { pressAttempted: false, releaseAttempted: false, activationCount: 0 }
+        : activationObserved
+          ? {
+              pressAttempted,
+              releaseAttempted,
+              activationCount: pressAttempted ? 1 : 0,
+            }
+          : {}),
       generationAvailable: true,
     });
 
     const failBefore = async (
       code: string,
       message: string,
+      failureStage = currentStage,
     ): Promise<FlowImageGenerateOnceResult> => {
+      let failureRecordPersisted = !attempt;
       if (attempt && !activationStarted) {
         const expected = attempt.state;
         if (
@@ -167,14 +188,28 @@ export function createFlowImageGenerateOnce(
                 attemptId: attempt.attemptId,
                 expected,
                 next: "failed-before-dispatch",
-                event: { stage: "dispatch", at: now(), method: "none", code },
+                event: {
+                  stage: failureStage,
+                  at: now(),
+                  method: "none",
+                  code,
+                },
               });
+            failureRecordPersisted = true;
           } catch {
             // Keeping an active persisted state blocks replay if storage failed.
           }
         }
       }
-      return response("failed-before-dispatch", code, message);
+      if (!failureRecordPersisted) {
+        return response(
+          "blocked",
+          "pre_dispatch_failure_record_failed",
+          "No Generate input was sent, but the failure could not be durably recorded. The existing attempt remains blocking; inspect its durable status before continuing.",
+          "storage",
+        );
+      }
+      return response("failed-before-dispatch", code, message, failureStage);
     };
 
     const markUncertain = async (code: string) => {
@@ -185,7 +220,7 @@ export function createFlowImageGenerateOnce(
           expected: "dispatch-intent",
           next: "uncertain",
           event: {
-            stage: "dispatch",
+            stage: currentStage,
             at: now(),
             method: "CDP Input.dispatchMouseEvent",
             code,
@@ -198,6 +233,7 @@ export function createFlowImageGenerateOnce(
     };
 
     try {
+      currentStage = "preflight";
       if (!port.hasRequiredApis() || !(await port.hasDebuggerPermission())) {
         return response(
           "blocked",
@@ -213,8 +249,10 @@ export function createFlowImageGenerateOnce(
           "Select a Flow project before generating.",
         );
       }
+      currentStage = "storage";
       const selectedRecord =
         await dependencies.repositories.getSelectedTarget("Flow");
+      currentStage = "preflight";
       if (
         !selectedRecord ||
         selectedRecord.tabId !== selected.tabId ||
@@ -251,10 +289,12 @@ export function createFlowImageGenerateOnce(
           "Confirm manual image settings again for the currently selected Flow project.",
         );
       }
+      currentStage = "storage";
       const snapshot = await dependencies.repositories.getPromptBatch(
         input.workspaceId,
         "image",
       );
+      currentStage = "preflight";
       if (!snapshot || snapshot.items.length !== 1) {
         return response(
           "blocked",
@@ -307,6 +347,7 @@ export function createFlowImageGenerateOnce(
         promptUtf8Bytes: item.measurement.utf8Bytes,
         createdAt: at,
       };
+      currentStage = "storage";
       try {
         attempt = await dependencies.repositories.createFlowImageAttempt({
           attemptId: makeId(),
@@ -335,7 +376,7 @@ export function createFlowImageGenerateOnce(
             canonicalTarget: input.settingsConfirmation.canonicalTarget,
           },
           state: "preparing",
-          activeKey: flowImageAttemptActiveKey(item.id),
+          activeKey: flowImageAttemptActiveKey(item.id, item.contentHash),
           events: [
             {
               stage: "preparation",
@@ -377,11 +418,14 @@ export function createFlowImageGenerateOnce(
       }
 
       let promptSource: string;
+      currentStage = "preparation";
       try {
+        currentStage = "storage";
         const persistedSource =
           await dependencies.repositories.getFlowImagePromptSnapshot(
             attempt.sourceSnapshotId,
           );
+        currentStage = "preparation";
         if (
           !persistedSource ||
           persistedSource.snapshotId !== attempt.sourceSnapshotId ||
@@ -418,6 +462,7 @@ export function createFlowImageGenerateOnce(
           "Exact settled prompt readback was not verified. Generate was not activated; inspect the editor before continuing.",
         );
       }
+      currentStage = "storage";
       attempt = await dependencies.repositories.transitionFlowImageAttempt({
         attemptId: attempt.attemptId,
         expected: "preparing",
@@ -430,6 +475,7 @@ export function createFlowImageGenerateOnce(
         },
       });
 
+      currentStage = "preflight";
       await port.attach(target.id);
       attached = true;
       attachedTabId = target.id;
@@ -441,19 +487,26 @@ export function createFlowImageGenerateOnce(
           "The selected Flow document changed after prompt verification. Generate was not activated.",
         );
       }
+      currentStage = "observer";
       const discovery = await port.inspectGenerate(target.id, promptSource);
       const preflightError = discoveryFailure(discovery);
       if (preflightError) {
-        return failBefore(preflightError.code, preflightError.message);
+        return failBefore(
+          preflightError.code,
+          preflightError.message,
+          preflightError.failureStage,
+        );
       }
       const baseline = discovery.baseline!;
       const buttonId = discovery.buttonObjectId!;
+      currentStage = "preflight";
       if (!(await currentFlowBinding(port, selected, target, frame))) {
         return failBefore(
           "document_binding_changed",
           "The selected Flow document changed during final preflight. Generate was not activated.",
         );
       }
+      currentStage = "observer";
       if (
         !(await port.recheckGenerate(
           target.id,
@@ -468,6 +521,7 @@ export function createFlowImageGenerateOnce(
           "Prompt readback, Generate control, or observation baseline changed. Generate was not activated.",
         );
       }
+      currentStage = "preflight";
       const position = await port.buttonPosition(target.id, buttonId);
       if (
         !position ||
@@ -479,6 +533,7 @@ export function createFlowImageGenerateOnce(
         );
       }
 
+      currentStage = "storage";
       attempt = await dependencies.repositories.transitionFlowImageAttempt({
         attemptId: attempt.attemptId,
         expected: "verified",
@@ -492,6 +547,7 @@ export function createFlowImageGenerateOnce(
         baseline,
       });
 
+      currentStage = "observer";
       if (
         !(await currentFlowBinding(port, selected, target, frame)) ||
         !(await port.recheckGenerate(
@@ -507,6 +563,7 @@ export function createFlowImageGenerateOnce(
           "The final preflight changed after intent persistence. No Generate input was sent.",
         );
       }
+      currentStage = "preflight";
       const finalPosition = await port.buttonPosition(target.id, buttonId);
       if (!finalPosition) {
         return failBefore(
@@ -515,8 +572,10 @@ export function createFlowImageGenerateOnce(
         );
       }
 
+      currentStage = "dispatch";
       activationStarted = true;
       const activation = await port.activate(target.id, finalPosition);
+      activationObserved = true;
       pressAttempted = activation.pressAttempted;
       releaseAttempted = activation.releaseAttempted;
       if (!activation.complete) {
@@ -527,6 +586,28 @@ export function createFlowImageGenerateOnce(
           "Generate input may have partially completed. The attempt is preserved as uncertain and will not be replayed.",
         );
       }
+      currentStage = "observer";
+      let postDispatchBinding: boolean;
+      try {
+        postDispatchBinding = await currentFlowBinding(
+          port,
+          selected,
+          target,
+          frame,
+        );
+      } catch {
+        postDispatchBinding = false;
+      }
+      if (!postDispatchBinding) {
+        await markUncertain("post_dispatch_observation_unavailable");
+        return response(
+          "uncertain",
+          "post_dispatch_observation_unavailable",
+          "The activation pair was sent, but the selected document could not be re-observed. Provider outcome is unknown; do not replay this attempt.",
+          "observer",
+        );
+      }
+      currentStage = "storage";
       try {
         attempt = await dependencies.repositories.transitionFlowImageAttempt({
           attemptId: attempt.attemptId,
@@ -554,6 +635,10 @@ export function createFlowImageGenerateOnce(
       );
     } catch (error) {
       if (activationStarted) {
+        currentStage =
+          error instanceof FlowImageAttemptTransitionError
+            ? "storage"
+            : currentStage;
         await markUncertain("activation_result_unknown");
         return response(
           "uncertain",
@@ -564,8 +649,17 @@ export function createFlowImageGenerateOnce(
       return failBefore(
         error instanceof FlowImageAttemptTransitionError
           ? "attempt_transition_failed"
-          : "pre_dispatch_failed",
-        "A pre-dispatch check or storage operation failed. Generate was not activated.",
+          : `${currentStage}_failed`,
+        currentStage === "preparation"
+          ? "Prompt preparation failed before dispatch. Generate was not activated."
+          : currentStage === "preflight"
+            ? "A selected-project or Generate preflight check failed. Generate was not activated."
+            : currentStage === "observer"
+              ? "A Flow observation could not be verified. Generate was not activated."
+              : "Attempt storage failed before dispatch. Generate was not activated.",
+        error instanceof FlowImageAttemptTransitionError
+          ? "storage"
+          : currentStage,
       );
     } finally {
       if (attached) {
@@ -616,10 +710,13 @@ async function currentFlowTarget(
 
 function discoveryFailure(
   discovery: FlowGenerateDiscovery,
-): { code: string; message: string } | undefined {
+):
+  | { code: string; message: string; failureStage: FlowImageAttemptStage }
+  | undefined {
   if (discovery.composer !== "identified") {
     return {
       code: `composer_${discovery.composer}`,
+      failureStage: "preflight",
       message:
         "A unique supported image composer was not verified. Generate was not activated.",
     };
@@ -627,6 +724,7 @@ function discoveryFailure(
   if (!discovery.exactPrompt) {
     return {
       code: "prompt_readback_mismatch",
+      failureStage: "preflight",
       message:
         "The prompt no longer matches the exact saved source. Generate was not activated.",
     };
@@ -634,6 +732,7 @@ function discoveryFailure(
   if (discovery.generate !== "identified") {
     return {
       code: `generate_${discovery.generate}`,
+      failureStage: "preflight",
       message:
         "A unique enabled Generate control was not verified in the image composer.",
     };
@@ -641,6 +740,7 @@ function discoveryFailure(
   if (discovery.observation !== "ready" || !discovery.baseline) {
     return {
       code: `observation_${discovery.observation}`,
+      failureStage: "observer",
       message:
         "Pre-dispatch results observation is unavailable or ambiguous. Generate was not activated.",
     };
@@ -648,6 +748,7 @@ function discoveryFailure(
   if (!discovery.buttonObjectId) {
     return {
       code: "generate_binding_missing",
+      failureStage: "preflight",
       message:
         "The verified Generate control could not be bound. Generate was not activated.",
     };
