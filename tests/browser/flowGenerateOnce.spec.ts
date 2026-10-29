@@ -40,9 +40,12 @@ const settingsConfirmation: FlowSettingsConfirmation = {
   canonicalTarget: selectedTab.canonicalTarget,
 };
 
-async function installImageComposer(page: Page) {
+async function installImageComposer(
+  page: Page,
+  actionName = "Start generation",
+) {
   await page.setContent(await readFile(observedFixturePath, "utf8"));
-  await page.evaluate(() => {
+  await page.evaluate((actionName) => {
     const results = document.createElement("main");
     results.innerHTML =
       '<section role="region" aria-label="Generated results"><img alt="Existing local fixture result" /></section>';
@@ -50,12 +53,62 @@ async function installImageComposer(page: Page) {
     const submit = document.querySelector(
       "flow-base-prompt-box button:last-of-type",
     );
-    submit?.setAttribute("aria-label", "Generate");
+    submit?.setAttribute("aria-label", actionName);
+  }, actionName);
+  await page.addStyleTag({
+    content:
+      "body{font:16px sans-serif}main,section{display:block;min-height:40px}img{width:20px;height:20px}flow-base-prompt-box,flow-rich-text-editor{display:block}[contenteditable]{display:block;min-height:80px;white-space:pre-wrap}button,input[type=submit]{display:block}",
+  });
+}
+
+async function installObservedEmptyWorkspace(page: Page) {
+  await page.setContent(await readFile(observedFixturePath, "utf8"));
+  await page.evaluate(() => {
+    const composer = document.querySelector("flow-base-prompt-box");
+    if (!composer) throw new Error("fixture_composer_missing");
+    const workspace = document.createElement("flow-project-page");
+    const marker = document.createElement("div");
+    marker.id = "empty-marker";
+    const icon = document.createElement("mat-icon");
+    icon.textContent = "add";
+    const phrase = document.createElement("span");
+    phrase.textContent = "Start creating or drop media";
+    marker.append(icon, phrase);
+    workspace.append(marker, composer);
+    document.body.replaceChildren(workspace);
+    const hiddenImage = document.createElement("img");
+    hiddenImage.style.display = "none";
+    const hiddenVideo = document.createElement("video");
+    hiddenVideo.style.display = "none";
+    workspace.append(hiddenImage, hiddenVideo);
   });
   await page.addStyleTag({
     content:
-      "body{font:16px sans-serif}main,section{display:block;min-height:40px}img{width:20px;height:20px}flow-base-prompt-box,flow-rich-text-editor{display:block}[contenteditable]{display:block;min-height:80px;white-space:pre-wrap}button{display:block}",
+      "body{font:16px sans-serif}flow-project-page,flow-base-prompt-box,flow-rich-text-editor,mat-icon,section{display:block;min-height:40px}[contenteditable]{display:block;min-height:80px;white-space:pre-wrap}button,input[type=submit]{display:block}",
   });
+}
+
+function sameBaseline(
+  first: NonNullable<FlowGenerateDiscovery["baseline"]>,
+  second: NonNullable<FlowGenerateDiscovery["baseline"]>,
+) {
+  if ("kind" in first || "kind" in second) {
+    return (
+      "kind" in first &&
+      "kind" in second &&
+      first.kind === second.kind &&
+      first.workspaceTag === second.workspaceTag &&
+      first.markerPhrase === second.markerPhrase &&
+      first.markerCount === second.markerCount &&
+      first.visibleMediaCount === second.visibleMediaCount &&
+      first.visibleResultCardCount === second.visibleResultCardCount &&
+      first.loadingMarkerCount === second.loadingMarkerCount
+    );
+  }
+  return (
+    first.regionLabel === second.regionLabel &&
+    first.mediaCount === second.mediaCount
+  );
 }
 
 async function inspectLocalComposer(page: Page, expected: string) {
@@ -65,17 +118,29 @@ async function inspectLocalComposer(page: Page, expected: string) {
   ) as Promise<FlowGenerateDiscovery>;
 }
 
+async function fillFixturePrompt(page: Page) {
+  const editor = page.locator(
+    'flow-base-prompt-box [contenteditable="true"][role="textbox"]',
+  );
+  await editor.focus();
+  await page.keyboard.insertText(source);
+}
+
 async function inspectSemanticGenerateButton(page: Page) {
   const expression = flowImageRuntimeExpression(source, "button");
-  return page.evaluate((runtime) => {
-    const button = (0, eval)(runtime) as HTMLElement | null;
+  return page.evaluate(async (runtime) => {
+    const button = (await (0, eval)(runtime)) as HTMLElement | null;
     return button?.getAttribute("aria-label") ?? null;
   }, expression);
 }
 
 async function createLocalAttempt(
   page: Page,
-  options: { failRelease?: boolean } = {},
+  options: {
+    failRelease?: boolean;
+    emptyWorkspace?: boolean;
+    mutateDuringRecheck?: "remove" | "change";
+  } = {},
 ) {
   Object.defineProperty(globalThis, "__AUTOMAT_BUILD_ID__", {
     value: "local-p04-2-fixture",
@@ -83,7 +148,8 @@ async function createLocalAttempt(
   });
   const { createFlowImageGenerateOnce } =
     await import("../../src/background/handlers/flow");
-  await installImageComposer(page);
+  if (options.emptyWorkspace) await installObservedEmptyWorkspace(page);
+  else await installImageComposer(page);
   const repositories = new ExtensionRepositories(
     createMemoryRepositoryDatabase(),
     () => 1_100,
@@ -100,6 +166,7 @@ async function createLocalAttempt(
   });
 
   const mouseEvents: string[] = [];
+  let mutationInjected = false;
   const commandPort: Pick<
     FlowPromptEntryPort,
     "sendCommand" | "attach" | "detach" | "now"
@@ -149,7 +216,32 @@ async function createLocalAttempt(
       buttonId: string,
       baseline: NonNullable<FlowGenerateDiscovery["baseline"]>,
     ) => {
-      const discovery = await inspectLocalComposer(page, expected);
+      let discovery: FlowGenerateDiscovery;
+      if (options.mutateDuringRecheck && !mutationInjected) {
+        mutationInjected = true;
+        discovery = await page.evaluate(
+          ({ expression, mutation }) => {
+            const pending = (0, eval)(
+              expression,
+            ) as Promise<FlowGenerateDiscovery>;
+            requestAnimationFrame(() => {
+              const marker = document.querySelector("#empty-marker");
+              if (mutation === "remove") marker?.remove();
+              else {
+                const phrase = marker?.querySelector("span");
+                if (phrase) phrase.textContent = "Workspace changed";
+              }
+            });
+            return pending;
+          },
+          {
+            expression: flowImageRuntimeExpression(expected),
+            mutation: options.mutateDuringRecheck,
+          },
+        );
+      } else {
+        discovery = await inspectLocalComposer(page, expected);
+      }
       return (
         expectedFrame.frameId === frame.frameId &&
         expectedFrame.loaderId === frame.loaderId &&
@@ -158,13 +250,13 @@ async function createLocalAttempt(
         discovery.exactPrompt &&
         discovery.generate === "identified" &&
         discovery.observation === "ready" &&
-        discovery.baseline?.regionLabel === baseline.regionLabel &&
-        discovery.baseline?.mediaCount === baseline.mediaCount
+        discovery.baseline !== undefined &&
+        sameBaseline(discovery.baseline, baseline)
       );
     },
     buttonPosition: async (_tabId: number, buttonId: string) => {
       const buttons = page.locator(
-        'flow-base-prompt-box button[aria-label="Generate"]',
+        'flow-base-prompt-box button[aria-label="Start generation"]',
       );
       return buttonId === "local-generate-button" &&
         (await buttons.count()) === 1
@@ -211,8 +303,188 @@ async function createLocalAttempt(
   };
 }
 
-test.describe("P04.2 local browser Flow fixtures only", () => {
-  test("contenteditable composer preserves exact text and uniquely binds Generate", async ({
+test.describe("P04.3 local browser Flow fixtures only", () => {
+  test("observed span and div marker form one stable empty workspace baseline", async ({
+    page,
+  }) => {
+    await installObservedEmptyWorkspace(page);
+    await fillFixturePrompt(page);
+
+    const discovery = await inspectLocalComposer(page, source);
+
+    expect(discovery).toMatchObject({
+      composer: "identified",
+      exactPrompt: true,
+      generate: "identified",
+      observation: "ready",
+      baseline: {
+        kind: "flow_empty_workspace_ui",
+        workspaceTag: "flow-project-page",
+        markerPhrase: "Start creating or drop media",
+        markerCount: 1,
+        visibleMediaCount: 0,
+        visibleResultCardCount: 0,
+        loadingMarkerCount: 0,
+      },
+    });
+    expect(
+      await page.locator("flow-project-page > #empty-marker").count(),
+    ).toBe(1);
+  });
+
+  test("independent empty markers are ambiguous and block activation", async ({
+    page,
+  }) => {
+    const fixture = await createLocalAttempt(page, { emptyWorkspace: true });
+    await page
+      .locator("#empty-marker")
+      .evaluate((marker) => marker.after(marker.cloneNode(true)));
+
+    const result = await fixture.generate(fixture.payload);
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      code: "observation_ambiguous",
+      activationCount: 0,
+    });
+    expect(fixture.mouseEvents).toEqual([]);
+  });
+
+  test("marker owned by a different project page cannot establish baseline", async ({
+    page,
+  }) => {
+    await installObservedEmptyWorkspace(page);
+    await page.evaluate(() => {
+      const marker = document.querySelector("#empty-marker");
+      const otherProject = document.createElement("flow-project-page");
+      otherProject.append(marker!);
+      document.body.append(otherProject);
+    });
+    await fillFixturePrompt(page);
+
+    const discovery = await inspectLocalComposer(page, source);
+    expect(discovery).toMatchObject({
+      observation: "unsupported",
+    });
+    expect(discovery.baseline).toBeUndefined();
+  });
+
+  test("hidden phrase marker is not accepted as an empty baseline", async ({
+    page,
+  }) => {
+    await installObservedEmptyWorkspace(page);
+    await page.locator("#empty-marker").evaluate((marker) => {
+      (marker as HTMLElement).style.display = "none";
+    });
+    await fillFixturePrompt(page);
+
+    const discovery = await inspectLocalComposer(page, source);
+    expect(discovery).toMatchObject({
+      observation: "missing",
+    });
+    expect(discovery.baseline).toBeUndefined();
+  });
+
+  test("visible loading state blocks empty baseline", async ({ page }) => {
+    await installObservedEmptyWorkspace(page);
+    await page.evaluate(() => {
+      const loading = document.createElement("div");
+      loading.setAttribute("data-state", "loading");
+      document.querySelector("flow-project-page")?.append(loading);
+    });
+    await fillFixturePrompt(page);
+
+    const discovery = await inspectLocalComposer(page, source);
+    expect(discovery).toMatchObject({
+      observation: "unsupported",
+    });
+    expect(discovery.baseline).toBeUndefined();
+  });
+
+  test("conflicting visible results surface blocks empty baseline", async ({
+    page,
+  }) => {
+    await installObservedEmptyWorkspace(page);
+    await page.evaluate(() => {
+      const results = document.createElement("section");
+      results.setAttribute("role", "region");
+      results.setAttribute("aria-label", "Generated results");
+      document.querySelector("flow-project-page")?.append(results);
+    });
+    await fillFixturePrompt(page);
+
+    const discovery = await inspectLocalComposer(page, source);
+    expect(discovery).toMatchObject({
+      observation: "unsupported",
+    });
+    expect(discovery.baseline).toBeUndefined();
+  });
+
+  test("hidden unowned media do not become generated results", async ({
+    page,
+  }) => {
+    await installObservedEmptyWorkspace(page);
+    await fillFixturePrompt(page);
+
+    expect(await inspectLocalComposer(page, source)).toMatchObject({
+      observation: "ready",
+      baseline: {
+        kind: "flow_empty_workspace_ui",
+        visibleMediaCount: 0,
+        visibleResultCardCount: 0,
+      },
+    });
+  });
+
+  test("positive empty UI baseline is durable and remains duplicate-blocked", async ({
+    page,
+  }) => {
+    const fixture = await createLocalAttempt(page, { emptyWorkspace: true });
+
+    const first = await fixture.generate(fixture.payload);
+    const attempt = (await fixture.repositories.getAllFlowImageAttempts())[0];
+    const repeated = await fixture.generate(fixture.payload);
+
+    expect(first).toMatchObject({ state: "dispatched", activationCount: 1 });
+    expect(first.message).toContain(
+      "Provider acceptance and results are not verified",
+    );
+    expect(attempt?.baseline).toMatchObject({
+      kind: "flow_empty_workspace_ui",
+      workspaceTag: "flow-project-page",
+      markerCount: 1,
+      visibleMediaCount: 0,
+      visibleResultCardCount: 0,
+      loadingMarkerCount: 0,
+    });
+    expect(repeated.code).toBe("attempt_already_active");
+    expect(fixture.mouseEvents).toEqual(["mousePressed", "mouseReleased"]);
+  });
+
+  for (const mutation of ["remove", "change"] as const) {
+    test(`marker ${mutation} during final baseline preflight blocks activation`, async ({
+      page,
+    }) => {
+      const fixture = await createLocalAttempt(page, {
+        emptyWorkspace: true,
+        mutateDuringRecheck: mutation,
+      });
+
+      const result = await fixture.generate(fixture.payload);
+
+      expect(result).toMatchObject({
+        state: "failed-before-dispatch",
+        activationCount: 0,
+      });
+      expect([
+        "final_preflight_changed",
+        "post_intent_preflight_changed",
+      ]).toContain(result.code);
+      expect(fixture.mouseEvents).toEqual([]);
+    });
+  }
+
+  test("observed four-control composer uniquely binds Start generation", async ({
     page,
   }) => {
     await installImageComposer(page);
@@ -230,10 +502,25 @@ test.describe("P04.2 local browser Flow fixtures only", () => {
       observation: "ready",
       baseline: { regionLabel: "Generated results", mediaCount: 1 },
     });
-    expect(await inspectSemanticGenerateButton(page)).toBe("Generate");
+    expect(
+      await page
+        .locator(
+          'flow-base-prompt-box button, flow-base-prompt-box [role="button"]',
+        )
+        .count(),
+    ).toBe(4);
+    expect(
+      await page.locator('flow-base-prompt-box button[type="submit"]').count(),
+    ).toBe(1);
+    expect(
+      await page
+        .locator('flow-base-prompt-box input[type="submit"][role="button"]')
+        .count(),
+    ).toBe(1);
+    expect(await inspectSemanticGenerateButton(page)).toBe("Start generation");
 
     await page
-      .locator('flow-base-prompt-box button[aria-label="Generate"]')
+      .locator('flow-base-prompt-box button[aria-label="Start generation"]')
       .evaluate((button) => button.after(button.cloneNode(true)));
     expect(await inspectLocalComposer(page, source)).toMatchObject({
       composer: "identified",
@@ -241,6 +528,73 @@ test.describe("P04.2 local browser Flow fixtures only", () => {
       generate: "ambiguous",
     });
     expect(await inspectSemanticGenerateButton(page)).toBeNull();
+  });
+
+  test("same Start generation label outside the verified composer is ignored", async ({
+    page,
+  }) => {
+    await installImageComposer(page);
+    await page.evaluate(() => {
+      const outside = document.createElement("button");
+      outside.setAttribute("aria-label", "Start generation");
+      outside.textContent = "Start generation";
+      document.body.append(outside);
+    });
+
+    expect(await inspectLocalComposer(page, source)).toMatchObject({
+      composer: "identified",
+      generate: "identified",
+    });
+    expect(await inspectSemanticGenerateButton(page)).toBe("Start generation");
+  });
+
+  test("hidden and disabled Start generation controls are rejected", async ({
+    page,
+  }) => {
+    for (const state of ["hidden", "disabled"] as const) {
+      await installImageComposer(page);
+      await page
+        .locator('flow-base-prompt-box button[aria-label="Start generation"]')
+        .evaluate((button, controlState) => {
+          if (controlState === "hidden") {
+            (button as HTMLElement).style.display = "none";
+          } else {
+            (button as HTMLButtonElement).disabled = true;
+          }
+        }, state);
+
+      expect(await inspectLocalComposer(page, source)).toMatchObject({
+        composer: "identified",
+        generate: "disabled",
+      });
+      expect(await inspectSemanticGenerateButton(page)).toBeNull();
+    }
+  });
+
+  test("longer misleading action labels do not match", async ({ page }) => {
+    for (const label of ["Start generation now", "Do not Start generation"]) {
+      await installImageComposer(page, label);
+
+      expect(await inspectLocalComposer(page, source)).toMatchObject({
+        composer: "identified",
+        generate: "missing",
+      });
+      expect(await inspectSemanticGenerateButton(page)).toBeNull();
+    }
+  });
+
+  test("existing exact Generate action names remain supported", async ({
+    page,
+  }) => {
+    for (const label of ["Generate", "Generate image", "Create image"]) {
+      await installImageComposer(page, label);
+
+      expect(await inspectLocalComposer(page, source)).toMatchObject({
+        composer: "identified",
+        generate: "identified",
+      });
+      expect(await inspectSemanticGenerateButton(page)).toBe(label);
+    }
   });
 
   test("successful local preflight permits exactly one activation pair", async ({
@@ -279,7 +633,7 @@ test.describe("P04.2 local browser Flow fixtures only", () => {
   }) => {
     const fixture = await createLocalAttempt(page);
     await page
-      .locator('flow-base-prompt-box button[aria-label="Generate"]')
+      .locator('flow-base-prompt-box button[aria-label="Start generation"]')
       .evaluate((button) => button.after(button.cloneNode(true)));
 
     const result = await fixture.generate(fixture.payload);

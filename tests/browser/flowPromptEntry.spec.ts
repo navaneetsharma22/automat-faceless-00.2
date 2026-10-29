@@ -164,7 +164,7 @@ test.describe("Flow composer local DOM fixtures only", () => {
       ).toMatchObject({
         composer: "identified",
         exactPrompt: false,
-        generate: "missing",
+        generate: "identified",
         generationAvailable: false,
       });
     } finally {
@@ -301,7 +301,7 @@ test.describe("Flow composer local DOM fixtures only", () => {
             .localComposerEvents,
       ),
     ).toEqual({ clicks: 0, submits: 0 });
-    // Contenteditable can be preflighted, but this fixture has no Generate or results region.
+    // The composer has a semantic action control, but fill-only never activates it.
     expect(
       await page.evaluate(
         (expression) => (0, eval)(expression),
@@ -310,7 +310,7 @@ test.describe("Flow composer local DOM fixtures only", () => {
     ).toMatchObject({
       composer: "identified",
       exactPrompt: true,
-      generate: "missing",
+      generate: "identified",
       generationAvailable: false,
     });
   });

@@ -210,12 +210,27 @@ export const FlowImageAttemptRecordSchema = z
       .strict(),
     state: z.enum(FLOW_IMAGE_ATTEMPT_STATES),
     baseline: z
-      .object({
-        regionLabel: z.string().min(1).max(80),
-        mediaCount: z.number().int().nonnegative().max(100_000),
-        capturedAt: z.number().finite().nonnegative(),
-      })
-      .strict()
+      .union([
+        z
+          .object({
+            regionLabel: z.string().min(1).max(80),
+            mediaCount: z.number().int().nonnegative().max(100_000),
+            capturedAt: z.number().finite().nonnegative(),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("flow_empty_workspace_ui"),
+            workspaceTag: z.literal("flow-project-page"),
+            markerPhrase: z.literal("Start creating or drop media"),
+            markerCount: z.literal(1),
+            visibleMediaCount: z.literal(0),
+            visibleResultCardCount: z.literal(0),
+            loadingMarkerCount: z.literal(0),
+            capturedAt: z.number().finite().nonnegative(),
+          })
+          .strict(),
+      ])
       .optional(),
     events: z.array(flowImageAttemptEventSchema).min(1).max(24),
     createdAt: z.number().finite().nonnegative(),

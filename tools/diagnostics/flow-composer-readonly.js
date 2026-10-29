@@ -1,4 +1,4 @@
-/* global document, window, getComputedStyle */
+/* global document, window, getComputedStyle, NodeFilter */
 // Paste into DevTools Console on the existing selected Flow tab. Read-only.
 // Emits structure and fixed signal/rejection codes, never editor values or labels.
 (() => {
@@ -209,6 +209,274 @@
       ancestors,
     };
   });
+  const controlLimit = 40;
+  const observedComposers = new Map();
+  editors.slice(0, limit).forEach((editor, index) => {
+    const report = candidates[index];
+    if (!report || !report.runtimeVisible || report.disabledAncestor) return;
+    if (
+      editor.tagName.toLowerCase() !== "div" ||
+      editor.getAttribute("contenteditable") !== "true" ||
+      editor.getAttribute("role") !== "textbox"
+    )
+      return;
+    const richHost = editor.closest("flow-rich-text-editor");
+    const boundary = editor.closest("flow-base-prompt-box");
+    if (
+      !richHost ||
+      !boundary ||
+      richHost.closest("flow-base-prompt-box") !== boundary
+    )
+      return;
+    const ownerSignal = report.nameSignals.some((signal) =>
+      ["prompt", "composer", "create"].includes(signal),
+    );
+    if (
+      !ownerSignal ||
+      report.readOnly ||
+      report.nameSignals.includes("search") ||
+      editor.closest('[role="search"], [role="searchbox"]')
+    )
+      return;
+    const entry = observedComposers.get(boundary) ?? [];
+    entry.push({ editor, candidate: index + 1 });
+    observedComposers.set(boundary, entry);
+  });
+
+  const controlDiagnostics = Array.from(
+    observedComposers,
+    ([boundary, entries]) => {
+      const editorsInBoundary = entries.map((entry) => entry.editor);
+      const controls = Array.from(
+        boundary.querySelectorAll('button, [role="button"]'),
+      );
+      const controlReports = controls
+        .slice(0, controlLimit)
+        .map((control, index) => {
+          const ariaLabel = control.getAttribute("aria-label") ?? "";
+          const directName = ariaLabel.trim();
+          let safeText = "";
+          let textInspectionTruncated = false;
+          if (!editorsInBoundary.some((editor) => control.contains(editor))) {
+            const walker = document.createTreeWalker(
+              control,
+              NodeFilter.SHOW_TEXT,
+            );
+            while (walker.nextNode()) {
+              const nodeText = walker.currentNode.nodeValue ?? "";
+              if (safeText.length + nodeText.length > 512) {
+                textInspectionTruncated = true;
+                break;
+              }
+              safeText += ` ${nodeText}`;
+            }
+          }
+          const resolverName = (directName || safeText.trim()).replace(
+            /\s+/g,
+            " ",
+          );
+          const currentResolverNameMatch =
+            /^(generate|generate image|create image)$/i.test(resolverName);
+          const signalText = [
+            directName,
+            control.getAttribute("title") ?? "",
+            control.getAttribute("data-icon") ?? "",
+            control.getAttribute("data-testid") ?? "",
+            typeof control.className === "string" ? control.className : "",
+            safeText,
+            ...Array.from(
+              control.querySelectorAll("svg, [data-icon]"),
+              (icon) =>
+                [
+                  icon.getAttribute("aria-label") ?? "",
+                  icon.getAttribute("title") ?? "",
+                  icon.getAttribute("data-icon") ?? "",
+                  typeof icon.className === "string" ? icon.className : "",
+                ].join(" "),
+            ),
+          ].join(" ");
+          const iconSignals = [
+            [
+              "arrow",
+              /arrow|chevron|north_east|keyboard_return|trending_flat/i,
+            ],
+            ["send", /send|submit|forward/i],
+            ["wand_or_sparkle", /wand|auto_awesome|magic|sparkle/i],
+            ["add_or_plus", /(?:^|[\s_-])add(?:$|[\s_-])|plus/i],
+            ["image", /image|photo|picture/i],
+          ]
+            .filter(([, pattern]) => pattern.test(signalText))
+            .map(([signal]) => signal);
+          const role = control.getAttribute("role");
+          const type =
+            control.tagName.toLowerCase() === "button" ||
+            control.tagName.toLowerCase() === "input"
+              ? (control.type?.toLowerCase() ?? null)
+              : null;
+          const nativeDisabled = control.matches(":disabled, [disabled]");
+          const ariaDisabled = control.getAttribute("aria-disabled") === "true";
+          const disabledAncestor = Boolean(
+            control.parentElement?.closest(
+              "[disabled], [aria-disabled='true']",
+            ),
+          );
+          const hiddenAncestor = Boolean(
+            control.closest("[hidden], [inert], [aria-hidden='true']"),
+          );
+          const style = getComputedStyle(control);
+          const cssHidden =
+            style.display === "none" ||
+            ["hidden", "collapse"].includes(style.visibility);
+          const hasClientRects = control.getClientRects().length > 0;
+          const rect = control.getBoundingClientRect();
+          const zeroArea = rect.width <= 0 || rect.height <= 0;
+          const visible =
+            control.isConnected &&
+            !nativeDisabled &&
+            !ariaDisabled &&
+            !disabledAncestor &&
+            !hiddenAncestor &&
+            !cssHidden &&
+            style.visibility === "visible" &&
+            hasClientRects;
+          const sameBoundary =
+            control.closest("flow-base-prompt-box") === boundary;
+          const containsEditor = editorsInBoundary.some((editor) =>
+            control.contains(editor),
+          );
+          const insideEditor = editorsInBoundary.some((editor) =>
+            editor.contains(control),
+          );
+          let boundaryDistance = null;
+          for (
+            let ancestor = control;
+            ancestor;
+            ancestor = ancestor.parentElement
+          ) {
+            if (ancestor === boundary) {
+              boundaryDistance = 0;
+              break;
+            }
+            if (ancestor.parentElement === boundary) {
+              boundaryDistance = 1;
+              break;
+            }
+          }
+          const commonAncestor = (() => {
+            const ancestors = new Set();
+            for (let node = control; node; node = node.parentElement)
+              ancestors.add(node);
+            for (
+              let node = editorsInBoundary[0];
+              node;
+              node = node.parentElement
+            ) {
+              if (ancestors.has(node)) return node;
+            }
+            return null;
+          })();
+          const rejectionReasons = [
+            !sameBoundary && "not_in_same_composer_boundary",
+            containsEditor && "control_contains_editor",
+            insideEditor && "control_is_inside_editor",
+            !currentResolverNameMatch &&
+              "accessible_name_not_in_current_allowlist",
+            !currentResolverNameMatch &&
+              iconSignals.length > 0 &&
+              "icon_signal_does_not_establish_generate_name",
+            nativeDisabled && "disabled",
+            ariaDisabled && "aria_disabled",
+            disabledAncestor && "disabled_ancestor",
+            hiddenAncestor && "hidden_ancestor",
+            cssHidden && "css_hidden",
+            !hasClientRects && "no_client_rects",
+            zeroArea && "zero_area",
+            textInspectionTruncated && "control_text_inspection_truncated",
+          ].filter(Boolean);
+          return {
+            candidate: index + 1,
+            tag: control.tagName.toLowerCase(),
+            role: role ?? "absent",
+            type: ["button", "submit", "reset", "image", "menu"].includes(type)
+              ? type
+              : type === null
+                ? null
+                : "other",
+            signals: {
+              generate: /\bgenerate\b/i.test(signalText),
+              create: /\bcreate\b/i.test(signalText),
+              image: /\bimage\b/i.test(signalText),
+              recognizedIcons: iconSignals,
+              svgDescendant: Boolean(control.querySelector("svg")),
+              ariaLabelPresent: control.hasAttribute("aria-label"),
+              titlePresent: control.hasAttribute("title"),
+              testIdPresent: control.hasAttribute("data-testid"),
+            },
+            currentResolverNameMatch,
+            nativeDisabled,
+            ariaDisabled,
+            disabledAncestor,
+            hiddenAncestor,
+            cssHidden,
+            isConnected: control.isConnected,
+            hasClientRects,
+            zeroArea,
+            runtimeVisibleAndEnabled: visible,
+            relationship: {
+              withinComposerBoundary: boundary.contains(control),
+              sameComposerBoundary: sameBoundary,
+              boundaryDistance,
+              containsEditor,
+              insideEditor,
+              commonAncestorTag: commonAncestor?.tagName.toLowerCase() ?? null,
+            },
+            eligibleUnderCurrentResolver: currentResolverNameMatch && visible,
+            rejectionReasons,
+          };
+        });
+      const exactNameCount = controlReports.filter(
+        (control) => control.currentResolverNameMatch,
+      ).length;
+      const enabledExactNameCount = controlReports.filter(
+        (control) =>
+          control.currentResolverNameMatch && control.runtimeVisibleAndEnabled,
+      ).length;
+      const state =
+        controls.length > controlLimit
+          ? "truncated_unresolved"
+          : entries.length !== 1
+            ? "ambiguous_editors_in_composer"
+            : exactNameCount > 1
+              ? "ambiguous"
+              : exactNameCount === 0
+                ? "missing"
+                : enabledExactNameCount === 0
+                  ? "disabled_or_hidden"
+                  : "identified";
+      if (exactNameCount > 1) {
+        for (const report of controlReports) {
+          if (report.currentResolverNameMatch)
+            report.rejectionReasons.push("multiple_exact_name_candidates");
+        }
+      }
+      return {
+        associationProfile: "flow-base-prompt-box_with_flow-rich-text-editor",
+        editorCandidates: entries.map((entry) => entry.candidate),
+        editorCount: entries.length,
+        boundaryTag: "flow-base-prompt-box",
+        boundaryContainsEditor: editorsInBoundary.every((editor) =>
+          boundary.contains(editor),
+        ),
+        controlCandidateCount: controls.length,
+        reportedControlCount: controlReports.length,
+        controlsTruncated: controls.length > controlLimit,
+        exactCurrentResolverNameCount: exactNameCount,
+        enabledExactCurrentResolverNameCount: enabledExactNameCount,
+        currentResolverResult: state,
+        controls: controlReports,
+      };
+    },
+  );
   return JSON.stringify(
     {
       diagnostic: "flow-composer-readonly-v1",
@@ -226,6 +494,17 @@
         (element) => element.shadowRoot,
       ).length,
       candidates,
+      composerControls: {
+        diagnostic: "flow-composer-controls-readonly-v1",
+        verifiedComposerCount: controlDiagnostics.length,
+        composers: controlDiagnostics,
+        status:
+          controlDiagnostics.length === 0
+            ? "no_verified_composer_boundary"
+            : controlDiagnostics.length > 1
+              ? "ambiguous_composer_boundaries"
+              : "controls_scoped_to_verified_composer",
+      },
     },
     null,
     2,

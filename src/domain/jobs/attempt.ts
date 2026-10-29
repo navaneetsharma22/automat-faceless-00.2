@@ -16,6 +16,23 @@ export type FlowImageAttemptEvent = {
   code?: string;
 };
 
+export type FlowImageAttemptBaseline =
+  | {
+      regionLabel: string;
+      mediaCount: number;
+      capturedAt: number;
+    }
+  | {
+      kind: "flow_empty_workspace_ui";
+      workspaceTag: "flow-project-page";
+      markerPhrase: "Start creating or drop media";
+      markerCount: 1;
+      visibleMediaCount: 0;
+      visibleResultCardCount: 0;
+      loadingMarkerCount: 0;
+      capturedAt: number;
+    };
+
 export type FlowImageAttemptRecord = {
   attemptId: string;
   activeKey?: string;
@@ -44,11 +61,7 @@ export type FlowImageAttemptRecord = {
     canonicalTarget?: string;
   };
   state: FlowImageAttemptState;
-  baseline?: {
-    regionLabel: string;
-    mediaCount: number;
-    capturedAt: number;
-  };
+  baseline?: FlowImageAttemptBaseline;
   events: FlowImageAttemptEvent[];
   createdAt: number;
   updatedAt: number;
