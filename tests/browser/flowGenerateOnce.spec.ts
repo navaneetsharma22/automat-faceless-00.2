@@ -30,6 +30,8 @@ const selectedTab: ProviderTab = {
 const frame = {
   frameId: "local-frame-1",
   loaderId: "local-loader-1",
+  documentId: "local-document-1",
+  senderFrameId: 0,
   url: selectedTab.url,
 };
 const settingsConfirmation: FlowSettingsConfirmation = {
@@ -38,6 +40,7 @@ const settingsConfirmation: FlowSettingsConfirmation = {
   tabId: selectedTab.id,
   projectId: selectedTab.projectId,
   canonicalTarget: selectedTab.canonicalTarget,
+  declaredVariantCount: 2,
 };
 
 async function installImageComposer(

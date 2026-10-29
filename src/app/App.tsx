@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "./components/Button";
 import { ConnectionStatus } from "./components/ConnectionStatus";
+import { Field } from "./components/Field";
 import { Navigation, type Workspace } from "./components/Navigation";
 import { Notice } from "./components/Notice";
 import { ProgressPanel } from "./components/ProgressPanel";
@@ -70,6 +71,7 @@ function Dashboard() {
     useState<DownloadPreviewState>("empty");
   const [imageSettingsConfirmation, setImageSettingsConfirmation] =
     useState<FlowSettingsConfirmation | null>(null);
+  const [imageVariantCount, setImageVariantCount] = useState("");
   const [imageConfirmationPending, setImageConfirmationPending] =
     useState(false);
   const [imageConfirmationError, setImageConfirmationError] = useState<
@@ -82,10 +84,25 @@ function Dashboard() {
   ]);
   const toast = useToast();
 
-  const updateImageSettingsConfirmation = async (checked: boolean) => {
+  const updateImageSettingsConfirmation = async (
+    checked: boolean,
+    declaredVariantCount: string,
+  ) => {
     if (!checked) {
       setImageSettingsConfirmation(null);
       setImageConfirmationError(undefined);
+      return;
+    }
+    const parsedVariantCount = Number(declaredVariantCount);
+    if (
+      !Number.isInteger(parsedVariantCount) ||
+      parsedVariantCount < 1 ||
+      parsedVariantCount > 100
+    ) {
+      setImageSettingsConfirmation(null);
+      setImageConfirmationError(
+        "Enter the variant count you manually selected in Flow (1–100).",
+      );
       return;
     }
     setImageConfirmationPending(true);
@@ -117,6 +134,7 @@ function Dashboard() {
         tabId: target.id,
         projectId: target.projectId,
         canonicalTarget: target.canonicalTarget,
+        declaredVariantCount: parsedVariantCount,
       });
     } catch (error) {
       setImageSettingsConfirmation(null);
@@ -230,6 +248,12 @@ function Dashboard() {
               settingsConfirmation={imageSettingsConfirmation}
               confirmationPending={imageConfirmationPending}
               confirmationError={imageConfirmationError}
+              declaredVariantCount={imageVariantCount}
+              setDeclaredVariantCount={(value) => {
+                setImageVariantCount(value);
+                setImageSettingsConfirmation(null);
+                setImageConfirmationError(undefined);
+              }}
               setSettingsConfirmation={updateImageSettingsConfirmation}
             />
           </div>
@@ -302,6 +326,8 @@ function ImagesView({
   settingsConfirmation,
   confirmationPending,
   confirmationError,
+  declaredVariantCount,
+  setDeclaredVariantCount,
   setSettingsConfirmation,
 }: {
   session: ImportPreviewSession;
@@ -309,7 +335,12 @@ function ImagesView({
   settingsConfirmation: FlowSettingsConfirmation | null;
   confirmationPending: boolean;
   confirmationError?: string;
-  setSettingsConfirmation: (value: boolean) => void;
+  declaredVariantCount: string;
+  setDeclaredVariantCount: (value: string) => void;
+  setSettingsConfirmation: (
+    value: boolean,
+    declaredVariantCount: string,
+  ) => void;
 }) {
   const [wrapLines, setWrapLines] = useState(false);
   const [editorExpanded, setEditorExpanded] = useState(false);
@@ -339,12 +370,34 @@ function ImagesView({
         <SettingsConfirmation
           id="image-settings-confirm"
           provider="Flow"
-          contextLabel="current image prompt"
           checked={settingsConfirmation !== null}
-          onChange={(checked) => void setSettingsConfirmation(checked)}
+          contextLabel={`${declaredVariantCount || "variant count required"} variants`}
+          onChange={(checked) =>
+            void setSettingsConfirmation(checked, declaredVariantCount)
+          }
           disabled={confirmationPending}
           error={confirmationError}
         />
+        <Field
+          id="image-variant-count"
+          label="Flow variants selected"
+          hint="Enter the count you selected manually in Flow. This records your declaration; Automat Faceless does not inspect or change Flow settings."
+          required
+        >
+          <input
+            id="image-variant-count"
+            type="number"
+            min={1}
+            max={100}
+            step={1}
+            inputMode="numeric"
+            value={declaredVariantCount}
+            onChange={(event) =>
+              setDeclaredVariantCount(event.currentTarget.value)
+            }
+            aria-label="Number of Flow image variants manually selected"
+          />
+        </Field>
         <div className={styles.actionRow}>
           <Button disabled aria-describedby="image-disabled-reason">
             Start image batch

@@ -36,6 +36,8 @@ const selectedTab: ProviderTab = {
 const frame = {
   frameId: "top-frame-1",
   loaderId: "loader-1",
+  documentId: "document-1",
+  senderFrameId: 0,
   url: selectedTab.url,
 };
 const settingsConfirmation: FlowSettingsConfirmation = {
@@ -44,6 +46,7 @@ const settingsConfirmation: FlowSettingsConfirmation = {
   tabId: selectedTab.id,
   projectId: selectedTab.projectId,
   canonicalTarget: selectedTab.canonicalTarget,
+  declaredVariantCount: 2,
 };
 
 function discovery(
@@ -292,7 +295,11 @@ describe("P04 durable Flow image Generate attempt", () => {
           observedMediaCount: 2,
         },
         completeness: "incomplete",
-        variantDeclaration: { status: "absent" },
+        variantDeclaration: {
+          status: "declared",
+          count: 2,
+          source: "validated_settings_confirmation",
+        },
         existingResultIdentities: [],
       },
     });
@@ -339,7 +346,11 @@ describe("P04 durable Flow image Generate attempt", () => {
         frameId: frame.frameId,
         loaderId: frame.loaderId,
       },
-      variantDeclaration: { status: "absent" },
+      variantDeclaration: {
+        status: "declared",
+        count: 2,
+        source: "validated_settings_confirmation",
+      },
     });
   });
 

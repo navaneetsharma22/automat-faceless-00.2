@@ -1,8 +1,10 @@
 import { createConnectionMessageListener } from "./handlers/connections";
 import {
+  createChromeFlowImageGenerateOncePort,
   createFlowImageGenerateOnceForWorker,
   createSavedFlowPromptEntry,
 } from "./handlers/flow";
+import { createFlowImageObservationHandler } from "./handlers/observations";
 import { registerDashboardAction } from "./openDashboard";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import { FOUNDATION_WORKER_RESTARTED } from "../shared/messages";
@@ -16,14 +18,24 @@ const preferences = new ChromePreferenceRepository({
   get: (key) => chrome.storage.local.get(key),
   set: (items) => chrome.storage.local.set(items),
 });
+const flowPromptEntry = createSavedFlowPromptEntry(repositories);
+const flowPort = createChromeFlowImageGenerateOncePort(repositories);
+const flowImageGenerateOnce = createFlowImageGenerateOnceForWorker(
+  repositories,
+  flowPort,
+);
+const flowImageObservation = createFlowImageObservationHandler({
+  extensionId: chrome.runtime.id,
+  repositories,
+  port: flowPort,
+});
 const workerReady = Promise.all([
   repositories.markTargetsUnverified(),
   repositories.reconcileInterruptedFlowImageAttempts(),
-]).then(() => undefined);
+])
+  .then(() => flowImageObservation.resumeReadOnlyAfterWorkerRestart())
+  .then(() => undefined);
 void workerReady.catch(() => undefined);
-const flowPromptEntry = createSavedFlowPromptEntry(repositories);
-const flowImageGenerateOnce =
-  createFlowImageGenerateOnceForWorker(repositories);
 
 // Register extension listeners synchronously during worker evaluation.
 chrome.runtime.onMessage.addListener(
@@ -33,6 +45,7 @@ chrome.runtime.onMessage.addListener(
     ready: workerReady,
     flowPromptEntry,
     flowImageGenerateOnce,
+    flowImageObservation: flowImageObservation.handle,
   }),
 );
 registerDashboardAction(chrome);

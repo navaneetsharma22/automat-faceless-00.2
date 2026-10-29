@@ -43,6 +43,7 @@ type FlowSettingsConfirmation = {
   tabId: number;
   projectId: string;
   canonicalTarget: string;
+  declaredVariantCount: number;
 };
 
 export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
@@ -77,10 +78,47 @@ export function createChromeFlowImageGenerateOncePort(
   repositories: ExtensionRepositories,
 ): FlowImageGenerateOncePort {
   const base = createChromeFlowPromptEntryPort(repositories);
+  const bindBrowserDocument = async (
+    tabId: number,
+    frame: FlowDocumentBinding | undefined,
+  ): Promise<FlowDocumentBinding | undefined> => {
+    if (!frame || typeof chrome === "undefined" || !chrome.scripting) {
+      return undefined;
+    }
+    const injections = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      func: () => location.href,
+    });
+    const document = injections[0];
+    if (
+      !document?.documentId ||
+      document.frameId !== 0 ||
+      typeof document.result !== "string" ||
+      flowTabFromUrl(tabId, "", document.result)?.canonicalTarget !==
+        flowTabFromUrl(tabId, "", frame.url)?.canonicalTarget
+    ) {
+      return undefined;
+    }
+    return {
+      ...frame,
+      documentId: document.documentId,
+      senderFrameId: document.frameId,
+    };
+  };
+  const captureBoundFrame = async (tabId: number) => {
+    const bound = await bindBrowserDocument(
+      tabId,
+      await captureFlowDocumentBinding(base, tabId),
+    );
+    if (!bound) throw new Error("flow_document_identity_unavailable");
+    return bound;
+  };
+  const readBoundFrame = async (tabId: number) =>
+    bindBrowserDocument(tabId, await readFlowDocumentBinding(base, tabId));
   return {
     ...base,
-    captureFrame: (tabId) => captureFlowDocumentBinding(base, tabId),
-    readFrame: (tabId) => readFlowDocumentBinding(base, tabId),
+    captureFrame: captureBoundFrame,
+    readFrame: readBoundFrame,
     inspectGenerate: (tabId, prompt) =>
       inspectFlowImageGenerate(base, tabId, prompt),
     recheckGenerate: (tabId, prompt, frame, button, baseline) =>
@@ -114,6 +152,9 @@ type FlowImageGenerateOnceDependencies = {
   }>;
   now?: () => number;
   createAttemptId?: () => string;
+  createObservationSessionId?: () => string;
+  /** Synthetic-only switch for offline lifecycle fixtures. Worker default stays unsupported. */
+  observationProfileSupported?: boolean;
 };
 
 type FlowImageGenerateOnceResult = {
@@ -135,6 +176,8 @@ export function createFlowImageGenerateOnce(
   return async (input) => {
     const now = dependencies.now ?? Date.now;
     const makeId = dependencies.createAttemptId ?? (() => crypto.randomUUID());
+    const makeObservationSessionId =
+      dependencies.createObservationSessionId ?? (() => crypto.randomUUID());
     const port = dependencies.port;
     let attempt: FlowImageAttemptRecord | undefined;
     let attached = false;
@@ -230,6 +273,20 @@ export function createFlowImageGenerateOnce(
             method: "CDP Input.dispatchMouseEvent",
             code,
           },
+          resultOutcome: {
+            status: "unknown",
+            reason: "observation_lost",
+            declaredVariantCount:
+              attempt.settingsConfirmation.declaredVariantCount,
+            observedSucceededCount:
+              attempt.resultOutcome?.observedSucceededCount ?? 0,
+            observedFailedCount:
+              attempt.resultOutcome?.observedFailedCount ?? 0,
+            updatedAt: now(),
+          },
+          observationSession: attempt.observationSession
+            ? { ...attempt.observationSession, status: "lost" }
+            : undefined,
         });
       } catch {
         // The durable dispatch-intent remains active and restart reconciliation
@@ -238,6 +295,17 @@ export function createFlowImageGenerateOnce(
     };
 
     try {
+      if (
+        !Number.isInteger(input.settingsConfirmation.declaredVariantCount) ||
+        input.settingsConfirmation.declaredVariantCount < 1 ||
+        input.settingsConfirmation.declaredVariantCount > 100
+      ) {
+        return response(
+          "blocked",
+          "variant_declaration_missing",
+          "Enter and confirm the variant count you manually selected in Flow before generating.",
+        );
+      }
       currentStage = "preflight";
       if (!port.hasRequiredApis() || !(await port.hasDebuggerPermission())) {
         return response(
@@ -322,6 +390,14 @@ export function createFlowImageGenerateOnce(
         );
       }
       const frame = await port.captureFrame(target.id);
+      if (!frame.documentId || frame.senderFrameId !== 0) {
+        return response(
+          "blocked",
+          "browser_document_identity_unavailable",
+          "The selected Flow document identity could not be verified. Generate was not activated.",
+          "observer",
+        );
+      }
       const frameTarget = flowTabFromUrl(target.id, "", frame.url);
       if (
         !frameTarget ||
@@ -370,6 +446,8 @@ export function createFlowImageGenerateOnce(
           tabId: target.id,
           frameId: frame.frameId,
           loaderId: frame.loaderId,
+          documentId: frame.documentId,
+          senderFrameId: frame.senderFrameId,
           buildId: BUILD_ID,
           protocolVersion: PROTOCOL_VERSION,
           settingsConfirmation: {
@@ -379,6 +457,8 @@ export function createFlowImageGenerateOnce(
             tabId: input.settingsConfirmation.tabId,
             projectId: input.settingsConfirmation.projectId,
             canonicalTarget: input.settingsConfirmation.canonicalTarget,
+            declaredVariantCount:
+              input.settingsConfirmation.declaredVariantCount,
           },
           state: "preparing",
           activeKey: flowImageAttemptActiveKey(item.id, item.contentHash),
@@ -522,7 +602,42 @@ export function createFlowImageGenerateOnce(
           buildId: attempt.buildId,
           protocolVersion: attempt.protocolVersion,
         },
+        input.settingsConfirmation.declaredVariantCount,
       );
+      const observationSession = {
+        sessionId: makeObservationSessionId(),
+        documentId: frame.documentId,
+        senderFrameId: frame.senderFrameId,
+        startedAt: now(),
+        deadlineAt: now() + 5 * 60_000,
+        maxEvents: 64,
+        profileSupport: dependencies.observationProfileSupported
+          ? ("fixture_supported" as const)
+          : ("unsupported" as const),
+        status: dependencies.observationProfileSupported
+          ? ("active" as const)
+          : ("unsupported" as const),
+        lastSequence: 0,
+        reconciliationCount: 0,
+      };
+      const resultOutcome = dependencies.observationProfileSupported
+        ? {
+            status: "awaiting_evidence" as const,
+            declaredVariantCount:
+              input.settingsConfirmation.declaredVariantCount,
+            observedSucceededCount: 0,
+            observedFailedCount: 0,
+            updatedAt: now(),
+          }
+        : {
+            status: "unknown" as const,
+            reason: "live_profile_unsupported" as const,
+            declaredVariantCount:
+              input.settingsConfirmation.declaredVariantCount,
+            observedSucceededCount: 0,
+            observedFailedCount: 0,
+            updatedAt: now(),
+          };
       const buttonId = discovery.buttonObjectId!;
       currentStage = "preflight";
       if (!(await currentFlowBinding(port, selected, target, frame))) {
@@ -571,6 +686,8 @@ export function createFlowImageGenerateOnce(
         },
         baseline,
         resultBaseline,
+        observationSession,
+        resultOutcome,
       });
       if (
         !flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt) ||
@@ -724,6 +841,8 @@ async function currentFlowBinding(
   return Boolean(
     liveFrame?.frameId === frame.frameId &&
     liveFrame.loaderId === frame.loaderId &&
+    liveFrame.documentId === frame.documentId &&
+    liveFrame.senderFrameId === frame.senderFrameId &&
     flowTabFromUrl(target.id, "", liveFrame.url)?.canonicalTarget ===
       selected.canonicalTarget,
   );
@@ -917,8 +1036,8 @@ export function createSavedFlowPromptEntry(
 
 export function createFlowImageGenerateOnceForWorker(
   repositories: ExtensionRepositories,
+  port = createChromeFlowImageGenerateOncePort(repositories),
 ): (input: FlowImageGenerateOnceInput) => Promise<FlowImageGenerateOnceResult> {
-  const port = createChromeFlowImageGenerateOncePort(repositories);
   return createFlowImageGenerateOnce({
     repositories,
     port,

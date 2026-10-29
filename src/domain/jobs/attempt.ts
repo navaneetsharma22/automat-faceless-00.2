@@ -1,4 +1,9 @@
-import type { FlowImageResultBaseline } from "./results";
+import type {
+  FlowImageObservationOutcome,
+  FlowImageObservationSession,
+  FlowImageResultBaseline,
+  FlowImageResultLink,
+} from "./results";
 
 export const FLOW_IMAGE_ATTEMPT_STATES = [
   "preparing",
@@ -60,6 +65,8 @@ export type FlowImageAttemptRecord = {
   tabId: number;
   frameId: string;
   loaderId: string;
+  documentId?: string;
+  senderFrameId?: number;
   buildId: string;
   protocolVersion: number;
   settingsConfirmation: {
@@ -69,11 +76,22 @@ export type FlowImageAttemptRecord = {
     tabId: number;
     projectId: string;
     canonicalTarget?: string;
+    /** Absent on historical P04 attempts. */
+    declaredVariantCount?: number;
   };
   state: FlowImageAttemptState;
   baseline?: FlowImageAttemptBaseline;
   /** Optional for compatibility with attempts written before P05.1. */
   resultBaseline?: FlowImageResultBaseline;
+  observationSession?: FlowImageObservationSession;
+  resultLinks?: FlowImageResultLink[];
+  observationReceipts?: Array<{
+    observationId: string;
+    sequence: number;
+    fingerprint: string;
+    receivedAt: number;
+  }>;
+  resultOutcome?: FlowImageObservationOutcome;
   events: FlowImageAttemptEvent[];
   createdAt: number;
   updatedAt: number;

@@ -34,6 +34,7 @@ export function captureFlowResultBaseline(
   profile: FlowImageBaseline,
   binding: FlowResultBaselineBinding,
   provenance: { buildId: string; protocolVersion: number },
+  declaredVariantCount?: number,
 ): FlowImageResultBaseline {
   const emptyProfile = "kind" in profile;
   const baseline: FlowImageResultBaseline = {
@@ -75,7 +76,14 @@ export function captureFlowResultBaseline(
             "result_card_identity_unavailable",
           ],
     },
-    variantDeclaration: { status: "absent" },
+    variantDeclaration:
+      declaredVariantCount === undefined
+        ? { status: "absent" }
+        : {
+            status: "declared",
+            count: declaredVariantCount,
+            source: "validated_settings_confirmation",
+          },
     limitations: emptyProfile
       ? [
           "selected_workspace_scope_only",

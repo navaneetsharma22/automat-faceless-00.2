@@ -41,6 +41,7 @@ export type RequestPayloads = {
       tabId: number;
       projectId: string;
       canonicalTarget: string;
+      declaredVariantCount: number;
     };
   };
   "preferences.getTheme": Record<string, never>;

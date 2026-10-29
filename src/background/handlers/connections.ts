@@ -14,6 +14,9 @@ import { PromptBatchValidationError } from "../../storage/repositories";
 export type ExtensionMessageSender = {
   id?: string;
   url?: string;
+  tab?: { id?: number; url?: string };
+  frameId?: number;
+  documentId?: string;
 };
 
 export type FoundationDependencies = {
@@ -26,6 +29,10 @@ export type FoundationDependencies = {
   }) => Promise<unknown>;
   flowImageGenerateOnce?: (
     input: Extract<AppRequest, { type: "flow.image.generateOnce" }>["payload"],
+  ) => Promise<unknown>;
+  flowImageObservation?: (
+    message: unknown,
+    sender: ExtensionMessageSender,
   ) => Promise<unknown>;
 };
 
@@ -196,6 +203,46 @@ export function createConnectionMessageListener(
     sender: ExtensionMessageSender,
     sendResponse: SendResponse,
   ): true => {
+    if (
+      rawRequest !== null &&
+      typeof rawRequest === "object" &&
+      "type" in rawRequest &&
+      rawRequest.type === "AUTOMAT_FLOW_IMAGE_OBSERVATION"
+    ) {
+      if (!dependencies.flowImageObservation) {
+        sendResponse(
+          failure(
+            "flow-observation",
+            "unauthorized_sender",
+            "flow_observation_unavailable",
+            "Flow result observation is unavailable in this worker context.",
+          ),
+        );
+        return true;
+      }
+      void Promise.resolve(dependencies.ready)
+        .then(() => dependencies.flowImageObservation!(rawRequest, sender))
+        .then((data) => {
+          sendResponse({
+            protocolVersion: PROTOCOL_VERSION,
+            buildId: BUILD_ID,
+            requestId: "flow-observation",
+            ok: true,
+            data,
+          });
+        })
+        .catch(() => {
+          sendResponse(
+            failure(
+              "flow-observation",
+              "storage_failure",
+              "flow_observation_failed",
+              "Flow result observation could not be safely recorded.",
+            ),
+          );
+        });
+      return true;
+    }
     const parsed = parseRequest(rawRequest);
     if (!parsed.ok) {
       sendResponse(

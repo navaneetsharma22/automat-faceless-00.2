@@ -103,13 +103,7 @@ export const FlowImageObservationSessionSchema = z
     deadlineAt: z.number().finite().nonnegative(),
     maxEvents: z.number().int().positive().max(128),
     profileSupport: z.enum(["unsupported", "fixture_supported"]),
-    status: z.enum([
-      "active",
-      "unsupported",
-      "lost",
-      "timed_out",
-      "closed",
-    ]),
+    status: z.enum(["active", "unsupported", "lost", "timed_out", "closed"]),
     lastSequence: z.number().int().nonnegative(),
     reconciliationCount: z.number().int().nonnegative().max(3),
   })
@@ -140,7 +134,9 @@ export const FlowImageResultLinkSchema = z
   .refine((link) =>
     link.status === "processing"
       ? link.terminalEvidence === undefined
-      : link.terminalEvidence !== undefined,
+      : link.status === "succeeded"
+        ? link.terminalEvidence === "provider_success_marker"
+        : link.terminalEvidence === "provider_error_marker",
   );
 export type FlowImageResultLink = z.infer<typeof FlowImageResultLinkSchema>;
 
@@ -215,7 +211,9 @@ export const FlowImageObservationEventSchema = z
           .refine((result) =>
             result.status === "processing"
               ? result.terminalEvidence === undefined
-              : result.terminalEvidence !== undefined,
+              : result.status === "succeeded"
+                ? result.terminalEvidence === "provider_success_marker"
+                : result.terminalEvidence === "provider_error_marker",
           ),
       )
       .min(1)
@@ -506,7 +504,10 @@ export function reduceFlowImageObservation(
       link,
     ]),
   );
-  const eventKeys = new Map<string, FlowImageObservationEvent["results"][number]>();
+  const eventKeys = new Map<
+    string,
+    FlowImageObservationEvent["results"][number]
+  >();
   for (const result of event.results) {
     const key = flowProviderResultIdentityKey(result.identity);
     const previousInEvent = eventKeys.get(key);
@@ -561,9 +562,10 @@ export function reduceFlowImageObservation(
   ) {
     status = "complete";
   } else if (failed > 0) {
-    status = succeeded === 0 && failed === declaredVariantCount
-      ? "failed"
-      : "partial_error";
+    status =
+      succeeded === 0 && failed === declaredVariantCount
+        ? "failed"
+        : "partial_error";
   } else if (nextLinks.some((link) => link.status === "processing")) {
     status = "processing";
   } else {
@@ -597,12 +599,19 @@ export function flowResultBaselineMatchesAttempt(
     loaderId: string;
     buildId: string;
     protocolVersion: number;
+    settingsConfirmation?: { declaredVariantCount?: number };
   },
 ): boolean {
   if (!baseline) return false;
   const parsed = FlowImageResultBaselineSchema.safeParse(baseline);
   if (!parsed.success) return false;
   const binding = parsed.data.binding;
+  const variantDeclarationMatches =
+    attempt.settingsConfirmation?.declaredVariantCount === undefined
+      ? parsed.data.variantDeclaration.status === "absent"
+      : parsed.data.variantDeclaration.status === "declared" &&
+        parsed.data.variantDeclaration.count ===
+          attempt.settingsConfirmation.declaredVariantCount;
   return (
     binding.workspaceId === attempt.workspaceId &&
     binding.batchId === attempt.batchId &&
@@ -616,7 +625,8 @@ export function flowResultBaselineMatchesAttempt(
     binding.frameId === attempt.frameId &&
     binding.loaderId === attempt.loaderId &&
     parsed.data.capture.buildId === attempt.buildId &&
-    parsed.data.capture.protocolVersion === attempt.protocolVersion
+    parsed.data.capture.protocolVersion === attempt.protocolVersion &&
+    variantDeclarationMatches
   );
 }
 

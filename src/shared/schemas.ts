@@ -6,6 +6,11 @@ import {
 } from "../domain/jobs/attempt";
 import {
   FlowImageResultBaselineSchema,
+  FlowImageObservationOutcomeSchema,
+  FlowImageObservationReceiptSchema,
+  FlowImageObservationSessionSchema,
+  FlowImageResultLinkSchema,
+  flowProviderResultIdentityKey,
   flowResultBaselineMatchesAttempt,
 } from "../domain/jobs/results";
 import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnapshot";
@@ -208,6 +213,8 @@ export const FlowImageAttemptRecordSchema = z
     tabId: z.number().int().nonnegative(),
     frameId: z.string().min(1).max(256),
     loaderId: z.string().min(1).max(256),
+    documentId: z.string().min(1).max(256).optional(),
+    senderFrameId: z.number().int().nonnegative().optional(),
     buildId: z.string().min(1).max(128),
     protocolVersion: z.number().int().positive(),
     settingsConfirmation: z
@@ -218,6 +225,7 @@ export const FlowImageAttemptRecordSchema = z
         tabId: z.number().int().nonnegative(),
         projectId: z.string().min(1).max(512),
         canonicalTarget: z.string().min(1).max(2048).optional(),
+        declaredVariantCount: z.number().int().positive().max(100).optional(),
       })
       .strict(),
     state: z.enum(FLOW_IMAGE_ATTEMPT_STATES),
@@ -245,6 +253,13 @@ export const FlowImageAttemptRecordSchema = z
       ])
       .optional(),
     resultBaseline: FlowImageResultBaselineSchema.optional(),
+    observationSession: FlowImageObservationSessionSchema.optional(),
+    resultLinks: z.array(FlowImageResultLinkSchema).max(100).optional(),
+    observationReceipts: z
+      .array(FlowImageObservationReceiptSchema)
+      .max(128)
+      .optional(),
+    resultOutcome: FlowImageObservationOutcomeSchema.optional(),
     events: z.array(flowImageAttemptEventSchema).min(1).max(24),
     createdAt: z.number().finite().nonnegative(),
     updatedAt: z.number().finite().nonnegative(),
@@ -261,6 +276,36 @@ export const FlowImageAttemptRecordSchema = z
       flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt),
     { message: "result_baseline_attempt_binding_mismatch" },
   )
+  .refine(
+    (attempt) =>
+      attempt.observationSession === undefined ||
+      (attempt.documentId === attempt.observationSession.documentId &&
+        attempt.senderFrameId === attempt.observationSession.senderFrameId),
+    { message: "observation_session_document_binding_mismatch" },
+  )
+  .refine((attempt) => {
+    if (!attempt.resultBaseline) return true;
+    const declaration = attempt.resultBaseline.variantDeclaration;
+    const attemptCount = attempt.settingsConfirmation.declaredVariantCount;
+    return declaration.status === "absent"
+      ? attemptCount === undefined
+      : declaration.count === attemptCount;
+  }, "attempt_variant_declaration_mismatch")
+  .refine((attempt) => {
+    const identities = (attempt.resultLinks ?? []).map((link) =>
+      flowProviderResultIdentityKey(link.identity),
+    );
+    return new Set(identities).size === identities.length;
+  }, "duplicate_result_link_identity")
+  .refine((attempt) => {
+    const receipts = attempt.observationReceipts ?? [];
+    return (
+      new Set(receipts.map((receipt) => receipt.observationId)).size ===
+        receipts.length &&
+      new Set(receipts.map((receipt) => receipt.sequence)).size ===
+        receipts.length
+    );
+  }, "duplicate_observation_receipt")
   .refine(
     (attempt) =>
       attempt.activeKey === undefined ||
@@ -283,6 +328,7 @@ export const FlowSettingsConfirmationSchema = z
     tabId: z.number().int().nonnegative(),
     projectId: z.string().min(1).max(512),
     canonicalTarget: z.string().min(1).max(2048),
+    declaredVariantCount: z.number().int().positive().max(100),
   })
   .strict();
 export type FlowSettingsConfirmation = z.infer<

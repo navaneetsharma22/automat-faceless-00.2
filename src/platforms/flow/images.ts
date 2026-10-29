@@ -6,6 +6,9 @@ export type FlowDocumentBinding = {
   frameId: string;
   loaderId: string;
   url: string;
+  /** Browser document identity captured from the same top frame. */
+  documentId?: string;
+  senderFrameId?: number;
 };
 
 type EmptyWorkspaceInspection =

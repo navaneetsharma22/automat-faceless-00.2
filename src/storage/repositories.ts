@@ -29,6 +29,11 @@ import {
   type FlowImageAttemptRecord,
   type FlowImageAttemptState,
 } from "../domain/jobs/attempt";
+import {
+  FlowImageObservationEventSchema,
+  reduceFlowImageObservation,
+  type FlowImageObservationEvent,
+} from "../domain/jobs/results";
 
 export type PromptDraftInput = Pick<
   PromptDraftRecord,
@@ -88,6 +93,15 @@ export class FlowImageAttemptValidationError extends Error {
   constructor() {
     super("The image attempt record failed validation.");
     this.name = "FlowImageAttemptValidationError";
+  }
+}
+
+export class FlowImageObservationRejectedError extends Error {
+  constructor(readonly code: string) {
+    super(
+      "The Flow image observation did not match the active attempt session.",
+    );
+    this.name = "FlowImageObservationRejectedError";
   }
 }
 
@@ -637,8 +651,15 @@ export class ExtensionRepositories {
     event: FlowImageAttemptEvent;
     baseline?: FlowImageAttemptRecord["baseline"];
     resultBaseline?: FlowImageAttemptRecord["resultBaseline"];
+    observationSession?: FlowImageAttemptRecord["observationSession"];
+    resultOutcome?: FlowImageAttemptRecord["resultOutcome"];
   }): Promise<FlowImageAttemptRecord> {
-    if (input.next === "dispatch-intent" && !input.resultBaseline) {
+    if (
+      input.next === "dispatch-intent" &&
+      (!input.resultBaseline ||
+        !input.observationSession ||
+        !input.resultOutcome)
+    ) {
       throw new FlowImageAttemptValidationError();
     }
     return this.tables.transaction(["flowImageAttempts"], async () => {
@@ -660,6 +681,10 @@ export class ExtensionRepositories {
         ...(input.resultBaseline
           ? { resultBaseline: input.resultBaseline }
           : {}),
+        ...(input.observationSession
+          ? { observationSession: input.observationSession }
+          : {}),
+        ...(input.resultOutcome ? { resultOutcome: input.resultOutcome } : {}),
         events: [...current.events, input.event],
         updatedAt: input.event.at,
       };
@@ -679,6 +704,182 @@ export class ExtensionRepositories {
 
   getAllFlowImageAttempts(): Promise<FlowImageAttemptRecord[]> {
     return this.tables.flowImageAttempts.toArray();
+  }
+
+  async recordFlowImageObservation(input: {
+    attemptId: string;
+    event: FlowImageObservationEvent;
+    fingerprint: string;
+    receivedAt: number;
+  }): Promise<{
+    status: "applied" | "duplicate";
+    attempt: FlowImageAttemptRecord;
+  }> {
+    const parsedEvent = FlowImageObservationEventSchema.safeParse(input.event);
+    if (!parsedEvent.success || !/^[0-9a-f]{64}$/.test(input.fingerprint)) {
+      throw new FlowImageObservationRejectedError("invalid_observation");
+    }
+    const receipt: NonNullable<
+      FlowImageAttemptRecord["observationReceipts"]
+    >[number] = {
+      observationId: parsedEvent.data.observationId,
+      sequence: parsedEvent.data.sequence,
+      fingerprint: input.fingerprint,
+      receivedAt: input.receivedAt,
+    };
+    return this.tables.transaction(["flowImageAttempts"], async () => {
+      const current = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (!current) {
+        throw new FlowImageObservationRejectedError("attempt_missing");
+      }
+      const session = current.observationSession;
+      if (
+        (current.state !== "dispatched" && current.state !== "uncertain") ||
+        !session ||
+        session.status !== "active" ||
+        session.sessionId !== parsedEvent.data.sessionId ||
+        parsedEvent.data.attemptId !== current.attemptId ||
+        !current.resultBaseline ||
+        !current.settingsConfirmation.declaredVariantCount
+      ) {
+        throw new FlowImageObservationRejectedError("session_not_active");
+      }
+      if (
+        !current.resultBaseline ||
+        Object.entries(current.resultBaseline.binding).some(
+          ([key, value]) =>
+            parsedEvent.data.binding[
+              key as keyof typeof parsedEvent.data.binding
+            ] !== value,
+        )
+      ) {
+        throw new FlowImageObservationRejectedError("binding_mismatch");
+      }
+      const priorReceipt = (current.observationReceipts ?? []).find(
+        (entry) => entry.observationId === receipt.observationId,
+      );
+      if (priorReceipt) {
+        if (priorReceipt.fingerprint !== receipt.fingerprint) {
+          throw new FlowImageObservationRejectedError(
+            "observation_id_conflict",
+          );
+        }
+        return { status: "duplicate", attempt: current };
+      }
+      if (
+        parsedEvent.data.sequence !== session.lastSequence + 1 ||
+        parsedEvent.data.sequence > session.maxEvents ||
+        (current.observationReceipts ?? []).length >= session.maxEvents
+      ) {
+        throw new FlowImageObservationRejectedError(
+          "observation_sequence_invalid",
+        );
+      }
+      const reduction = reduceFlowImageObservation(
+        current.resultBaseline,
+        current.settingsConfirmation.declaredVariantCount,
+        current.resultLinks ?? [],
+        parsedEvent.data,
+        input.receivedAt,
+      );
+      if (reduction.outcome.status === "unknown") {
+        throw new FlowImageObservationRejectedError(
+          reduction.outcome.reason ?? "observation_ambiguous",
+        );
+      }
+      const terminalInventory =
+        reduction.links.length ===
+          current.settingsConfirmation.declaredVariantCount &&
+        reduction.links.every((link) => link.status !== "processing");
+      const closeSession =
+        reduction.outcome.status === "complete" ||
+        reduction.outcome.status === "failed" ||
+        (reduction.outcome.status === "partial_error" && terminalInventory) ||
+        parsedEvent.data.sequence === session.maxEvents;
+      if (parsedEvent.data.sequence === session.maxEvents) {
+        reduction.outcome = {
+          ...reduction.outcome,
+          status: "unknown",
+          reason: "event_limit_reached",
+        };
+      }
+      const attempt: FlowImageAttemptRecord = {
+        ...current,
+        observationSession: {
+          ...session,
+          lastSequence: parsedEvent.data.sequence,
+          ...(closeSession ? { status: "closed" as const } : {}),
+        },
+        resultLinks: reduction.links,
+        resultOutcome: reduction.outcome,
+        observationReceipts: [...(current.observationReceipts ?? []), receipt],
+        events: current.events,
+        updatedAt: input.receivedAt,
+      };
+      if (!FlowImageAttemptRecordSchema.safeParse(attempt).success) {
+        throw new FlowImageAttemptValidationError();
+      }
+      await this.tables.flowImageAttempts.put(attempt);
+      const readback = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (
+        !readback ||
+        readback.observationSession?.lastSequence !== receipt.sequence ||
+        readback.observationReceipts?.at(-1)?.fingerprint !==
+          receipt.fingerprint ||
+        readback.resultOutcome?.status !== reduction.outcome.status
+      ) {
+        throw new FlowImageAttemptValidationError();
+      }
+      return { status: "applied", attempt: readback };
+    });
+  }
+
+  async updateFlowImageObservationSession(input: {
+    attemptId: string;
+    sessionId: string;
+    sessionStatus?: NonNullable<
+      FlowImageAttemptRecord["observationSession"]
+    >["status"];
+    resultOutcome?: FlowImageAttemptRecord["resultOutcome"];
+    reconciliationCount?: number;
+  }): Promise<FlowImageAttemptRecord> {
+    return this.tables.transaction(["flowImageAttempts"], async () => {
+      const current = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (
+        !current ||
+        !current.observationSession ||
+        current.observationSession.sessionId !== input.sessionId
+      ) {
+        throw new FlowImageObservationRejectedError("session_not_found");
+      }
+      const updated: FlowImageAttemptRecord = {
+        ...current,
+        observationSession: {
+          ...current.observationSession,
+          ...(input.sessionStatus ? { status: input.sessionStatus } : {}),
+          ...(input.reconciliationCount !== undefined
+            ? { reconciliationCount: input.reconciliationCount }
+            : {}),
+        },
+        ...(input.resultOutcome ? { resultOutcome: input.resultOutcome } : {}),
+        updatedAt: input.resultOutcome?.updatedAt ?? this.now(),
+      };
+      if (!FlowImageAttemptRecordSchema.safeParse(updated).success) {
+        throw new FlowImageAttemptValidationError();
+      }
+      await this.tables.flowImageAttempts.put(updated);
+      const readback = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (
+        !readback ||
+        readback.observationSession?.sessionId !== input.sessionId ||
+        readback.observationSession.status !==
+          updated.observationSession?.status ||
+        readback.resultOutcome?.status !== updated.resultOutcome?.status
+      ) {
+        throw new FlowImageAttemptValidationError();
+      }
+      return readback;
+    });
   }
 
   async reconcileInterruptedFlowImageAttempts(): Promise<{
