@@ -57,8 +57,21 @@ export type RequestPayloads = {
       canonicalTarget: string;
       declaredVariantCount: number;
     };
+    countMode:
+      | {
+          mode: "new_empty_project";
+          countSessionId: string;
+          startingImageCount: 0;
+        }
+      | {
+          mode: "existing_project";
+          countSessionId: string;
+          startingImageCount: number;
+          userConfirmed: true;
+        };
   };
   "flow.image.checkReadiness": Record<string, never>;
+  "flow.image.getCountDecision": { attemptId: string };
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };
 };
@@ -89,6 +102,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.prompt.fill": 20_000,
   "flow.image.generateOnce": 30_000,
   "flow.image.checkReadiness": 15_000,
+  "flow.image.getCountDecision": 10_000,
   "preferences.getTheme": 3000,
   "preferences.setTheme": 3000,
 };

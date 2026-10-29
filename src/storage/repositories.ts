@@ -32,6 +32,7 @@ import {
 import {
   FlowImageObservationEventSchema,
   reduceFlowImageObservation,
+  reduceFlowImageCountDecision,
   type FlowImageAnyObservationEvent,
 } from "../domain/jobs/results";
 
@@ -68,6 +69,13 @@ export class ActiveFlowImageAttemptError extends Error {
       "A dispatched, uncertain, or active attempt already exists for this image prompt.",
     );
     this.name = "ActiveFlowImageAttemptError";
+  }
+}
+
+export class FlowCountSessionActiveError extends Error {
+  constructor() {
+    super("A prior attempt in this count session is unresolved.");
+    this.name = "FlowCountSessionActiveError";
   }
 }
 
@@ -546,6 +554,20 @@ export class ExtensionRepositories {
             throw new ActiveFlowImageAttemptError();
           }
           if (
+            record.countSessionId &&
+            existing.some(
+              (attempt) =>
+                attempt.countSessionId === record.countSessionId &&
+                attempt.state !== "failed-before-dispatch" &&
+                !(
+                  attempt.state === "dispatched" &&
+                  attempt.countDecision?.status === "count_matched"
+                ),
+            )
+          ) {
+            throw new FlowCountSessionActiveError();
+          }
+          if (
             existing.some(
               (attempt) => attempt.confirmationKey === record.confirmationKey,
             )
@@ -575,6 +597,7 @@ export class ExtensionRepositories {
       );
     } catch (error) {
       if (error instanceof ActiveFlowImageAttemptError) throw error;
+      if (error instanceof FlowCountSessionActiveError) throw error;
       if (error instanceof DuplicateFlowImageConfirmationError) throw error;
       if (error instanceof FlowImagePromptSnapshotConflictError) throw error;
       if (error instanceof DOMException && error.name === "ConstraintError") {
@@ -658,6 +681,8 @@ export class ExtensionRepositories {
     resultBaseline?: FlowImageAttemptRecord["resultBaseline"];
     observationSession?: FlowImageAttemptRecord["observationSession"];
     resultOutcome?: FlowImageAttemptRecord["resultOutcome"];
+    countBaseline?: FlowImageAttemptRecord["countBaseline"];
+    countDecision?: FlowImageAttemptRecord["countDecision"];
   }): Promise<FlowImageAttemptRecord> {
     if (
       input.next === "dispatch-intent" &&
@@ -690,6 +715,8 @@ export class ExtensionRepositories {
           ? { observationSession: input.observationSession }
           : {}),
         ...(input.resultOutcome ? { resultOutcome: input.resultOutcome } : {}),
+        ...(input.countBaseline ? { countBaseline: input.countBaseline } : {}),
+        ...(input.countDecision ? { countDecision: input.countDecision } : {}),
         events: [...current.events, input.event],
         updatedAt: input.event.at,
       };
@@ -705,6 +732,39 @@ export class ExtensionRepositories {
     attemptId: string,
   ): Promise<FlowImageAttemptRecord | undefined> {
     return this.tables.flowImageAttempts.get(attemptId);
+  }
+
+  async recordFlowImageCountDispatchBoundary(input: {
+    attemptId: string;
+    boundaryAt: number;
+  }): Promise<FlowImageAttemptRecord> {
+    return this.tables.transaction(["flowImageAttempts"], async () => {
+      const current = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (
+        !current ||
+        current.state !== "dispatch-intent" ||
+        !current.countBaseline ||
+        !current.countDecision ||
+        current.countDecision.dispatchBoundaryAt !== undefined
+      )
+        throw new FlowImageAttemptValidationError();
+      const next: FlowImageAttemptRecord = {
+        ...current,
+        countDecision: {
+          ...current.countDecision,
+          dispatchBoundaryAt: input.boundaryAt,
+          updatedAt: input.boundaryAt,
+        },
+        updatedAt: input.boundaryAt,
+      };
+      if (!FlowImageAttemptRecordSchema.safeParse(next).success)
+        throw new FlowImageAttemptValidationError();
+      await this.tables.flowImageAttempts.put(next);
+      const readback = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (readback?.countDecision?.dispatchBoundaryAt !== input.boundaryAt)
+        throw new FlowImageAttemptValidationError();
+      return readback;
+    });
   }
 
   getAllFlowImageAttempts(): Promise<FlowImageAttemptRecord[]> {
@@ -850,6 +910,34 @@ export class ExtensionRepositories {
         },
         resultLinks: reduction.links,
         resultOutcome: reduction.outcome,
+        ...(structuralEvent &&
+        current.countBaseline &&
+        current.settingsConfirmation.declaredVariantCount
+          ? {
+              countDecision: reduceFlowImageCountDecision({
+                declaration: current.countBaseline,
+                declaredVariantCount:
+                  current.settingsConfirmation.declaredVariantCount,
+                expectedCumulativeAdditions:
+                  current.countBaseline.priorDeclaredAdditions +
+                  current.settingsConfirmation.declaredVariantCount,
+                priorMatchedAttemptIds:
+                  current.countBaseline.priorMatchedAttemptIds,
+                resultBaseline: current.resultBaseline,
+                events: [
+                  ...(current.structuralObservations ?? []),
+                  ...(structuralEvent
+                    ? [
+                        parsedEvent.data as import("../domain/jobs/results").FlowStructuralObservationEvent,
+                      ]
+                    : []),
+                ],
+                dispatchBoundaryAt: current.countDecision?.dispatchBoundaryAt,
+                previous: current.countDecision,
+                now: input.receivedAt,
+              }),
+            }
+          : {}),
         observationReceipts: [...(current.observationReceipts ?? []), receipt],
         ...(structuralObservations ? { structuralObservations } : {}),
         events: current.events,
@@ -865,7 +953,9 @@ export class ExtensionRepositories {
         readback.observationSession?.lastSequence !== receipt.sequence ||
         readback.observationReceipts?.at(-1)?.fingerprint !==
           receipt.fingerprint ||
-        readback.resultOutcome?.status !== reduction.outcome.status
+        readback.resultOutcome?.status !== reduction.outcome.status ||
+        readback.countDecision?.observationSequence !==
+          attempt.countDecision?.observationSequence
       ) {
         throw new FlowImageAttemptValidationError();
       }
@@ -884,6 +974,8 @@ export class ExtensionRepositories {
     armReceipt?: NonNullable<
       FlowImageAttemptRecord["observationSession"]
     >["armReceipt"];
+    countBaseline?: FlowImageAttemptRecord["countBaseline"];
+    countDecision?: FlowImageAttemptRecord["countDecision"];
   }): Promise<FlowImageAttemptRecord> {
     return this.tables.transaction(["flowImageAttempts"], async () => {
       const current = await this.tables.flowImageAttempts.get(input.attemptId);
@@ -905,6 +997,8 @@ export class ExtensionRepositories {
             : {}),
         },
         ...(input.resultOutcome ? { resultOutcome: input.resultOutcome } : {}),
+        ...(input.countBaseline ? { countBaseline: input.countBaseline } : {}),
+        ...(input.countDecision ? { countDecision: input.countDecision } : {}),
         updatedAt: input.resultOutcome?.updatedAt ?? this.now(),
       };
       if (!FlowImageAttemptRecordSchema.safeParse(updated).success) {
@@ -940,11 +1034,17 @@ export class ExtensionRepositories {
             : current.state === "dispatch-intent"
               ? "uncertain"
               : undefined;
-        if (!nextState) continue;
+        const activeCountObservationInterrupted = Boolean(
+          current.countBaseline &&
+          current.countDecision &&
+          current.observationSession?.status === "active" &&
+          (current.state === "dispatched" || current.state === "uncertain"),
+        );
+        if (!nextState && !activeCountObservationInterrupted) continue;
         const at = this.now();
         const next: FlowImageAttemptRecord = {
           ...current,
-          state: nextState,
+          ...(nextState ? { state: nextState } : {}),
           ...(nextState === "failed-before-dispatch"
             ? { activeKey: undefined }
             : {}),
@@ -954,13 +1054,15 @@ export class ExtensionRepositories {
               stage: "recovery",
               at,
               method: "none",
-              code:
-                nextState === "uncertain"
+              code: nextState
+                ? nextState === "uncertain"
                   ? "worker_restart_after_intent"
-                  : "worker_restart_before_dispatch",
+                  : "worker_restart_before_dispatch"
+                : "count_observer_interrupted_by_worker_restart",
             },
           ],
-          ...(nextState === "uncertain" &&
+          ...((nextState === "uncertain" ||
+            activeCountObservationInterrupted) &&
           current.observationSession &&
           (current.observationSession.status === "arming" ||
             current.observationSession.status === "active")
@@ -992,13 +1094,26 @@ export class ExtensionRepositories {
                 },
               }
             : {}),
+          ...((nextState === "uncertain" ||
+            activeCountObservationInterrupted) &&
+          current.countDecision
+            ? {
+                countDecision: {
+                  ...current.countDecision,
+                  status: "interrupted" as const,
+                  reason: "observer_lost" as const,
+                  updatedAt: at,
+                },
+              }
+            : {}),
           updatedAt: at,
         };
         if (!FlowImageAttemptRecordSchema.safeParse(next).success) {
           throw new FlowImageAttemptValidationError();
         }
         await this.tables.flowImageAttempts.put(next);
-        if (nextState === "uncertain") uncertain += 1;
+        if (nextState === "uncertain" || activeCountObservationInterrupted)
+          uncertain += 1;
         else failedBeforeDispatch += 1;
       }
       return { failedBeforeDispatch, uncertain };

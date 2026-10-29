@@ -6,6 +6,9 @@ import {
 } from "../domain/jobs/attempt";
 import {
   FlowImageResultBaselineSchema,
+  FlowImageCountBaselineDeclarationSchema,
+  FlowImageCountDecisionSchema,
+  FlowImageCountModeRequestSchema,
   FlowImageObservationOutcomeSchema,
   FlowImageObservationReceiptSchema,
   FlowImageObservationSessionSchema,
@@ -305,6 +308,9 @@ export const FlowImageAttemptRecordSchema = z
       .max(64)
       .optional(),
     resultOutcome: FlowImageObservationOutcomeSchema.optional(),
+    countSessionId: z.string().uuid().optional(),
+    countBaseline: FlowImageCountBaselineDeclarationSchema.optional(),
+    countDecision: FlowImageCountDecisionSchema.optional(),
     events: z.array(flowImageAttemptEventSchema).min(1).max(24),
     createdAt: z.number().finite().nonnegative(),
     updatedAt: z.number().finite().nonnegative(),
@@ -336,6 +342,37 @@ export const FlowImageAttemptRecordSchema = z
       ? attemptCount === undefined
       : declaration.count === attemptCount;
   }, "attempt_variant_declaration_mismatch")
+  .refine((attempt) => {
+    if (!attempt.countBaseline) return attempt.countDecision === undefined;
+    const baseline = attempt.countBaseline;
+    const decision = attempt.countDecision;
+    const declaredVariantCount =
+      attempt.settingsConfirmation.declaredVariantCount;
+    return Boolean(
+      decision &&
+      declaredVariantCount !== undefined &&
+      attempt.countSessionId === baseline.countSessionId &&
+      baseline.projectId === attempt.projectId &&
+      baseline.tabId === attempt.tabId &&
+      baseline.documentId === attempt.documentId &&
+      baseline.buildId === attempt.buildId &&
+      baseline.protocolVersion === attempt.protocolVersion &&
+      baseline.canonicalTarget ===
+        attempt.settingsConfirmation.canonicalTarget &&
+      decision.countSessionId === baseline.countSessionId &&
+      decision.mode === baseline.mode &&
+      decision.startingImageCount === baseline.startingImageCount &&
+      decision.declaredVariantCount === declaredVariantCount &&
+      decision.expectedCumulativeAdditions ===
+        baseline.priorDeclaredAdditions + declaredVariantCount &&
+      decision.priorMatchedAttemptIds.length ===
+        baseline.priorMatchedAttemptIds.length &&
+      decision.priorMatchedAttemptIds.every(
+        (attemptId, index) =>
+          attemptId === baseline.priorMatchedAttemptIds[index],
+      ),
+    );
+  }, "attempt_count_decision_binding_mismatch")
   .refine((attempt) => {
     const identities = (attempt.resultLinks ?? []).map((link) =>
       flowProviderResultIdentityKey(link.identity),
@@ -470,12 +507,17 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
         workspaceId: workspaceIdSchema,
         promptHash: z.string().regex(/^[0-9a-f]{64}$/),
         settingsConfirmation: FlowSettingsConfirmationSchema,
+        countMode: FlowImageCountModeRequestSchema,
       })
       .strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.image.checkReadiness"),
     payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.image.getCountDecision"),
+    payload: z.object({ attemptId: z.string().min(1).max(128) }).strict(),
   }),
   requestBase.extend({
     type: z.literal("preferences.getTheme"),

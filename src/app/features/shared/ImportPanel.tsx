@@ -34,6 +34,7 @@ export type FlowGenerateOutcomeMessage = {
   pressAttempted?: boolean;
   releaseAttempted?: boolean;
   activationCount?: number;
+  countDecision?: Record<string, unknown>;
 };
 
 export function formatFlowGenerateOutcome(
@@ -143,6 +144,20 @@ export function ImportPanel({
   const [flowGenerateResult, setFlowGenerateResult] = useState<
     FlowGenerateOutcomeMessage | undefined
   >();
+  const [flowCountMode, setFlowCountMode] = useState<
+    "new_empty_project" | "existing_project"
+  >("new_empty_project");
+  const [flowStartingImageCount, setFlowStartingImageCount] = useState("");
+  const [flowExistingCountConfirmed, setFlowExistingCountConfirmed] =
+    useState(false);
+  const [flowCountSessionId, setFlowCountSessionId] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const [flowCountDecisionReport, setFlowCountDecisionReport] = useState<
+    Record<string, unknown> | undefined
+  >();
+  const [flowCountDecisionPending, setFlowCountDecisionPending] =
+    useState(false);
   const [flowReadinessPending, setFlowReadinessPending] = useState(false);
   const [flowReadinessExportStatus, setFlowReadinessExportStatus] = useState<
     string | undefined
@@ -526,6 +541,19 @@ export function ImportPanel({
           workspaceId,
           promptHash,
           settingsConfirmation: confirmation,
+          countMode:
+            flowCountMode === "new_empty_project"
+              ? {
+                  mode: "new_empty_project",
+                  countSessionId: flowCountSessionId,
+                  startingImageCount: 0,
+                }
+              : {
+                  mode: "existing_project",
+                  countSessionId: flowCountSessionId,
+                  startingImageCount: Number(flowStartingImageCount),
+                  userConfirmed: true,
+                },
         },
       );
       if (!rawResult || typeof rawResult !== "object") {
@@ -533,6 +561,7 @@ export function ImportPanel({
       }
       const result = rawResult as NonNullable<typeof flowGenerateResult>;
       setFlowGenerateResult(result);
+      setFlowCountDecisionReport(undefined);
       if (
         result.state === "dispatched" ||
         result.state === "uncertain" ||
@@ -584,6 +613,35 @@ export function ImportPanel({
       });
     } finally {
       setFlowReadinessPending(false);
+    }
+  };
+
+  const refreshFlowCountDecision = async () => {
+    const attemptId = flowGenerateResult?.attemptId;
+    if (!attemptId || flowCountDecisionPending) return;
+    setFlowCountDecisionPending(true);
+    try {
+      const report = await persistenceClient.request(
+        "flow.image.getCountDecision",
+        { attemptId },
+      );
+      setFlowCountDecisionReport(
+        report && typeof report === "object"
+          ? (report as Record<string, unknown>)
+          : {
+              status: "unavailable",
+              reason: "invalid_worker_response",
+              providerOutcome: "unknown",
+            },
+      );
+    } catch {
+      setFlowCountDecisionReport({
+        status: "unavailable",
+        reason: "readback_failed",
+        providerOutcome: "unknown",
+      });
+    } finally {
+      setFlowCountDecisionPending(false);
     }
   };
 
@@ -795,6 +853,79 @@ export function ImportPanel({
               variants in Flow.
             </p>
           ) : null}
+          <Field
+            id="flow-count-mode"
+            label="Flow project count mode"
+            hint="This declaration controls a separate heuristic count. It does not prove provider inventory, identity, or success."
+          >
+            <select
+              id="flow-count-mode"
+              value={flowCountMode}
+              onChange={(event) => {
+                setFlowCountMode(
+                  event.currentTarget.value as
+                    "new_empty_project" | "existing_project",
+                );
+                setFlowExistingCountConfirmed(false);
+                setFlowCountSessionId(crypto.randomUUID());
+                setFlowCountDecisionReport(undefined);
+              }}
+            >
+              <option value="new_empty_project">New empty project</option>
+              <option value="existing_project">Existing project</option>
+            </select>
+          </Field>
+          {flowCountMode === "existing_project" ? (
+            <>
+              <Field
+                id="flow-starting-image-count"
+                label="Starting image count in this project"
+                hint="User-attested count only. The visible DOM inventory remains incomplete."
+                required
+              >
+                <input
+                  id="flow-starting-image-count"
+                  type="number"
+                  min={0}
+                  max={100000}
+                  step={1}
+                  value={flowStartingImageCount}
+                  onChange={(event) => {
+                    setFlowStartingImageCount(event.currentTarget.value);
+                    setFlowExistingCountConfirmed(false);
+                    setFlowCountSessionId(crypto.randomUUID());
+                    setFlowCountDecisionReport(undefined);
+                  }}
+                />
+              </Field>
+              <label className={styles.subtleText}>
+                <input
+                  type="checkbox"
+                  checked={flowExistingCountConfirmed}
+                  onChange={(event) =>
+                    setFlowExistingCountConfirmed(event.currentTarget.checked)
+                  }
+                  disabled={
+                    flowStartingImageCount.trim() === "" ||
+                    !Number.isInteger(Number(flowStartingImageCount)) ||
+                    Number(flowStartingImageCount) < 0
+                  }
+                />{" "}
+                I confirm this starting image count for the selected project.
+              </label>
+            </>
+          ) : null}
+          <p className={styles.subtleText}>
+            Starting count:{" "}
+            {flowCountMode === "new_empty_project"
+              ? "0 (observed empty UI scope)"
+              : flowStartingImageCount || "not confirmed"}
+            ; expected additions for this prompt:{" "}
+            {flowSettingsConfirmation?.declaredVariantCount ??
+              "confirm Flow variants"}
+            ; expected total uses starting count plus frozen declarations and is
+            arithmetic only.
+          </p>
           <Button
             type="button"
             disabled={
@@ -808,7 +939,12 @@ export function ImportPanel({
               flowGenerateRequiresReview ||
               flowGenerateLockConfirmationId ===
                 flowSettingsConfirmation?.confirmationId ||
-              currentItemCount !== 1
+              currentItemCount !== 1 ||
+              (flowCountMode === "existing_project" &&
+                (!flowExistingCountConfirmed ||
+                  flowStartingImageCount.trim() === "" ||
+                  !Number.isInteger(Number(flowStartingImageCount)) ||
+                  Number(flowStartingImageCount) < 0))
             }
             loading={flowGeneratePending}
             loadingLabel="Preparing one Generate attempt…"
@@ -872,6 +1008,23 @@ export function ImportPanel({
           }
         >
           {formatFlowGenerateOutcome(flowGenerateResult)}
+        </Notice>
+      ) : null}
+      {flowGenerateResult?.attemptId ? (
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={flowCountDecisionPending}
+          loading={flowCountDecisionPending}
+          loadingLabel="Reading durable count decision…"
+          onClick={() => void refreshFlowCountDecision()}
+        >
+          Refresh count decision (read-only)
+        </Button>
+      ) : null}
+      {flowCountDecisionReport ? (
+        <Notice kind="info">
+          {`${(flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status === "count_matched" ? "Count matched — heuristic observation. " : ""}${String(flowCountDecisionReport.message ?? "Durable count decision read back.")} Decision ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status ?? flowCountDecisionReport.status ?? "unavailable")}; reason ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.reason ?? flowCountDecisionReport.reason ?? "none")}; expected additions ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedCumulativeAdditions ?? "unknown")}; expected total ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedTotal ?? "unknown")}; observed eligible candidates ${String(((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.observedEligibleCandidateIds as unknown[] | undefined)?.length ?? "unknown")}. Provider outcome ${String(flowCountDecisionReport.providerOutcome ?? "unknown")}; this count match is heuristic observation only.`}
         </Notice>
       ) : null}
       {flowGenerateRequiresReview ||

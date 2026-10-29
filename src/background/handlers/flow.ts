@@ -18,6 +18,7 @@ import {
 } from "../../platforms/flow/images";
 import {
   flowImageAttemptActiveKey,
+  flowImageAttemptConfirmationKey,
   type FlowImageAttemptStage,
   type FlowImageAttemptRecord,
 } from "../../domain/jobs/attempt";
@@ -26,6 +27,7 @@ import {
   flowImageResultBaselineFingerprintInput,
   FlowImageObservationArmReceiptSchema,
   FlowStructuralSnapshotSchema,
+  reduceFlowImageCountDecision,
   flowResultBaselineMatchesAttempt,
   flowResultBaselineMatchesProfile,
   type FlowImageObservationArmBinding,
@@ -34,6 +36,7 @@ import { captureFlowResultBaseline } from "../../platforms/flow/observer";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import {
   ActiveFlowImageAttemptError,
+  FlowCountSessionActiveError,
   DuplicateFlowImageConfirmationError,
   FlowImageAttemptTransitionError,
   FlowImagePromptSnapshotConflictError,
@@ -370,6 +373,38 @@ export function createFlowImageReadinessCheck(
   };
 }
 
+/** Read-only durable count-decision projection for the dashboard. */
+export function createFlowImageCountDecisionReadback(
+  repositories: ExtensionRepositories,
+): (attemptId: string) => Promise<unknown> {
+  return async (attemptId) => {
+    const attempt = await repositories.getFlowImageAttempt(attemptId);
+    if (!attempt || !attempt.countDecision)
+      return {
+        status: "unavailable",
+        reason: "count_decision_not_recorded",
+        message:
+          "No durable count decision is available for this attempt. Provider outcome remains unknown.",
+        providerOutcome: attempt?.resultOutcome?.status ?? "unknown",
+      };
+    return {
+      status: "available",
+      attemptId: attempt.attemptId,
+      attemptState: attempt.state,
+      countDecision: attempt.countDecision,
+      baselineProvenance: attempt.countBaseline?.provenance ?? null,
+      baselineVirtualized: attempt.countBaseline?.virtualized ?? null,
+      baselineInventoryComplete: false,
+      providerOutcome: attempt.resultOutcome?.status ?? "unknown",
+      providerOutcomeReason: attempt.resultOutcome?.reason ?? null,
+      message:
+        attempt.countDecision.status === "count_matched"
+          ? "The declared count matched eligible structural candidates. This is heuristic observation, not provider success or causal attribution."
+          : `Count observation ${attempt.countDecision.status}${attempt.countDecision.reason ? `: ${attempt.countDecision.reason}` : ""}. Provider outcome remains unknown.`,
+    };
+  };
+}
+
 type FlowSettingsConfirmation = {
   confirmationId: string;
   confirmedAt: number;
@@ -543,6 +578,20 @@ export function createChromeFlowImageGenerateOncePort(
         unidentifiedImageCount: baseline.data.unidentifiedImageCount,
         lifecycleSignalCount: baseline.data.lifecycleSignals.length,
         resourceEventCount: baseline.data.resourceEvents.length,
+        candidateIds: [
+          ...new Set(
+            baseline.data.mediaCandidates.map((item) => item.candidateId),
+          ),
+        ],
+        tileTokens: [
+          ...new Set(baseline.data.tiles.map((item) => item.tileToken)),
+        ],
+        candidateTileRelationships: baseline.data.mediaCandidates.map(
+          (item) => ({
+            candidateId: item.candidateId,
+            tileToken: item.tileToken,
+          }),
+        ),
         captureGaps: baseline.data.captureGaps,
       },
     });
@@ -644,6 +693,7 @@ type FlowImageGenerateOnceInput = {
   workspaceId: string;
   promptHash: string;
   settingsConfirmation: FlowSettingsConfirmation;
+  countMode: import("../../domain/jobs/results").FlowImageCountModeRequest;
 };
 
 type FlowImageGenerateOnceDependencies = {
@@ -843,6 +893,18 @@ export function createFlowImageGenerateOnce(
           "Enter and confirm the variant count you manually selected in Flow before generating.",
         );
       }
+      if (
+        !input.countMode ||
+        !/^[0-9a-f-]{36}$/i.test(input.countMode.countSessionId) ||
+        (input.countMode.mode === "existing_project" &&
+          input.countMode.userConfirmed !== true)
+      ) {
+        return response(
+          "blocked",
+          "count_baseline_declaration_invalid",
+          "Choose New empty project or confirm the existing project image count before Generate.",
+        );
+      }
       currentStage = "preflight";
       if (!port.hasRequiredApis() || !(await port.hasDebuggerPermission())) {
         return response(
@@ -953,6 +1015,84 @@ export function createFlowImageGenerateOnce(
           "The selected Flow document changed during preparation.",
         );
       }
+      const allCountAttempts =
+        await dependencies.repositories.getAllFlowImageAttempts();
+      const priorCountAttempts = allCountAttempts.filter(
+        (candidate) =>
+          candidate.countSessionId === input.countMode.countSessionId,
+      );
+      const duplicateInProgress = priorCountAttempts.find(
+        (candidate) =>
+          candidate.itemId === item.id &&
+          candidate.promptHash === item.contentHash &&
+          candidate.state !== "failed-before-dispatch",
+      );
+      if (duplicateInProgress) {
+        return response(
+          "blocked",
+          "attempt_already_active",
+          "This exact saved image source already has an active or dispatched attempt. Inspect it; this action will not replay Generate.",
+        );
+      }
+      const unresolvedProjectCountAttempt = allCountAttempts.find(
+        (candidate) =>
+          candidate.countSessionId !== undefined &&
+          candidate.projectId === target.projectId &&
+          candidate.tabId === target.id &&
+          candidate.documentId === frame.documentId &&
+          candidate.state !== "failed-before-dispatch" &&
+          !(
+            candidate.state === "dispatched" &&
+            candidate.countDecision?.status === "count_matched"
+          ),
+      );
+      if (unresolvedProjectCountAttempt) {
+        return response(
+          "blocked",
+          "count_session_paused",
+          "An earlier count observation for this exact Flow document is unresolved. Inspect that durable attempt before starting another count session; this action will not replay or bypass it.",
+        );
+      }
+      if (
+        priorCountAttempts.some(
+          (candidate) =>
+            candidate.countBaseline !== undefined &&
+            (candidate.projectId !== target.projectId ||
+              candidate.tabId !== target.id ||
+              candidate.documentId !== frame.documentId ||
+              candidate.buildId !== BUILD_ID ||
+              candidate.protocolVersion !== PROTOCOL_VERSION ||
+              candidate.countBaseline.mode !== input.countMode.mode ||
+              candidate.countBaseline.startingImageCount !==
+                input.countMode.startingImageCount),
+        )
+      ) {
+        return response(
+          "blocked",
+          "count_session_binding_changed",
+          "This count session belongs to another project or document. Start a fresh count session using the current project baseline.",
+        );
+      }
+      const unresolvedCountAttempt = priorCountAttempts.find(
+        (candidate) =>
+          candidate.state !== "failed-before-dispatch" &&
+          !(
+            candidate.state === "dispatched" &&
+            candidate.countDecision?.status === "count_matched"
+          ),
+      );
+      if (unresolvedCountAttempt) {
+        return response(
+          "blocked",
+          "count_session_paused",
+          "A prior prompt in this count session is unresolved or ambiguous. Inspect that attempt; this action will not dispatch another prompt.",
+        );
+      }
+      const priorMatchedAttempts = priorCountAttempts.filter(
+        (candidate) =>
+          candidate.state === "dispatched" &&
+          candidate.countDecision?.status === "count_matched",
+      );
       const at = now();
       const sourceSnapshot = {
         snapshotId: flowImagePromptSnapshotId(item.id, item.contentHash),
@@ -969,7 +1109,10 @@ export function createFlowImageGenerateOnce(
       try {
         attempt = await dependencies.repositories.createFlowImageAttempt({
           attemptId: makeId(),
-          confirmationKey: input.settingsConfirmation.confirmationId,
+          confirmationKey: await flowImageAttemptConfirmationKey(
+            input.settingsConfirmation.confirmationId,
+            item.contentHash,
+          ),
           workspaceId: input.workspaceId,
           batchId: snapshot.batch.id,
           itemId: item.id,
@@ -997,6 +1140,7 @@ export function createFlowImageGenerateOnce(
             declaredVariantCount:
               input.settingsConfirmation.declaredVariantCount,
           },
+          countSessionId: input.countMode.countSessionId,
           state: "preparing",
           activeKey: flowImageAttemptActiveKey(item.id, item.contentHash),
           events: [
@@ -1011,6 +1155,13 @@ export function createFlowImageGenerateOnce(
           updatedAt: at,
         });
       } catch (error) {
+        if (error instanceof FlowCountSessionActiveError) {
+          return response(
+            "blocked",
+            "count_session_paused",
+            "A prior prompt in this count session is unresolved. Inspect its durable count decision; Generate was not activated.",
+          );
+        }
         if (error instanceof ActiveFlowImageAttemptError) {
           return response(
             "blocked",
@@ -1120,6 +1271,18 @@ export function createFlowImageGenerateOnce(
         );
       }
       const baseline = discovery.baseline!;
+      const baselineIsEmpty =
+        "kind" in baseline && baseline.kind === "flow_empty_workspace_ui";
+      if (
+        input.countMode.mode === "new_empty_project" &&
+        priorMatchedAttempts.length === 0 &&
+        !baselineIsEmpty
+      ) {
+        return failBefore(
+          "new_empty_project_baseline_mismatch",
+          "New empty project mode requires the supported observed empty UI. Choose Existing project and attest its starting image count, or select an empty Flow project.",
+        );
+      }
       const resultBaseline = captureFlowResultBaseline(
         baseline,
         {
@@ -1306,12 +1469,84 @@ export function createFlowImageGenerateOnce(
             "The bound Flow observer could not start. Generate was not activated.",
           );
         }
+        if (!armReceipt) {
+          return failBefore(
+            "count_baseline_capture_missing",
+            "The bound observer did not return its scoped candidate and tile baseline. Generate was not activated.",
+          );
+        }
+        const countBaseline: NonNullable<
+          FlowImageAttemptRecord["countBaseline"]
+        > = {
+          ...(input.countMode.mode === "new_empty_project"
+            ? {
+                mode: "new_empty_project" as const,
+                countSessionId: input.countMode.countSessionId,
+                startingImageCount: 0 as const,
+                provenance: "observed_empty_ui_scope" as const,
+              }
+            : {
+                mode: "existing_project" as const,
+                countSessionId: input.countMode.countSessionId,
+                startingImageCount: input.countMode.startingImageCount,
+                provenance: "user_attested_existing_image_count" as const,
+                inventoryComplete: false as const,
+              }),
+          projectId: target.projectId,
+          canonicalTarget: target.canonicalTarget,
+          tabId: target.id,
+          documentId: frame.documentId,
+          buildId: BUILD_ID,
+          protocolVersion: PROTOCOL_VERSION,
+          capturedAt: armReceipt.capturedAt,
+          baselineCandidateIds: armReceipt.baseline.candidateIds,
+          baselineTileTokens: armReceipt.baseline.tileTokens,
+          virtualized: armReceipt.baseline.virtualized,
+          renderedScopeComplete: armReceipt.baseline.completeForRenderedScope,
+          captureGaps: armReceipt.baseline.captureGaps,
+          priorMatchedAttemptIds: priorMatchedAttempts.map(
+            (candidate) => candidate.attemptId,
+          ),
+          priorMatchedCandidateIds: priorMatchedAttempts.flatMap(
+            (candidate) =>
+              candidate.countDecision?.observedEligibleCandidateIds ?? [],
+          ),
+          priorDeclaredAdditions: priorMatchedAttempts.reduce(
+            (sum, candidate) =>
+              sum + (candidate.settingsConfirmation.declaredVariantCount ?? 0),
+            0,
+          ),
+        };
+        const initialCountDecision = reduceFlowImageCountDecision({
+          declaration: countBaseline,
+          declaredVariantCount: input.settingsConfirmation.declaredVariantCount,
+          expectedCumulativeAdditions:
+            countBaseline.priorDeclaredAdditions +
+            input.settingsConfirmation.declaredVariantCount,
+          priorMatchedAttemptIds: countBaseline.priorMatchedAttemptIds,
+          resultBaseline: attempt.resultBaseline!,
+          events: [],
+          now: now(),
+        });
+        if (
+          initialCountDecision.status === "blocked" ||
+          initialCountDecision.status === "ambiguous"
+        ) {
+          return failBefore(
+            initialCountDecision.reason ?? "count_baseline_ambiguous",
+            initialCountDecision.reason === "existing_project_virtualized"
+              ? "This project uses a virtualized tile inventory, so newly revealed old assets cannot be distinguished. Count mode is paused; Generate was not activated."
+              : "The selected project does not have a complete supported count baseline. Generate was not activated.",
+          );
+        }
         attempt =
           await dependencies.repositories.updateFlowImageObservationSession({
             attemptId: attempt.attemptId,
             sessionId: observationSession.sessionId,
             sessionStatus: "active",
             ...(armReceipt ? { armReceipt } : {}),
+            countBaseline,
+            countDecision: initialCountDecision,
           });
         const activated = await port.activateObservation(
           attempt.tabId,
@@ -1358,6 +1593,13 @@ export function createFlowImageGenerateOnce(
           "The result baseline binding changed before activation. No Generate input was sent.",
         );
       }
+
+      currentStage = "storage";
+      attempt =
+        await dependencies.repositories.recordFlowImageCountDispatchBoundary({
+          attemptId: attempt.attemptId,
+          boundaryAt: now(),
+        });
 
       currentStage = "dispatch";
       activationStarted = true;

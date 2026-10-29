@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { flowImageObservationProducer } from "../../src/platforms/flow/observationProducer";
 import { flowWorkspaceScopeAnalyzer } from "../../src/platforms/flow/workspaceScope";
 import { flowImageRuntimeExpression } from "../../src/platforms/flow/images";
+import { reduceFlowImageCountDecision } from "../../src/domain/jobs/results";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -90,6 +91,116 @@ test("production isolated-world producer binds, records structural candidates, a
     sourceBaselineFingerprint: binding.sourceBaselineFingerprint,
     listenerRoots: expect.any(Number),
     captureFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+  });
+  const armBaseline = (
+    arm as {
+      baseline: {
+        completeForRenderedScope: boolean;
+        virtualized: boolean;
+        tileCount: number;
+        candidateIds: string[];
+        tileTokens: string[];
+        candidateTileRelationships: Array<{
+          candidateId: string;
+          tileToken: string;
+        }>;
+        captureGaps: string[];
+      };
+    }
+  ).baseline;
+  expect(armBaseline.candidateTileRelationships).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        candidateId: expect.stringMatching(/^[0-9a-f]{64}$/),
+        tileToken: expect.stringMatching(/^tile-/),
+      }),
+    ]),
+  );
+  const countDecision = reduceFlowImageCountDecision({
+    declaration: {
+      mode: "existing_project",
+      countSessionId: binding.sessionId,
+      startingImageCount: 4,
+      provenance: "user_attested_existing_image_count",
+      inventoryComplete: false,
+      projectId: binding.projectId,
+      canonicalTarget: binding.canonicalTarget,
+      tabId: binding.tabId,
+      documentId: binding.documentId,
+      buildId: binding.buildId,
+      protocolVersion: binding.protocolVersion,
+      capturedAt: 10,
+      baselineCandidateIds: armBaseline.candidateIds,
+      baselineTileTokens: armBaseline.tileTokens,
+      virtualized: armBaseline.virtualized,
+      renderedScopeComplete: armBaseline.completeForRenderedScope,
+      captureGaps: armBaseline.captureGaps,
+      priorMatchedAttemptIds: [],
+      priorMatchedCandidateIds: [],
+      priorDeclaredAdditions: 0,
+    },
+    declaredVariantCount: 1,
+    expectedCumulativeAdditions: 1,
+    priorMatchedAttemptIds: [],
+    resultBaseline: {
+      schemaVersion: 1,
+      binding: {
+        workspaceId: binding.workspaceId,
+        batchId: binding.batchId,
+        itemId: binding.itemId,
+        sourceHash: binding.sourceHash,
+        sourceSnapshotId: binding.sourceSnapshotId,
+        attemptId: binding.attemptId,
+        provider: "Flow",
+        projectId: binding.projectId,
+        tabId: binding.tabId,
+        frameId: binding.frameId,
+        loaderId: binding.loaderId,
+      },
+      capture: {
+        method: "flow_image_runtime_observation",
+        capturedAt: 10,
+        buildId: binding.buildId,
+        protocolVersion: binding.protocolVersion,
+      },
+      observation: {
+        profile: "flow_rendered_tile_candidates",
+        profileVersion: 1,
+        renderedTileCount: armBaseline.tileCount,
+        candidateIds: armBaseline.candidateIds,
+        candidateMultiplicity: armBaseline.candidateIds.map((candidateId) => ({
+          candidateId,
+          renderedCopies: 1,
+        })),
+        repeatedCandidateCount: 0,
+        unidentifiedImageCount: 0,
+        unrelatedImageCount: 0,
+        virtualized: armBaseline.virtualized,
+        loadingSignalCount: 0,
+        captureGaps: armBaseline.captureGaps,
+      },
+      completeness: "incomplete",
+      existingResultIdentities: [],
+      excludedObservations: {
+        count: armBaseline.candidateIds.length,
+        reasons: [
+          "stable_provider_identity_unavailable",
+          "result_card_identity_unavailable",
+        ],
+      },
+      variantDeclaration: {
+        status: "declared",
+        count: 1,
+        source: "validated_settings_confirmation",
+      },
+      limitations: ["provider_result_identity_contract_not_live_verified"],
+    },
+    events: [],
+    now: 20,
+  });
+  expect(countDecision).toMatchObject({
+    status: "ambiguous",
+    reason: "existing_project_virtualized",
   });
 
   const activated = await page.evaluate(

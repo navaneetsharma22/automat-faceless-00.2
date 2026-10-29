@@ -31,6 +31,7 @@ export type FoundationDependencies = {
     input: Extract<AppRequest, { type: "flow.image.generateOnce" }>["payload"],
   ) => Promise<unknown>;
   flowImageReadiness?: () => Promise<unknown>;
+  flowImageCountDecision?: (attemptId: string) => Promise<unknown>;
   flowImageObservation?: (
     message: unknown,
     sender: ExtensionMessageSender,
@@ -198,6 +199,15 @@ async function dispatch(
         );
       }
       return dependencies.flowImageReadiness();
+    case "flow.image.getCountDecision":
+      if (!dependencies.flowImageCountDecision) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "flow_count_decision_unavailable",
+          "The durable Flow count decision is unavailable in this worker context.",
+        );
+      }
+      return dependencies.flowImageCountDecision(request.payload.attemptId);
     case "preferences.getTheme":
       return { theme: await dependencies.preferences.getTheme() };
     case "preferences.setTheme":

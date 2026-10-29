@@ -3,8 +3,11 @@ import type {
   FlowImageObservationSession,
   FlowImageResultBaseline,
   FlowImageResultLink,
+  FlowImageCountBaselineDeclaration,
+  FlowImageCountDecision,
   FlowStructuralObservationEvent,
 } from "./results";
+import { sha256Hex } from "../batches/hashPrompt";
 
 export const FLOW_IMAGE_ATTEMPT_STATES = [
   "preparing",
@@ -112,6 +115,10 @@ export type FlowImageAttemptRecord = {
   /** Bounded page-derived structural payloads retained for read-only review. */
   structuralObservations?: FlowStructuralObservationEvent[];
   resultOutcome?: FlowImageObservationOutcome;
+  countSessionId?: string;
+  /** Separate heuristic bookkeeping; never upgrades provider outcome. */
+  countBaseline?: FlowImageCountBaselineDeclaration;
+  countDecision?: FlowImageCountDecision;
   events: FlowImageAttemptEvent[];
   createdAt: number;
   updatedAt: number;
@@ -149,4 +156,14 @@ export function flowImageAttemptActiveKey(
   return promptHash
     ? `flow-image:${itemId}:${promptHash}`
     : `flow-image:${itemId}`;
+}
+
+/** Reuse one settings attestation across prompts while deduplicating a repeated source. */
+export async function flowImageAttemptConfirmationKey(
+  confirmationId: string,
+  promptHash: string,
+): Promise<string> {
+  return sha256Hex(
+    `flow-image-confirmation-v1\u0000${confirmationId}\u0000${promptHash}`,
+  );
 }

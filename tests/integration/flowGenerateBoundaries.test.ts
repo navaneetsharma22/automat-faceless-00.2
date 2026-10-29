@@ -10,6 +10,11 @@ import {
   type FlowImageAttemptRecord,
   type FlowImageAttemptState,
 } from "../../src/domain/jobs/attempt";
+import {
+  flowImageResultBaselineFingerprintInput,
+  flowStructuralSnapshotFingerprintInput,
+  type FlowStructuralObservationEvent,
+} from "../../src/domain/jobs/results";
 import { flowImagePromptSnapshotId } from "../../src/domain/batches/flowImagePromptSnapshot";
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import { activateFlowImageGenerate } from "../../src/platforms/flow/images";
@@ -66,8 +71,20 @@ function discovery(
     generate: "identified" as const,
     observation: "ready" as const,
     baseline: {
-      regionLabel: "Generated results",
-      mediaCount: 2,
+      kind: "flow_rendered_tile_candidates" as const,
+      workspaceTag: "flow-project-page" as const,
+      renderedTileCount: 2,
+      candidateIds: ["a".repeat(64), "b".repeat(64)],
+      candidateMultiplicity: [
+        { candidateId: "a".repeat(64), renderedCopies: 1 },
+        { candidateId: "b".repeat(64), renderedCopies: 1 },
+      ],
+      repeatedCandidateCount: 0,
+      unidentifiedImageCount: 0,
+      unrelatedImageCount: 0,
+      virtualized: false,
+      loadingSignalCount: 0,
+      captureGaps: [],
       capturedAt: 1_010,
     },
     buttonObjectId: "generate-button",
@@ -106,6 +123,8 @@ function makePort(
     };
   } = {},
 ) {
+  const productionObservationSupported =
+    options.productionObservationSupported ?? true;
   const selected = options.selection ?? {
     tabId: selectedTab.id,
     canonicalTarget: selectedTab.canonicalTarget,
@@ -155,7 +174,8 @@ function makePort(
       observationBindings.push(binding);
       if (options.observationArm === "failed")
         throw new Error("fixture observer start failed");
-      if (options.productionObservationSupported) {
+      if (options.observationArm === "unsupported") return "unsupported";
+      if (productionObservationSupported) {
         if (options.omitProductionArmReceipt) return "started";
         return {
           status: "started",
@@ -171,20 +191,54 @@ function makePort(
             baseline: {
               completeForRenderedScope: true,
               virtualized: false,
-              tileCount: 0,
-              mediaCandidateCount: 0,
+              tileCount: 2,
+              mediaCandidateCount: 2,
               identityCandidateCount: 0,
               identityCandidatesTruncated: false,
               unidentifiedImageCount: 0,
               lifecycleSignalCount: 0,
               resourceEventCount: 0,
               captureGaps: [],
+              candidateIds: ["a".repeat(64), "b".repeat(64)],
+              tileTokens: ["tile-1", "tile-2"],
+              candidateTileRelationships: [
+                { candidateId: "a".repeat(64), tileToken: "tile-1" },
+                { candidateId: "b".repeat(64), tileToken: "tile-2" },
+              ],
               ...options.productionArmBaselineOverrides,
             },
           },
         };
       }
-      return options.observationArm ?? "started";
+      return {
+        status: "started",
+        receipt: {
+          capturedAt: 1_050,
+          sourceBaselineFingerprint: (
+            binding as { sourceBaselineFingerprint: string }
+          ).sourceBaselineFingerprint,
+          captureFingerprint: "a".repeat(64),
+          listenerRootCount: 1,
+          baseline: {
+            completeForRenderedScope: true,
+            virtualized: false,
+            tileCount: 2,
+            mediaCandidateCount: 2,
+            identityCandidateCount: 0,
+            identityCandidatesTruncated: false,
+            unidentifiedImageCount: 0,
+            lifecycleSignalCount: 0,
+            resourceEventCount: 0,
+            captureGaps: [],
+            candidateIds: ["a".repeat(64), "b".repeat(64)],
+            tileTokens: ["tile-1", "tile-2"],
+            candidateTileRelationships: [
+              { candidateId: "a".repeat(64), tileToken: "tile-1" },
+              { candidateId: "b".repeat(64), tileToken: "tile-2" },
+            ],
+          },
+        },
+      };
     },
     stopObservation: async () => {
       lifecycle.push("stop_observation");
@@ -194,7 +248,7 @@ function makePort(
       return "started";
     },
     resumeObservation: async () => "resumed",
-    productionObservationSupported: options.productionObservationSupported,
+    productionObservationSupported,
   } as unknown as FlowPromptEntryPort & {
     captureFrame: () => Promise<typeof frame>;
     readFrame: () => Promise<typeof frame>;
@@ -284,6 +338,12 @@ async function setup(options: Parameters<typeof makePort>[0] = {}) {
     workspaceId: "default",
     promptHash: await sha256Hex(prompt),
     settingsConfirmation,
+    countMode: {
+      mode: "existing_project" as const,
+      countSessionId: "8ca777a9-09a4-4640-82e1-8ece47164153",
+      startingImageCount: 2,
+      userConfirmed: true as const,
+    },
   };
   return {
     repositories,
@@ -372,7 +432,11 @@ describe("P04 durable Flow image Generate attempt", () => {
         projectId: "project_01",
         canonicalTarget: selectedTab.canonicalTarget,
       },
-      baseline: { regionLabel: "Generated results", mediaCount: 2 },
+      baseline: {
+        kind: "flow_rendered_tile_candidates",
+        renderedTileCount: 2,
+        candidateIds: ["a".repeat(64), "b".repeat(64)],
+      },
       resultBaseline: {
         schemaVersion: 1,
         binding: {
@@ -392,10 +456,20 @@ describe("P04 durable Flow image Generate attempt", () => {
           loaderId: frame.loaderId,
         },
         observation: {
-          profile: "flow_labelled_results_region",
+          profile: "flow_rendered_tile_candidates",
           profileVersion: 1,
-          regionLabel: "Generated results",
-          observedMediaCount: 2,
+          renderedTileCount: 2,
+          candidateIds: ["a".repeat(64), "b".repeat(64)],
+          candidateMultiplicity: [
+            { candidateId: "a".repeat(64), renderedCopies: 1 },
+            { candidateId: "b".repeat(64), renderedCopies: 1 },
+          ],
+          repeatedCandidateCount: 0,
+          unidentifiedImageCount: 0,
+          unrelatedImageCount: 0,
+          virtualized: false,
+          loadingSignalCount: 0,
+          captureGaps: [],
         },
         completeness: "incomplete",
         variantDeclaration: {
@@ -516,7 +590,7 @@ describe("P04 durable Flow image Generate attempt", () => {
       sourceBaselineFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       captureFingerprint: "a".repeat(64),
       listenerRootCount: 1,
-      baseline: { completeForRenderedScope: true, tileCount: 0 },
+      baseline: { completeForRenderedScope: true, tileCount: 2 },
     });
     expect(test.fixture.lifecycle.indexOf("start_observation")).toBeLessThan(
       test.fixture.lifecycle.indexOf("activate_observation"),
@@ -541,6 +615,107 @@ describe("P04 durable Flow image Generate attempt", () => {
       sourceBaselineFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       buildId: BUILD_ID,
       protocolVersion: PROTOCOL_VERSION,
+    });
+  });
+
+  it("allows a second prompt with the same settings attestation only after durable count match", async () => {
+    const test = await setup();
+    const first = await test.generate(test.payload);
+    expect(first.state).toBe("dispatched");
+    const firstAttempt = (
+      await test.repositories.getAllFlowImageAttempts()
+    )[0]!;
+    const snapshot: FlowStructuralObservationEvent["snapshot"] = {
+      completeForRenderedScope: true,
+      virtualized: false,
+      unidentifiedImageCount: 0,
+      tiles: [
+        { tileToken: "tile-3", tag: "flow-image-tile", visible: true },
+        { tileToken: "tile-4", tag: "flow-image-tile", visible: true },
+      ],
+      mediaCandidates: [
+        {
+          candidateId: "c".repeat(64),
+          mediaToken: "media-3",
+          tileToken: "tile-3",
+          visible: true,
+          complete: true,
+          naturalWidth: 100,
+          naturalHeight: 100,
+        },
+        {
+          candidateId: "d".repeat(64),
+          mediaToken: "media-4",
+          tileToken: "tile-4",
+          visible: true,
+          complete: true,
+          naturalWidth: 100,
+          naturalHeight: 100,
+        },
+      ],
+      identityCandidates: [],
+      identityCandidatesTruncated: false,
+      resourceEvents: [],
+      lifecycleSignals: [],
+      captureGaps: [],
+    };
+    const observation: FlowStructuralObservationEvent = {
+      kind: "structural_snapshot",
+      attemptId: firstAttempt.attemptId,
+      sessionId: firstAttempt.observationSession!.sessionId,
+      observationId: "00000000-0000-4000-8000-000000000010",
+      sequence: 1,
+      observedAt: 1_200,
+      profile: "flow_tile_candidate_structure_v1",
+      binding: firstAttempt.resultBaseline!.binding,
+      sourceBaselineFingerprint: await sha256Hex(
+        flowImageResultBaselineFingerprintInput(firstAttempt.resultBaseline!),
+      ),
+      captureFingerprint: await sha256Hex(
+        flowStructuralSnapshotFingerprintInput(snapshot),
+      ),
+      snapshot,
+    };
+    await test.repositories.recordFlowImageObservation({
+      attemptId: firstAttempt.attemptId,
+      event: observation,
+      fingerprint: await sha256Hex(JSON.stringify(observation)),
+      receivedAt: 1_201,
+    });
+    const matched = await test.repositories.getFlowImageAttempt(
+      firstAttempt.attemptId,
+    );
+    expect(matched?.countDecision).toMatchObject({
+      status: "count_matched",
+      expectedCumulativeAdditions: 2,
+      expectedTotal: 4,
+      observedEligibleCandidateIds: ["c".repeat(64), "d".repeat(64)],
+    });
+    expect(matched?.resultOutcome?.status).toBe("unknown");
+
+    const replacement = '{"shot_id":"02","scene":"SYNTHETIC next prompt"}';
+    await test.repositories.savePromptBatch({
+      workspaceId: "default",
+      kind: "image",
+      sourceText: replacement,
+    });
+    const second = await test.generate({
+      workspaceId: "default",
+      promptHash: await sha256Hex(replacement),
+      settingsConfirmation,
+      countMode: test.payload.countMode,
+    });
+    expect(second).toMatchObject({ state: "dispatched", activationCount: 1 });
+    const attempts = await test.repositories.getAllFlowImageAttempts();
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]?.settingsConfirmation.confirmationId).toBe(
+      attempts[0]?.settingsConfirmation.confirmationId,
+    );
+    expect(attempts[1]?.settingsConfirmation.declaredVariantCount).toBe(2);
+    expect(attempts[1]?.countDecision).toMatchObject({
+      expectedCumulativeAdditions: 4,
+      expectedTotal: 6,
+      priorMatchedAttemptIds: [firstAttempt.attemptId],
     });
   });
 
@@ -679,7 +854,7 @@ describe("P04 durable Flow image Generate attempt", () => {
     expect(attempt.promptHash).not.toBe(await sha256Hex(replacement));
   });
 
-  it("does not let a replaced shot at the same batch position collide with the active source lock", async () => {
+  it("pauses before another prompt while the prior count decision is unresolved", async () => {
     const test = await setup();
     const first = await test.generate(test.payload);
     const replacement = '{"shot_id":"02","scene":"SYNTHETIC shot two"}';
@@ -696,6 +871,7 @@ describe("P04 durable Flow image Generate attempt", () => {
         ...settingsConfirmation,
         confirmationId: "confirm-shot-two",
       },
+      countMode: test.payload.countMode,
     };
 
     expect(first.state).toBe("dispatched");
@@ -706,18 +882,44 @@ describe("P04 durable Flow image Generate attempt", () => {
     const second = await test.generate(replacementPayload);
     const attempts = await test.repositories.getAllFlowImageAttempts();
     expect(second).toMatchObject({
-      state: "dispatched",
-      activationCount: 1,
-      providerOutcome: "unverified",
+      state: "blocked",
+      code: "count_session_paused",
+      activationCount: 0,
     });
-    expect(test.fixture.activations).toBe(2);
-    expect(attempts).toHaveLength(2);
-    expect(attempts.map((attempt) => attempt.shotId)).toEqual(["1", "2"]);
-    expect(attempts[0]?.promptHash).not.toBe(attempts[1]?.promptHash);
-    expect(attempts[0]?.sourceSnapshotId).not.toBe(
-      attempts[1]?.sourceSnapshotId,
-    );
-    expect(attempts[0]?.activeKey).not.toBe(attempts[1]?.activeKey);
+    expect(test.fixture.activations).toBe(1);
+    expect(attempts).toHaveLength(1);
+  });
+
+  it("does not allow a fresh count session to bypass an unresolved attempt on the same document", async () => {
+    const test = await setup();
+    expect((await test.generate(test.payload)).state).toBe("dispatched");
+    const replacement = '{"shot_id":"02","scene":"SYNTHETIC second shot"}';
+    await test.repositories.savePromptBatch({
+      workspaceId: "default",
+      kind: "image",
+      sourceText: replacement,
+    });
+    const second = await test.generate({
+      workspaceId: "default",
+      promptHash: await sha256Hex(replacement),
+      settingsConfirmation: {
+        ...settingsConfirmation,
+        confirmationId: "confirm-second-session",
+      },
+      countMode: {
+        mode: "existing_project",
+        countSessionId: "a7d4a5c2-f2f2-4fb6-9c51-4cf1777c99c1",
+        startingImageCount: 2,
+        userConfirmed: true,
+      },
+    });
+    expect(second).toMatchObject({
+      state: "blocked",
+      code: "count_session_paused",
+      activationCount: 0,
+    });
+    expect(test.fixture.activations).toBe(1);
+    expect(await test.repositories.getAllFlowImageAttempts()).toHaveLength(1);
   });
 
   it("blocks Generate when the attempt's immutable source snapshot is unavailable", async () => {

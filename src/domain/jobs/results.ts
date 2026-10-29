@@ -151,6 +151,18 @@ export const FlowImageObservationArmReceiptSchema = z
         unidentifiedImageCount: z.number().int().nonnegative().max(1000),
         lifecycleSignalCount: z.number().int().nonnegative().max(500),
         resourceEventCount: z.number().int().nonnegative().max(100),
+        candidateIds: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(500),
+        tileTokens: z.array(z.string().regex(/^tile-[0-9]{1,6}$/)).max(100),
+        candidateTileRelationships: z
+          .array(
+            z
+              .object({
+                candidateId: z.string().regex(/^[0-9a-f]{64}$/),
+                tileToken: z.string().regex(/^tile-[0-9]{1,6}$/),
+              })
+              .strict(),
+          )
+          .max(500),
         captureGaps: z.array(z.string().min(1).max(64)).max(16),
       })
       .strict(),
@@ -456,6 +468,378 @@ export const FlowImageObservationOutcomeSchema = z
 export type FlowImageObservationOutcome = z.infer<
   typeof FlowImageObservationOutcomeSchema
 >;
+
+/** Count-mode declarations are user attestations or observed empty UI scope, never inventory proof. */
+export const FlowImageCountBaselineDeclarationSchema = z
+  .discriminatedUnion("mode", [
+    z
+      .object({
+        mode: z.literal("new_empty_project"),
+        countSessionId: z.string().uuid(),
+        startingImageCount: z.literal(0),
+        provenance: z.literal("observed_empty_ui_scope"),
+      })
+      .strict(),
+    z
+      .object({
+        mode: z.literal("existing_project"),
+        countSessionId: z.string().uuid(),
+        startingImageCount: z.number().int().nonnegative().max(100_000),
+        provenance: z.literal("user_attested_existing_image_count"),
+        inventoryComplete: z.literal(false),
+      })
+      .strict(),
+  ])
+  .and(
+    z
+      .object({
+        projectId: z.string().min(1).max(512),
+        canonicalTarget: z.string().min(1).max(2048),
+        tabId: z.number().int().nonnegative(),
+        documentId: z.string().min(1).max(256),
+        buildId: z.string().min(1).max(128),
+        protocolVersion: z.number().int().positive(),
+        capturedAt: z.number().finite().nonnegative(),
+        baselineCandidateIds: z
+          .array(z.string().regex(/^[0-9a-f]{64}$/))
+          .max(500),
+        baselineTileTokens: z
+          .array(z.string().regex(/^tile-[0-9]{1,6}$/))
+          .max(100),
+        virtualized: z.boolean(),
+        renderedScopeComplete: z.boolean(),
+        captureGaps: z.array(z.string().min(1).max(64)).max(16),
+        priorMatchedAttemptIds: z.array(z.string().min(1).max(128)).max(100),
+        priorMatchedCandidateIds: z
+          .array(z.string().regex(/^[0-9a-f]{64}$/))
+          .max(500),
+        priorDeclaredAdditions: z.number().int().nonnegative().max(100_000),
+      })
+      .strict(),
+  )
+  .superRefine((baseline, context) => {
+    for (const [name, values] of [
+      ["baselineCandidateIds", baseline.baselineCandidateIds],
+      ["baselineTileTokens", baseline.baselineTileTokens],
+      ["priorMatchedAttemptIds", baseline.priorMatchedAttemptIds],
+      ["priorMatchedCandidateIds", baseline.priorMatchedCandidateIds],
+    ] as const) {
+      if (new Set(values).size !== values.length)
+        context.addIssue({
+          code: "custom",
+          message: `duplicate_count_baseline_${name}`,
+        });
+    }
+  });
+export type FlowImageCountBaselineDeclaration = z.infer<
+  typeof FlowImageCountBaselineDeclarationSchema
+>;
+
+export const FlowImageCountModeRequestSchema = z.discriminatedUnion("mode", [
+  z
+    .object({
+      mode: z.literal("new_empty_project"),
+      countSessionId: z.string().uuid(),
+      startingImageCount: z.literal(0),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("existing_project"),
+      countSessionId: z.string().uuid(),
+      startingImageCount: z.number().int().nonnegative().max(100_000),
+      userConfirmed: z.literal(true),
+    })
+    .strict(),
+]);
+export type FlowImageCountModeRequest = z.infer<
+  typeof FlowImageCountModeRequestSchema
+>;
+
+export const FlowImageCountDecisionSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum([
+      "observing",
+      "count_matched",
+      "blocked",
+      "ambiguous",
+      "interrupted",
+    ]),
+    reason: z
+      .enum([
+        "baseline_binding_mismatch",
+        "baseline_incomplete",
+        "existing_project_virtualized",
+        "loading_or_processing_observed",
+        "error_signal_observed",
+        "candidate_ownership_ambiguous",
+        "extra_candidates",
+        "observer_lost",
+        "observer_timeout",
+        "observation_gap",
+        "observation_truncated",
+        "storage_readback_failed",
+        "missing_candidates_timeout",
+      ])
+      .optional(),
+    countSessionId: z.string().uuid(),
+    mode: z.enum(["new_empty_project", "existing_project"]),
+    startingImageCount: z.number().int().nonnegative().max(100_000),
+    declaredVariantCount: z.number().int().positive().max(100),
+    expectedCumulativeAdditions: z.number().int().nonnegative().max(100_000),
+    expectedTotal: z.number().int().nonnegative().max(200_000),
+    priorMatchedAttemptIds: z.array(z.string().min(1).max(128)).max(100),
+    observedEligibleCandidateIds: z
+      .array(z.string().regex(/^[0-9a-f]{64}$/))
+      .max(500),
+    observationSequence: z.number().int().nonnegative().max(128),
+    dispatchBoundaryAt: z.number().finite().nonnegative().optional(),
+    updatedAt: z.number().finite().nonnegative(),
+  })
+  .strict()
+  .refine(
+    (decision) =>
+      decision.expectedTotal ===
+        decision.startingImageCount + decision.expectedCumulativeAdditions &&
+      new Set(decision.observedEligibleCandidateIds).size ===
+        decision.observedEligibleCandidateIds.length,
+    { message: "count_decision_expected_total_mismatch" },
+  );
+export type FlowImageCountDecision = z.infer<
+  typeof FlowImageCountDecisionSchema
+>;
+
+export type FlowImageCountReductionInput = {
+  declaration: FlowImageCountBaselineDeclaration;
+  declaredVariantCount: number;
+  expectedCumulativeAdditions: number;
+  priorMatchedAttemptIds: string[];
+  resultBaseline: FlowImageResultBaseline;
+  events: readonly FlowStructuralObservationEvent[];
+  dispatchBoundaryAt?: number;
+  previous?: FlowImageCountDecision;
+  now: number;
+};
+
+/**
+ * Bounded structural heuristic. `count_matched` is deliberately separate
+ * from FlowImageObservationOutcome and cannot establish provider success.
+ */
+export function reduceFlowImageCountDecision(
+  input: FlowImageCountReductionInput,
+): FlowImageCountDecision {
+  const { declaration, resultBaseline, events } = input;
+  const make = (
+    status: FlowImageCountDecision["status"],
+    reason?: FlowImageCountDecision["reason"],
+    observedEligibleCandidateIds: string[] = input.previous
+      ?.observedEligibleCandidateIds ?? [],
+    observationSequence = input.previous?.observationSequence ?? 0,
+  ): FlowImageCountDecision => ({
+    schemaVersion: 1,
+    status,
+    ...(reason ? { reason } : {}),
+    countSessionId: declaration.countSessionId,
+    mode: declaration.mode,
+    startingImageCount: declaration.startingImageCount,
+    declaredVariantCount: input.declaredVariantCount,
+    expectedCumulativeAdditions: input.expectedCumulativeAdditions,
+    expectedTotal:
+      declaration.startingImageCount + input.expectedCumulativeAdditions,
+    priorMatchedAttemptIds: input.priorMatchedAttemptIds,
+    observedEligibleCandidateIds,
+    observationSequence,
+    ...(input.dispatchBoundaryAt === undefined
+      ? input.previous?.dispatchBoundaryAt === undefined
+        ? {}
+        : { dispatchBoundaryAt: input.previous.dispatchBoundaryAt }
+      : { dispatchBoundaryAt: input.dispatchBoundaryAt }),
+    updatedAt: input.now,
+  });
+
+  if (
+    declaration.projectId !== resultBaseline.binding.projectId ||
+    declaration.tabId !== resultBaseline.binding.tabId ||
+    declaration.canonicalTarget.length === 0 ||
+    declaration.documentId.length === 0 ||
+    declaration.buildId !== resultBaseline.capture.buildId ||
+    declaration.protocolVersion !== resultBaseline.capture.protocolVersion
+  )
+    return make("blocked", "baseline_binding_mismatch");
+  if (
+    !declaration.renderedScopeComplete ||
+    declaration.captureGaps.length > 0 ||
+    resultBaseline.observation.profile === "flow_labelled_results_region" ||
+    (resultBaseline.completeness === "incomplete" &&
+      resultBaseline.observation.profile !== "flow_rendered_tile_candidates")
+  )
+    return make("blocked", "baseline_incomplete");
+  if (resultBaseline.observation.profile === "flow_empty_workspace_ui") {
+    if (
+      declaration.baselineCandidateIds.length !== 0 ||
+      declaration.baselineTileTokens.length !== 0
+    )
+      return make("blocked", "baseline_incomplete");
+  } else if (
+    resultBaseline.observation.profile === "flow_rendered_tile_candidates" &&
+    (JSON.stringify([...new Set(declaration.baselineCandidateIds)].sort()) !==
+      JSON.stringify(
+        [...new Set(resultBaseline.observation.candidateIds)].sort(),
+      ) ||
+      declaration.baselineTileTokens.length !==
+        resultBaseline.observation.renderedTileCount ||
+      declaration.virtualized !== resultBaseline.observation.virtualized)
+  ) {
+    return make("blocked", "baseline_incomplete");
+  }
+  if (declaration.mode === "new_empty_project") {
+    if (
+      declaration.startingImageCount !== 0 ||
+      (resultBaseline.observation.profile !== "flow_empty_workspace_ui" &&
+        (resultBaseline.observation.profile !==
+          "flow_rendered_tile_candidates" ||
+          resultBaseline.observation.renderedTileCount === 0))
+    )
+      return make("blocked", "baseline_incomplete");
+  } else if (
+    declaration.virtualized ||
+    (resultBaseline.observation.profile === "flow_rendered_tile_candidates" &&
+      resultBaseline.observation.virtualized)
+  ) {
+    return make("ambiguous", "existing_project_virtualized");
+  }
+
+  const priorIds = new Set([
+    ...declaration.baselineCandidateIds,
+    ...declaration.priorMatchedCandidateIds,
+  ]);
+  const baselineTiles = new Set(declaration.baselineTileTokens);
+  const seen = new Set(input.previous?.observedEligibleCandidateIds ?? []);
+  let lastSequence = input.previous?.observationSequence ?? 0;
+  if (
+    input.previous &&
+    ["blocked", "ambiguous", "interrupted"].includes(input.previous.status)
+  )
+    return input.previous;
+  if (
+    declaration.mode === "new_empty_project" &&
+    declaration.priorMatchedAttemptIds.length === 0 &&
+    (priorIds.size > 0 ||
+      baselineTiles.size > 0 ||
+      resultBaseline.observation.profile !== "flow_empty_workspace_ui")
+  )
+    return make("blocked", "baseline_incomplete");
+  if (
+    declaration.mode === "new_empty_project" &&
+    declaration.priorMatchedAttemptIds.length > 0 &&
+    (declaration.virtualized ||
+      declaration.priorMatchedCandidateIds.length !==
+        declaration.priorDeclaredAdditions ||
+      declaration.baselineCandidateIds.some(
+        (candidateId) =>
+          !declaration.priorMatchedCandidateIds.includes(candidateId),
+      ))
+  )
+    return make("ambiguous", "candidate_ownership_ambiguous");
+  for (const event of events) {
+    if (event.sequence <= lastSequence) continue;
+    lastSequence = event.sequence;
+    if (event.kind === "observer_lost")
+      return make("interrupted", "observer_lost", [...seen], lastSequence);
+    if (event.kind === "observer_timed_out")
+      return make("interrupted", "observer_timeout", [...seen], lastSequence);
+    if (
+      event.snapshot.captureGaps.length > 0 ||
+      !event.snapshot.completeForRenderedScope ||
+      event.snapshot.identityCandidatesTruncated ||
+      event.snapshot.unidentifiedImageCount > 0
+    )
+      return make("ambiguous", "observation_gap", [...seen], lastSequence);
+    if (event.snapshot.virtualized)
+      return make(
+        "ambiguous",
+        "existing_project_virtualized",
+        [...seen],
+        lastSequence,
+      );
+
+    const visibleTileTokens = new Set(
+      event.snapshot.tiles
+        .filter((tile) => tile.visible)
+        .map((tile) => tile.tileToken),
+    );
+    const relevantSignals = event.snapshot.lifecycleSignals.filter(
+      (signal) =>
+        signal.visible &&
+        (signal.scope === "project" ||
+          (signal.tileToken !== null &&
+            visibleTileTokens.has(signal.tileToken))),
+    );
+    if (
+      relevantSignals.some((signal) => signal.markerKind === "error_candidate")
+    )
+      return make("blocked", "error_signal_observed", [...seen], lastSequence);
+    if (
+      event.snapshot.resourceEvents.some(
+        (resource) =>
+          resource.type === "error" &&
+          resource.tileToken !== null &&
+          visibleTileTokens.has(resource.tileToken),
+      )
+    )
+      return make("blocked", "error_signal_observed", [...seen], lastSequence);
+    if (
+      relevantSignals.some((signal) =>
+        ["loading", "processing", "busy", "progressbar"].includes(
+          signal.markerKind,
+        ),
+      )
+    )
+      return make(
+        "observing",
+        "loading_or_processing_observed",
+        [...seen],
+        lastSequence,
+      );
+
+    if (
+      input.dispatchBoundaryAt === undefined ||
+      event.observedAt <= input.dispatchBoundaryAt
+    )
+      continue;
+    const tiles = new Map(
+      event.snapshot.tiles.map((tile) => [tile.tileToken, tile]),
+    );
+    for (const media of event.snapshot.mediaCandidates) {
+      if (
+        !media.visible ||
+        !media.complete ||
+        media.naturalWidth <= 0 ||
+        media.naturalHeight <= 0
+      )
+        continue;
+      const tile = tiles.get(media.tileToken);
+      if (!tile?.visible) continue;
+      if (priorIds.has(media.candidateId)) continue;
+      if (baselineTiles.has(media.tileToken))
+        return make(
+          "ambiguous",
+          "candidate_ownership_ambiguous",
+          [...seen],
+          lastSequence,
+        );
+      seen.add(media.candidateId);
+    }
+    if (seen.size > input.declaredVariantCount)
+      return make("blocked", "extra_candidates", [...seen], lastSequence);
+  }
+
+  const candidateIds = [...seen].sort();
+  if (candidateIds.length === input.declaredVariantCount)
+    return make("count_matched", undefined, candidateIds, lastSequence);
+  return make("observing", undefined, candidateIds, lastSequence);
+}
 
 export const FlowImageObservationReceiptSchema = z
   .object({

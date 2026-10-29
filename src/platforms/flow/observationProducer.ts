@@ -126,7 +126,26 @@ export async function flowImageObservationProducer(
         protocolVersion: binding.protocolVersion,
         captureFingerprint: await hashText(state.lastFingerprint),
         listenerRoots: state.roots.size,
-        baseline: after,
+        baseline: {
+          completeForRenderedScope: after.completeForRenderedScope,
+          virtualized: after.virtualized,
+          tileCount: after.tiles.length,
+          mediaCandidateCount: after.mediaCandidates.length,
+          identityCandidateCount: after.identityCandidates.length,
+          identityCandidatesTruncated: after.identityCandidatesTruncated,
+          unidentifiedImageCount: after.unidentifiedImageCount,
+          lifecycleSignalCount: after.lifecycleSignals.length,
+          resourceEventCount: after.resourceEvents.length,
+          candidateIds: [
+            ...new Set(after.mediaCandidates.map((item) => item.candidateId)),
+          ],
+          tileTokens: [...new Set(after.tiles.map((item) => item.tileToken))],
+          candidateTileRelationships: after.mediaCandidates.map((item) => ({
+            candidateId: item.candidateId,
+            tileToken: item.tileToken,
+          })),
+          captureGaps: after.captureGaps,
+        },
       };
     } catch (error) {
       stopState(state);

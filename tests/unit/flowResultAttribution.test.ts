@@ -467,5 +467,61 @@ describe("P05.1 Flow result baseline and conservative attribution", () => {
     };
     expect(FlowImageAttemptRecordSchema.safeParse(record).success).toBe(true);
     expect(record).not.toHaveProperty("resultBaseline");
+
+    const countBaseline = {
+      mode: "new_empty_project" as const,
+      countSessionId: "8ca777a9-09a4-4640-82e1-8ece47164153",
+      startingImageCount: 0 as const,
+      provenance: "observed_empty_ui_scope" as const,
+      projectId: "historical-project",
+      canonicalTarget: "https://labs.google/fx/tools/flow/project-fixture",
+      tabId: 1,
+      documentId: "document-fixture",
+      buildId: "historical-build",
+      protocolVersion: 1,
+      capturedAt: 4,
+      baselineCandidateIds: [],
+      baselineTileTokens: [],
+      virtualized: false,
+      renderedScopeComplete: true,
+      captureGaps: [],
+      priorMatchedAttemptIds: [],
+      priorMatchedCandidateIds: [],
+      priorDeclaredAdditions: 0,
+    };
+    const countAttempt = {
+      ...record,
+      documentId: "document-fixture",
+      settingsConfirmation: {
+        ...record.settingsConfirmation,
+        canonicalTarget: countBaseline.canonicalTarget,
+        declaredVariantCount: 3,
+      },
+      countSessionId: countBaseline.countSessionId,
+      countBaseline,
+      countDecision: {
+        schemaVersion: 1 as const,
+        status: "observing" as const,
+        countSessionId: countBaseline.countSessionId,
+        mode: countBaseline.mode,
+        startingImageCount: 0,
+        declaredVariantCount: 3,
+        expectedCumulativeAdditions: 3,
+        expectedTotal: 3,
+        priorMatchedAttemptIds: [],
+        observedEligibleCandidateIds: [],
+        observationSequence: 0,
+        updatedAt: 4,
+      },
+    };
+    expect(FlowImageAttemptRecordSchema.safeParse(countAttempt).success).toBe(
+      true,
+    );
+    expect(
+      FlowImageAttemptRecordSchema.safeParse({
+        ...countAttempt,
+        countBaseline: { ...countBaseline, documentId: "other-document" },
+      }).success,
+    ).toBe(false);
   });
 });
