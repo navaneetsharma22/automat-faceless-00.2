@@ -1,0 +1,79 @@
+<!doctype html>
+<!-- Synthetic only: no captured Flow card markup or live IDs. -->
+<html lang="en">
+  <head>
+    <style>
+      flow-project-page,
+      flow-base-prompt-box,
+      flow-rich-text-editor,
+      flow-image-result-card {
+        display: block;
+      }
+      flow-project-page,
+      flow-image-result-card {
+        padding: 12px;
+      }
+      img {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+      }
+      nav {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <nav role="navigation">
+      <button aria-label="Synthetic account action">account</button>
+    </nav>
+    <flow-project-page>
+      <flow-base-prompt-box>
+        <flow-rich-text-editor>
+          <div contenteditable="true" role="textbox" aria-label="Prompt">
+            private prompt text must never be emitted
+          </div>
+        </flow-rich-text-editor>
+      </flow-base-prompt-box>
+      <main>
+        <section data-testid="generated-results">
+          <flow-image-result-card
+            data-result-id="result-private-fixture-01"
+            data-asset-id="asset-shared-fixture"
+            data-generation-id="generation-private-fixture-01"
+            data-variant-id="variant-private-fixture-01"
+            data-state="complete"
+          >
+            <img alt="synthetic thumbnail one" />
+            <img alt="synthetic thumbnail two" />
+          </flow-image-result-card>
+          <flow-image-result-card
+            data-result-id="result-private-fixture-01-rerender"
+            data-asset-id="asset-shared-fixture"
+            data-generation-id="generation-private-fixture-01"
+            data-variant-id="variant-private-fixture-01"
+            data-state="completed"
+          >
+            <img alt="synthetic rerendered thumbnail" />
+          </flow-image-result-card>
+          <flow-image-result-card
+            data-result-id="result-private-fixture-02"
+            data-generation-id="generation-private-fixture-01"
+            data-variant-id="variant-private-fixture-02"
+            data-state="complete"
+          >
+            <img alt="synthetic distinct variant" />
+          </flow-image-result-card>
+          <flow-image-result-card
+            data-result-id="result-private-fixture-error"
+            data-state="error"
+            role="alert"
+          >
+            synthetic error marker
+            <div role="progressbar" data-state="loading" hidden></div>
+          </flow-image-result-card>
+        </section>
+      </main>
+    </flow-project-page>
+  </body>
+</html>

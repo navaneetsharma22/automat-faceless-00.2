@@ -22,4 +22,5 @@ node_modules/
 !docs/evidence/prompt-preservation.md
 !docs/evidence/prompt-sample-profile.md
 !docs/evidence/flow-one-image.md
+!docs/evidence/flow-completion.md
 config.bat

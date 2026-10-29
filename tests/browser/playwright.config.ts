@@ -19,7 +19,12 @@ const installedChromium =
 
 export default defineConfig({
   testDir: ".",
-  testMatch: ["flowPromptEntry.spec.ts", "flowGenerateOnce.spec.ts"],
+  testMatch: [
+    "flowPromptEntry.spec.ts",
+    "flowGenerateOnce.spec.ts",
+    "flowPopulatedResultsDiagnostic.spec.ts",
+    "flowImageTileDiagnostic.spec.ts",
+  ],
   reporter: "list",
   use: {
     browserName: "chromium",

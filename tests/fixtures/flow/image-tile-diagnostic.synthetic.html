@@ -1,0 +1,79 @@
+<!doctype html>
+<!-- Synthetic fixture only. Identifiers and structure are invented test data. -->
+<html lang="en">
+  <head>
+    <style>
+      flow-project-page,
+      flow-base-prompt-box,
+      flow-rich-text-editor,
+      flow-grid-tile-container,
+      flow-tile-container,
+      flow-image-tile,
+      cdk-virtual-scroll-viewport {
+        display: block;
+      }
+      flow-project-page,
+      flow-image-tile {
+        padding: 8px;
+      }
+      img {
+        width: 32px;
+        height: 32px;
+      }
+    </style>
+  </head>
+  <body>
+    <flow-project-page>
+      <flow-base-prompt-box>
+        <flow-rich-text-editor>
+          <div contenteditable="true" role="textbox" aria-label="Prompt">
+            synthetic private prompt text
+          </div>
+        </flow-rich-text-editor>
+      </flow-base-prompt-box>
+      <cdk-virtual-scroll-viewport>
+        <flow-grid-tile-container role="group">
+          <flow-tile-container>
+            <flow-image-tile data-asset-id="synthetic-asset-alpha">
+              <div
+                id="synthetic-dom-hotbar-host"
+                aria-labelledby="synthetic-toolbar-label"
+              >
+                <div class="tile-control-wrapper">
+                  <div class="tile-control-wrapper">
+                    <div class="tile-control-wrapper">
+                      <div class="tile-control-wrapper">
+                        <div class="tile-control-wrapper">
+                          <div class="tile-control-wrapper">
+                            <div class="tile-control-wrapper">
+                              <div class="tile-control-wrapper">
+                                <flow-image-hotbar
+                                  data-testid="synthetic-hotbar"
+                                >
+                                  <button aria-label="Synthetic account action">
+                                    hidden label
+                                  </button>
+                                </flow-image-hotbar>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <img alt="synthetic thumbnail alpha" />
+            </flow-image-tile>
+            <flow-image-tile
+              data-asset-id="synthetic-asset-beta"
+              data-variant-id="synthetic-variant-beta"
+            >
+              <img alt="synthetic thumbnail beta" />
+            </flow-image-tile>
+          </flow-tile-container>
+        </flow-grid-tile-container>
+      </cdk-virtual-scroll-viewport>
+    </flow-project-page>
+  </body>
+</html>
