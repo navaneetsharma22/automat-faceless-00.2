@@ -2,7 +2,7 @@
 
 ## Current route compatibility correction — 28 October 2026
 
-Current status: **route/capability correction OFFLINE_VERIFIED; corrected Flow/Vids connections USER_REPORTED_PASS**. The user now reports both providers connect after the shared parser fix. Loaded build/document identities were not independently observed. Earlier screenshots and browser reports retain their tested scope; historical pending-retest entries below are superseded by this user report. The subsequent P04.3 composer-discovery failure is an entry-readiness issue and does not establish a handshake failure. No provider tab was inspected or acted on by the agent in this follow-up.
+Current status: **route/capability correction OFFLINE_VERIFIED; Flow/Vids connection success USER_REPORTED_PASS; exact packaged account-route handshake NOT independently verified**. The user reports both providers connect after the shared parser fix and later reported a successful Flow fill/readback in the existing composer (see [P04.3 evidence](flow-one-image.md#user-reported-flow-fillreadback-and-p042-contenteditable-integration--29-october-2026)). Those reports and earlier screenshots retain their tested scope; loaded build/document identities were not independently observed. The route correction remains bound to the explicitly selected tab and the canonical account-prefixed route. No provider tab was inspected, changed, refreshed, or navigated by the agent in this conflict-resolution task.
 
 ### Confirmed source-level mismatch
 
@@ -210,4 +210,4 @@ Final automated verification: Vitest **16 files / 162 tests PASS**; local synthe
 
 ### Subsequent user connection report
 
-**USER_REPORTED_PASS:** the user reports Flow and Vids now connect successfully after the shared route-parser fix. This supersedes the pending user connection-retest gate above; it is not independent runtime inspection. The loaded build ID and browser document/connector identity were not supplied in this report. The user then reported a fill-only `composer-discovery` failure before text entry; see [current P04.3 evidence](flow-one-image.md#current-p043-discovery-failure---28-october-2026). The shared account-prefixed route contract is preserved. No application connection change or provider action was made in this follow-up.
+**USER_REPORTED_PASS:** the user reports Flow and Vids now connect successfully after the shared route-parser fix. This is not independent runtime inspection; the loaded build ID and browser document/connector identity were not supplied. The user subsequently supplied a read-only composer diagnostic, then reported an exact successful Flow fill/readback; see [P04.3 evidence](flow-one-image.md#user-reported-flow-fillreadback-and-p042-contenteditable-integration--29-october-2026). The shared account-prefixed route contract is preserved. No application connection change or provider action was made by the agent in this follow-up.

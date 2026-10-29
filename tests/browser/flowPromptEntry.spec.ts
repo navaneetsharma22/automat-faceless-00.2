@@ -161,7 +161,12 @@ test.describe("Flow composer local DOM fixtures only", () => {
           (expression) => (0, eval)(expression),
           expressions[1]!,
         ),
-      ).toMatchObject({ composer: "unsupported", generationAvailable: false });
+      ).toMatchObject({
+        composer: "identified",
+        exactPrompt: false,
+        generate: "missing",
+        generationAvailable: false,
+      });
     } finally {
       await bundle.close();
     }
@@ -296,13 +301,18 @@ test.describe("Flow composer local DOM fixtures only", () => {
             .localComposerEvents,
       ),
     ).toEqual({ clicks: 0, submits: 0 });
-    // This entry fix does not enable the P04.2 Generate adapter on rich editors.
+    // Contenteditable can be preflighted, but this fixture has no Generate or results region.
     expect(
       await page.evaluate(
         (expression) => (0, eval)(expression),
         flowImageRuntimeExpression(source),
       ),
-    ).toMatchObject({ composer: "unsupported", generationAvailable: false });
+    ).toMatchObject({
+      composer: "identified",
+      exactPrompt: true,
+      generate: "missing",
+      generationAvailable: false,
+    });
   });
 
   test("rich editor rejects a bare empty paragraph or unsupported markup before input", async ({

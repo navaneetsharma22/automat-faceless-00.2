@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import {
   activateFlowImageGenerate,
@@ -13,6 +15,10 @@ import type { ProviderTab } from "../../src/platforms/shared/contracts";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 
 const source = '{"shot_id":"01","scene":"SYNTHETIC local P04.2 fixture"}';
+const observedFixturePath = resolve(
+  process.cwd(),
+  "tests/fixtures/flow/observed-composer.synthetic.html",
+);
 const selectedTab: ProviderTab = {
   id: 41,
   title: "Local Flow fixture",
@@ -35,17 +41,20 @@ const settingsConfirmation: FlowSettingsConfirmation = {
 };
 
 async function installImageComposer(page: Page) {
-  await page.setContent(`<!doctype html>
-    <html><body>
-      <main><section role="region" aria-label="Generated results"><img alt="Existing local fixture result" /></section></main>
-      <form role="group" aria-label="Image prompt composer">
-        <textarea aria-label="Prompt text" placeholder="What do you want to create?"></textarea>
-        <button type="button" aria-label="Generate">Generate</button>
-      </form>
-    </body></html>`);
+  await page.setContent(await readFile(observedFixturePath, "utf8"));
+  await page.evaluate(() => {
+    const results = document.createElement("main");
+    results.innerHTML =
+      '<section role="region" aria-label="Generated results"><img alt="Existing local fixture result" /></section>';
+    document.body.prepend(results);
+    const submit = document.querySelector(
+      "flow-base-prompt-box button:last-of-type",
+    );
+    submit?.setAttribute("aria-label", "Generate");
+  });
   await page.addStyleTag({
     content:
-      "body{font:16px sans-serif}main,section{min-height:40px}img{width:20px;height:20px}textarea{display:block;min-height:80px}button{display:block}",
+      "body{font:16px sans-serif}main,section{display:block;min-height:40px}img{width:20px;height:20px}flow-base-prompt-box,flow-rich-text-editor{display:block}[contenteditable]{display:block;min-height:80px;white-space:pre-wrap}button{display:block}",
   });
 }
 
@@ -54,6 +63,14 @@ async function inspectLocalComposer(page: Page, expected: string) {
     (expression) => (0, eval)(expression),
     flowImageRuntimeExpression(expected),
   ) as Promise<FlowGenerateDiscovery>;
+}
+
+async function inspectSemanticGenerateButton(page: Page) {
+  const expression = flowImageRuntimeExpression(source, "button");
+  return page.evaluate((runtime) => {
+    const button = (0, eval)(runtime) as HTMLElement | null;
+    return button?.getAttribute("aria-label") ?? null;
+  }, expression);
 }
 
 async function createLocalAttempt(
@@ -146,7 +163,9 @@ async function createLocalAttempt(
       );
     },
     buttonPosition: async (_tabId: number, buttonId: string) => {
-      const buttons = page.locator('form button[aria-label="Generate"]');
+      const buttons = page.locator(
+        'flow-base-prompt-box button[aria-label="Generate"]',
+      );
       return buttonId === "local-generate-button" &&
         (await buttons.count()) === 1
         ? { x: 10, y: 10 }
@@ -160,10 +179,12 @@ async function createLocalAttempt(
     repositories,
     port,
     fillPrompt: async (expectedSource) => {
-      const editor = page.locator('textarea[aria-label="Prompt text"]');
+      const editor = page.locator(
+        'flow-base-prompt-box [contenteditable="true"][role="textbox"]',
+      );
       await editor.focus();
       await page.keyboard.insertText(expectedSource);
-      const actual = await editor.inputValue();
+      const actual = await editor.innerText();
       const matches = actual === expectedSource;
       return {
         fillVerified: matches,
@@ -191,6 +212,37 @@ async function createLocalAttempt(
 }
 
 test.describe("P04.2 local browser Flow fixtures only", () => {
+  test("contenteditable composer preserves exact text and uniquely binds Generate", async ({
+    page,
+  }) => {
+    await installImageComposer(page);
+    const editor = page.locator(
+      'flow-base-prompt-box [contenteditable="true"][role="textbox"]',
+    );
+    await editor.focus();
+    await page.keyboard.insertText(source);
+
+    expect(await inspectLocalComposer(page, source)).toMatchObject({
+      composer: "identified",
+      exactPrompt: true,
+      actualCodeUnits: source.length,
+      generate: "identified",
+      observation: "ready",
+      baseline: { regionLabel: "Generated results", mediaCount: 1 },
+    });
+    expect(await inspectSemanticGenerateButton(page)).toBe("Generate");
+
+    await page
+      .locator('flow-base-prompt-box button[aria-label="Generate"]')
+      .evaluate((button) => button.after(button.cloneNode(true)));
+    expect(await inspectLocalComposer(page, source)).toMatchObject({
+      composer: "identified",
+      exactPrompt: true,
+      generate: "ambiguous",
+    });
+    expect(await inspectSemanticGenerateButton(page)).toBeNull();
+  });
+
   test("successful local preflight permits exactly one activation pair", async ({
     page,
   }) => {
@@ -217,6 +269,24 @@ test.describe("P04.2 local browser Flow fixtures only", () => {
     expect(result).toMatchObject({
       state: "failed-before-dispatch",
       code: "observation_missing",
+      activationCount: 0,
+    });
+    expect(fixture.mouseEvents).toEqual([]);
+  });
+
+  test("ambiguous semantic Generate controls block before dispatch", async ({
+    page,
+  }) => {
+    const fixture = await createLocalAttempt(page);
+    await page
+      .locator('flow-base-prompt-box button[aria-label="Generate"]')
+      .evaluate((button) => button.after(button.cloneNode(true)));
+
+    const result = await fixture.generate(fixture.payload);
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      code: "generate_ambiguous",
       activationCount: 0,
     });
     expect(fixture.mouseEvents).toEqual([]);

@@ -137,3 +137,13 @@ State changed files and resulting behaviour, focused checks with actual output, 
 ## Current task boundary
 
 This card is a future work specification. Its presence does not authorize running live provider actions now. Follow the actual user task's authorization. Start only the requested subphase, not every row in this card.
+
+## Latest P04.2/P04.3 handoff — 29 October 2026
+
+The user reports a successful live **fill/readback only**: CDP `Input.insertText`, expected/actual length 15,889, exact SHA-256 `f452ef3df4f0e7281560c52f980378df7f3cbfbc1b461353be1e46294a664a8b`, immediate and settled match, no mismatch, and no Generate activation. This is user-provided screenshot evidence, not an independently inspected browser run; project and loaded package IDs for that fill were not provided.
+
+P04.2 review found and fixed its contenteditable adapter gap. The one-shot handler now preflights the observed `flow-base-prompt-box` containing `flow-rich-text-editor` with its `div[contenteditable=true][role=textbox]`, validates exact saved prompt content, and resolves a unique enabled semantic Generate control within the composer. It keeps source/project/top-document/settings/dispatch-intent/duplicate/no-replay guards. Local fixture coverage uses the observed structure and verifies unique control acceptance, ambiguity blocking, and one-shot safeguards. No live Generate was sent.
+
+Checks: focused Vitest **5 files / 72 PASS**; local Chromium Playwright **29 PASS**; typecheck and `tsc -b` **PASS**; changed-file formatting **PASS**; production package **PASS** (Vite 8.3.5, 163 modules); lint, standalone connector, manifest and shared build-ID checks **PASS**. Package ID: **`automat-faceless-0.1.0-mvsy0hw6`**. See [evidence](../docs/evidence/flow-one-image.md#user-reported-flow-fillreadback-and-p042-contenteditable-integration--29-october-2026) for details and one-shot steps.
+
+**Next eligible action:** one explicit user-triggered **Generate once in Flow** after loading/verifying that package ID and confirming the current project, unchanged saved source, and existing manual settings attestation. Do not run the separate fill-only action. One-shot preparation rereads the editor and must treat the exact existing prompt as already matching (`inputMethod=none`) without text insertion; the handler verifies the saved source/snapshot itself. Live Generate accessible name and results observer are not yet verified; any missing/ambiguous/mismatched preflight must stop before activation. An uncertain attempt must not be replayed. P04.2 live dispatch/provider outcome and P05 terminal completion remain unverified; P04.4/P05 are not started.

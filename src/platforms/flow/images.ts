@@ -61,7 +61,11 @@ export function flowImageRuntime(
     editor instanceof HTMLDivElement &&
     editor.getAttribute("contenteditable") === "true" &&
     editor.getAttribute("role") === "textbox" &&
-    Boolean(richHost && richBoundary && richHost.closest("flow-base-prompt-box") === richBoundary);
+    Boolean(
+      richHost &&
+      richBoundary &&
+      richHost.closest("flow-base-prompt-box") === richBoundary,
+    );
   if (!nativeEditor && !richEditor) {
     return {
       composer: "unsupported",
