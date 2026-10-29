@@ -24,8 +24,9 @@ const prompt = '{"shot_id":"01","scene":"offline fixture"}';
 
 async function makeFixture(
   variantCount = 2,
-  profileSupport: "fixture_supported" | "production_observation_only" =
-    "fixture_supported",
+  profileSupport:
+    "fixture_supported" | "production_observation_only" = "fixture_supported",
+  leaveDispatchIntent = false,
 ) {
   const repositories = new ExtensionRepositories(
     createMemoryRepositoryDatabase(),
@@ -176,17 +177,19 @@ async function makeFixture(
     observationSession: session,
     resultOutcome: awaiting,
   });
-  await repositories.transitionFlowImageAttempt({
-    attemptId: attempt.attemptId,
-    expected: "dispatch-intent",
-    next: "dispatched",
-    event: {
-      stage: "dispatch",
-      at: 1_050,
-      method: "CDP Input.dispatchMouseEvent",
-      code: "activation_pair_sent",
-    },
-  });
+  if (!leaveDispatchIntent) {
+    await repositories.transitionFlowImageAttempt({
+      attemptId: attempt.attemptId,
+      expected: "dispatch-intent",
+      next: "dispatched",
+      event: {
+        stage: "dispatch",
+        at: 1_050,
+        method: "CDP Input.dispatchMouseEvent",
+        code: "activation_pair_sent",
+      },
+    });
+  }
   const port = {
     getSelection: async () => ({ tabId, canonicalTarget }),
     getTab: async () => ({
@@ -340,7 +343,7 @@ async function structuralEvent(
 
 describe("P05.2 attempt-bound Flow observation", () => {
   it("durably records production structural observations as unknown without result links", async () => {
-    const fixture = await makeFixture(2, "production_observation_only");
+    const fixture = await makeFixture(2, "production_observation_only", true);
     const observation = await structuralEvent(fixture.attempt, 1);
     const accepted = await send(fixture, observation);
     expect(accepted).toMatchObject({
@@ -358,6 +361,7 @@ describe("P05.2 attempt-bound Flow observation", () => {
       reason: "ownership_ambiguous",
       declaredVariantCount: 2,
     });
+    expect(stored?.state).toBe("dispatch-intent");
     expect(await send(fixture, observation)).toMatchObject({
       accepted: true,
       duplicate: true,
@@ -367,11 +371,17 @@ describe("P05.2 attempt-bound Flow observation", () => {
   it("turns production observer detach and timeout into explicit unknown outcomes", async () => {
     const detached = await makeFixture(1, "production_observation_only");
     expect(
-      await send(detached, await structuralEvent(detached.attempt, 1, "observer_lost")),
+      await send(
+        detached,
+        await structuralEvent(detached.attempt, 1, "observer_lost"),
+      ),
     ).toMatchObject({ accepted: true, outcome: "unknown" });
     expect(
-      (await detached.repositories.getFlowImageAttempt(detached.attempt.attemptId))
-        ?.observationSession?.status,
+      (
+        await detached.repositories.getFlowImageAttempt(
+          detached.attempt.attemptId,
+        )
+      )?.observationSession?.status,
     ).toBe("lost");
 
     const timedOut = await makeFixture(1, "production_observation_only");
@@ -382,13 +392,49 @@ describe("P05.2 attempt-bound Flow observation", () => {
       ),
     ).toMatchObject({ accepted: true, outcome: "unknown" });
     expect(
-      (await timedOut.repositories.getFlowImageAttempt(timedOut.attempt.attemptId))
-        ?.observationSession?.status,
+      (
+        await timedOut.repositories.getFlowImageAttempt(
+          timedOut.attempt.attemptId,
+        )
+      )?.observationSession?.status,
     ).toBe("timed_out");
     expect(
-      (await timedOut.repositories.getFlowImageAttempt(timedOut.attempt.attemptId))
-        ?.resultOutcome,
+      (
+        await timedOut.repositories.getFlowImageAttempt(
+          timedOut.attempt.attemptId,
+        )
+      )?.resultOutcome,
     ).toMatchObject({ status: "unknown", reason: "observation_timeout" });
+  });
+
+  it("rejects a structural receipt for a different durable source baseline", async () => {
+    const fixture = await makeFixture(1, "production_observation_only");
+    const observation = await structuralEvent(fixture.attempt, 1);
+    observation.sourceBaselineFingerprint = "c".repeat(64);
+    expect(await send(fixture, observation)).toMatchObject({
+      accepted: false,
+      code: "observation_source_baseline_mismatch",
+    });
+    expect(
+      (
+        await fixture.repositories.getFlowImageAttempt(
+          fixture.attempt.attemptId,
+        )
+      )?.resultOutcome,
+    ).toMatchObject({ status: "unknown", reason: "binding_changed" });
+  });
+
+  it("resumes an existing production observation after restart without activation", async () => {
+    const fixture = await makeFixture(1, "production_observation_only");
+    const result = await fixture.handler.resumeReadOnlyAfterWorkerRestart();
+    expect(result).toEqual({ resumed: 1, unknown: 0 });
+    expect(
+      (
+        await fixture.repositories.getFlowImageAttempt(
+          fixture.attempt.attemptId,
+        )
+      )?.observationSession,
+    ).toMatchObject({ status: "active", reconciliationCount: 1 });
   });
   it("keeps a declared x1 pending through processing and completes on one terminal identity", async () => {
     const fixture = await makeFixture(1);
