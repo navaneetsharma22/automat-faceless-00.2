@@ -22,6 +22,11 @@ import {
   type FlowImageAttemptRecord,
 } from "../../domain/jobs/attempt";
 import { flowImagePromptSnapshotId } from "../../domain/batches/flowImagePromptSnapshot";
+import {
+  flowResultBaselineMatchesAttempt,
+  flowResultBaselineMatchesProfile,
+} from "../../domain/jobs/results";
+import { captureFlowResultBaseline } from "../../platforms/flow/observer";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import {
   ActiveFlowImageAttemptError,
@@ -498,6 +503,26 @@ export function createFlowImageGenerateOnce(
         );
       }
       const baseline = discovery.baseline!;
+      const resultBaseline = captureFlowResultBaseline(
+        baseline,
+        {
+          workspaceId: attempt.workspaceId,
+          batchId: attempt.batchId,
+          itemId: attempt.itemId,
+          sourceHash: attempt.promptHash,
+          sourceSnapshotId: attempt.sourceSnapshotId,
+          attemptId: attempt.attemptId,
+          provider: attempt.provider,
+          projectId: attempt.projectId,
+          tabId: attempt.tabId,
+          frameId: attempt.frameId,
+          loaderId: attempt.loaderId,
+        },
+        {
+          buildId: attempt.buildId,
+          protocolVersion: attempt.protocolVersion,
+        },
+      );
       const buttonId = discovery.buttonObjectId!;
       currentStage = "preflight";
       if (!(await currentFlowBinding(port, selected, target, frame))) {
@@ -545,7 +570,17 @@ export function createFlowImageGenerateOnce(
           code: "dispatch_intent_persisted",
         },
         baseline,
+        resultBaseline,
       });
+      if (
+        !flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt) ||
+        !flowResultBaselineMatchesProfile(attempt.resultBaseline, baseline)
+      ) {
+        return failBefore(
+          "result_baseline_binding_mismatch",
+          "The persisted result baseline no longer matches this attempt and observation profile. No Generate input was sent.",
+        );
+      }
 
       currentStage = "observer";
       if (
@@ -569,6 +604,15 @@ export function createFlowImageGenerateOnce(
         return failBefore(
           "generate_control_lost",
           "The Generate control was lost before activation. No Generate input was sent.",
+        );
+      }
+      if (
+        !flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt) ||
+        !flowResultBaselineMatchesProfile(attempt.resultBaseline, baseline)
+      ) {
+        return failBefore(
+          "result_baseline_binding_mismatch",
+          "The result baseline binding changed before activation. No Generate input was sent.",
         );
       }
 

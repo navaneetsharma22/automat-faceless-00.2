@@ -1,3 +1,5 @@
+import type { FlowImageResultBaseline } from "./results";
+
 export const FLOW_IMAGE_ATTEMPT_STATES = [
   "preparing",
   "verified",
@@ -70,6 +72,8 @@ export type FlowImageAttemptRecord = {
   };
   state: FlowImageAttemptState;
   baseline?: FlowImageAttemptBaseline;
+  /** Optional for compatibility with attempts written before P05.1. */
+  resultBaseline?: FlowImageResultBaseline;
   events: FlowImageAttemptEvent[];
   createdAt: number;
   updatedAt: number;

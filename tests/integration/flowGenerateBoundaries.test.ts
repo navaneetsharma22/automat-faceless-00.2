@@ -79,6 +79,7 @@ function makePort(
     frame?: typeof frame;
     generated?: ReturnType<typeof discovery>;
     recheck?: boolean;
+    baselineChangesDuringRecheck?: boolean;
     position?: { x: number; y: number } | undefined;
     activation?: {
       complete: boolean;
@@ -115,7 +116,8 @@ function makePort(
       return liveFrame;
     },
     inspectGenerate: async () => options.generated ?? discovery(),
-    recheckGenerate: async () => options.recheck ?? true,
+    recheckGenerate: async () =>
+      options.baselineChangesDuringRecheck ? false : (options.recheck ?? true),
     buttonPosition: async () => options.position ?? { x: 10, y: 20 },
     activate: async () => {
       activations += 1;
@@ -265,7 +267,36 @@ describe("P04 durable Flow image Generate attempt", () => {
         canonicalTarget: selectedTab.canonicalTarget,
       },
       baseline: { regionLabel: "Generated results", mediaCount: 2 },
+      resultBaseline: {
+        schemaVersion: 1,
+        binding: {
+          workspaceId: "default",
+          batchId: test.saved.batch.id,
+          itemId: test.saved.items[0]?.id,
+          sourceHash: await sha256Hex(prompt),
+          sourceSnapshotId: flowImagePromptSnapshotId(
+            test.saved.items[0]!.id,
+            await sha256Hex(prompt),
+          ),
+          attemptId: "attempt-1",
+          provider: "Flow",
+          projectId: "project_01",
+          tabId: selectedTab.id,
+          frameId: frame.frameId,
+          loaderId: frame.loaderId,
+        },
+        observation: {
+          profile: "flow_labelled_results_region",
+          profileVersion: 1,
+          regionLabel: "Generated results",
+          observedMediaCount: 2,
+        },
+        completeness: "incomplete",
+        variantDeclaration: { status: "absent" },
+        existingResultIdentities: [],
+      },
     });
+    expect(attempts[0]?.resultBaseline?.excludedObservations.count).toBe(2);
     expect("prompt" in attempts[0]!).toBe(false);
     expect(
       (await test.repositories.getPromptBatch("default", "image"))?.items[0]
@@ -279,6 +310,52 @@ describe("P04 durable Flow image Generate attempt", () => {
       rawJsonBody: prompt,
       promptHash: await sha256Hex(prompt),
     });
+  });
+
+  it("has the bound result baseline durably stored before the activation call", async () => {
+    const test = await setup();
+    const activate = test.fixture.port.activate.bind(test.fixture.port);
+    let stateAtActivation: string | undefined;
+    let resultBaselineAtActivation: unknown;
+    test.fixture.port.activate = async (...args) => {
+      const attempt = (await test.repositories.getAllFlowImageAttempts())[0];
+      stateAtActivation = attempt?.state;
+      resultBaselineAtActivation = attempt?.resultBaseline;
+      return activate(...args);
+    };
+
+    const result = await test.generate(test.payload);
+    expect(result.state).toBe("dispatched");
+    expect(stateAtActivation).toBe("dispatch-intent");
+    expect(resultBaselineAtActivation).toMatchObject({
+      binding: {
+        attemptId: "attempt-1",
+        sourceSnapshotId: flowImagePromptSnapshotId(
+          test.saved.items[0]!.id,
+          await sha256Hex(prompt),
+        ),
+        projectId: selectedTab.projectId,
+        tabId: selectedTab.id,
+        frameId: frame.frameId,
+        loaderId: frame.loaderId,
+      },
+      variantDeclaration: { status: "absent" },
+    });
+  });
+
+  it("leaves a changed baseline before dispatch failed closed with no baseline-bound intent", async () => {
+    const test = await setup({ baselineChangesDuringRecheck: true });
+    const result = await test.generate(test.payload);
+    const [attempt] = await test.repositories.getAllFlowImageAttempts();
+
+    expect(result).toMatchObject({
+      state: "failed-before-dispatch",
+      code: "final_preflight_changed",
+      activationCount: 0,
+    });
+    expect(attempt?.state).toBe("failed-before-dispatch");
+    expect(attempt).not.toHaveProperty("resultBaseline");
+    expect(test.fixture.activations).toBe(0);
   });
 
   it("keeps the attempted source immutable when the latest saved batch is replaced", async () => {

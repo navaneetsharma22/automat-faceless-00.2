@@ -1,31 +1,12 @@
 import { flowComposerRuntime, readFlowEditorRuntime } from "./composer";
 import type { FlowPromptEntryPort } from "./promptEntry";
+import type { FlowImageBaseline } from "./observer";
 
 export type FlowDocumentBinding = {
   frameId: string;
   loaderId: string;
   url: string;
 };
-
-export type FlowImageGalleryBaseline = {
-  regionLabel: string;
-  mediaCount: number;
-  capturedAt: number;
-};
-
-export type FlowEmptyWorkspaceBaseline = {
-  kind: "flow_empty_workspace_ui";
-  workspaceTag: "flow-project-page";
-  markerPhrase: "Start creating or drop media";
-  markerCount: 1;
-  visibleMediaCount: 0;
-  visibleResultCardCount: 0;
-  loadingMarkerCount: 0;
-  capturedAt: number;
-};
-
-export type FlowImageBaseline =
-  FlowImageGalleryBaseline | FlowEmptyWorkspaceBaseline;
 
 type EmptyWorkspaceInspection =
   | { state: "missing" | "ambiguous" | "unsupported" | "unstable" }

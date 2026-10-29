@@ -4,6 +4,10 @@ import {
   FLOW_IMAGE_ATTEMPT_STATES,
   flowImageAttemptActiveKey,
 } from "../domain/jobs/attempt";
+import {
+  FlowImageResultBaselineSchema,
+  flowResultBaselineMatchesAttempt,
+} from "../domain/jobs/results";
 import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnapshot";
 
 const promptSourceSchema = z
@@ -240,6 +244,7 @@ export const FlowImageAttemptRecordSchema = z
           .strict(),
       ])
       .optional(),
+    resultBaseline: FlowImageResultBaselineSchema.optional(),
     events: z.array(flowImageAttemptEventSchema).min(1).max(24),
     createdAt: z.number().finite().nonnegative(),
     updatedAt: z.number().finite().nonnegative(),
@@ -249,6 +254,12 @@ export const FlowImageAttemptRecordSchema = z
     (attempt) =>
       attempt.sourceSnapshotId ===
       flowImagePromptSnapshotId(attempt.itemId, attempt.promptHash),
+  )
+  .refine(
+    (attempt) =>
+      attempt.resultBaseline === undefined ||
+      flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt),
+    { message: "result_baseline_attempt_binding_mismatch" },
   )
   .refine(
     (attempt) =>

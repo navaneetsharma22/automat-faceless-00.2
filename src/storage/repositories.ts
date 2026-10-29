@@ -636,7 +636,11 @@ export class ExtensionRepositories {
     next: FlowImageAttemptState;
     event: FlowImageAttemptEvent;
     baseline?: FlowImageAttemptRecord["baseline"];
+    resultBaseline?: FlowImageAttemptRecord["resultBaseline"];
   }): Promise<FlowImageAttemptRecord> {
+    if (input.next === "dispatch-intent" && !input.resultBaseline) {
+      throw new FlowImageAttemptValidationError();
+    }
     return this.tables.transaction(["flowImageAttempts"], async () => {
       const current = await this.tables.flowImageAttempts.get(input.attemptId);
       if (
@@ -653,6 +657,9 @@ export class ExtensionRepositories {
           ? { activeKey: undefined }
           : {}),
         ...(input.baseline ? { baseline: input.baseline } : {}),
+        ...(input.resultBaseline
+          ? { resultBaseline: input.resultBaseline }
+          : {}),
         events: [...current.events, input.event],
         updatedAt: input.event.at,
       };
