@@ -679,10 +679,13 @@ export function createFlowImageReadinessCheck(
                   : modeGate.detailCode ===
                       "existing_count_candidate_count_mismatch"
                     ? "The user-attested starting count does not match the number of distinct visible, ready, tile-owned candidates in the stable baseline. Recheck the selected count or project."
-                    : modeGate.detailCode === "baseline_incomplete" ||
-                        modeGate.detailCode === "rendered_scope_incomplete"
-                      ? "The selected mode has no complete stable rendered-scope baseline. Resolve the reported capture gaps or unsupported structure."
-                      : "The selected count mode is blocked by the reported workspace, session, or capture gate. Review the exact eligibility reason before continuing.";
+                    : modeGate.detailCode ===
+                        "baseline_qualifying_count_unavailable"
+                      ? "The stable capture did not return a qualifying ready-candidate count. This measurement is unavailable, not zero; retry readiness after checking the capture path."
+                      : modeGate.detailCode === "baseline_incomplete" ||
+                          modeGate.detailCode === "rendered_scope_incomplete"
+                        ? "The selected mode has no complete stable rendered-scope baseline. Resolve the reported capture gaps or unsupported structure."
+                        : "The selected count mode is blocked by the reported workspace, session, or capture gate. Review the exact eligibility reason before continuing.";
       return {
         diagnostic: "flow-readiness-no-generate-v1",
         status: eligible ? "ready" : "blocked",

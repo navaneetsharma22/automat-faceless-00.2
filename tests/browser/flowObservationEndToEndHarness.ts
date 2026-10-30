@@ -4,15 +4,24 @@ import {
   ExtensionRepositories,
   sha256Hex,
 } from "../../src/storage/repositories";
-import { flowImagePromptSnapshotId } from "../../src/domain/batches/flowImagePromptSnapshot";
+import { createConnectionMessageListener } from "../../src/background/handlers/connections";
 import {
-  flowImageResultBaselineFingerprintInput,
-  reduceFlowImageCountDecision,
-} from "../../src/domain/jobs/results";
-import { captureFlowResultBaseline } from "../../src/platforms/flow/observer";
-import { flowWorkspaceScopeAnalyzer } from "../../src/platforms/flow/workspaceScope";
-import { createChromeFlowImageGenerateOncePort } from "../../src/background/handlers/flow";
+  createChromeFlowImageGenerateOncePort,
+  createFlowImageCountDecisionReadback,
+  createFlowImageGenerateOnceForWorker,
+  createFlowImageReadinessCheck,
+} from "../../src/background/handlers/flow";
 import { createFlowImageObservationHandler } from "../../src/background/handlers/observations";
+import {
+  createConnectionLifecycleService,
+  createReadinessAfterConnectionRevalidation,
+} from "../../src/background/connectionLifecycle";
+import type {
+  ConnectionPort,
+  ConnectionProbeRequest,
+  ProviderTab,
+} from "../../src/platforms/shared/contracts";
+import { createFoundationClient } from "../../src/shared/messageClient";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 
 const projectId = "observation-e2e-project";
@@ -21,368 +30,362 @@ const canonicalTarget = `https://flow.google.com/project/${projectId}`;
 const documentId = "fixture-document";
 const frameId = "fixture-frame";
 const loaderId = "fixture-loader";
-const attemptId = "attempt-observation-e2e-fixture";
-const countSessionId = "290cfdaa-9655-4905-a7b0-54cff19297bb";
-const observationSessionId = "6321c40c-754e-419d-a776-489d816e22c5";
 const extensionId = "fixture-extension";
+const rawJsonBody = '{"shot_id":"05","scene":"synthetic fixture"}';
+const countSessionId = "290cfdaa-9655-4905-a7b0-54cff19297bb";
+const confirmationId = "fixture-confirmation";
+const candidateObjects = new Map<string, Element>();
+const chromeListeners: Array<(...args: never[]) => unknown> = [];
+let connectorScriptSource = "";
+let syntheticActivationCount = 0;
+let debuggerAttached = false;
+let worker: ReturnType<typeof createConnectionMessageListener>;
 let activeFixture: {
+  attemptId: string;
   readReport: () => Promise<Record<string, unknown>>;
-  markSyntheticActivationDispatched: () => Promise<void>;
   close: () => Promise<void>;
 } | null = null;
 
-export async function setupProductionObservationFixture() {
-  try {
-    return await setupProductionObservationFixtureImpl();
-  } catch (error) {
-    const details = error as {
-      schemaIssuePaths?: string[];
-      schemaIssueCodes?: string[];
-    };
-    throw new Error(
-      `fixture_setup_failed_${JSON.stringify({ schemaIssuePaths: details.schemaIssuePaths, schemaIssueCodes: details.schemaIssueCodes, message: String(error) })}`,
-      { cause: error },
-    );
-  }
-}
-
-async function setupProductionObservationFixtureImpl() {
-  const database = new AutomatDatabase(
-    `flow-observation-e2e-${crypto.randomUUID()}`,
-  );
-  await database.open();
-  const repositories = new ExtensionRepositories(
-    createDexieRepositoryDatabase(database),
-  );
-  const now = Date.now;
-  const rawJsonBody = '{"shot_id":"05","scene":"synthetic fixture"}';
-  const promptHash = await sha256Hex(rawJsonBody);
-  const sourceSnapshotId = flowImagePromptSnapshotId("shot-05", promptHash);
-  const sourceSnapshot = {
-    snapshotId: sourceSnapshotId,
-    workspaceId: "default",
-    batchId: "fixture-batch",
-    itemId: "shot-05",
-    promptHash,
-    rawJsonBody,
-    promptCodeUnits: rawJsonBody.length,
-    promptUtf8Bytes: new TextEncoder().encode(rawJsonBody).byteLength,
-    createdAt: now(),
-  };
-  await repositories.saveFlowImagePromptSnapshot(sourceSnapshot);
-  await repositories.recordSelectedTarget({
-    provider: "Flow",
-    tabId,
-    canonicalTarget,
-    verification: "unverified",
-    updatedAt: now(),
-  });
-  const attempt = await repositories.createFlowImageAttempt({
-    attemptId,
-    confirmationKey: "fixture-confirmation-key",
-    workspaceId: "default",
-    batchId: "fixture-batch",
-    itemId: "shot-05",
-    shotId: "5",
-    promptHash,
-    sourceSnapshot,
-    promptCodeUnits: sourceSnapshot.promptCodeUnits,
-    promptUtf8Bytes: sourceSnapshot.promptUtf8Bytes,
-    provider: "Flow",
-    projectId,
-    tabId,
-    frameId,
-    loaderId,
-    documentId,
-    senderFrameId: 0,
-    buildId: BUILD_ID,
-    protocolVersion: PROTOCOL_VERSION,
-    settingsConfirmation: {
-      confirmationId: "fixture-confirmation",
-      confirmedAt: now(),
-      userAttested: true,
-      tabId,
-      projectId,
-      canonicalTarget,
-      declaredVariantCount: 2,
-    },
-    countSessionId,
-    state: "preparing",
-    events: [
-      {
-        stage: "preparation",
-        at: now(),
-        method: "none",
-        code: "preparation_persisted",
+function installChromeFacade() {
+  const listeners = chromeListeners as Array<
+    (
+      message: unknown,
+      sender: unknown,
+      sendResponse: (value: unknown) => void,
+    ) => unknown
+  >;
+  const runtime = {
+    id: extensionId,
+    onMessage: {
+      addListener(
+        listener: (
+          message: unknown,
+          sender: unknown,
+          sendResponse: (value: unknown) => void,
+        ) => unknown,
+      ) {
+        if (!listeners.includes(listener)) listeners.push(listener);
       },
-    ],
-    createdAt: now(),
-    updatedAt: now(),
-  });
-  let verified;
-  try {
-    verified = await repositories.transitionFlowImageAttempt({
-      attemptId: attempt.attemptId,
-      expected: "preparing",
-      next: "verified",
-      event: {
-        stage: "verification",
-        at: now(),
-        method: "CDP Input.insertText",
-        code: "exact_settled_readback",
+      removeListener(
+        listener: (
+          message: unknown,
+          sender: unknown,
+          sendResponse: (value: unknown) => void,
+        ) => unknown,
+      ) {
+        const index = listeners.indexOf(listener);
+        if (index >= 0) listeners.splice(index, 1);
       },
-    });
-  } catch (error) {
-    throw new Error(
-      `fixture_verified_transition_failed_${JSON.stringify({ paths: (error as { schemaIssuePaths?: string[] }).schemaIssuePaths, codes: (error as { schemaIssueCodes?: string[] }).schemaIssueCodes })}`,
-      { cause: error },
-    );
-  }
-  const oldIds = await Promise.all(
-    ["one", "two", "three", "four"].map((label) =>
-      sha256Hex(`synthetic-media-${label}`),
-    ),
-  );
-  const baseline = {
-    kind: "flow_rendered_tile_candidates" as const,
-    workspaceTag: "flow-project-page" as const,
-    renderedTileCount: 4,
-    candidateIds: oldIds,
-    qualifyingCandidateIds: oldIds,
-    candidateMultiplicity: oldIds.map((candidateId) => ({
-      candidateId,
-      renderedCopies: 1,
-    })),
-    repeatedCandidateCount: 0,
-    unidentifiedImageCount: 0,
-    unrelatedImageCount: 0,
-    virtualScrollContainerCount: 1,
-    virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
-    virtualized: false,
-    loadingSignalCount: 0,
-    captureGaps: [],
-    capturedAt: now(),
-  };
-  const resultBaseline = captureFlowResultBaseline(
-    baseline,
-    {
-      workspaceId: verified.workspaceId,
-      batchId: verified.batchId,
-      itemId: verified.itemId,
-      sourceHash: verified.promptHash,
-      sourceSnapshotId: verified.sourceSnapshotId,
-      attemptId: verified.attemptId,
-      provider: verified.provider,
-      projectId: verified.projectId,
-      tabId: verified.tabId,
-      frameId: verified.frameId,
-      loaderId: verified.loaderId,
     },
-    { buildId: verified.buildId, protocolVersion: verified.protocolVersion },
-    2,
-  );
-  const observationSession = {
-    sessionId: observationSessionId,
-    documentId,
-    senderFrameId: 0,
-    startedAt: now() - 1,
-    deadlineAt: now() + 30_000,
-    maxEvents: 64,
-    profileSupport: "production_observation_only" as const,
-    status: "arming" as const,
-    lastSequence: 0,
-    reconciliationCount: 0,
-  };
-  const dispatchIntent = await repositories.transitionFlowImageAttempt({
-    attemptId,
-    expected: "verified",
-    next: "dispatch-intent",
-    event: {
-      stage: "dispatch",
-      at: now(),
-      method: "none",
-      code: "dispatch_intent_persisted",
+    sendMessage(message: unknown) {
+      return dispatchThroughWorker(message, {
+        id: extensionId,
+        tab: { id: tabId, url: canonicalTarget },
+        frameId: 0,
+        documentId,
+      });
     },
-    baseline,
-    resultBaseline,
-    observationSession,
-    resultOutcome: {
-      status: "awaiting_evidence",
-      declaredVariantCount: 2,
-      observedSucceededCount: 0,
-      observedFailedCount: 0,
-      updatedAt: now(),
-    },
-  });
-
-  const fakeChrome = globalThis as typeof globalThis & {
-    chrome?: Record<string, unknown>;
   };
-  fakeChrome.chrome = {
-    runtime: {
-      sendMessage: async (message: unknown) => {
-        const response = await handler.handle(message, {
-          id: extensionId,
-          tab: { id: tabId, url: canonicalTarget },
-          frameId: 0,
-          documentId,
-        });
-        return { ok: true, data: response };
-      },
+  const tab = {
+    id: tabId,
+    title: "Synthetic Flow project",
+    url: canonicalTarget,
+  };
+  const chromeFacade = {
+    runtime,
+    permissions: { contains: async () => true },
+    tabs: {
+      get: async (id: number) => (id === tabId ? tab : undefined),
+      sendMessage: async (_id: number, message: unknown) =>
+        new Promise((resolve) => {
+          const listener = listeners[0];
+          if (!listener) return resolve(undefined);
+          listener(
+            message,
+            { id: extensionId, tab, frameId: 0, documentId },
+            resolve,
+          );
+        }),
     },
     scripting: {
       executeScript: async (details: {
-        func: (...args: unknown[]) => unknown;
+        func?: (...args: unknown[]) => unknown;
         args?: unknown[];
-      }) => [
-        {
-          frameId: 0,
-          documentId,
-          result: await details.func(...(details.args ?? [])),
-        },
-      ],
+        files?: string[];
+      }) => {
+        let result: unknown;
+        if (details.files?.includes("connection-probe.js")) {
+          if (!connectorScriptSource)
+            throw new Error("fixture_connector_asset_missing");
+          (0, eval)(connectorScriptSource);
+        } else if (details.func) {
+          result = await details.func(...(details.args ?? []));
+        }
+        return [{ frameId: 0, documentId, result }];
+      },
+    },
+    debugger: {
+      attach: async () => {
+        debuggerAttached = true;
+      },
+      detach: async () => {
+        debuggerAttached = false;
+      },
+      getTargets: async () => [{ tabId, attached: debuggerAttached }],
+      sendCommand: async (
+        _target: unknown,
+        method: string,
+        params?: Record<string, unknown>,
+      ) => {
+        if (method === "Page.getFrameTree")
+          return {
+            frameTree: {
+              frame: { id: frameId, loaderId, url: canonicalTarget },
+            },
+          };
+        if (method === "Runtime.evaluate") {
+          const value = await (0, eval)(String(params?.expression ?? ""));
+          if (params?.returnByValue === false && value instanceof Element) {
+            const objectId = `fixture-node-${candidateObjects.size + 1}`;
+            candidateObjects.set(objectId, value);
+            return { result: { objectId, subtype: "node" } };
+          }
+          return { result: { value } };
+        }
+        if (method === "Runtime.callFunctionOn") {
+          const element = candidateObjects.get(String(params?.objectId ?? ""));
+          if (!element) throw new Error("fixture_cdp_node_missing");
+          const call = (0, eval)(
+            `(${String(params?.functionDeclaration ?? "")})`,
+          );
+          const value = await call.call(element);
+          return { result: { value } };
+        }
+        if (method === "Input.insertText") {
+          const editor = document.querySelector<HTMLElement>(
+            '[contenteditable="true"][role="textbox"]',
+          );
+          if (!editor) throw new Error("fixture_editor_missing");
+          editor.textContent = String(params?.text ?? "");
+          editor.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              inputType: "insertText",
+              data: String(params?.text ?? ""),
+            }),
+          );
+          return {};
+        }
+        if (method === "Input.dispatchMouseEvent") {
+          if (
+            params?.type === "mouseReleased" &&
+            syntheticActivationCount === 0
+          ) {
+            syntheticActivationCount += 1;
+            const button = document.querySelector<HTMLButtonElement>(
+              "flow-base-prompt-box button",
+            );
+            button?.click();
+          }
+          return {};
+        }
+        return {};
+      },
     },
   };
-  const productionPort = createChromeFlowImageGenerateOncePort(repositories);
-  const boundPort = {
-    ...productionPort,
-    getSelection: async () => ({ tabId }),
-    getTab: async () => ({ title: "Flow project", url: canonicalTarget }),
-    readFrame: async () => ({
-      frameId,
-      loaderId,
-      documentId,
-      senderFrameId: 0,
-      url: canonicalTarget,
-    }),
-  };
-  const handler = createFlowImageObservationHandler({
-    extensionId,
-    repositories,
-    port: boundPort,
-    now,
-  });
-  // Reinstall the message function after handler initialization to keep the
-  // real production port transport routed through the real handler.
-  (
-    fakeChrome.chrome.runtime as {
-      sendMessage: (message: unknown) => Promise<unknown>;
-    }
-  ).sendMessage = async (message) => {
-    const response = await handler.handle(message, {
-      id: extensionId,
-      tab: { id: tabId, url: canonicalTarget },
-      frameId: 0,
-      documentId,
-    });
-    return { ok: true, data: response };
-  };
-  const binding = {
-    workspaceId: verified.workspaceId,
-    batchId: verified.batchId,
-    itemId: verified.itemId,
-    sourceHash: verified.promptHash,
-    sourceSnapshotId: verified.sourceSnapshotId,
-    sourceBaselineFingerprint: await sha256Hex(
-      flowImageResultBaselineFingerprintInput(resultBaseline),
-    ),
-    attemptId,
-    provider: "Flow" as const,
-    projectId,
-    canonicalTarget,
-    tabId,
-    frameId,
-    loaderId,
-    documentId,
-    senderFrameId: 0,
-    sessionId: observationSessionId,
-    startedAt: observationSession.startedAt,
-    deadlineAt: observationSession.deadlineAt,
-    maxEvents: 64,
-    buildId: BUILD_ID,
-    protocolVersion: PROTOCOL_VERSION,
-  };
-  const armed = await productionPort.startObservation(tabId, binding);
-  if (typeof armed !== "object" || armed.status !== "started")
-    throw new Error("fixture_production_arm_failed");
-  const countBaseline = {
-    mode: "existing_project" as const,
-    countSessionId,
-    startingImageCount: 4,
-    provenance: "user_attested_existing_image_count" as const,
-    inventoryComplete: false as const,
-    projectId,
-    canonicalTarget,
-    tabId,
-    documentId,
-    buildId: BUILD_ID,
-    protocolVersion: PROTOCOL_VERSION,
-    capturedAt: now(),
-    baselineCandidateIds: armed.receipt.baseline.candidateIds,
-    qualifyingBaselineCandidateIds:
-      armed.receipt.baseline.qualifyingCandidateIds,
-    baselineTileTokens: armed.receipt.baseline.tileTokens,
-    virtualScrollContainerCount:
-      armed.receipt.baseline.virtualScrollContainerCount,
-    virtualizationEvidence: armed.receipt.baseline.virtualizationEvidence,
-    virtualized: armed.receipt.baseline.virtualized,
-    renderedScopeComplete: armed.receipt.baseline.completeForRenderedScope,
-    captureGaps: armed.receipt.baseline.captureGaps,
-    priorMatchedAttemptIds: [],
-    priorMatchedCandidateIds: [],
-    priorDeclaredAdditions: 0,
-  };
-  const countDecision = reduceFlowImageCountDecision({
-    declaration: countBaseline,
-    declaredVariantCount: 2,
-    expectedCumulativeAdditions: 2,
-    priorMatchedAttemptIds: [],
-    resultBaseline,
-    events: [],
-    now: now(),
-  });
-  await repositories.updateFlowImageObservationSession({
-    attemptId,
-    sessionId: observationSessionId,
-    sessionStatus: "active",
-    armReceipt: armed.receipt,
-    countBaseline,
-    countDecision,
-  });
-  const activatedObserver = await productionPort.activateObservation(
-    tabId,
-    binding,
-  );
-  if (activatedObserver !== "started")
-    throw new Error("fixture_production_observer_activation_failed");
-  const dispatchBoundaryAt = now();
-  await repositories.recordFlowImageCountDispatchBoundary({
-    attemptId,
-    boundaryAt: dispatchBoundaryAt,
-  });
+  (globalThis as typeof globalThis & { chrome?: unknown }).chrome =
+    chromeFacade;
+}
 
-  activeFixture = {
-    markSyntheticActivationDispatched: async () => {
-      await repositories.transitionFlowImageAttempt({
-        attemptId,
-        expected: "dispatch-intent",
-        next: "dispatched",
-        event: {
-          stage: "dispatch",
-          at: now(),
-          method: "CDP Input.dispatchMouseEvent",
-          code: "activation_pair_sent",
-        },
+async function dispatchThroughWorker(message: unknown, sender: unknown) {
+  return await new Promise<unknown>((resolve) => {
+    worker(message, sender as never, resolve as never);
+  });
+}
+
+export async function setupProductionObservationFixture(
+  connectorSource: string,
+) {
+  try {
+    connectorScriptSource = connectorSource;
+    installChromeFacade();
+    syntheticActivationCount = 0;
+    const database = new AutomatDatabase(
+      `flow-observation-e2e-${crypto.randomUUID()}`,
+    );
+    await database.open();
+    const repositories = new ExtensionRepositories(
+      createDexieRepositoryDatabase(database),
+    );
+    const flowPort = createChromeFlowImageGenerateOncePort(repositories);
+    const selectedTab: ProviderTab = {
+      id: tabId,
+      title: "Synthetic Flow project",
+      url: canonicalTarget,
+      provider: "Flow",
+      projectId,
+      canonicalTarget,
+    };
+    const requestProbe = (request: ConnectionProbeRequest) =>
+      new Promise<unknown>((resolve) => {
+        const listener = chromeListeners[0] as unknown as
+          | ((
+              message: unknown,
+              sender: unknown,
+              sendResponse: (value: unknown) => void,
+            ) => unknown)
+          | undefined;
+        if (!listener) return resolve(undefined);
+        listener(
+          request,
+          {
+            id: extensionId,
+            tab: { id: tabId, url: canonicalTarget },
+            frameId: 0,
+            documentId,
+          },
+          resolve,
+        );
       });
-    },
-    readReport: async () => {
-      const saved = await repositories.getFlowImageAttempt(attemptId);
+    let connectorPresent = false;
+    const connectorPort: ConnectionPort = {
+      getMissingAccess: async () => ({}),
+      getTab: async () => selectedTab,
+      pingTopFrame: async (_id, request) =>
+        connectorPresent ? ((await requestProbe(request)) as never) : undefined,
+      identifyDocument: async () => ({
+        documentId,
+        frameId: 0,
+        url: canonicalTarget,
+      }),
+      injectConnector: async () => {
+        (0, eval)(connectorScriptSource);
+        connectorPresent = true;
+        return { documentId, frameId: 0, url: canonicalTarget };
+      },
+      probeTopFrame: async (_id, _documentId, request) =>
+        (await requestProbe(request)) as never,
+      releaseConnector: async () => {
+        connectorPresent = false;
+      },
+      makeAttemptId: () => crypto.randomUUID(),
+    };
+    const lifecycle = createConnectionLifecycleService(
+      repositories,
+      () => connectorPort,
+    );
+    const observation = createFlowImageObservationHandler({
+      extensionId,
+      repositories,
+      port: flowPort,
+    });
+    const workerReady = repositories.markTargetsUnverified();
+    const readiness = createReadinessAfterConnectionRevalidation(
+      lifecycle.revalidate,
+      createFlowImageReadinessCheck(repositories),
+    );
+    worker = createConnectionMessageListener(extensionId, {
+      repositories,
+      preferences: {
+        getTheme: async () => "light",
+        setTheme: async () => undefined,
+      } as never,
+      ready: workerReady,
+      revalidateConnection: (provider, enableReconnect) =>
+        lifecycle.revalidate(provider, enableReconnect),
+      flowImageReadiness: readiness,
+      flowImageGenerateOnce: createFlowImageGenerateOnceForWorker(
+        repositories,
+        flowPort,
+      ),
+      flowImageObservation: observation.handle,
+      flowImageCountDecision:
+        createFlowImageCountDecisionReadback(repositories),
+    });
+    const client = createFoundationClient({
+      sendMessage: (request) =>
+        dispatchThroughWorker(request, {
+          id: extensionId,
+          url: `chrome-extension://${extensionId}/index.html`,
+        }),
+    });
+
+    const selection = await client.request("connections.recordSelection", {
+      provider: "Flow",
+      tabId,
+      canonicalTarget,
+    });
+    const connection = (await client.request("connections.revalidate", {
+      provider: "Flow",
+      enableReconnect: true,
+    })) as Record<string, unknown>;
+    const savedSource = (await client.request("promptBatch.put", {
+      workspaceId: "default",
+      kind: "image",
+      sourceText: rawJsonBody,
+    })) as { items?: Array<{ contentHash: string }> };
+    const promptHash = savedSource.items?.[0]?.contentHash;
+    if (!promptHash) throw new Error("fixture_saved_source_missing_hash");
+    const countMode = {
+      mode: "existing_project" as const,
+      countSessionId,
+      startingImageCount: 4,
+      userConfirmed: true as const,
+    };
+    const firstReadiness = (await client.request("flow.image.checkReadiness", {
+      countMode,
+    })) as Record<string, unknown>;
+    const afterFirstReadiness = await repositories.getSelectedTarget("Flow");
+    const secondReadiness = (await client.request("flow.image.checkReadiness", {
+      countMode,
+    })) as Record<string, unknown>;
+    const afterSecondReadiness = await repositories.getSelectedTarget("Flow");
+    const generation = (await client.request("flow.image.generateOnce", {
+      workspaceId: "default",
+      promptHash,
+      settingsConfirmation: {
+        confirmationId,
+        confirmedAt: Date.now(),
+        tabId,
+        projectId,
+        canonicalTarget,
+        declaredVariantCount: 2,
+      },
+      countMode,
+    })) as {
+      state: string;
+      providerOutcome: string;
+      attemptId?: string;
+      code: string;
+    };
+    if (!generation.attemptId)
+      throw new Error(
+        `fixture_generate_once_no_attempt_${generation.code}_${JSON.stringify({ connection, selectedTarget: await repositories.getSelectedTarget("Flow") })}`,
+      );
+
+    const readReport = async () => {
+      const saved = await repositories.getFlowImageAttempt(
+        generation.attemptId!,
+      );
       if (!saved) throw new Error("fixture_attempt_missing");
+      const sourceSnapshot = await repositories.getFlowImagePromptSnapshot(
+        saved.sourceSnapshotId,
+      );
+      const selectedTarget = await repositories.getSelectedTarget("Flow");
+      const dashboardReadback = (await client.request(
+        "flow.image.getCountDecision",
+        { attemptId: saved.attemptId },
+      )) as Record<string, unknown>;
+      const countDecision = dashboardReadback.countDecision as Record<
+        string,
+        unknown
+      >;
       return {
         state: saved.state,
         outcome: saved.resultOutcome,
         session: saved.observationSession,
-        countDecision: saved.countDecision,
+        countDecision,
+        dashboardReadback,
         sequences: saved.structuralObservations?.map((event) => ({
           sequence: event.sequence,
           kind: event.kind,
@@ -410,25 +413,104 @@ async function setupProductionObservationFixtureImpl() {
           .filter((event) => event.stage === "observer")
           .map((event) => event.code),
         durableBoundary: saved.countDecision?.dispatchBoundaryAt,
+        audit: {
+          connectionState: selectedTarget?.connectionState,
+          connectionVerification: selectedTarget?.verification,
+          verificationBindingMatchesAttempt: Boolean(
+            selectedTarget?.verificationBinding?.tabId === saved.tabId &&
+            selectedTarget.verificationBinding.projectId === saved.projectId &&
+            selectedTarget.verificationBinding.documentId ===
+              saved.documentId &&
+            selectedTarget.verificationBinding.extensionBuildId ===
+              saved.buildId &&
+            selectedTarget.verificationBinding.connectorBuildId ===
+              saved.buildId,
+          ),
+          readinessPreservedVerification: Boolean(
+            afterFirstReadiness?.verification === "verified" &&
+            afterFirstReadiness.connectionState === "verified" &&
+            afterSecondReadiness?.verification === "verified" &&
+            afterSecondReadiness.connectionState === "verified",
+          ),
+          sourceSnapshotPresent: Boolean(sourceSnapshot),
+          exactSourceHash: Boolean(
+            sourceSnapshot &&
+            sourceSnapshot.rawJsonBody === rawJsonBody &&
+            sourceSnapshot.snapshotId === saved.sourceSnapshotId &&
+            sourceSnapshot.workspaceId === saved.workspaceId &&
+            sourceSnapshot.batchId === saved.batchId &&
+            sourceSnapshot.itemId === saved.itemId &&
+            sourceSnapshot.promptHash === saved.promptHash &&
+            sourceSnapshot.promptCodeUnits === rawJsonBody.length &&
+            sourceSnapshot.promptUtf8Bytes ===
+              new TextEncoder().encode(rawJsonBody).byteLength &&
+            (await sha256Hex(sourceSnapshot.rawJsonBody)) === saved.promptHash,
+          ),
+          sourceSnapshotCodeUnits: sourceSnapshot?.promptCodeUnits,
+          sourceSnapshotUtf8Bytes: sourceSnapshot?.promptUtf8Bytes,
+          sourceSnapshotIdMatchesAttempt:
+            sourceSnapshot?.snapshotId === saved.sourceSnapshotId,
+          settingsDeclaredVariantCount:
+            saved.settingsConfirmation.declaredVariantCount,
+          settingsConfirmationMatchesAttempt:
+            saved.settingsConfirmation.tabId === saved.tabId &&
+            saved.settingsConfirmation.projectId === saved.projectId &&
+            saved.settingsConfirmation.canonicalTarget === canonicalTarget,
+          countStartingImageCount: saved.countBaseline?.startingImageCount,
+          qualifyingBaselineCount:
+            saved.countBaseline?.qualifyingBaselineCandidateIds?.length,
+          armReceiptBaselineCount:
+            saved.observationSession?.armReceipt?.baseline
+              .qualifyingCandidateIds?.length,
+          overflowEvidence: saved.countBaseline?.virtualizationEvidence,
+          baselineActualScrolling: saved.countBaseline?.virtualized,
+          countDecisionStatus: saved.countDecision?.status,
+          countDecisionExpectedTotal: saved.countDecision?.expectedTotal,
+          durableReceiptCount: saved.observationReceipts?.length ?? 0,
+          attemptBuildId: saved.buildId,
+          attemptProtocolVersion: saved.protocolVersion,
+          workerBuildId: BUILD_ID,
+          workerProtocolVersion: PROTOCOL_VERSION,
+          activationCount: syntheticActivationCount,
+        },
+        setup: {
+          selection,
+          connection,
+          firstReadiness,
+          secondReadiness,
+          generation,
+        },
       };
-    },
-    close: async () => {
-      await productionPort.stopObservation(tabId, binding);
-      database.close();
-      await database.delete();
-      activeFixture = null;
-    },
-  };
-  return {
-    attemptId,
-    binding,
-    dispatchBoundaryAt,
-    armReceipt: armed.receipt,
-    baselineSequence: (await repositories.getFlowImageAttempt(attemptId))
-      ?.observationSession?.lastSequence,
-    scopeAnalyzerSource: flowWorkspaceScopeAnalyzer.toString(),
-    initialAttemptState: dispatchIntent.state,
-  };
+    };
+    const initial = await repositories.getFlowImageAttempt(
+      generation.attemptId,
+    );
+    if (!initial) throw new Error("fixture_attempt_missing_after_dispatch");
+    activeFixture = {
+      attemptId: generation.attemptId,
+      readReport,
+      close: async () => {
+        database.close();
+        await database.delete();
+        activeFixture = null;
+      },
+    };
+    return {
+      attemptId: generation.attemptId,
+      dispatchBoundaryAt: initial.countDecision?.dispatchBoundaryAt,
+      baselineSequence: initial.observationSession?.lastSequence,
+      setup: { connection, firstReadiness, secondReadiness, generation },
+    };
+  } catch (error) {
+    const details = error as {
+      schemaIssuePaths?: string[];
+      schemaIssueCodes?: string[];
+    };
+    throw new Error(
+      `fixture_setup_failed_${JSON.stringify({ schemaIssuePaths: details.schemaIssuePaths, schemaIssueCodes: details.schemaIssueCodes, message: String(error) })}`,
+      { cause: error },
+    );
+  }
 }
 
 export async function readProductionObservationFixtureReport() {
@@ -438,7 +520,8 @@ export async function readProductionObservationFixtureReport() {
 
 export async function markSyntheticActivationDispatched() {
   if (!activeFixture) throw new Error("fixture_not_initialized");
-  await activeFixture.markSyntheticActivationDispatched();
+  // The production GenerateOnce handler already persisted the dispatched
+  // transition after issuing the synthetic CDP activation pair.
 }
 
 export async function closeProductionObservationFixture() {

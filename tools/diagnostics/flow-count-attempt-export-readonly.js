@@ -4,13 +4,9 @@
 // is queried, and this script never writes to IndexedDB or the provider.
 (() => {
   const databaseName = "automat-faceless-app-v1";
-  // Prefer the attempt ID visible in the dashboard. If left unchanged, the
-  // export proceeds only when exactly one attempt matches the reported counts.
-  const requestedAttemptId = "PASTE_DASHBOARD_ATTEMPT_ID_HERE";
-  const screenshotProjectPrefixes = {
-    latestScreenshot: "25ca5bf0",
-    earlierReadiness: "ac09dcee",
-  };
+  // Confirm this exact ID against the dashboard screenshot before running.
+  // The exporter refuses to substitute another attempt if it is absent.
+  const requestedAttemptId = "86e721b7-7cc9-4c1d-a476-f2fc2d30f9ec";
   const resultName = "__FLOW_COUNT_ATTEMPT_READONLY_EXPORT__";
   const allowedStores = [
     "flowImageAttempts",
@@ -50,11 +46,11 @@
     return Boolean(
       ["dispatched", "uncertain"].includes(attempt.state) &&
       baseline?.mode === "existing_project" &&
-      baseline.startingImageCount === 2 &&
+      baseline.startingImageCount === 4 &&
       attempt.settingsConfirmation?.declaredVariantCount === 2 &&
-      decision?.startingImageCount === 2 &&
+      decision?.startingImageCount === 4 &&
       decision?.expectedCumulativeAdditions === 2 &&
-      decision?.expectedTotal === 4,
+      decision?.expectedTotal === 6,
     );
   };
   const projectPrefixMatches = (projectId, prefix) =>
@@ -261,6 +257,24 @@
         (/storage|persist/i.test(event.code ?? "") &&
           /failed|failure|unavailable/i.test(event.code ?? "")),
     );
+    const sanitizedAttemptEvents = (attempt.events ?? [])
+      .slice(-100)
+      .map((event, index) => ({
+        ordinal: index + 1,
+        stage: event.stage,
+        at: event.at,
+        method: event.method,
+        code:
+          typeof event.code === "string" && /^[a-z0-9_]{1,64}$/.test(event.code)
+            ? event.code
+            : "event_code_unavailable_or_unrecognized",
+      }));
+    const mismatchEvents = sanitizedAttemptEvents.filter((event) =>
+      /binding|fingerprint|sender|session|document|project|reconciliation|observer_(lost|resume|deadline)/.test(
+        event.code,
+      ),
+    );
+    const currentVerification = selectedTarget?.verificationBinding ?? null;
     const bindingConsistency = {
       confirmationProjectMatchesAttempt:
         attempt.settingsConfirmation?.projectId === priorProject,
@@ -300,8 +314,35 @@
     return {
       attempt: {
         attemptId: attempt.attemptId,
+        attemptIdMatchesRequestedDashboardId:
+          attempt.attemptId === requestedAttemptId,
         state: attempt.state,
         failureStage: attempt.events?.at(-1)?.stage ?? null,
+        createdAt: attempt.createdAt,
+        updatedAt: attempt.updatedAt,
+        immutableAttemptBinding: {
+          projectMask: await idMask(attempt.projectId, "project"),
+          tabId: attempt.tabId,
+          frameIdMask: await idMask(attempt.frameId, "frame"),
+          loaderIdMask: await idMask(attempt.loaderId, "loader"),
+          documentMask: await idMask(attempt.documentId, "document"),
+          senderFrameId: attempt.senderFrameId ?? null,
+          buildId: attempt.buildId,
+          protocolVersion: attempt.protocolVersion,
+          sourceHash: attempt.promptHash,
+          sourceSnapshotMask: await idMask(attempt.sourceSnapshotId, "snapshot"),
+          sessionMask: await idMask(session?.sessionId, "session"),
+          sessionDocumentMask: await idMask(session?.documentId, "document"),
+          sessionSenderFrameId: session?.senderFrameId ?? null,
+          bindingsAreHistoricalAndWereNotRewritten: true,
+        },
+        eventTrail: sanitizedAttemptEvents,
+        boundedMismatchDiagnostics: {
+          persistedDiagnosticEvents: mismatchEvents,
+          exactRecordedReason: mismatchEvents.at(-1)?.code ?? null,
+          rejectedObservationPayloadsPersisted: false,
+          rejectedPayloadsStatus: "absent_from_this_storage_schema",
+        },
         workspaceId: attempt.workspaceId,
         batchId: attempt.batchId,
         itemId: attempt.itemId,
@@ -328,16 +369,6 @@
           documentMask: await idMask(attempt.documentId, "document"),
           buildId: attempt.buildId,
           protocolVersion: attempt.protocolVersion,
-          projectPrefixComparison: {
-            matchesLatestScreenshotProject: projectPrefixMatches(
-              priorProject,
-              screenshotProjectPrefixes.latestScreenshot,
-            ),
-            matchesEarlierReadinessProject: projectPrefixMatches(
-              priorProject,
-              screenshotProjectPrefixes.earlierReadiness,
-            ),
-          },
           consistency: bindingConsistency,
         },
         settingsConfirmation: {
@@ -393,6 +424,8 @@
               maxEvents: session.maxEvents,
               lastSequence: session.lastSequence,
               reconciliationCount: session.reconciliationCount,
+              resultOutcomeUpdatedAt: attempt.resultOutcome?.updatedAt ?? null,
+              countDecisionUpdatedAt: decision?.updatedAt ?? null,
               armReceipt: session.armReceipt ?? null,
             }
           : null,
@@ -411,6 +444,16 @@
           activationPairAttemptCount: (attempt.events ?? []).filter(
             (event) => event.code === "activation_pair_sent",
           ).length,
+        },
+        timelineTimestamps: {
+          attemptCreatedAt: attempt.createdAt,
+          attemptUpdatedAt: attempt.updatedAt,
+          dispatchBoundaryAt: dispatchBoundaryAt ?? null,
+          observationSessionStartedAt: session?.startedAt ?? null,
+          observationSessionDeadlineAt: session?.deadlineAt ?? null,
+          resultOutcomeUpdatedAt: attempt.resultOutcome?.updatedAt ?? null,
+          countDecisionUpdatedAt: decision?.updatedAt ?? null,
+          latestAttemptEventAt: attempt.events?.at(-1)?.at ?? null,
         },
         observationDelivery: {
           classification:
@@ -522,6 +565,43 @@
               selectedTarget.canonicalTarget ===
               attempt.settingsConfirmation?.canonicalTarget,
             verification: selectedTarget.verification,
+            connectionState: selectedTarget.connectionState ?? null,
+            reconnectEnabled: selectedTarget.reconnectEnabled !== false,
+            savedVerificationBinding: currentVerification
+              ? {
+                  projectMask: await idMask(currentVerification.projectId, "project"),
+                  tabId: currentVerification.tabId,
+                  canonicalTargetMatchesAttempt:
+                    currentVerification.canonicalTarget ===
+                    attempt.settingsConfirmation?.canonicalTarget,
+                  projectMatchesAttempt:
+                    currentVerification.projectId === attempt.projectId,
+                  documentMatchesAttempt:
+                    currentVerification.documentId === attempt.documentId,
+                  frameIdMatchesAttempt:
+                    currentVerification.frameId === attempt.senderFrameId,
+                  extensionBuildMatchesAttempt:
+                    currentVerification.extensionBuildId === attempt.buildId,
+                  connectorBuildMatchesAttempt:
+                    currentVerification.connectorBuildId === attempt.buildId,
+                  extensionProtocolMatchesAttempt:
+                    currentVerification.extensionProtocolVersion ===
+                    attempt.protocolVersion,
+                  connectorProtocolVersion:
+                    currentVerification.connectorProtocolVersion,
+                  connectorTokenPresent:
+                    typeof currentVerification.documentToken === "string",
+                  verifiedAt: currentVerification.verifiedAt,
+                }
+              : null,
+            lifecycleDiagnostics: (selectedTarget.lifecycleDiagnostics ?? [])
+              .slice(-32)
+              .map((event) => ({
+                kind: event.kind,
+                reason: event.reason,
+                at: event.at,
+                bindingComparison: event.bindingComparison ?? null,
+              })),
           }
         : null,
       privacy: {
@@ -598,14 +678,6 @@
           matchingAttemptSummaries: candidates.map((entry) => ({
             attemptId: entry.attemptId,
             state: entry.state,
-            projectMatchesLatestScreenshotPrefix: projectPrefixMatches(
-              entry.projectId,
-              screenshotProjectPrefixes.latestScreenshot,
-            ),
-            projectMatchesEarlierReadinessPrefix: projectPrefixMatches(
-              entry.projectId,
-              screenshotProjectPrefixes.earlierReadiness,
-            ),
             sessionStatus: entry.observationSession?.status ?? null,
             observationReceiptCount: entry.observationReceipts?.length ?? 0,
             countDecisionStatus: entry.countDecision?.status ?? null,

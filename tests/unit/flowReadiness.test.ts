@@ -233,6 +233,7 @@ describe("Flow no-Generate readiness", () => {
     expect(unavailableResult).toMatchObject({
       status: "blocked",
       reason: "baseline_qualifying_count_unavailable",
+      message: expect.stringContaining("unavailable, not zero"),
     });
     expect(unavailableResult.qualifyingCandidateCount).toBeUndefined();
 

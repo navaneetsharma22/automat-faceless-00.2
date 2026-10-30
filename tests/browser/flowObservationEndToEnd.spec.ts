@@ -7,21 +7,66 @@ const fixturePath = resolve(
   process.cwd(),
   "tests/fixtures/flow/image-lifecycle-recorder.synthetic.html",
 );
+const connectorAssetPath = resolve(process.cwd(), "dist/connection-probe.js");
 const fixtureUrl = "https://flow.google.com/project/observation-e2e-project";
+const rawPrompt = '{"shot_id":"05","scene":"synthetic fixture"}';
+const rawPromptLength = rawPrompt.length;
+const rawPromptBytes = new TextEncoder().encode(rawPrompt).byteLength;
 
 test("production count path persists 4 existing images, two pending tiles, and two new candidates", async ({
   page,
 }) => {
   const fixture = await readFile(fixturePath, "utf8");
+  const connectorAsset = await readFile(connectorAssetPath, "utf8");
+  const packageBuildId = /var [^=]+=\x60([^\x60]+)\x60/.exec(
+    connectorAsset,
+  )?.[1];
+  if (!packageBuildId) throw new Error("packaged_connector_build_id_missing");
   await page.route("https://flow.google.com/**", (route) =>
     route.fulfill({ status: 200, contentType: "text/html", body: fixture }),
   );
   await page.goto(fixtureUrl);
   await page.locator("flow-base-prompt-box").evaluate((composer) => {
+    const editor = composer.querySelector('[contenteditable="true"]');
+    if (editor) editor.innerHTML = "<p><br></p>";
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = "Synthetic Generate";
+    button.textContent = "Generate";
     composer.append(button);
+    button.addEventListener("click", () => {
+      const activeComposer = document.querySelector("flow-base-prompt-box");
+      const activeEditor = document.querySelector('[contenteditable="true"]');
+      if (activeEditor) activeEditor.innerHTML = "<p><br></p>";
+      if (!activeComposer) throw new Error("synthetic_composer_missing");
+      const parent = activeComposer.parentElement;
+      activeComposer.remove();
+      window.setTimeout(() => parent?.prepend(activeComposer), 80);
+      const container = document.querySelector("flow-tile-container");
+      if (!container) throw new Error("synthetic_tile_container_missing");
+      for (let index = 1; index <= 2; index += 1) {
+        const tile = document.createElement("flow-image-tile");
+        tile.dataset.fixtureOutput = String(index);
+        const loading = document.createElement("div");
+        loading.setAttribute("role", "progressbar");
+        loading.dataset.loading = "true";
+        loading.textContent = "synthetic loading";
+        tile.append(loading);
+        container.append(tile);
+      }
+      window.setTimeout(() => {
+        for (const tile of Array.from(
+          container.querySelectorAll("flow-image-tile[data-fixture-output]"),
+        )) {
+          const index = tile.getAttribute("data-fixture-output");
+          tile.replaceChildren();
+          const image = document.createElement("img");
+          image.dataset.mediaId = `synthetic-new-output-${index}`;
+          image.src =
+            "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='green'/%3E%3C/svg%3E";
+          tile.append(image);
+        }
+      }, 850);
+    });
   });
   const bundle = await rolldown({
     input: resolve(
@@ -34,7 +79,7 @@ test("production count path persists 4 existing images, two pending tiles, and t
         transform(code: string) {
           return code.replaceAll(
             "__AUTOMAT_BUILD_ID__",
-            JSON.stringify("automat-faceless-0.1.0-browser-fixture"),
+            JSON.stringify(packageBuildId),
           );
         },
       },
@@ -59,14 +104,17 @@ test("production count path persists 4 existing images, two pending tiles, and t
       ).slice(0, 120),
     }));
     const setup = await page
-      .evaluate(async () => {
+      .evaluate(async (connectorSource) => {
         const harness = (
           window as unknown as {
             FlowObservationEndToEnd: {
-              setupProductionObservationFixture: () => Promise<{
+              setupProductionObservationFixture: (
+                connectorSource: string,
+              ) => Promise<{
                 attemptId: string;
-                dispatchBoundaryAt: number;
+                dispatchBoundaryAt: number | undefined;
                 baselineSequence: number | undefined;
+                setup: Record<string, unknown>;
               }>;
               readProductionObservationFixtureReport: () => Promise<{
                 state: string;
@@ -109,8 +157,8 @@ test("production count path persists 4 existing images, two pending tiles, and t
             };
           }
         ).FlowObservationEndToEnd;
-        return await harness.setupProductionObservationFixture();
-      })
+        return await harness.setupProductionObservationFixture(connectorSource);
+      }, connectorAsset)
       .catch((error: unknown) => {
         const details = error as {
           schemaIssuePaths?: string[];
@@ -154,13 +202,48 @@ test("production count path persists 4 existing images, two pending tiles, and t
                 receiptSequences: number[];
                 diagnostics: string[];
                 durableBoundary?: number;
+                audit: Record<string, unknown>;
+                setup: Record<string, unknown>;
               }>;
             };
           }
         ).FlowObservationEndToEnd.readProductionObservationFixtureReport(),
       );
 
-    expect(setup.baselineSequence).toBe(1);
+    expect(setup.setup.connection).toMatchObject({
+      ok: true,
+      state: "verified",
+    });
+    for (const readiness of [
+      setup.setup.firstReadiness,
+      setup.setup.secondReadiness,
+    ] as Array<Record<string, unknown>>) {
+      expect(readiness).toMatchObject({
+        status: "ready",
+        selectedCountMode: {
+          mode: "existing_project",
+          startingImageCount: 4,
+          userConfirmed: true,
+        },
+        countModeEligibility: {
+          status: "eligible",
+          startingImageCount: 4,
+          userConfirmed: true,
+        },
+        qualifyingCandidateCount: 4,
+        baselineCoverageAssessment: {
+          viewportOverflowObserved: true,
+          actualScrollingObserved: false,
+          candidateOwnershipAmbiguous: false,
+          declaredExistingCountMatchesQualifyingCandidates: true,
+          inventoryComplete: false,
+          providerIdentityVerified: false,
+        },
+      });
+    }
+    if ((setup.setup.generation as { state?: string }).state !== "dispatched")
+      throw new Error(JSON.stringify(setup.setup.generation));
+    expect(setup.baselineSequence).toBeGreaterThanOrEqual(1);
     expect(setup.dispatchBoundaryAt).toBeGreaterThan(0);
     const initialReport = await readReport();
     expect(initialReport.sequences[0]?.candidateIds).toHaveLength(4);
@@ -169,43 +252,6 @@ test("production count path persists 4 existing images, two pending tiles, and t
       "scroll_extent_exceeds_viewport",
     );
     expect(initialReport.sequences[0]?.virtualized).toBe(false);
-    await page.locator("flow-base-prompt-box button").evaluate((button) => {
-      button.addEventListener("click", () => {
-        const composer = document.querySelector("flow-base-prompt-box");
-        const editor = document.querySelector('[contenteditable="true"]');
-        if (editor) editor.textContent = "";
-        if (!composer) throw new Error("synthetic_composer_missing");
-        const parent = composer.parentElement;
-        composer.remove();
-        window.setTimeout(() => parent?.prepend(composer), 80);
-        const container = document.querySelector("flow-tile-container");
-        if (!container) throw new Error("synthetic_tile_container_missing");
-        for (let index = 1; index <= 2; index += 1) {
-          const tile = document.createElement("flow-image-tile");
-          tile.dataset.fixtureOutput = String(index);
-          const loading = document.createElement("div");
-          loading.setAttribute("role", "progressbar");
-          loading.dataset.loading = "true";
-          loading.textContent = "synthetic loading";
-          tile.append(loading);
-          container.append(tile);
-        }
-        window.setTimeout(() => {
-          for (const tile of Array.from(
-            container.querySelectorAll("flow-image-tile[data-fixture-output]"),
-          )) {
-            const index = tile.getAttribute("data-fixture-output");
-            tile.replaceChildren();
-            const image = document.createElement("img");
-            image.dataset.mediaId = `synthetic-new-output-${index}`;
-            image.src =
-              "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='green'/%3E%3C/svg%3E";
-            tile.append(image);
-          }
-        }, 850);
-      });
-    });
-    await page.locator("flow-base-prompt-box button").click();
     await page.evaluate(() =>
       (
         window as unknown as {
@@ -265,6 +311,41 @@ test("production count path persists 4 existing images, two pending tiles, and t
       startingImageCount: 4,
       declaredVariantCount: 2,
       expectedTotal: 6,
+    });
+    expect(report.audit).toMatchObject({
+      connectionState: "verified",
+      connectionVerification: "verified",
+      readinessPreservedVerification: true,
+      verificationBindingMatchesAttempt: true,
+      exactSourceHash: true,
+      sourceSnapshotIdMatchesAttempt: true,
+      sourceSnapshotCodeUnits: rawPromptLength,
+      sourceSnapshotUtf8Bytes: rawPromptBytes,
+      settingsDeclaredVariantCount: 2,
+      settingsConfirmationMatchesAttempt: true,
+      countStartingImageCount: 4,
+      qualifyingBaselineCount: 4,
+      armReceiptBaselineCount: 4,
+      overflowEvidence: ["scroll_extent_exceeds_viewport"],
+      baselineActualScrolling: false,
+      countDecisionStatus: "count_matched",
+      countDecisionExpectedTotal: 6,
+      workerBuildId: packageBuildId,
+      attemptBuildId: packageBuildId,
+      attemptProtocolVersion: 4,
+      workerProtocolVersion: 4,
+      activationCount: 1,
+    });
+    expect(report.dashboardReadback).toMatchObject({
+      status: "available",
+      attemptState: "dispatched",
+      countDecision: {
+        status: "count_matched",
+        startingImageCount: 4,
+        expectedTotal: 6,
+      },
+      baselineInventoryComplete: false,
+      providerOutcome: "unknown",
     });
     expect(report.sequences.some((event) => event.tileCount === 6)).toBe(true);
     expect(report.sequences.some((event) => event.resourceEventCount > 0)).toBe(

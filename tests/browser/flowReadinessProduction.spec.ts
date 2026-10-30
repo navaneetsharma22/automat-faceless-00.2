@@ -63,16 +63,22 @@ test("production readiness preserves a confirmed four-count and measures four re
     const chunk = built.output.find((entry) => entry.type === "chunk");
     if (!chunk) throw new Error("Flow readiness fixture bundle missing");
     await page.addScriptTag({ content: chunk.code });
-    const result = await page.evaluate(async () => {
-      const fixture = window as Window & {
-        FlowReadinessProductionFixture?: {
-          runProductionReadinessFixture: () => Promise<Record<string, unknown>>;
+    const runReadiness = async (startingImageCount = 4) =>
+      page.evaluate(async (count) => {
+        const fixture = window as Window & {
+          FlowReadinessProductionFixture?: {
+            runProductionReadinessFixture: (
+              startingImageCount: number,
+            ) => Promise<Record<string, unknown>>;
+          };
         };
-      };
-      if (!fixture.FlowReadinessProductionFixture)
-        throw new Error("Flow readiness fixture export missing");
-      return fixture.FlowReadinessProductionFixture.runProductionReadinessFixture();
-    });
+        if (!fixture.FlowReadinessProductionFixture)
+          throw new Error("Flow readiness fixture export missing");
+        return fixture.FlowReadinessProductionFixture.runProductionReadinessFixture(
+          count,
+        );
+      }, startingImageCount);
+    const result = await runReadiness();
     expect(result).toMatchObject({
       selectedVerified: true,
       attemptsCreated: 0,
@@ -102,6 +108,101 @@ test("production readiness preserves a confirmed four-count and measures four re
         .locator("cdk-virtual-scroll-viewport")
         .evaluate((viewport) => (viewport as HTMLElement).scrollTop),
     ).toBe(0);
+
+    await page
+      .locator("flow-image-tile img")
+      .first()
+      .evaluate((image) => {
+        image.setAttribute("src", "data:image/gif;base64,invalid-resource");
+      });
+    await page.waitForFunction(() => {
+      const image = document.querySelector(
+        "flow-image-tile img",
+      ) as HTMLImageElement;
+      return image.complete && image.naturalWidth === 0;
+    });
+    const incompleteResource = await runReadiness(4);
+    expect(incompleteResource).toMatchObject({
+      report: {
+        status: "blocked",
+        reason: "existing_count_candidate_count_mismatch",
+        selectedCountMode: { startingImageCount: 4, userConfirmed: true },
+        qualifyingCandidateCount: 3,
+      },
+      attemptsCreated: 0,
+    });
+
+    await page.locator("flow-image-tile img").evaluateAll((images) => {
+      for (const image of images) {
+        image.setAttribute("src", "data:image/gif;base64,invalid-resource");
+      }
+    });
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll("flow-image-tile img")].every(
+        (image) =>
+          (image as HTMLImageElement).complete &&
+          (image as HTMLImageElement).naturalWidth === 0,
+      ),
+    );
+    const measuredZero = await runReadiness(4);
+    expect(measuredZero).toMatchObject({
+      report: {
+        status: "blocked",
+        reason: "existing_count_candidate_count_mismatch",
+        qualifyingCandidateCount: 0,
+      },
+      attemptsCreated: 0,
+    });
+
+    await page.locator("flow-image-tile img").evaluateAll((images) => {
+      for (const image of images) {
+        image.setAttribute(
+          "src",
+          "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=",
+        );
+      }
+    });
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll("flow-image-tile img")].every(
+        (image) =>
+          (image as HTMLImageElement).complete &&
+          (image as HTMLImageElement).naturalWidth > 0,
+      ),
+    );
+    await page
+      .locator("flow-image-tile img")
+      .nth(1)
+      .evaluate((image) => {
+        image.setAttribute("data-media-id", "fixture-ready-one");
+      });
+    const duplicate = await runReadiness(4);
+    expect(duplicate).toMatchObject({
+      report: {
+        status: "blocked",
+        reason: "existing_count_candidate_count_mismatch",
+        distinctCandidateCount: 3,
+        qualifyingCandidateCount: 3,
+        repeatedCandidateCount: 1,
+      },
+      attemptsCreated: 0,
+    });
+
+    await page
+      .locator("flow-image-tile img")
+      .nth(1)
+      .evaluate((image) => {
+        image.setAttribute("data-media-id", "fixture-ready-two");
+      });
+    const countMismatch = await runReadiness(3);
+    expect(countMismatch).toMatchObject({
+      report: {
+        status: "blocked",
+        reason: "existing_count_candidate_count_mismatch",
+        selectedCountMode: { startingImageCount: 3, userConfirmed: true },
+        qualifyingCandidateCount: 4,
+      },
+      attemptsCreated: 0,
+    });
   } finally {
     await bundle.close();
   }

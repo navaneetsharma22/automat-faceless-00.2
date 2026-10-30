@@ -4,7 +4,10 @@ import {
   ExtensionRepositories,
 } from "../../src/storage/repositories";
 import { createFlowImageReadinessCheck } from "../../src/background/handlers/flow";
+import { createConnectionMessageListener } from "../../src/background/handlers/connections";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
+import { createFoundationClient } from "../../src/shared/messageClient";
+import type { AppRequest, AppResponse } from "../../src/shared/schemas";
 import {
   CONNECTION_CAPABILITY,
   CONNECTOR_PROTOCOL_VERSION,
@@ -15,7 +18,7 @@ const documentId = "production-readiness-fixture-document";
 const makeDatabaseName = () =>
   `flow-readiness-production-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-export async function runProductionReadinessFixture() {
+export async function runProductionReadinessFixture(startingImageCount = 4) {
   const database = new AutomatDatabase(makeDatabaseName());
   await database.open();
   const repositories = new ExtensionRepositories(
@@ -59,11 +62,36 @@ export async function runProductionReadinessFixture() {
     },
   } as unknown as Pick<typeof chrome.scripting, "executeScript">;
   const readiness = createFlowImageReadinessCheck(repositories, scriptingPort);
-  const report = await readiness({
+  const extensionId = "flow-readiness-production-fixture-extension";
+  const worker = createConnectionMessageListener(extensionId, {
+    repositories,
+    preferences: {
+      getTheme: async () => "light",
+      setTheme: async () => undefined,
+    } as never,
+    ready: Promise.resolve(),
+    flowImageReadiness: readiness,
+  });
+  const client = createFoundationClient({
+    sendMessage: (request: AppRequest) =>
+      new Promise<unknown>((resolve) => {
+        const wireRequest = JSON.parse(JSON.stringify(request)) as AppRequest;
+        worker(
+          wireRequest,
+          {
+            id: extensionId,
+            url: `chrome-extension://${extensionId}/index.html`,
+          },
+          (response) =>
+            resolve(JSON.parse(JSON.stringify(response)) as AppResponse),
+        );
+      }),
+  });
+  const report = await client.request("flow.image.checkReadiness", {
     countMode: {
       mode: "existing_project",
       countSessionId: "0f0ea52e-b649-41b8-8a63-0a23ef01ad25",
-      startingImageCount: 4,
+      startingImageCount,
       userConfirmed: true,
     },
   });
