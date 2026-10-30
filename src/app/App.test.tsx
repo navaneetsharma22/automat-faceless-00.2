@@ -65,7 +65,8 @@ describe("P01.3 workspace previews", () => {
       return 1 as ReturnType<typeof setTimeout>;
     });
     const emptyMarkup = renderElement(ValidatedPromptPanel, { session });
-    expect(emptyMarkup).toContain("No validated image batch yet");
+    expect(emptyMarkup).toContain("No validated prompts");
+    expect(emptyMarkup).toContain("Nothing is sent to Flow");
     expect(emptyMarkup).not.toContain("SHOT-001");
     expect(emptyMarkup).not.toContain("% example");
 

@@ -76,6 +76,19 @@ export function flowGenerateResponseLostOutcome(): FlowGenerateOutcomeMessage {
   };
 }
 
+function formatFlowReadinessStatus(result: Record<string, unknown>) {
+  const eligibility = result.countModeEligibility as
+    Record<string, unknown> | undefined;
+  return `${String(result.message ?? "Read-only readiness check finished.")} Readiness ${String(result.status ?? "unknown")}; reason ${flowReadinessReasonLabel(result.status, result.reason)}; count mode ${String(eligibility?.mode ?? "unavailable")}; eligibility ${String(eligibility?.status ?? "unavailable")}; blocker ${String(eligibility?.detailCode ?? eligibility?.reason ?? "none")}. Full sanitized details are available to copy or download.`;
+}
+
+function formatFlowRecoveryStatus(
+  attemptId: string,
+  result: Record<string, unknown>,
+) {
+  return `Attempt ${attemptId}: recovery ${String(result.status)}; reason ${String(result.reason ?? "unavailable")}${result.detailReason ? `; detail ${String(result.detailReason)}` : ""}${result.currentCountDecisionStatus ? `; current count decision ${String(result.currentCountDecisionStatus)}` : ""}. Historical provider outcome and observations remain unchanged.`;
+}
+
 export type ImportPanelProps = {
   kind: PromptKind;
   session: ImportPreviewSession;
@@ -298,14 +311,15 @@ export function ImportPanel({
     snapshot.resultRevision !== snapshot.revision;
   const changedSinceSave =
     savedSource !== undefined && snapshot.source !== savedSource;
-  const currentSettingsConfirmationWasRejected = Boolean(
+  const currentSettingsConfirmationIsLocked = Boolean(
     flowSettingsConfirmation?.confirmationId &&
-      flowGenerateLockConfirmationId ===
-        flowSettingsConfirmation.confirmationId &&
-      ["attempt_already_active", "duplicate_generate_click"].includes(
-        flowGenerateResult?.code ?? "",
-      ),
+    flowGenerateLockConfirmationId === flowSettingsConfirmation.confirmationId,
   );
+  const currentSettingsConfirmationWasRejected =
+    currentSettingsConfirmationIsLocked &&
+    ["attempt_already_active", "duplicate_generate_click"].includes(
+      flowGenerateResult?.code ?? "",
+    );
   const existingCountIsUnconfirmed =
     flowCountMode === "existing_project" &&
     (!flowExistingCountConfirmed ||
@@ -322,8 +336,10 @@ export function ImportPanel({
           ? "Save the current validated prompt before enabling Generate once."
           : !flowSettingsConfirmation
             ? "Confirm the manual image settings for the selected Flow project."
-            : currentSettingsConfirmationWasRejected
-              ? "An attempt already matches this settings confirmation. Inspect its durable status before continuing."
+            : currentSettingsConfirmationIsLocked
+              ? currentSettingsConfirmationWasRejected
+                ? "An attempt already matches this settings confirmation. Inspect its durable status before continuing."
+                : "This settings confirmation is locked pending attempt review. Inspect the current durable state before continuing."
               : flowEntryPending || flowGeneratePending
                 ? "A Flow action is already in progress. Wait for its current result."
                 : persistenceStatus === "saving" ||
@@ -956,10 +972,7 @@ export function ImportPanel({
         role="group"
         aria-label={`${label} source actions`}
       >
-        <Field
-          id={`${kind}-json-file`}
-          label="Load JSON"
-        >
+        <Field id={`${kind}-json-file`} label="Load JSON">
           <input
             id={`${kind}-json-file`}
             className={styles.fileInput}
@@ -976,39 +989,40 @@ export function ImportPanel({
           />
         </Field>
         <div className={styles.sourceToolbarButtons}>
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={
-            persistenceStatus === "loading" ||
-            persistenceStatus === "saving" ||
-            exportingSavedSource
-          }
-          onClick={requestLoadSavedBatch}
-        >
-          {persistenceStatus === "loading"
-            ? "Loading saved batch…"
-            : "Load saved batch"}
-        </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={
+              persistenceStatus === "loading" ||
+              persistenceStatus === "saving" ||
+              exportingSavedSource
+            }
+            onClick={requestLoadSavedBatch}
+          >
+            {persistenceStatus === "loading"
+              ? "Loading saved batch…"
+              : "Load saved batch"}
+          </Button>
 
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={
-            exportingSavedSource ||
-            persistenceStatus === "saving" ||
-            persistenceStatus === "loading"
-          }
-          loading={exportingSavedSource}
-          loadingLabel="Exporting saved source…"
-          onClick={() => void exportSavedSource()}
-        >
-          Export saved source
-        </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={
+              exportingSavedSource ||
+              persistenceStatus === "saving" ||
+              persistenceStatus === "loading"
+            }
+            loading={exportingSavedSource}
+            loadingLabel="Exporting saved source…"
+            onClick={() => void exportSavedSource()}
+          >
+            Export saved source
+          </Button>
         </div>
       </div>
       <p className={styles.sourceHelper} id={`${kind}-json-file-hint`}>
-        UTF-8 JSON. Maximum {INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()} bytes.
+        UTF-8 JSON. Maximum {INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()}{" "}
+        bytes.
       </p>
 
       {confirmLoad ? (
@@ -1278,15 +1292,15 @@ export function ImportPanel({
                 </p>
                 {flowReadinessResult ? (
                   <>
-                    <Notice
-                      kind={
-                        flowReadinessResult.status === "ready"
-                          ? "success"
-                          : "warning"
-                      }
-                    >
-                      {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; mode ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.mode ?? flowCountMode)}; mode eligibility ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.status ?? "unavailable")}; mode blocker ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.detailCode ?? (flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.reason ?? "none")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; qualifying owned candidates ${String(flowReadinessResult.qualifyingCandidateCount ?? "unavailable")}; virtual-scroll containers ${String(flowReadinessResult.virtualScrollContainerCount ?? 0)}; viewport overflow ${String(flowReadinessResult.viewportOverflowObserved ?? false)}; actual scrolling ${String(flowReadinessResult.actualScrollingObserved ?? false)}; candidate continuity ${String(flowReadinessResult.candidateIdentityContinuity ?? "unresolved")}; ownership ambiguous ${String(flowReadinessResult.candidateOwnershipAmbiguous ?? false)}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory completeness and provider identity remain unverified; terminal completion is unsupported.`}
-                    </Notice>
+                    {flowReadinessResult.status === "ready" ? (
+                      <p role="status" className={styles.subtleText}>
+                        {formatFlowReadinessStatus(flowReadinessResult)}
+                      </p>
+                    ) : (
+                      <Notice kind="warning">
+                        {formatFlowReadinessStatus(flowReadinessResult)}
+                      </Notice>
+                    )}
                     <Button
                       type="button"
                       variant="secondary"
@@ -1523,14 +1537,25 @@ export function ImportPanel({
                               </p>
                               {flowCountRecoveryReport?.attemptId ===
                               oldAttemptId ? (
-                                <Notice
-                                  kind={
-                                    flowCountRecoveryReport.status ===
-                                    "recovered"
-                                      ? "info"
-                                      : "warning"
-                                  }
-                                >{`Attempt ${oldAttemptId}: recovery ${String(flowCountRecoveryReport.status)}; reason ${String(flowCountRecoveryReport.reason ?? "unavailable")}${flowCountRecoveryReport.detailReason ? `; detail ${String(flowCountRecoveryReport.detailReason)}` : ""}${flowCountRecoveryReport.currentCountDecisionStatus ? `; current count decision ${String(flowCountRecoveryReport.currentCountDecisionStatus)}` : ""}. Historical provider outcome and observations remain unchanged.`}</Notice>
+                                flowCountRecoveryReport.status ===
+                                "recovered" ? (
+                                  <p
+                                    role="status"
+                                    className={styles.subtleText}
+                                  >
+                                    {formatFlowRecoveryStatus(
+                                      oldAttemptId,
+                                      flowCountRecoveryReport,
+                                    )}
+                                  </p>
+                                ) : (
+                                  <Notice kind="warning">
+                                    {formatFlowRecoveryStatus(
+                                      oldAttemptId,
+                                      flowCountRecoveryReport,
+                                    )}
+                                  </Notice>
+                                )
                               ) : null}
                             </article>
                           );
@@ -1556,13 +1581,25 @@ export function ImportPanel({
                         )}
                       </code>
                     </h3>
-                    <Notice
-                      kind={
-                        flowCountRecoveryReport.status === "recovered"
-                          ? "info"
-                          : "warning"
-                      }
-                    >{`Recovery ${String(flowCountRecoveryReport.status)}; reason ${String(flowCountRecoveryReport.reason ?? "unavailable")}${flowCountRecoveryReport.detailReason ? `; detail ${String(flowCountRecoveryReport.detailReason)}` : ""}. The historical outcome and observations remain unchanged.`}</Notice>
+                    {flowCountRecoveryReport.status === "recovered" ? (
+                      <p role="status" className={styles.subtleText}>
+                        {formatFlowRecoveryStatus(
+                          String(
+                            flowCountRecoveryReport.attemptId ?? "unavailable",
+                          ),
+                          flowCountRecoveryReport,
+                        )}
+                      </p>
+                    ) : (
+                      <Notice kind="warning">
+                        {formatFlowRecoveryStatus(
+                          String(
+                            flowCountRecoveryReport.attemptId ?? "unavailable",
+                          ),
+                          flowCountRecoveryReport,
+                        )}
+                      </Notice>
+                    )}
                   </article>
                 ) : null}
                 <Button
@@ -1575,9 +1612,7 @@ export function ImportPanel({
                   Generate once in Flow
                 </Button>
                 {generateDisabledReason ? (
-                  <p className={styles.subtleText}>
-                    {generateDisabledReason}
-                  </p>
+                  <p className={styles.subtleText}>{generateDisabledReason}</p>
                 ) : null}
                 {flowEntryRequiresReview ? (
                   <p className={styles.subtleText}>
@@ -1589,31 +1624,34 @@ export function ImportPanel({
               </div>
             ) : null}
             {flowEntryPending ? (
-              <Notice kind="info">
+              <p role="status" className={styles.subtleText}>
                 Flow composer discovery and prompt preflight are pending. No
                 Generate action is available.
-              </Notice>
+              </p>
             ) : null}
             {flowGeneratePending ? (
-              <Notice kind="info">
+              <p role="status" className={styles.subtleText}>
                 Preparing the saved prompt and checking the selected Flow
                 document. No Generate input has been sent at this point.
-              </Notice>
+              </p>
             ) : null}
             {flowGenerateResult ? (
-              <Notice
-                kind={
-                  flowGenerateResult.state === "dispatched"
-                    ? "info"
-                    : flowGenerateResult.state === "uncertain"
+              flowGenerateResult.state === "dispatched" ? (
+                <p role="status" className={styles.subtleText}>
+                  {formatFlowGenerateOutcome(flowGenerateResult)}
+                </p>
+              ) : (
+                <Notice
+                  kind={
+                    flowGenerateResult.state === "uncertain" ||
+                    flowGenerateResult.state === "blocked"
                       ? "warning"
-                      : flowGenerateResult.state === "blocked"
-                        ? "warning"
-                        : "error"
-                }
-              >
-                {formatFlowGenerateOutcome(flowGenerateResult)}
-              </Notice>
+                      : "error"
+                  }
+                >
+                  {formatFlowGenerateOutcome(flowGenerateResult)}
+                </Notice>
+              )
             ) : null}
             {flowGenerateResult?.attemptId ? (
               <Button
@@ -1628,33 +1666,39 @@ export function ImportPanel({
               </Button>
             ) : null}
             {flowCountDecisionReport ? (
-              <Notice kind="info">
+              <p role="status" className={styles.subtleText}>
                 {`${(flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status === "count_matched" ? "Count matched — heuristic observation. " : ""}${String(flowCountDecisionReport.message ?? "Durable count decision read back.")} Decision ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status ?? flowCountDecisionReport.status ?? "unavailable")}; reason ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.reason ?? flowCountDecisionReport.reason ?? "none")}; expected additions ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedCumulativeAdditions ?? "unknown")}; expected total ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedTotal ?? "unknown")}; observed eligible candidates ${String(((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.observedEligibleCandidateIds as unknown[] | undefined)?.length ?? "unknown")}. Provider outcome ${String(flowCountDecisionReport.providerOutcome ?? "unknown")}; this count match is heuristic observation only.`}
-              </Notice>
+              </p>
             ) : null}
             {flowEntryResult ? (
-              <Notice kind={flowEntryResult.fillVerified ? "success" : "error"}>
-                {[
-                  `${flowEntryResult.stage ?? "Flow entry"}: ${flowEntryResult.message ?? "Flow prompt entry did not complete."}`,
-                  flowEntryResult.expectedCodeUnits !== undefined
-                    ? `Expected ${flowEntryResult.expectedCodeUnits} code units; actual ${flowEntryResult.actualCodeUnits ?? "unavailable"}. Entry method: ${flowEntryResult.inputMethod ?? "none"}. Fill verified: ${flowEntryResult.fillVerified ? "yes" : "no"}. Generate: unavailable.`
-                    : "",
-                  flowEntryResult.composer
-                    ? `Connector reachable: ${flowEntryResult.connectorReachable ? "yes" : "no"}; composer: ${flowEntryResult.composer}; entry method compatible: ${flowEntryResult.methodCompatible ? "yes" : "no"}.`
-                    : "",
-                  flowEntryResult.textReadback
-                    ? `Editor: ${flowEntryResult.editorKind}; profile: ${flowEntryResult.composerProfile}; readback: ${flowEntryResult.textReadback}.`
-                    : "",
-                  flowEntryResult.expectedSha256
-                    ? `Expected SHA-256 ${flowEntryResult.expectedSha256}; actual ${flowEntryResult.actualSha256 ?? "unavailable"}.`
-                    : "",
-                  flowEntryResult.immediateMatch !== undefined
-                    ? `Immediate match: ${flowEntryResult.immediateMatch ? "yes" : "no"}; settled match: ${flowEntryResult.settledMatch ? "yes" : "no"}. Mismatch: ${flowEntryResult.mismatchCategory ?? "none"}${flowEntryResult.firstDifferenceOffset !== undefined ? ` at offset ${flowEntryResult.firstDifferenceOffset}` : ""}.`
-                    : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-              </Notice>
+              flowEntryResult.fillVerified ? (
+                <p role="status" className={styles.subtleText}>
+                  {`${flowEntryResult.stage ?? "Flow entry"}: ${flowEntryResult.message ?? "The selected Flow editor was verified."} Generate is unavailable.`}
+                </p>
+              ) : (
+                <Notice kind="error">
+                  {[
+                    `${flowEntryResult.stage ?? "Flow entry"}: ${flowEntryResult.message ?? "Flow prompt entry did not complete."}`,
+                    flowEntryResult.expectedCodeUnits !== undefined
+                      ? `Expected ${flowEntryResult.expectedCodeUnits} code units; actual ${flowEntryResult.actualCodeUnits ?? "unavailable"}. Entry method: ${flowEntryResult.inputMethod ?? "none"}. Fill verified: ${flowEntryResult.fillVerified ? "yes" : "no"}. Generate: unavailable.`
+                      : "",
+                    flowEntryResult.composer
+                      ? `Connector reachable: ${flowEntryResult.connectorReachable ? "yes" : "no"}; composer: ${flowEntryResult.composer}; entry method compatible: ${flowEntryResult.methodCompatible ? "yes" : "no"}.`
+                      : "",
+                    flowEntryResult.textReadback
+                      ? `Editor: ${flowEntryResult.editorKind}; profile: ${flowEntryResult.composerProfile}; readback: ${flowEntryResult.textReadback}.`
+                      : "",
+                    flowEntryResult.expectedSha256
+                      ? `Expected SHA-256 ${flowEntryResult.expectedSha256}; actual ${flowEntryResult.actualSha256 ?? "unavailable"}.`
+                      : "",
+                    flowEntryResult.immediateMatch !== undefined
+                      ? `Immediate match: ${flowEntryResult.immediateMatch ? "yes" : "no"}; settled match: ${flowEntryResult.settledMatch ? "yes" : "no"}. Mismatch: ${flowEntryResult.mismatchCategory ?? "none"}${flowEntryResult.firstDifferenceOffset !== undefined ? ` at offset ${flowEntryResult.firstDifferenceOffset}` : ""}.`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                </Notice>
+              )
             ) : null}
           </div>
         </details>

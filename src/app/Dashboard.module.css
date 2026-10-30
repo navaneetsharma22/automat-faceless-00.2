@@ -576,6 +576,10 @@
 .sourceSummary {
   gap: var(--space-3);
 }
+.sourceSummaryEmpty {
+  gap: var(--space-2);
+  padding: var(--space-4);
+}
 .sourcePromptList {
   display: grid;
   max-height: min(58vh, 42rem);

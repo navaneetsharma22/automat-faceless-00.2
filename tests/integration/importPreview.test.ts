@@ -83,6 +83,7 @@ describe("P03.3 import preview integration", () => {
     expect(videoMarkup).toContain("&quot;shot_id&quot;:&quot;02&quot;");
 
     expect(imageMarkup).not.toContain("Load synthetic example");
+    expect(imageMarkup).not.toContain("Start image batch");
   });
 
   it("shows only current complete result counts and IDs with provider-safe wording", () => {
@@ -116,6 +117,7 @@ describe("P03.3 import preview integration", () => {
       markup.indexOf("Legacy count-mode and one-shot tools"),
     );
     expect(markup).toContain("Technical details");
+    expect(markup).toContain("UTF-8 JSON. Maximum");
   });
 
   it("retains the previous successful preview as stale after edits or failure", () => {

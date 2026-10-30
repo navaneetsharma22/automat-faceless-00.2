@@ -364,7 +364,7 @@ export function ValidatedPromptPanel({
 
   return (
     <section
-      className={`${styles.panel} ${styles.sourceSummary}`}
+      className={`${styles.panel} ${styles.sourceSummary} ${items.length ? "" : styles.sourceSummaryEmpty}`}
       aria-labelledby="image-source-summary-title"
     >
       <div className={styles.panelHeading}>

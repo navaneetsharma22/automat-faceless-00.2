@@ -380,6 +380,12 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .sourceToolbarButtons button {
+    padding-inline: var(--space-2);
+    font-size: var(--font-size-xs);
+    white-space: nowrap;
+  }
+
   .sourceActions > *,
   .validateRow > * {
     max-width: 100%;
