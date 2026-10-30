@@ -186,8 +186,12 @@ export function createFlowImageObservationHandler(
       return "binding_tab_project_id_mismatch";
     if (parsed.canonicalTarget !== selected.canonicalTarget)
       return "binding_tab_canonical_target_mismatch";
+    const ownerLease = dependencies.port.getDebuggerLeaseForOwner?.(
+      attempt.tabId,
+      attempt.attemptId,
+    );
     const frame = await run("frame_inspection", () =>
-      dependencies.port.readFrame(attempt.tabId),
+      dependencies.port.readFrame(attempt.tabId, ownerLease),
     );
     if (!frame) return "binding_frame_unavailable";
     if (frame.frameId !== attempt.frameId) return "binding_frame_id_mismatch";

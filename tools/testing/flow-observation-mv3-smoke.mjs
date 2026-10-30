@@ -1,4 +1,4 @@
-/* global process, URL, chrome, location, crypto, console, TextEncoder, indexedDB */
+/* global process, URL, chrome, crypto, console, indexedDB, setTimeout, fetch, window, document */
 import assert from "node:assert/strict";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -52,6 +52,7 @@ try {
   const worker =
     context.serviceWorkers()[0] ??
     (await context.waitForEvent("serviceworker", { timeout: 15_000 }));
+  worker.on("console", (message) => console.log("mv3-worker:", message.text()));
   const extensionId = new URL(worker.url()).hostname;
   const dashboard = await context.newPage();
   await dashboard.goto(`chrome-extension://${extensionId}/index.html`);
@@ -141,6 +142,7 @@ try {
     provider: "Flow",
     enableReconnect: true,
   });
+  console.log("mv3-smoke: connection ready");
   assert.equal(connection.ok, true, "strict connector handshake failed");
   assert.equal(connection.data?.state, "verified");
   const saved = await request("promptBatch.put", {
@@ -163,6 +165,7 @@ try {
     userConfirmed: true,
   };
   const readiness = await request("flow.image.checkReadiness", { countMode });
+  console.log("mv3-smoke: readiness returned");
   assert.equal(readiness.ok, true, "production readiness handler failed");
   assert.equal(readiness.data?.status, "ready", JSON.stringify(readiness));
   assert.equal(readiness.data?.countModeEligibility?.startingImageCount, 4);
@@ -172,6 +175,7 @@ try {
     JSON.stringify(readiness),
   );
 
+  console.log("mv3-smoke: sending GenerateOnce request");
   const generation = await request("flow.image.generateOnce", {
     workspaceId: "default",
     promptHash,
@@ -185,6 +189,7 @@ try {
     },
     countMode,
   });
+  console.log("mv3-smoke: generate request returned");
   assert.equal(generation.ok, true, "production GenerateOnce handler failed");
   assert.equal(
     generation.data?.state,
@@ -205,20 +210,28 @@ try {
     1,
     "production activation did not click local synthetic control once",
   );
-  const postHandlerDebuggerState = await dashboard.evaluate(
-    async (targetId) => {
-      const targets = await chrome.debugger.getTargets();
-      return targets.some(
-        (target) => target.tabId === targetId && target.attached,
-      );
-    },
-    tabId,
+  const postHandlerLeaseProbe = await dashboard.evaluate(async (targetId) => {
+    try {
+      await chrome.debugger.attach({ tabId: targetId }, "1.3");
+      await chrome.debugger.detach({ tabId: targetId });
+      return true;
+    } catch {
+      return false;
+    }
+  }, tabId);
+  console.log("mv3-smoke: post-handler lease probe", postHandlerLeaseProbe);
+  assert.equal(
+    postHandlerLeaseProbe,
+    true,
+    "GenerateOnce must release its extension debugger lease before delayed observation",
   );
 
   // Candidate readiness is delayed beyond GenerateOnce's handler lifetime and
   // debugger cleanup. The production injected observer sends the later event.
   await sleep(40_700);
+  console.log("mv3-smoke: delayed candidate wait complete");
   const final = await request("flow.image.getCountDecision", { attemptId });
+  console.log("mv3-smoke: final count decision returned");
   assert.equal(
     final.data?.countDecision?.status,
     "count_matched",
@@ -249,6 +262,7 @@ try {
         .map((event) => event.code)
         .filter(Boolean),
       countDecision: row?.countDecision,
+      resultOutcome: row?.resultOutcome,
     };
   }, attemptId);
   assert.equal(final.ok, true);
@@ -256,6 +270,7 @@ try {
   assert.equal(stored.lastSequence >= 2, true, JSON.stringify(stored));
   assert.equal(stored.sessionStatus, "active");
   assert.equal(stored.countDecision?.status, "count_matched");
+  assert.equal(stored.resultOutcome?.status, "unknown");
 
   // Prove ownership isolation separately. An attachment made outside the
   // adapter must block the production observation check and remain attached.
@@ -336,10 +351,11 @@ try {
         delayedCandidateReadyMs: 40_000,
         finalCountDecisionBeforeExternalOwner:
           final.data?.countDecision?.status,
+        providerOutcomeBeforeExternalOwner: stored.resultOutcome?.status,
         durableSessionStatusBeforeExternalOwner: stored.sessionStatus,
         durableAcceptedSequences: stored.acceptedSequences,
         durableObservationCount: stored.observationCount,
-        postGenerateOnceDebuggerAttached: postHandlerDebuggerState,
+        postHandlerLeaseProbeSucceeded: postHandlerLeaseProbe,
         externalOwnerRefusal: refusedStored.eventCodes.at(-1),
         externalOwnerPreservedUntilTestCleanup: externalOwnerPreserved,
         failClosedOutcome: refusedStored.outcome?.status,

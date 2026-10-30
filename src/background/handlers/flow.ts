@@ -8,7 +8,6 @@ import { flowTabFromUrl } from "../../platforms/flow/connection";
 import { sameFlowDocument } from "../../platforms/flow/connection";
 import {
   activateFlowImageGenerate,
-  captureFlowDocumentBinding,
   inspectFlowImageButton,
   inspectFlowImageGenerate,
   readFlowDocumentBinding,
@@ -830,8 +829,20 @@ type FlowSettingsConfirmation = {
 };
 
 export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
+  acquireDebuggerLease?: (
+    tabId: number,
+    ownerId?: string,
+  ) => Promise<FlowDebuggerLease>;
+  getDebuggerLeaseForOwner?: (
+    tabId: number,
+    ownerId: string,
+  ) => FlowDebuggerLease | undefined;
+  releaseDebuggerLease?: (lease: FlowDebuggerLease) => Promise<void>;
   captureFrame: (tabId: number) => Promise<FlowDocumentBinding>;
-  readFrame: (tabId: number) => Promise<FlowDocumentBinding | undefined>;
+  readFrame: (
+    tabId: number,
+    lease?: FlowDebuggerLease,
+  ) => Promise<FlowDocumentBinding | undefined>;
   inspectGenerate: (
     tabId: number,
     prompt: string,
@@ -882,6 +893,12 @@ export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
   productionObservationSupported?: boolean;
 };
 
+export type FlowDebuggerLease = {
+  readonly tabId: number;
+  readonly token: symbol;
+  readonly ownerId?: string;
+};
+
 /** Fixed, privacy-safe arm diagnostics. Never include exception messages or page data. */
 export type FlowObservationArmDiagnostic = {
   phase: "scope_install" | "arm_injection" | "receipt_validation";
@@ -913,7 +930,15 @@ export type FlowObservationArmDiagnostic = {
     | "UnknownError";
 };
 
-const flowDebuggerOwnedTabs = new Set<number>();
+type FlowDebuggerLeaseState = {
+  lease: FlowDebuggerLease;
+  attached: boolean;
+  releaseQueue: () => void;
+  frameReadTail: Promise<void>;
+};
+
+const flowDebuggerLeaseStates = new Map<number, FlowDebuggerLeaseState>();
+const flowDebuggerLeaseTails = new Map<number, Promise<void>>();
 let flowDebuggerDetachEventSource: unknown;
 
 function trackFlowDebuggerOwnership(): void {
@@ -925,9 +950,24 @@ function trackFlowDebuggerOwnership(): void {
     return;
   flowDebuggerDetachEventSource = chrome.debugger;
   chrome.debugger.onDetach.addListener((source) => {
-    if (typeof source.tabId === "number")
-      flowDebuggerOwnedTabs.delete(source.tabId);
+    if (typeof source.tabId !== "number") return;
+    const state = flowDebuggerLeaseStates.get(source.tabId);
+    if (state) state.attached = false;
   });
+}
+
+async function lockFlowDebuggerTab(tabId: number): Promise<() => void> {
+  const previous = flowDebuggerLeaseTails.get(tabId) ?? Promise.resolve();
+  let unlock!: () => void;
+  const gate = new Promise<void>((resolve) => (unlock = resolve));
+  const tail = previous.then(() => gate);
+  flowDebuggerLeaseTails.set(tabId, tail);
+  await previous;
+  return () => {
+    unlock();
+    if (flowDebuggerLeaseTails.get(tabId) === tail)
+      flowDebuggerLeaseTails.delete(tabId);
+  };
 }
 
 const flowArmExceptionName = (
@@ -952,28 +992,68 @@ export function createChromeFlowImageGenerateOncePort(
   repositories: ExtensionRepositories,
 ): FlowImageGenerateOncePort {
   const base = createChromeFlowPromptEntryPort(repositories);
-  // Chrome permits a debugger session only after the extension has attached.
-  // Track attachments created by this adapter so GenerateOnce can share its
-  // lease with in-handler checks, while later observation messages acquire a
-  // short, owned lease of their own. Acquisition is the ownership proof:
-  // getTargets() reports attachment, not which client owns it.
-  const attachDebugger = async (tabId: number) => {
+  // A lease is the only proof that this adapter owns the tab's debugger
+  // session. Chrome exposes attachment state, but not the other client's
+  // identity, so an attach failure is never treated as permission to borrow.
+  const acquireDebuggerLease = async (
+    tabId: number,
+    ownerId?: string,
+  ): Promise<FlowDebuggerLease> => {
+    const releaseQueue = await lockFlowDebuggerTab(tabId);
+    trackFlowDebuggerOwnership();
     try {
       await base.attach(tabId);
     } catch {
+      releaseQueue();
       const error = new Error("flow_debugger_attach_refused");
       error.name = "FlowDebuggerAttachError";
       throw error;
     }
+    const lease = {
+      tabId,
+      token: Symbol("flow-debugger-lease"),
+      ...(ownerId ? { ownerId } : {}),
+    };
+    flowDebuggerLeaseStates.set(tabId, {
+      lease,
+      attached: true,
+      releaseQueue,
+      frameReadTail: Promise.resolve(),
+    });
+    return lease;
   };
-  const detachDebugger = async (tabId: number) => {
-    if (!flowDebuggerOwnedTabs.has(tabId)) return;
+  const getDebuggerLeaseForOwner = (tabId: number, ownerId: string) => {
+    const state = flowDebuggerLeaseStates.get(tabId);
+    return state?.attached && state.lease.ownerId === ownerId
+      ? state.lease
+      : undefined;
+  };
+  const releaseDebuggerLease = async (lease: FlowDebuggerLease) => {
+    const state = flowDebuggerLeaseStates.get(lease.tabId);
+    if (!state || state.lease.token !== lease.token) return;
     try {
-      await base.detach(tabId);
+      let sessionStillOwned = state.attached;
+      if (!sessionStillOwned) {
+        // A delayed onDetach from the previous lease can arrive after this
+        // lease attached. A successful command proves this adapter's current
+        // CDP session is still present; a failed command never authorizes a
+        // detach that could affect an unrelated owner.
+        try {
+          await base.sendCommand(lease.tabId, "Page.getFrameTree");
+          sessionStillOwned = true;
+        } catch {
+          sessionStillOwned = false;
+        }
+      }
+      if (sessionStillOwned) await base.detach(lease.tabId);
     } catch {
       const error = new Error("flow_debugger_detach_failed");
       error.name = "FlowDebuggerDetachError";
       throw error;
+    } finally {
+      if (flowDebuggerLeaseStates.get(lease.tabId) === state)
+        flowDebuggerLeaseStates.delete(lease.tabId);
+      state.releaseQueue();
     }
   };
   const bindBrowserDocument = async (
@@ -1004,36 +1084,63 @@ export function createChromeFlowImageGenerateOncePort(
     };
   };
   const captureBoundFrame = async (tabId: number) => {
-    const bound = await bindBrowserDocument(
-      tabId,
-      await captureFlowDocumentBinding(base, tabId),
-    );
-    if (!bound) throw new Error("flow_document_identity_unavailable");
-    return bound;
-  };
-  const readBoundFrame = async (tabId: number) => {
-    let frame: FlowDocumentBinding | undefined;
-    const acquiredHere = !flowDebuggerOwnedTabs.has(tabId);
+    const lease = await acquireDebuggerLease(tabId);
     try {
-      if (acquiredHere) await attachDebugger(tabId);
-      frame = await readFlowDocumentBinding(base, tabId);
+      await base.sendCommand(tabId, "Page.enable");
+      const frame = await readFlowDocumentBinding(base, tabId);
+      const bound = await bindBrowserDocument(tabId, frame);
+      if (!bound) throw new Error("flow_document_identity_unavailable");
+      return bound;
+    } finally {
+      await releaseDebuggerLease(lease);
+    }
+  };
+  const readBoundFrame = async (tabId: number, lease?: FlowDebuggerLease) => {
+    const ownsLease = lease !== undefined;
+    const activeLease = lease ?? (await acquireDebuggerLease(tabId));
+    const state = flowDebuggerLeaseStates.get(tabId);
+    if (
+      activeLease.tabId !== tabId ||
+      !state ||
+      state.lease.token !== activeLease.token ||
+      !state.attached
+    ) {
+      if (!ownsLease) await releaseDebuggerLease(activeLease);
+      throw new Error("flow_debugger_lease_invalid");
+    }
+    const previousRead = state.frameReadTail;
+    let finishRead!: () => void;
+    const currentRead = new Promise<void>((resolve) => {
+      finishRead = resolve;
+    });
+    state.frameReadTail = previousRead.then(() => currentRead);
+    await previousRead;
+    try {
+      if (!state.attached) throw new Error("flow_debugger_lease_detached");
+      await base.sendCommand(tabId, "Page.enable");
+      const frame = await readFlowDocumentBinding(base, tabId);
+      let bound: FlowDocumentBinding | undefined;
+      try {
+        bound = await bindBrowserDocument(tabId, frame);
+      } catch {
+        const error = new Error("flow_browser_document_probe_failed");
+        error.name = "FlowDocumentProbeError";
+        throw error;
+      }
+      return bound;
     } catch (cause) {
       const causeName = cause instanceof Error ? cause.name : "";
-      if (causeName === "FlowDebuggerAttachError") throw cause;
+      if (
+        causeName === "FlowDebuggerAttachError" ||
+        causeName === "FlowDocumentProbeError"
+      )
+        throw cause;
       const error = new Error("flow_frame_tree_read_failed");
       error.name = "FlowFrameTreeReadError";
       throw error;
     } finally {
-      if (acquiredHere && flowDebuggerOwnedTabs.has(tabId)) {
-        await detachDebugger(tabId);
-      }
-    }
-    try {
-      return await bindBrowserDocument(tabId, frame);
-    } catch {
-      const error = new Error("flow_browser_document_probe_failed");
-      error.name = "FlowDocumentProbeError";
-      throw error;
+      finishRead();
+      if (!ownsLease) await releaseDebuggerLease(activeLease);
     }
   };
   const installScopeAnalyzer = async (
@@ -1156,8 +1263,9 @@ export function createChromeFlowImageGenerateOncePort(
   };
   return {
     ...base,
-    attach: attachDebugger,
-    detach: detachDebugger,
+    acquireDebuggerLease,
+    getDebuggerLeaseForOwner,
+    releaseDebuggerLease,
     captureFrame: captureBoundFrame,
     readFrame: readBoundFrame,
     inspectGenerate: (tabId, prompt) =>
@@ -1349,8 +1457,9 @@ export function createFlowImageGenerateOnce(
       dependencies.createObservationSessionId ?? (() => crypto.randomUUID());
     const port = dependencies.port;
     let attempt: FlowImageAttemptRecord | undefined;
-    let attached = false;
-    let attachedTabId: number | undefined;
+    let debuggerLease: FlowDebuggerLease | undefined;
+    let legacyDebuggerAttached = false;
+    let legacyDebuggerTabId: number | undefined;
     let activationStarted = false;
     let activationObserved = false;
     let pressAttempted = false;
@@ -1930,12 +2039,27 @@ export function createFlowImageGenerateOnce(
       });
 
       currentStage = "preflight";
-      await port.attach(target.id);
-      attached = true;
-      attachedTabId = target.id;
+      if (port.acquireDebuggerLease) {
+        debuggerLease = await port.acquireDebuggerLease(
+          target.id,
+          attempt.attemptId,
+        );
+      } else {
+        await port.attach(target.id);
+        legacyDebuggerAttached = true;
+        legacyDebuggerTabId = target.id;
+      }
       await port.sendCommand(target.id, "Page.enable");
       await port.sendCommand(target.id, "Runtime.enable");
-      if (!(await currentFlowBinding(port, selected, target, frame))) {
+      if (
+        !(await currentFlowBinding(
+          port,
+          selected,
+          target,
+          frame,
+          debuggerLease,
+        ))
+      ) {
         return failBefore(
           "document_binding_changed",
           "The selected Flow document changed after prompt verification. Generate was not activated.",
@@ -2026,7 +2150,15 @@ export function createFlowImageGenerateOnce(
             };
       const buttonId = discovery.buttonObjectId!;
       currentStage = "preflight";
-      if (!(await currentFlowBinding(port, selected, target, frame))) {
+      if (
+        !(await currentFlowBinding(
+          port,
+          selected,
+          target,
+          frame,
+          debuggerLease,
+        ))
+      ) {
         return failBefore(
           "document_binding_changed",
           "The selected Flow document changed during final preflight. Generate was not activated.",
@@ -2051,7 +2183,13 @@ export function createFlowImageGenerateOnce(
       const position = await port.buttonPosition(target.id, buttonId);
       if (
         !position ||
-        !(await currentFlowBinding(port, selected, target, frame))
+        !(await currentFlowBinding(
+          port,
+          selected,
+          target,
+          frame,
+          debuggerLease,
+        ))
       ) {
         return failBefore(
           "generate_binding_lost",
@@ -2270,7 +2408,13 @@ export function createFlowImageGenerateOnce(
 
       currentStage = "observer";
       if (
-        !(await currentFlowBinding(port, selected, target, frame)) ||
+        !(await currentFlowBinding(
+          port,
+          selected,
+          target,
+          frame,
+          debuggerLease,
+        )) ||
         !(await port.recheckGenerate(
           target.id,
           promptSource,
@@ -2332,6 +2476,7 @@ export function createFlowImageGenerateOnce(
           selected,
           target,
           frame,
+          debuggerLease,
         );
       } catch {
         postDispatchBinding = false;
@@ -2403,8 +2548,10 @@ export function createFlowImageGenerateOnce(
           : currentStage,
       );
     } finally {
-      if (attached) {
-        await port.detach(attachedTabId!).catch(() => undefined);
+      if (debuggerLease) {
+        await port.releaseDebuggerLease?.(debuggerLease).catch(() => undefined);
+      } else if (legacyDebuggerAttached) {
+        await port.detach(legacyDebuggerTabId!).catch(() => undefined);
       }
     }
   };
@@ -2415,9 +2562,10 @@ async function currentFlowBinding(
   selected: { tabId: number; canonicalTarget: string },
   target: ProviderTab,
   frame: FlowDocumentBinding,
+  lease?: FlowDebuggerLease,
 ): Promise<boolean> {
   if (!(await currentFlowTarget(port, selected, target))) return false;
-  const liveFrame = await port.readFrame(target.id);
+  const liveFrame = await port.readFrame(target.id, lease);
   return Boolean(
     liveFrame?.frameId === frame.frameId &&
     liveFrame.loaderId === frame.loaderId &&

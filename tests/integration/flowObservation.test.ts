@@ -505,6 +505,8 @@ describe("P05.2 attempt-bound Flow observation", () => {
           get: async () => ({ title: "fixture", url: canonicalTarget }),
         },
         debugger: {
+          attach: async () => undefined,
+          detach: async () => undefined,
           sendCommand: async (_target: unknown, method: string) => {
             if (failingApi === "debugger" && method === "Page.getFrameTree") {
               await new Promise((resolve) => setTimeout(resolve, 15));
@@ -587,6 +589,365 @@ describe("P05.2 attempt-bound Flow observation", () => {
       }
     },
   );
+
+  it("does not borrow or detach an externally owned debugger session", async () => {
+    const fixture = await makeFixture(1, "production_observation_only", true);
+    const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+    let detachCount = 0;
+    let commandCount = 0;
+    const chromeStub = {
+      tabs: {
+        get: async () => ({ title: "fixture", url: canonicalTarget }),
+      },
+      debugger: {
+        onDetach: { addListener: () => undefined },
+        attach: async () => {
+          throw new Error("Debugger is already attached by another owner");
+        },
+        detach: async () => {
+          detachCount += 1;
+        },
+        sendCommand: async () => {
+          commandCount += 1;
+          return {};
+        },
+      },
+      scripting: { executeScript: async () => [] },
+    };
+    Object.defineProperty(globalThis, "chrome", {
+      configurable: true,
+      value: chromeStub,
+    });
+    try {
+      const port = createChromeFlowImageGenerateOncePort(fixture.repositories);
+      await expect(port.readFrame(tabId)).rejects.toMatchObject({
+        name: "FlowDebuggerAttachError",
+      });
+      expect(commandCount).toBe(0);
+      expect(detachCount).toBe(0);
+    } finally {
+      if (originalChrome === undefined)
+        delete (globalThis as { chrome?: unknown }).chrome;
+      else
+        Object.defineProperty(globalThis, "chrome", {
+          configurable: true,
+          value: originalChrome,
+        });
+    }
+  });
+
+  it("serializes concurrent frame inspections and releases each acquired lease", async () => {
+    const fixture = await makeFixture(1, "production_observation_only", true);
+    const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+    let attached = false;
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    let attachCount = 0;
+    let detachCount = 0;
+    const chromeStub = {
+      tabs: {
+        get: async () => ({ title: "fixture", url: canonicalTarget }),
+      },
+      debugger: {
+        onDetach: { addListener: () => undefined },
+        attach: async () => {
+          if (attached) throw new Error("already attached");
+          attached = true;
+          attachCount += 1;
+        },
+        detach: async () => {
+          if (attached) {
+            attached = false;
+            detachCount += 1;
+          }
+        },
+        sendCommand: async (_target: unknown, method: string) => {
+          if (method === "Page.getFrameTree") {
+            activeReads += 1;
+            maxActiveReads = Math.max(maxActiveReads, activeReads);
+            await new Promise((resolve) => setTimeout(resolve, 15));
+            activeReads -= 1;
+            return {
+              frameTree: {
+                frame: {
+                  id: "fixture-frame",
+                  loaderId: "fixture-loader",
+                  url: canonicalTarget,
+                },
+              },
+            };
+          }
+          return {};
+        },
+      },
+      scripting: {
+        executeScript: async () => [
+          { documentId, frameId: 0, result: canonicalTarget },
+        ],
+      },
+    };
+    Object.defineProperty(globalThis, "chrome", {
+      configurable: true,
+      value: chromeStub,
+    });
+    try {
+      const port = createChromeFlowImageGenerateOncePort(fixture.repositories);
+      const results = await Promise.all([
+        port.readFrame(tabId),
+        port.readFrame(tabId),
+        port.readFrame(tabId),
+      ]);
+      expect(results.every((result) => result?.documentId === documentId)).toBe(
+        true,
+      );
+      expect(maxActiveReads).toBe(1);
+      expect(attachCount).toBe(3);
+      expect(detachCount).toBe(3);
+      expect(attached).toBe(false);
+    } finally {
+      if (originalChrome === undefined)
+        delete (globalThis as { chrome?: unknown }).chrome;
+      else
+        Object.defineProperty(globalThis, "chrome", {
+          configurable: true,
+          value: originalChrome,
+        });
+    }
+  });
+
+  it("reuses a live debugger lease only for its explicit attempt owner", async () => {
+    const fixture = await makeFixture(1, "production_observation_only", true);
+    const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+    let attached = false;
+    let attachCount = 0;
+    let detachCount = 0;
+    const chromeStub = {
+      tabs: {
+        get: async () => ({ title: "fixture", url: canonicalTarget }),
+      },
+      debugger: {
+        onDetach: { addListener: () => undefined },
+        attach: async () => {
+          if (attached) throw new Error("already attached");
+          attached = true;
+          attachCount += 1;
+        },
+        detach: async () => {
+          if (attached) {
+            attached = false;
+            detachCount += 1;
+          }
+        },
+        sendCommand: async (_target: unknown, method: string) =>
+          method === "Page.getFrameTree"
+            ? {
+                frameTree: {
+                  frame: {
+                    id: "fixture-frame",
+                    loaderId: "fixture-loader",
+                    url: canonicalTarget,
+                  },
+                },
+              }
+            : {},
+      },
+      scripting: {
+        executeScript: async () => [
+          { documentId, frameId: 0, result: canonicalTarget },
+        ],
+      },
+    };
+    Object.defineProperty(globalThis, "chrome", {
+      configurable: true,
+      value: chromeStub,
+    });
+    try {
+      const port = createChromeFlowImageGenerateOncePort(fixture.repositories);
+      const lease = await port.acquireDebuggerLease(tabId, "fixture-attempt");
+      expect(
+        port.getDebuggerLeaseForOwner(tabId, "another-attempt"),
+      ).toBeUndefined();
+      expect(port.getDebuggerLeaseForOwner(tabId, "fixture-attempt")).toBe(
+        lease,
+      );
+      expect(await port.readFrame(tabId, lease)).toMatchObject({
+        documentId,
+        frameId: "fixture-frame",
+      });
+      expect(attachCount).toBe(1);
+      await port.releaseDebuggerLease(lease);
+      expect(detachCount).toBe(1);
+      expect(
+        port.getDebuggerLeaseForOwner(tabId, "fixture-attempt"),
+      ).toBeUndefined();
+    } finally {
+      if (originalChrome === undefined)
+        delete (globalThis as { chrome?: unknown }).chrome;
+      else
+        Object.defineProperty(globalThis, "chrome", {
+          configurable: true,
+          value: originalChrome,
+        });
+    }
+  });
+
+  it("releases only its lease after genuine debugger detachment", async () => {
+    const fixture = await makeFixture(1, "production_observation_only", true);
+    const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+    let attached = false;
+    let detachCount = 0;
+    let detachCalls = 0;
+    let detachListener: ((source: { tabId?: number }) => void) | undefined;
+    let failNextFrameRead = true;
+    const chromeStub = {
+      tabs: {
+        get: async () => ({ title: "fixture", url: canonicalTarget }),
+      },
+      debugger: {
+        onDetach: {
+          addListener: (listener: (source: { tabId?: number }) => void) => {
+            detachListener = listener;
+          },
+        },
+        attach: async () => {
+          if (attached) throw new Error("already attached");
+          attached = true;
+        },
+        detach: async () => {
+          detachCalls += 1;
+          if (attached) {
+            attached = false;
+            detachCount += 1;
+          }
+        },
+        sendCommand: async (_target: unknown, method: string) => {
+          if (method === "Page.getFrameTree" && failNextFrameRead) {
+            failNextFrameRead = false;
+            attached = false;
+            detachListener?.({ tabId });
+            throw new Error("Debugger detached during inspection");
+          }
+          if (method === "Page.getFrameTree" && !attached)
+            throw new Error("Debugger is not attached");
+          if (method === "Page.getFrameTree")
+            return {
+              frameTree: {
+                frame: {
+                  id: "fixture-frame",
+                  loaderId: "fixture-loader",
+                  url: canonicalTarget,
+                },
+              },
+            };
+          return {};
+        },
+      },
+      scripting: {
+        executeScript: async () => [
+          { documentId, frameId: 0, result: canonicalTarget },
+        ],
+      },
+    };
+    Object.defineProperty(globalThis, "chrome", {
+      configurable: true,
+      value: chromeStub,
+    });
+    try {
+      const port = createChromeFlowImageGenerateOncePort(fixture.repositories);
+      await expect(port.readFrame(tabId)).rejects.toMatchObject({
+        name: "FlowFrameTreeReadError",
+      });
+      expect(detachCalls).toBe(0);
+      expect(detachCount).toBe(0);
+      expect(attached).toBe(false);
+      expect(await port.readFrame(tabId)).toMatchObject({
+        documentId,
+        frameId: "fixture-frame",
+      });
+      expect(detachCalls).toBe(1);
+      expect(detachCount).toBe(1);
+      expect(attached).toBe(false);
+    } finally {
+      if (originalChrome === undefined)
+        delete (globalThis as { chrome?: unknown }).chrome;
+      else
+        Object.defineProperty(globalThis, "chrome", {
+          configurable: true,
+          value: originalChrome,
+        });
+    }
+  });
+
+  it("ignores a delayed detach event from an older lease without leaking the new one", async () => {
+    const fixture = await makeFixture(1, "production_observation_only", true);
+    const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+    let attached = false;
+    let detachCount = 0;
+    let detachCalls = 0;
+    let detachListener: ((source: { tabId?: number }) => void) | undefined;
+    const chromeStub = {
+      tabs: {
+        get: async () => ({ title: "fixture", url: canonicalTarget }),
+      },
+      debugger: {
+        onDetach: {
+          addListener: (listener: (source: { tabId?: number }) => void) => {
+            detachListener = listener;
+          },
+        },
+        attach: async () => {
+          if (attached) throw new Error("already attached");
+          attached = true;
+        },
+        detach: async () => {
+          detachCalls += 1;
+          if (attached) {
+            attached = false;
+            detachCount += 1;
+          }
+        },
+        sendCommand: async (_target: unknown, method: string) => {
+          if (method === "Page.getFrameTree" && attached)
+            return {
+              frameTree: {
+                frame: { id: "f", loaderId: "l", url: canonicalTarget },
+              },
+            };
+          if (method === "Page.getFrameTree")
+            throw new Error("Debugger is not attached");
+          return {};
+        },
+      },
+      scripting: {
+        executeScript: async () => [
+          { documentId, frameId: 0, result: canonicalTarget },
+        ],
+      },
+    };
+    Object.defineProperty(globalThis, "chrome", {
+      configurable: true,
+      value: chromeStub,
+    });
+    try {
+      const port = createChromeFlowImageGenerateOncePort(fixture.repositories);
+      const first = await port.acquireDebuggerLease(tabId, "first-attempt");
+      await port.releaseDebuggerLease(first);
+      const second = await port.acquireDebuggerLease(tabId, "second-attempt");
+      detachListener?.({ tabId });
+      await port.releaseDebuggerLease(second);
+      expect(detachCalls).toBe(2);
+      expect(detachCount).toBe(2);
+      expect(attached).toBe(false);
+    } finally {
+      if (originalChrome === undefined)
+        delete (globalThis as { chrome?: unknown }).chrome;
+      else
+        Object.defineProperty(globalThis, "chrome", {
+          configurable: true,
+          value: originalChrome,
+        });
+    }
+  });
 
   it("turns production observer detach and timeout into explicit unknown outcomes", async () => {
     const detached = await makeFixture(1, "production_observation_only");
