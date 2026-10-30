@@ -35,6 +35,7 @@ export default defineConfig({
     "sidebarLayout.spec.ts",
     "dashboardCleanup.spec.ts",
     "imageQueueStorage.spec.ts",
+    "imageQueueSequence.spec.ts",
   ],
   reporter: "list",
   use: {

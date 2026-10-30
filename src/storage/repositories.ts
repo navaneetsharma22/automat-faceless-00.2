@@ -11,6 +11,7 @@ import {
 import {
   ImageSubmissionQueueRecordSchema,
   TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+  nextTimedDispatchDeadline,
   type ImageQueueManualSettingsDeclaration,
   type ImageSubmissionQueueRecord as QueueRecord,
 } from "../domain/jobs/queue";
@@ -271,7 +272,7 @@ export type RepositoryDatabase = {
   >;
   imageSubmissionQueues: Pick<
     Table<QueueRecord, string>,
-    "add" | "get" | "toArray"
+    "add" | "get" | "put" | "toArray"
   >;
   transaction: <T>(
     tableNames: string[],
@@ -352,6 +353,13 @@ export function createDexieRepositoryDatabase(
             database.batches,
             database.promptItems,
             database.selectedTargets,
+            operation,
+          );
+        case "imageSubmissionQueues+flowImageAttempts":
+          return database.transaction(
+            "rw",
+            database.imageSubmissionQueues,
+            database.flowImageAttempts,
             operation,
           );
         case "flowImageAttempts+flowCountRecoveries":
@@ -768,6 +776,7 @@ export class ExtensionRepositories {
           })),
           lastDispatchReceiptStoredAt: null,
           nextEligibleDispatchAt: null,
+          revision: 0,
           createdAt: now,
           updatedAt: now,
         };
@@ -808,6 +817,252 @@ export class ExtensionRepositories {
     return record;
   }
 
+  async claimTimedImageQueueItem(input: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+    attemptId: string;
+    at: number;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(
+      ["imageSubmissionQueues+flowImageAttempts"],
+      async () => {
+        const queue = await this.tables.imageSubmissionQueues.get(
+          input.queueId,
+        );
+        if (!queue || !(await isValidTimedQueueSnapshot(queue)))
+          throw new ImageQueueEligibilityError("queue_record_invalid");
+        if (queue.revision !== input.expectedRevision)
+          throw new ImageQueueEligibilityError("queue_revision_changed");
+        if (queue.state !== "ready" && queue.state !== "waiting")
+          throw new ImageQueueEligibilityError("queue_not_dispatchable");
+        if (
+          queue.nextEligibleDispatchAt !== null &&
+          input.at < queue.nextEligibleDispatchAt
+        )
+          throw new ImageQueueEligibilityError("dispatch_not_due");
+        const item = queue.items[input.order];
+        if (!item || item.order !== input.order || item.itemState !== "pending")
+          throw new ImageQueueEligibilityError("queue_item_not_pending");
+        const attempts = await this.tables.flowImageAttempts.toArray();
+        if (
+          attempts.some(
+            (attempt) =>
+              isBlockingFlowImageAttempt(attempt) &&
+              attempt.promptHash === item.promptHash,
+          )
+        )
+          throw new ActiveFlowImageAttemptError();
+        const claimed: QueueRecord = {
+          ...queue,
+          state: queue.state,
+          revision: queue.revision + 1,
+          updatedAt: input.at,
+          items: queue.items.map((entry, index) =>
+            index === input.order
+              ? {
+                  ...entry,
+                  itemState: "sending",
+                  providerOutcome: "not_started",
+                  dispatchIntent: {
+                    attemptId: input.attemptId,
+                    recordedAt: input.at,
+                  },
+                }
+              : entry,
+          ),
+        };
+        if (!ImageSubmissionQueueRecordSchema.safeParse(claimed).success)
+          throw new ImageQueueEligibilityError("dispatch_intent_invalid");
+        await this.tables.imageSubmissionQueues.put(claimed);
+        const readback = await this.tables.imageSubmissionQueues.get(
+          input.queueId,
+        );
+        if (
+          !readback ||
+          readback.revision !== claimed.revision ||
+          readback.items[input.order]?.dispatchIntent?.attemptId !==
+            input.attemptId
+        )
+          throw new ImageQueueEligibilityError(
+            "dispatch_intent_readback_failed",
+          );
+        result = readback;
+      },
+    );
+    return result;
+  }
+
+  async recordTimedImageQueueReceipt(input: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+    attemptId: string;
+    recordedAt: number;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(["imageSubmissionQueues"], async () => {
+      const queue = await this.tables.imageSubmissionQueues.get(input.queueId);
+      const item = queue?.items[input.order];
+      if (
+        !queue ||
+        queue.revision !== input.expectedRevision ||
+        item?.itemState !== "sending" ||
+        item.dispatchIntent?.attemptId !== input.attemptId
+      )
+        throw new ImageQueueEligibilityError(
+          "dispatch_receipt_revision_changed",
+        );
+      const sentItems = queue.items.map((entry, index) =>
+        index === input.order
+          ? {
+              ...entry,
+              itemState: "sent" as const,
+              providerOutcome: "unknown" as const,
+              dispatchReceipt: {
+                attemptId: input.attemptId,
+                storedAt: input.recordedAt,
+                evidence: "activation_pair_sent_or_uncertain" as const,
+              },
+            }
+          : entry,
+      );
+      const nextIndex = input.order + 1;
+      const final = nextIndex >= sentItems.length;
+      const next: QueueRecord = {
+        ...queue,
+        items: sentItems,
+        state: final ? "sent" : "waiting",
+        lastDispatchReceiptStoredAt: input.recordedAt,
+        nextEligibleDispatchAt: final
+          ? null
+          : nextTimedDispatchDeadline(input.recordedAt),
+        revision: queue.revision + 1,
+        updatedAt: input.recordedAt,
+      };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(next).success)
+        throw new ImageQueueEligibilityError("dispatch_receipt_invalid");
+      await this.tables.imageSubmissionQueues.put(next);
+      const readback = await this.tables.imageSubmissionQueues.get(
+        input.queueId,
+      );
+      if (
+        !readback ||
+        readback.revision !== next.revision ||
+        readback.items[input.order]?.itemState !== "sent"
+      )
+        throw new ImageQueueEligibilityError(
+          "dispatch_receipt_readback_failed",
+        );
+      result = readback;
+    });
+    return result;
+  }
+
+  async markTimedImageQueueActivationStarted(input: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+    attemptId: string;
+    at: number;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(["imageSubmissionQueues"], async () => {
+      const queue = await this.tables.imageSubmissionQueues.get(input.queueId);
+      const item = queue?.items[input.order];
+      if (
+        !queue ||
+        queue.revision !== input.expectedRevision ||
+        item?.itemState !== "sending" ||
+        item.dispatchIntent?.attemptId !== input.attemptId ||
+        item.dispatchIntent.activationStartedAt !== undefined
+      )
+        throw new ImageQueueEligibilityError(
+          "activation_intent_revision_changed",
+        );
+      result = {
+        ...queue,
+        revision: queue.revision + 1,
+        updatedAt: input.at,
+        items: queue.items.map((entry, index) =>
+          index === input.order
+            ? {
+                ...entry,
+                providerOutcome: "unknown",
+                dispatchIntent: {
+                  ...entry.dispatchIntent!,
+                  activationStartedAt: input.at,
+                },
+              }
+            : entry,
+        ),
+      };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(result).success)
+        throw new ImageQueueEligibilityError("activation_intent_invalid");
+      await this.tables.imageSubmissionQueues.put(result);
+      const readback = await this.tables.imageSubmissionQueues.get(
+        input.queueId,
+      );
+      if (
+        !readback ||
+        readback.revision !== result.revision ||
+        readback.items[input.order]?.dispatchIntent?.activationStartedAt !==
+          input.at
+      )
+        throw new ImageQueueEligibilityError(
+          "activation_intent_readback_failed",
+        );
+      result = readback;
+    });
+    return result;
+  }
+
+  async blockTimedImageQueue(input: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+    at: number;
+    uncertain: boolean;
+    reason: string;
+  }): Promise<QueueRecord | undefined> {
+    let result: QueueRecord | undefined;
+    await this.tables.transaction(["imageSubmissionQueues"], async () => {
+      const queue = await this.tables.imageSubmissionQueues.get(input.queueId);
+      if (!queue || queue.revision !== input.expectedRevision) return;
+      result = {
+        ...queue,
+        state: "blocked",
+        revision: queue.revision + 1,
+        updatedAt: input.at,
+        items: queue.items.map((entry, index) =>
+          index === input.order && entry.itemState === "sending"
+            ? {
+                ...entry,
+                itemState: "blocked",
+                blockReason: input.reason.slice(0, 64),
+                providerOutcome:
+                  input.uncertain ||
+                  entry.dispatchIntent?.activationStartedAt !== undefined
+                    ? "unknown"
+                    : "not_started",
+              }
+            : entry,
+        ),
+      };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(result).success)
+        throw new ImageQueueEligibilityError("queue_block_readback_invalid");
+      await this.tables.imageSubmissionQueues.put(result);
+      const readback = await this.tables.imageSubmissionQueues.get(
+        input.queueId,
+      );
+      if (!readback || readback.revision !== result.revision)
+        throw new ImageQueueEligibilityError("queue_block_readback_failed");
+      result = readback;
+    });
+    return result;
+  }
+
   async listTimedImageSubmissionQueues(
     workspaceId: string,
   ): Promise<QueueRecord[]> {
@@ -822,6 +1077,49 @@ export class ExtensionRepositories {
       throw new ImageQueueEligibilityError("queue_record_invalid");
     }
     return records.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  async listAllTimedImageSubmissionQueues(): Promise<QueueRecord[]> {
+    const records = await this.tables.imageSubmissionQueues.toArray();
+    if (
+      !(await Promise.all(records.map(isValidTimedQueueSnapshot))).every(
+        Boolean,
+      )
+    )
+      throw new ImageQueueEligibilityError("queue_record_invalid");
+    return records;
+  }
+
+  async validateTimedImageQueueStart(queueId: string): Promise<QueueRecord> {
+    const queue = await this.getTimedImageSubmissionQueue(queueId);
+    if (!queue) throw new ImageQueueEligibilityError("queue_not_found");
+    if (
+      queue.state !== "ready" ||
+      queue.items.some((item) => item.itemState !== "pending")
+    )
+      throw new ImageQueueEligibilityError(
+        "queue_already_started_or_unresolved",
+      );
+    const selected = await this.getSelectedTarget("Flow");
+    if (
+      !selected ||
+      selected.tabId !== queue.selectedProject.tabId ||
+      selected.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+      selected.verification !== "verified" ||
+      selected.connectionState !== "verified" ||
+      selected.verificationBinding?.projectId !==
+        queue.selectedProject.projectId ||
+      selected.verificationBinding?.documentId === undefined
+    )
+      throw new ImageQueueEligibilityError(
+        "selected_project_or_document_changed",
+      );
+    if (
+      queue.manualSettingsDeclaration.confirmedAt > this.now() ||
+      queue.manualSettingsDeclaration.confirmationId.length === 0
+    )
+      throw new ImageQueueEligibilityError("settings_confirmation_invalid");
+    return queue;
   }
 
   async getPromptBatch(

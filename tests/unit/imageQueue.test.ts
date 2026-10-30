@@ -202,10 +202,9 @@ describe("timed image submission queue foundation", () => {
     ).toHaveLength(1);
   });
 
-  it("defines safe transitions and deadlines at least forty seconds after durable receipt", () => {
+  it("defines safe transitions and deadlines exactly forty seconds after durable receipt", () => {
     expect(TIMED_IMAGE_SUBMISSION_INTERVAL_MS).toBe(40_000);
-    expect(nextTimedDispatchDeadline(100_000, 110_000)).toBe(150_000);
-    expect(nextTimedDispatchDeadline(100_000, 90_000)).toBe(140_000);
+    expect(nextTimedDispatchDeadline(100_000)).toBe(140_000);
     expect(canTransitionImageQueue("ready", "waiting")).toBe(true);
     expect(canTransitionImageQueue("waiting", "ready")).toBe(false);
     expect(canTransitionImageQueue("blocked", "ready")).toBe(false);

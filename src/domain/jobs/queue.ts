@@ -14,6 +14,7 @@ export type ImageQueueItemState = (typeof IMAGE_QUEUE_ITEM_STATES)[number];
 export const IMAGE_QUEUE_STATES = [
   "ready",
   "waiting",
+  "sent",
   "paused",
   "blocked",
   "stopped",
@@ -40,6 +41,12 @@ export type ImageQueueItem = {
   readonly sourceSpan: { readonly start: number; readonly end: number };
   itemState: ImageQueueItemState;
   providerOutcome: "not_started" | "unknown";
+  dispatchIntent?: {
+    attemptId: string;
+    recordedAt: number;
+    activationStartedAt?: number;
+  };
+  blockReason?: string;
   dispatchReceipt?: {
     attemptId: string;
     storedAt: number;
@@ -71,6 +78,7 @@ export type ImageSubmissionQueueRecord = {
   nextEligibleDispatchAt: number | null;
   readonly createdAt: number;
   updatedAt: number;
+  revision: number;
 };
 
 const hashSchema = z.string().regex(/^[0-9a-f]{64}$/);
@@ -93,6 +101,15 @@ const itemSchema = z
       .strict(),
     itemState: z.enum(IMAGE_QUEUE_ITEM_STATES),
     providerOutcome: z.enum(["not_started", "unknown"]),
+    dispatchIntent: z
+      .object({
+        attemptId: z.string().min(1).max(128),
+        recordedAt: z.number().finite().nonnegative(),
+        activationStartedAt: z.number().finite().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
+    blockReason: z.string().min(1).max(64).optional(),
     dispatchReceipt: z
       .object({
         attemptId: z.string().min(1).max(128),
@@ -110,7 +127,10 @@ const itemSchema = z
   .refine(
     (item) =>
       item.providerOutcome ===
-      (item.dispatchReceipt ? "unknown" : "not_started"),
+      (item.dispatchReceipt ||
+      item.dispatchIntent?.activationStartedAt !== undefined
+        ? "unknown"
+        : "not_started"),
   );
 
 export const ImageSubmissionQueueRecordSchema = z
@@ -153,6 +173,7 @@ export const ImageSubmissionQueueRecordSchema = z
     nextEligibleDispatchAt: z.number().finite().nonnegative().nullable(),
     createdAt: z.number().finite().nonnegative(),
     updatedAt: z.number().finite().nonnegative(),
+    revision: z.number().int().nonnegative(),
   })
   .strict()
   .refine((record) => record.items.every((item, index) => item.order === index))
@@ -173,10 +194,11 @@ export const ImageSubmissionQueueRecordSchema = z
       : record.state !== "ready" &&
           record.lastDispatchReceiptStoredAt ===
             sent.at(-1)?.dispatchReceipt?.storedAt &&
-          record.nextEligibleDispatchAt !== null &&
-          record.nextEligibleDispatchAt >=
-            record.lastDispatchReceiptStoredAt +
-              TIMED_IMAGE_SUBMISSION_INTERVAL_MS;
+          (record.nextEligibleDispatchAt === null
+            ? record.items.every((item) => item.itemState === "sent")
+            : record.nextEligibleDispatchAt >=
+              record.lastDispatchReceiptStoredAt +
+                TIMED_IMAGE_SUBMISSION_INTERVAL_MS);
   });
 
 export function canTransitionImageQueue(
@@ -185,9 +207,10 @@ export function canTransitionImageQueue(
 ): boolean {
   const allowed: Record<ImageQueueState, readonly ImageQueueState[]> = {
     ready: ["waiting", "paused", "blocked", "stopped"],
-    waiting: ["paused", "blocked", "stopped"],
+    waiting: ["sent", "paused", "blocked", "stopped"],
     paused: ["ready", "stopped"],
     blocked: ["stopped"],
+    sent: [],
     stopped: [],
   };
   return allowed[from].includes(to);
@@ -210,18 +233,9 @@ export function canTransitionImageQueueItem(
 /** P06.2 must call this only after the preceding dispatch receipt is durable. */
 export function nextTimedDispatchDeadline(
   receiptDurablyStoredAt: number,
-  schedulerObservedAt: number,
 ): number {
-  if (
-    !Number.isFinite(receiptDurablyStoredAt) ||
-    !Number.isFinite(schedulerObservedAt) ||
-    receiptDurablyStoredAt < 0 ||
-    schedulerObservedAt < 0
-  ) {
+  if (!Number.isFinite(receiptDurablyStoredAt) || receiptDurablyStoredAt < 0) {
     throw new RangeError("Dispatch deadline inputs must be finite timestamps.");
   }
-  return (
-    Math.max(receiptDurablyStoredAt, schedulerObservedAt) +
-    TIMED_IMAGE_SUBMISSION_INTERVAL_MS
-  );
+  return receiptDurablyStoredAt + TIMED_IMAGE_SUBMISSION_INTERVAL_MS;
 }

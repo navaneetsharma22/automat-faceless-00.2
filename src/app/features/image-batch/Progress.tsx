@@ -23,38 +23,74 @@ export function ImageQueueProgress({
   const [queues, setQueues] = useState<ImageSubmissionQueueRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [startingQueueId, setStartingQueueId] = useState<string>();
+  const [, setClockTick] = useState(0);
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
     let active = true;
-    void persistenceClient
-      .request("imageQueue.list", { workspaceId })
-      .then((value) => {
-        if (!Array.isArray(value))
-          throw new Error("The queue list was invalid.");
-        const records = value.map((entry) => {
-          const parsed = ImageSubmissionQueueRecordSchema.safeParse(entry);
-          if (!parsed.success)
-            throw new Error("A saved queue failed validation.");
-          return parsed.data;
+    const refresh = () =>
+      persistenceClient
+        .request("imageQueue.list", { workspaceId })
+        .then((value) => {
+          if (!Array.isArray(value))
+            throw new Error("The queue list was invalid.");
+          const records = value.map((entry) => {
+            const parsed = ImageSubmissionQueueRecordSchema.safeParse(entry);
+            if (!parsed.success)
+              throw new Error("A saved queue failed validation.");
+            return parsed.data;
+          });
+          if (active) setQueues(records);
+        })
+        .catch((cause: unknown) => {
+          if (active)
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Saved queues could not be read.",
+            );
+        })
+        .finally(() => {
+          if (active) setLoading(false);
         });
-        if (active) setQueues(records);
-      })
-      .catch((cause: unknown) => {
-        if (active)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : "Saved queues could not be read.",
-          );
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    void refresh();
+    const refreshTimer = window.setInterval(() => {
+      setClockTick((tick) => tick + 1);
+      void refresh();
+    }, 1000);
     return () => {
       active = false;
+      window.clearInterval(refreshTimer);
     };
   }, [persistenceClient, workspaceId]);
+
+  const startQueue = async (queueId: string) => {
+    if (startingQueueId) return;
+    setStartingQueueId(queueId);
+    setError(undefined);
+    try {
+      const record = await persistenceClient.request("imageQueue.start", {
+        queueId,
+      });
+      const parsed = ImageSubmissionQueueRecordSchema.safeParse(record);
+      if (!parsed.success)
+        throw new Error("The queue start readback was invalid.");
+      setQueues((current) =>
+        current.map((queue) =>
+          queue.queueId === queueId ? parsed.data : queue,
+        ),
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The timed queue could not start.",
+      );
+    } finally {
+      setStartingQueueId(undefined);
+    }
+  };
 
   const disabledReason = !sourceReady
     ? "Validate and save the current image source before creating a queue."
@@ -103,8 +139,8 @@ export function ImageQueueProgress({
         is recorded as settings context; it does not multiply Generate actions.
       </p>
       <p className={styles.helper}>
-        P06.1 saves the ordered queue only. Provider submission and countdown
-        scheduling are unavailable; nothing is sent to Flow.
+        Start sends each exact saved prompt once. Provider results remain
+        unknown.
       </p>
       <div className={styles.actionRow}>
         <Button
@@ -153,13 +189,47 @@ export function ImageQueueProgress({
               {queue.items.length === 1 ? "" : "s"}
             </strong>
             <span>
-              {queue.state === "ready" ? "Saved · not started" : queue.state}
+              {queue.items.some((item) => item.itemState === "sending")
+                ? "Sending"
+                : queue.state === "ready"
+                  ? "Saved · not started"
+                  : queue.state}
             </span>
           </div>
           <p className={styles.helper}>
-            Project binding captured for review. Execution is unavailable in
-            P06.1.
+            Project and exact source are frozen in this queue snapshot.
           </p>
+          {queue.state === "ready" &&
+          queue.items.every((item) => item.itemState === "pending") ? (
+            <Button
+              type="button"
+              disabled={Boolean(startingQueueId)}
+              loading={startingQueueId === queue.queueId}
+              loadingLabel="Starting queue…"
+              onClick={() => void startQueue(queue.queueId)}
+            >
+              Start timed queue
+            </Button>
+          ) : null}
+          {queue.state === "waiting" &&
+          queue.nextEligibleDispatchAt !== null ? (
+            <p className={styles.helper} role="status">
+              {Date.now() < queue.nextEligibleDispatchAt
+                ? `Next dispatch eligible in ${Math.ceil((queue.nextEligibleDispatchAt - Date.now()) / 1000)}s.`
+                : "Dispatch deadline reached; the worker must recheck saved state before dispatch."}
+            </p>
+          ) : null}
+          {queue.state === "sent" &&
+          queue.items.every((item) => item.itemState === "sent") ? (
+            <p className={styles.helper} role="status">
+              All prompts sent; results not verified.
+            </p>
+          ) : null}
+          {queue.state === "blocked" ? (
+            <p className={styles.error} role="alert">
+              Queue blocked. Review before any further action.
+            </p>
+          ) : null}
           <ol className={styles.items}>
             {queue.items.map((item) => (
               <li key={item.queueItemId}>
@@ -170,15 +240,21 @@ export function ImageQueueProgress({
                   </span>
                 </div>
                 <span>
-                  {item.itemState === "pending" ? "Pending" : item.itemState}
+                  {item.itemState.charAt(0).toUpperCase() +
+                    item.itemState.slice(1)}
                 </span>
                 <details>
                   <summary>View exact prompt source</summary>
                   <pre>{item.rawJsonBody}</pre>
                 </details>
-                {item.providerOutcome === "unknown" ? (
+                {item.itemState === "sent" && item.dispatchReceipt ? (
                   <small>
                     Dispatch evidence stored; provider outcome unknown.
+                  </small>
+                ) : item.providerOutcome === "unknown" ? (
+                  <small>
+                    Activation is uncertain; provider outcome unknown. Automatic
+                    replay is blocked.
                   </small>
                 ) : (
                   <small>Not dispatched. Provider outcome not started.</small>
@@ -189,7 +265,7 @@ export function ImageQueueProgress({
           <small>
             Stored interval:{" "}
             {TIMED_IMAGE_SUBMISSION_INTERVAL_MS.toLocaleString()} ms. No
-            countdown is running.
+            countdown reflects the saved dispatch deadline.
           </small>
         </section>
       ))}

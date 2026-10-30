@@ -24,6 +24,8 @@ import {
   ExtensionRepositories,
 } from "../storage/repositories";
 import { providerTabFromUrl } from "../platforms/shared/connection";
+import { createTimedImageQueueScheduler } from "./scheduler";
+import { createFlowTimedQueueDispatcher } from "./generationQueue";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -67,6 +69,11 @@ const flowImageObservation = createFlowImageObservationHandler({
   repositories,
   port: flowPort,
 });
+const timedQueueScheduler = createTimedImageQueueScheduler({
+  repositories,
+  dispatch: createFlowTimedQueueDispatcher(repositories),
+  alarms: chrome.alarms,
+});
 const workerReady = Promise.all([
   repositories.markTargetsUnverified(),
   repositories.reconcileInterruptedFlowImageAttempts(),
@@ -74,6 +81,14 @@ const workerReady = Promise.all([
   .then(() => flowImageObservation.resumeReadOnlyAfterWorkerRestart())
   .then(() => undefined);
 void workerReady.catch(() => undefined);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  void workerReady
+    .then(() => timedQueueScheduler.onAlarm(alarm.name))
+    .catch(() => undefined);
+});
+void workerReady
+  .then(() => timedQueueScheduler.reconcileStartup())
+  .catch(() => undefined);
 
 // Persist only bounded lifecycle categories. URLs, titles and account data are
 // intentionally excluded; these are browser-observed events, not refresh causes.
@@ -258,6 +273,7 @@ chrome.runtime.onMessage.addListener(
     flowCountBlockerInspection,
     flowCountRebaseline,
     flowImageObservation: flowImageObservation.handle,
+    startTimedImageQueue: timedQueueScheduler.start,
     revalidateConnection: (provider, enableReconnect) =>
       connectionLifecycle.revalidate(provider, enableReconnect),
   }),

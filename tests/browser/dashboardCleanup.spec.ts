@@ -32,7 +32,9 @@ test("image import is source-faithful and the cleaned dashboard fits review view
     ),
   ).toBeVisible();
   await expect(
-    page.getByText("P06.1 saves the ordered queue only."),
+    page.getByText(
+      "Start sends each exact saved prompt once. Provider results remain unknown.",
+    ),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Create timed queue" }),

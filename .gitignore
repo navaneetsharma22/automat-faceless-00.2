@@ -14,6 +14,7 @@ node_modules/
 !/phases/PHASE_03_JSON_IMPORT.md
 !/phases/PHASE_00_BASELINE.md
 !/phases/PHASE_04_FLOW_ONE_IMAGE.md
+!/phases/PHASE_06_IMAGE_QUEUE.md
 !INPUT_FORMAT.md
 !/tests/fixtures/prompts/README.md
 !docs/evidence/connection-proof.md

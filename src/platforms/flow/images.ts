@@ -660,6 +660,118 @@ export async function inspectFlowImageGenerate(
   return discovery;
 }
 
+/** Timed mode inspects only the uniquely owned composer and its Generate control.
+ * It deliberately does not inspect result tiles, image counts, or observer state. */
+export async function inspectTimedFlowGenerate(
+  port: FlowImagePagePort,
+  tabId: number,
+  expectedText: string,
+): Promise<{
+  exactPrompt: boolean;
+  generate: "identified" | "missing" | "ambiguous" | "disabled";
+  buttonObjectId?: string;
+}> {
+  const expression = `(${flowTimedGenerateRuntime.toString()})(${JSON.stringify(expectedText)},(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}))`;
+  const response = (await port.sendCommand(tabId, "Runtime.evaluate", {
+    expression,
+    returnByValue: false,
+    awaitPromise: false,
+  })) as {
+    result?: {
+      objectId?: string;
+      subtype?: string;
+      description?: string;
+      value?: unknown;
+    };
+  };
+  const buttonObjectId = response.result?.objectId;
+  if (!buttonObjectId || response.result?.subtype !== "node")
+    return { exactPrompt: false, generate: "missing" };
+  const metadata = (await port.sendCommand(tabId, "Runtime.callFunctionOn", {
+    objectId: buttonObjectId,
+    functionDeclaration:
+      "function(){return {exact:this.dataset.afExact==='true',state:this.dataset.afState, count:Number(this.dataset.afCount)}}",
+    returnByValue: true,
+    awaitPromise: false,
+  })) as {
+    result?: { value?: { exact?: boolean; state?: string; count?: number } };
+  };
+  const value = metadata.result?.value;
+  return {
+    exactPrompt: value?.exact === true,
+    generate:
+      value?.state === "ambiguous"
+        ? "ambiguous"
+        : value?.state === "disabled"
+          ? "disabled"
+          : value?.state === "identified"
+            ? "identified"
+            : "missing",
+    ...(value?.state === "identified" ? { buttonObjectId } : {}),
+  };
+}
+
+function flowTimedGenerateRuntime(
+  expectedText: string,
+  composerRuntime: typeof flowComposerRuntime,
+  readText: typeof readFlowEditorRuntime,
+): HTMLElement | null {
+  const editor = composerRuntime("", true, readText);
+  if (!(editor instanceof HTMLElement)) return null;
+  const rich = editor.closest("flow-rich-text-editor");
+  const boundary = rich
+    ? editor.closest<HTMLElement>("flow-base-prompt-box")
+    : editor.closest<HTMLElement>(
+        'form, [role="form"], [role="group"], [role="region"], [data-composer]',
+      );
+  if (!boundary) return null;
+  let actual: string;
+  try {
+    actual = readText(editor);
+  } catch {
+    return null;
+  }
+  const name = (element: HTMLElement) =>
+    (
+      element.getAttribute("aria-label")?.trim() ||
+      element.textContent?.trim() ||
+      ""
+    ).replace(/\s+/g, " ");
+  const candidates = Array.from(
+    boundary.querySelectorAll<HTMLElement>("button, [role='button']"),
+  ).filter((button) =>
+    /^(generate|generate image|create image|start generation)$/i.test(
+      name(button),
+    ),
+  );
+  const enabled = candidates.filter((button) => {
+    const style = getComputedStyle(button);
+    return (
+      button.isConnected &&
+      !button.matches(":disabled, [disabled], [aria-disabled='true']") &&
+      !button.closest("[hidden], [inert], [aria-hidden='true']") &&
+      style.display !== "none" &&
+      style.visibility === "visible" &&
+      button.getClientRects().length > 0
+    );
+  });
+  if (candidates.length !== 1 || enabled.length !== 1) {
+    const marker = document.createElement("span");
+    marker.dataset.afState =
+      candidates.length > 1
+        ? "ambiguous"
+        : candidates.length === 1
+          ? "disabled"
+          : "missing";
+    return marker;
+  }
+  const button = enabled[0]!;
+  button.dataset.afExact = String(actual === expectedText);
+  button.dataset.afState = "identified";
+  button.dataset.afCount = String(candidates.length);
+  return button;
+}
+
 export async function inspectFlowImageButton(
   port: FlowImagePagePort,
   tabId: number,

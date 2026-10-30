@@ -57,6 +57,7 @@ export type FoundationDependencies = {
     provider: "Flow" | "Vids",
     enableReconnect?: boolean,
   ) => Promise<unknown>;
+  startTimedImageQueue?: (queueId: string) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -204,6 +205,25 @@ async function dispatch(
         );
       }
       return record;
+    }
+    case "imageQueue.start": {
+      if (!dependencies.startTimedImageQueue)
+        throw new FoundationOperationError(
+          "worker_error",
+          "image_queue_execution_unavailable",
+          "Timed queue execution is unavailable in this worker.",
+        );
+      try {
+        return await dependencies.startTimedImageQueue(request.payload.queueId);
+      } catch (error) {
+        if (error instanceof ImageQueueEligibilityError)
+          throw new FoundationOperationError(
+            "invalid_request",
+            error.code,
+            "The saved queue is no longer eligible to start. Reload and review its project, source, and state.",
+          );
+        throw error;
+      }
     }
     case "imageQueue.list":
       return dependencies.repositories.listTimedImageSubmissionQueues(

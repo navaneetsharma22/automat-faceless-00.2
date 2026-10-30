@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Automat Faceless extension baseline",
   "minimum_chrome_version": "106",
-  "permissions": ["storage", "debugger"],
+  "permissions": ["storage", "debugger", "alarms"],
   "optional_permissions": ["tabs", "scripting"],
   "optional_host_permissions": [
     "https://flow.google.com/*",

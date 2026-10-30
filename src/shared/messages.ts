@@ -36,6 +36,7 @@ export type RequestPayloads = {
     };
   };
   "imageQueue.get": { queueId: string };
+  "imageQueue.start": { queueId: string };
   "imageQueue.list": { workspaceId: string };
   "connections.recordSelection": {
     provider: "Flow" | "Vids";
@@ -125,6 +126,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "promptBatch.get": 30_000,
   "imageQueue.createTimed": 30_000,
   "imageQueue.get": 10_000,
+  "imageQueue.start": 30_000,
   "imageQueue.list": 10_000,
   "connections.recordSelection": 5000,
   "connections.getSelection": 5000,
