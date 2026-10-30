@@ -6,8 +6,13 @@ import type {
   ProviderTab,
 } from "../platforms/shared/contracts";
 import type { ExtensionRepositories } from "../storage/repositories";
-import type { SelectedTargetRecord } from "../storage/db";
+import type {
+  SelectedTargetRecord,
+  VerificationBindingComparison,
+  VerificationBindingMatch,
+} from "../storage/db";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
+import { providerTabFromUrl } from "../platforms/shared/connection";
 import {
   CONNECTION_CAPABILITY,
   CONNECTOR_PROTOCOL_VERSION,
@@ -27,8 +32,16 @@ export type ConnectionRevalidationResult = {
   tab?: ProviderTab;
   documentId?: string;
   documentToken?: string;
+  savedBindingComparison?: VerificationBindingComparison;
   permissionRequest?: { permissions?: string[]; origins?: string[] };
 };
+
+function bindingMatch(
+  savedBindingPresent: boolean,
+  matches: boolean,
+): VerificationBindingMatch {
+  return !savedBindingPresent ? "missing" : matches ? "match" : "mismatch";
+}
 
 export function createConnectionLifecycleService(
   repositories: ExtensionRepositories,
@@ -77,36 +90,18 @@ export function createConnectionLifecycleService(
 
       const expectedRevision = target.revision ?? 0;
       const previousBinding = target.verificationBinding;
-      if (
+      const selectedRoute = providerTabFromUrl(
+        target.tabId,
+        "",
+        target.canonicalTarget,
+      );
+      const previousBindingMatchesSelectedTarget = Boolean(
         previousBinding &&
-        (previousBinding.extensionBuildId !== BUILD_ID ||
-          previousBinding.connectorBuildId !== BUILD_ID ||
-          previousBinding.extensionProtocolVersion !== PROTOCOL_VERSION ||
-          previousBinding.connectorProtocolVersion !==
-            CONNECTOR_PROTOCOL_VERSION)
-      ) {
-        await repositories.setTargetConnectionState(
-          provider,
-          "stale-build",
-          expectedRevision,
-          true,
-        );
-        await repositories.recordConnectionLifecycleDiagnostic(
-          provider,
-          {
-            kind: "revalidation_refused",
-            reason: "saved_binding_build_mismatch",
-            at: Date.now(),
-          },
-          target,
-        );
-        onStateChanged(provider, "stale-build", "saved_binding_build_mismatch");
-        return {
-          ok: false,
-          state: "stale-build",
-          reason: "saved_binding_build_mismatch",
-        };
-      }
+        previousBinding.provider === provider &&
+        previousBinding.tabId === target.tabId &&
+        previousBinding.canonicalTarget === target.canonicalTarget &&
+        previousBinding.projectId === selectedRoute?.projectId,
+      );
       await repositories.setTargetConnectionState(
         provider,
         "checking",
@@ -155,6 +150,41 @@ export function createConnectionLifecycleService(
           provider,
           { tabId: target.tabId, canonicalTarget: target.canonicalTarget },
           port,
+          {
+            // A saved document ID is a guard only when that old verification
+            // belongs to the currently selected target. Obsolete verification
+            // metadata must not veto a fresh explicit Connect handshake.
+            expectedDocumentId: previousBindingMatchesSelectedTarget
+              ? previousBinding?.documentId
+              : undefined,
+            decideStaleConnectorReplacement: async () => {
+              if (provider !== "Flow")
+                return {
+                  allowed: true,
+                  reasonCode: "stale_connector_active_observation" as const,
+                };
+              try {
+                const attempts = await repositories.getAllFlowImageAttempts();
+                const activeObservation = attempts.some(
+                  (attempt) =>
+                    attempt.provider === "Flow" &&
+                    attempt.tabId === target.tabId &&
+                    attempt.projectId === selectedRoute?.projectId &&
+                    (attempt.observationSession?.status === "arming" ||
+                      attempt.observationSession?.status === "active"),
+                );
+                return {
+                  allowed: !activeObservation,
+                  reasonCode: "stale_connector_active_observation" as const,
+                };
+              } catch {
+                return {
+                  allowed: false,
+                  reasonCode: "stale_connector_state_unavailable" as const,
+                };
+              }
+            },
+          },
         ),
         new Promise<null>((resolve) => {
           timer = setTimeout(() => resolve(null), 8_000);
@@ -209,12 +239,16 @@ export function createConnectionLifecycleService(
           provider,
           {
             kind: documentChanged ? "document_changed" : "revalidation_refused",
-            reason: result.stage,
+            reason: result.reasonCode ?? result.stage,
             at: Date.now(),
           },
           target,
         );
-        onStateChanged(provider, connectionState, result.stage);
+        onStateChanged(
+          provider,
+          connectionState,
+          result.reasonCode ?? result.stage,
+        );
         return {
           ok: false,
           state:
@@ -225,49 +259,56 @@ export function createConnectionLifecycleService(
                 : documentChanged
                   ? "stale-document"
                   : "temporarily-unreachable",
-          reason: result.stage,
+          reason: result.reasonCode ?? result.stage,
           permissionRequest: result.permissionRequest,
         };
       }
-      if (
-        previousBinding &&
-        (previousBinding.tabId !== result.tab.id ||
-          previousBinding.canonicalTarget !== result.tab.canonicalTarget ||
-          previousBinding.projectId !== result.tab.projectId ||
-          previousBinding.documentId !== result.documentId)
-      ) {
-        await repositories.setTargetConnectionState(
-          provider,
-          "stale-document",
-          expectedRevision,
-          true,
-        );
-        await repositories.recordConnectionLifecycleDiagnostic(
-          provider,
-          {
-            kind: "document_changed",
-            reason:
-              previousBinding.documentId !== result.documentId
-                ? "browser_document_id_mismatch"
-                : "saved_target_binding_mismatch",
-            at: Date.now(),
-          },
-          target,
-        );
-        onStateChanged(
-          provider,
-          "stale-document",
-          "saved_target_binding_mismatch",
-        );
-        return {
-          ok: false,
-          state: "stale-document",
-          reason:
-            previousBinding.documentId !== result.documentId
-              ? "browser_document_id_mismatch"
-              : "saved_target_binding_mismatch",
-        };
-      }
+      const savedBindingComparison: VerificationBindingComparison = {
+        savedBindingPresent: previousBinding !== undefined,
+        selectedTabId: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.tabId === result.tab.id,
+        ),
+        selectedProjectId: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.projectId === result.tab.projectId,
+        ),
+        selectedCanonicalTarget: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.canonicalTarget === result.tab.canonicalTarget,
+        ),
+        browserDocumentId: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.documentId === result.documentId,
+        ),
+        connectorDocumentToken: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.documentToken === result.documentToken,
+        ),
+        savedExtensionBuild: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.extensionBuildId === BUILD_ID,
+        ),
+        savedConnectorBuild: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.connectorBuildId === BUILD_ID,
+        ),
+        savedExtensionProtocol: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.extensionProtocolVersion === PROTOCOL_VERSION,
+        ),
+        savedConnectorProtocol: bindingMatch(
+          previousBinding !== undefined,
+          previousBinding?.connectorProtocolVersion ===
+            CONNECTOR_PROTOCOL_VERSION,
+        ),
+        liveConnectorBuild: "current",
+        liveConnectorProtocol: "current",
+      };
+      const savedBindingMismatch = Object.entries(savedBindingComparison).some(
+        ([field, match]) =>
+          field !== "savedBindingPresent" && match === "mismatch",
+      );
       const binding = {
         provider,
         tabId: result.tab.id,
@@ -312,16 +353,28 @@ export function createConnectionLifecycleService(
         provider,
         {
           kind: "revalidation_verified",
-          reason: "same_selected_document_and_build",
+          reason: savedBindingMismatch
+            ? "saved_verification_binding_refreshed"
+            : "same_selected_document_and_build",
+          ...(previousBinding
+            ? { bindingComparison: savedBindingComparison }
+            : {}),
           at: Date.now(),
         },
         target,
       );
-      onStateChanged(provider, "verified", "same_selected_document_and_build");
+      onStateChanged(
+        provider,
+        "verified",
+        savedBindingMismatch
+          ? "saved_verification_binding_refreshed"
+          : "same_selected_document_and_build",
+      );
       return {
         ok: true,
         state: "verified",
         reason: "verified_same_selected_target",
+        savedBindingComparison,
         tab: result.tab,
         documentId: result.documentId,
         documentToken: result.documentToken,

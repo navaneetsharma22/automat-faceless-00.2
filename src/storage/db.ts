@@ -58,9 +58,26 @@ export type SelectedTargetRecord = {
       | "tab_replaced"
       | "revalidation_refused";
     reason?: string;
+    bindingComparison?: VerificationBindingComparison;
     at: number;
   }>;
   updatedAt: number;
+};
+
+export type VerificationBindingMatch = "match" | "mismatch" | "missing";
+export type VerificationBindingComparison = {
+  savedBindingPresent: boolean;
+  selectedTabId: VerificationBindingMatch;
+  selectedProjectId: VerificationBindingMatch;
+  selectedCanonicalTarget: VerificationBindingMatch;
+  browserDocumentId: VerificationBindingMatch;
+  connectorDocumentToken: VerificationBindingMatch;
+  savedExtensionBuild: VerificationBindingMatch;
+  savedConnectorBuild: VerificationBindingMatch;
+  savedExtensionProtocol: VerificationBindingMatch;
+  savedConnectorProtocol: VerificationBindingMatch;
+  liveConnectorBuild: "current";
+  liveConnectorProtocol: "current";
 };
 
 export type WorkflowRecord = {

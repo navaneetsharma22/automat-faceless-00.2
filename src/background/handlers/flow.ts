@@ -63,6 +63,8 @@ export function createFlowImageReadinessCheck(
     ) => ({
       mode: countMode.mode,
       startingImageCount: countMode.startingImageCount,
+      userConfirmed:
+        countMode.mode === "existing_project" ? countMode.userConfirmed : null,
       status,
       reason,
       detailCode,
@@ -83,6 +85,10 @@ export function createFlowImageReadinessCheck(
       selectedCountMode: {
         mode: countMode.mode,
         startingImageCount: countMode.startingImageCount,
+        userConfirmed:
+          countMode.mode === "existing_project"
+            ? countMode.userConfirmed
+            : null,
       },
       countModeEligibility: countModeEligibility("blocked", reason, reason),
       attemptsCreated: 0,
@@ -374,6 +380,7 @@ export function createFlowImageReadinessCheck(
                 roots: Array<Document | ShadowRoot | Element>;
                 tiles: HTMLElement[];
                 candidateIds: string[];
+                qualifyingCandidateIds: string[];
                 candidateMultiplicity: Array<{
                   candidateId: string;
                   renderedCopies: number;
@@ -503,6 +510,7 @@ export function createFlowImageReadinessCheck(
               stableBaseline: stable,
               renderedTileCount: before.tiles.length,
               distinctCandidateCount: before.candidateIds.length,
+              qualifyingCandidateCount: before.qualifyingCandidateIds.length,
               candidateIds: before.candidateIds,
               repeatedCandidateCount: before.repeatedCandidateCount,
               unidentifiedImageCount: before.unidentifiedImageCount,
@@ -690,6 +698,10 @@ export function createFlowImageReadinessCheck(
         selectedCountMode: {
           mode: countMode.mode,
           startingImageCount: countMode.startingImageCount,
+          userConfirmed:
+            countMode.mode === "existing_project"
+              ? countMode.userConfirmed
+              : null,
         },
         countModeEligibility: modeReport,
         baselineCoverageAssessment: {
@@ -724,7 +736,10 @@ export function createFlowImageReadinessCheck(
         stableBaseline: result?.stableBaseline ?? false,
         renderedTileCount: result?.renderedTileCount ?? 0,
         distinctCandidateCount: result?.distinctCandidateCount ?? 0,
-        qualifyingCandidateCount: result?.qualifyingCandidateCount ?? 0,
+        qualifyingCandidateCount:
+          typeof result?.qualifyingCandidateCount === "number"
+            ? result.qualifyingCandidateCount
+            : undefined,
         repeatedCandidateCount: result?.repeatedCandidateCount ?? 0,
         unidentifiedImageCount: result?.unidentifiedImageCount ?? 0,
         unrelatedImageCount: result?.unrelatedImageCount ?? 0,

@@ -31,6 +31,8 @@ export default defineConfig({
     "flowAttemptStorageSchema.spec.ts",
     "flowProductionArm.spec.ts",
     "connectionLifecycle.spec.ts",
+    "flowReadinessProduction.spec.ts",
+    "sidebarLayout.spec.ts",
   ],
   reporter: "list",
   use: {

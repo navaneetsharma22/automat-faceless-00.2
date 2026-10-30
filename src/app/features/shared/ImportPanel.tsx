@@ -18,7 +18,10 @@ import {
   type SavedSourceExportDetails,
 } from "./savedSourceExport";
 import styles from "./ImportPanel.module.css";
-import { flowReadinessReasonLabel } from "./flowReadinessPresentation";
+import {
+  flowReadinessModeFromInput,
+  flowReadinessReasonLabel,
+} from "./flowReadinessPresentation";
 
 type ExampleConfirmation =
   | { type: "example"; revision: number }
@@ -600,30 +603,49 @@ export function ImportPanel({
 
   const checkFlowReadiness = async () => {
     if (kind !== "image" || flowReadinessPending) return;
+    const countMode = flowReadinessModeFromInput({
+      mode: flowCountMode,
+      countSessionId: flowCountSessionId,
+      startingImageCountText: flowStartingImageCount,
+      userConfirmed: flowExistingCountConfirmed,
+    });
+    if (
+      !countMode ||
+      (countMode.mode === "existing_project" && !countMode.userConfirmed)
+    ) {
+      setFlowReadinessResult({
+        status: "blocked",
+        reason: "count_declaration_unconfirmed",
+        message:
+          "Enter a whole starting image count and confirm it before checking existing-project readiness. No provider inspection was requested.",
+        selectedCountMode: {
+          mode: "existing_project",
+          startingImageCount: null,
+          userConfirmed: false,
+        },
+        countModeEligibility: {
+          mode: "existing_project",
+          startingImageCount: null,
+          userConfirmed: false,
+          status: "blocked",
+          reason: "count_declaration_unconfirmed",
+          detailCode: "count_declaration_unconfirmed",
+          inventoryComplete: false,
+          providerIdentityVerified: false,
+          terminalSemanticsSupported: false,
+        },
+        attemptsCreated: 0,
+        confirmationConsumed: false,
+        productionReceiptCreated: false,
+      });
+      return;
+    }
     setFlowReadinessPending(true);
     setFlowReadinessResult(undefined);
     try {
       const report = await persistenceClient.request(
         "flow.image.checkReadiness",
-        {
-          countMode:
-            flowCountMode === "new_empty_project"
-              ? {
-                  mode: "new_empty_project",
-                  countSessionId: flowCountSessionId,
-                  startingImageCount: 0,
-                }
-              : {
-                  mode: "existing_project",
-                  countSessionId: flowCountSessionId,
-                  startingImageCount: Number.isInteger(
-                    Number(flowStartingImageCount),
-                  )
-                    ? Number(flowStartingImageCount)
-                    : 0,
-                  userConfirmed: flowExistingCountConfirmed,
-                },
-        },
+        { countMode },
       );
       if (report && typeof report === "object")
         setFlowReadinessResult(report as Record<string, unknown>);
@@ -691,6 +713,8 @@ export function ImportPanel({
       renderedTileCount: flowReadinessResult.renderedTileCount ?? null,
       distinctCandidateCount:
         flowReadinessResult.distinctCandidateCount ?? null,
+      qualifyingCandidateCount:
+        flowReadinessResult.qualifyingCandidateCount ?? null,
       repeatedCandidateCount:
         flowReadinessResult.repeatedCandidateCount ?? null,
       unidentifiedImageCount:
@@ -733,6 +757,8 @@ export function ImportPanel({
       renderedTileCount: flowReadinessResult.renderedTileCount ?? null,
       distinctCandidateCount:
         flowReadinessResult.distinctCandidateCount ?? null,
+      qualifyingCandidateCount:
+        flowReadinessResult.qualifyingCandidateCount ?? null,
       repeatedCandidateCount:
         flowReadinessResult.repeatedCandidateCount ?? null,
       unidentifiedImageCount:
@@ -842,7 +868,7 @@ export function ImportPanel({
                   flowReadinessResult.status === "ready" ? "success" : "warning"
                 }
               >
-                {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; mode ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.mode ?? flowCountMode)}; mode eligibility ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.status ?? "unavailable")}; mode blocker ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.detailCode ?? (flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.reason ?? "none")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; qualifying owned candidates ${String(flowReadinessResult.qualifyingCandidateCount ?? 0)}; virtual-scroll containers ${String(flowReadinessResult.virtualScrollContainerCount ?? 0)}; viewport overflow ${String(flowReadinessResult.viewportOverflowObserved ?? false)}; actual scrolling ${String(flowReadinessResult.actualScrollingObserved ?? false)}; candidate continuity ${String(flowReadinessResult.candidateIdentityContinuity ?? "unresolved")}; ownership ambiguous ${String(flowReadinessResult.candidateOwnershipAmbiguous ?? false)}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory completeness and provider identity remain unverified; terminal completion is unsupported.`}
+                {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; mode ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.mode ?? flowCountMode)}; mode eligibility ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.status ?? "unavailable")}; mode blocker ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.detailCode ?? (flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.reason ?? "none")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; qualifying owned candidates ${String(flowReadinessResult.qualifyingCandidateCount ?? "unavailable")}; virtual-scroll containers ${String(flowReadinessResult.virtualScrollContainerCount ?? 0)}; viewport overflow ${String(flowReadinessResult.viewportOverflowObserved ?? false)}; actual scrolling ${String(flowReadinessResult.actualScrollingObserved ?? false)}; candidate continuity ${String(flowReadinessResult.candidateIdentityContinuity ?? "unresolved")}; ownership ambiguous ${String(flowReadinessResult.candidateOwnershipAmbiguous ?? false)}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory completeness and provider identity remain unverified; terminal completion is unsupported.`}
               </Notice>
               <Button
                 type="button"

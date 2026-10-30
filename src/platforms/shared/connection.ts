@@ -16,6 +16,15 @@ import { ConnectionApiUnavailableError } from "./chromeApiDiagnostics";
 import { parseProviderRoute } from "./providerRoute";
 
 const attachmentTasks = new Map<string, Promise<ConnectionResult>>();
+export type StaleConnectorReplacementDecision = {
+  allowed: boolean;
+  reasonCode:
+    "stale_connector_active_observation" | "stale_connector_state_unavailable";
+};
+export type ConnectionVerificationOptions = {
+  expectedDocumentId?: string;
+  decideStaleConnectorReplacement?: () => Promise<StaleConnectorReplacementDecision>;
+};
 
 export function providerTabFromUrl(
   id: number,
@@ -52,12 +61,13 @@ export function attachToSelectedTab(
   provider: ProviderName,
   selected: ProviderTab,
   port: ConnectionPort,
+  options: ConnectionVerificationOptions = {},
 ): Promise<ConnectionResult> {
   const key = `${provider}:${selected.id}`;
   const active = attachmentTasks.get(key);
   if (active) return active;
 
-  const task = attach(provider, selected, port).finally(() => {
+  const task = attach(provider, selected, port, options).finally(() => {
     if (attachmentTasks.get(key) === task) attachmentTasks.delete(key);
   });
   attachmentTasks.set(key, task);
@@ -68,6 +78,7 @@ export async function verifyPersistedTarget(
   provider: ProviderName,
   target: { tabId: number; canonicalTarget: string },
   port: ConnectionPort,
+  options: ConnectionVerificationOptions = {},
 ): Promise<ConnectionResult> {
   let selected: ProviderTab | undefined;
   try {
@@ -91,13 +102,14 @@ export async function verifyPersistedTarget(
       "target_validation",
     );
   }
-  return attachToSelectedTab(provider, selected, port);
+  return attachToSelectedTab(provider, selected, port, options);
 }
 
 async function attach(
   provider: ProviderName,
   selected: ProviderTab,
   port: ConnectionPort,
+  options: ConnectionVerificationOptions,
 ): Promise<ConnectionResult> {
   let stage: ConnectionFailureStage = "permission_check";
   if (selected.provider !== provider) {
@@ -150,13 +162,6 @@ async function attach(
       (firstResponse.buildId !== BUILD_ID ||
         firstResponse.protocolVersion !== CONNECTOR_PROTOCOL_VERSION),
     );
-    if (firstResponseIsStale) {
-      return failed(
-        "stale-build",
-        "The selected document is responding through a connector from another build or protocol. Revalidation is blocked; the connector was left unchanged and the provider page was not navigated.",
-        "connector_ping",
-      );
-    }
     if (
       firstResponse?.projectId &&
       !sameReportedProject(firstResponse, selected) &&
@@ -174,6 +179,79 @@ async function attach(
     if (responseIsCurrent) {
       stage = "document_validation";
       identity = await port.identifyDocument(selected.id, selected);
+    } else if (firstResponseIsStale) {
+      const decision = await options.decideStaleConnectorReplacement?.();
+      if (!decision?.allowed) {
+        const reasonCode =
+          decision?.reasonCode ?? "stale_connector_state_unavailable";
+        return failed(
+          "stale-build",
+          reasonCode === "stale_connector_active_observation"
+            ? "The selected document has an outdated connector, but a Flow observation is active for this project. It was left untouched. Wait for or inspect that attempt before reconnecting."
+            : "The selected document has an outdated connector, but the durable observation state could not be checked. It was left untouched. Retry Connect when storage is available.",
+          "connector_ping",
+          undefined,
+          undefined,
+          reasonCode,
+        );
+      }
+      stage = "document_validation";
+      const beforeReplacement = await port.identifyDocument(
+        selected.id,
+        selected,
+      );
+      if (
+        !beforeReplacement ||
+        beforeReplacement.frameId !== 0 ||
+        !beforeReplacement.documentId
+      )
+        return failed(
+          "stale-build",
+          "The outdated connector could not be bound to the current top-frame document. It was left untouched; reconnect only after the selected document can be verified.",
+          "document_validation",
+          undefined,
+          undefined,
+          "stale_connector_state_unavailable",
+        );
+      if (
+        options.expectedDocumentId &&
+        beforeReplacement.documentId !== options.expectedDocumentId
+      )
+        return failed(
+          "wrong-target",
+          "The selected project is open in a different browser document than the saved connection. The connector was left untouched; verify the current document explicitly.",
+          "document_validation",
+          undefined,
+          undefined,
+          "saved_document_changed_before_replacement",
+        );
+      const observedTarget = providerTabFromUrl(
+        selected.id,
+        selected.title,
+        beforeReplacement.url,
+      );
+      if (!sameProject(observedTarget, selected))
+        return failed(
+          "wrong-target",
+          "The top-frame document changed project before connector replacement. The connector was left untouched.",
+          "document_validation",
+        );
+      stage = "connector_injection";
+      identity = await port.injectConnector(selected.id, selected);
+      if (
+        !identity ||
+        identity.frameId !== beforeReplacement.frameId ||
+        identity.documentId !== beforeReplacement.documentId ||
+        identity.url !== beforeReplacement.url
+      )
+        return failed(
+          "wrong-target",
+          "The browser document changed while the versioned connector was being replaced. No verified connection was recorded.",
+          "document_validation",
+          undefined,
+          undefined,
+          "stale_connector_replacement_document_changed",
+        );
     } else {
       // Injection is limited to a missing listener; stale identities block.
       stage = "connector_injection";
@@ -237,6 +315,7 @@ async function attach(
         "handshake_validation",
         undefined,
         handshakeDiagnostics,
+        "stale_connector_live",
       );
     }
     if (response.protocolVersion !== CONNECTOR_PROTOCOL_VERSION) {
@@ -246,6 +325,7 @@ async function attach(
         "handshake_validation",
         undefined,
         handshakeDiagnostics,
+        "stale_connector_live",
       );
     }
     if (!isCompatibleConnector(response, request) || !response.documentToken) {
@@ -480,12 +560,14 @@ function failed(
     { ok: false }
   >["permissionRequest"],
   handshakeDiagnostics?: ConnectionHandshakeDiagnostics,
+  reasonCode?: Extract<ConnectionResult, { ok: false }>["reasonCode"],
 ): ConnectionResult {
   return {
     ok: false,
     state,
     error,
     stage,
+    ...(reasonCode ? { reasonCode } : {}),
     ...(permissionRequest ? { permissionRequest } : {}),
     ...(handshakeDiagnostics ? { handshakeDiagnostics } : {}),
   };

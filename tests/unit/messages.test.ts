@@ -3,6 +3,7 @@ import { createConnectionMessageListener } from "../../src/background/handlers/c
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import { createFoundationClient } from "../../src/shared/messageClient";
 import { makeRequest } from "../../src/shared/messages";
+import { flowReadinessModeFromInput } from "../../src/app/features/shared/flowReadinessPresentation";
 import type { AppRequest, AppResponse } from "../../src/shared/schemas";
 import {
   ChromePreferenceRepository,
@@ -45,6 +46,55 @@ function createHarness() {
 }
 
 describe("extension message protocol", () => {
+  it("serializes and forwards an explicit confirmed readiness count without substituting zero", async () => {
+    const { repositories, preferences } = createHarness();
+    const readiness = vi.fn(async ({ countMode }) => ({
+      status: "blocked",
+      selectedCountMode: countMode,
+    }));
+    const listener = createConnectionMessageListener(extensionId, {
+      repositories,
+      preferences,
+      flowImageReadiness: readiness,
+    });
+    const transport = {
+      sendMessage: (request: AppRequest) =>
+        new Promise<unknown>((resolve) => {
+          const wireRequest = JSON.parse(JSON.stringify(request)) as AppRequest;
+          listener(wireRequest, dashboardSender, (response) =>
+            resolve(JSON.parse(JSON.stringify(response)) as AppResponse),
+          );
+        }),
+    };
+    const client = createFoundationClient(transport);
+    const countMode = flowReadinessModeFromInput({
+      mode: "existing_project",
+      countSessionId: "3b7a1cd4-eeb5-441d-b9eb-142b3e8a0084",
+      startingImageCountText: "4",
+      userConfirmed: true,
+    });
+    if (!countMode || countMode.mode !== "existing_project")
+      throw new Error("expected count input was rejected");
+
+    const response = await client.request("flow.image.checkReadiness", {
+      countMode,
+    });
+    expect(readiness).toHaveBeenCalledWith({
+      countMode: {
+        mode: "existing_project",
+        countSessionId: "3b7a1cd4-eeb5-441d-b9eb-142b3e8a0084",
+        startingImageCount: 4,
+        userConfirmed: true,
+      },
+    });
+    expect(response).toMatchObject({
+      selectedCountMode: {
+        mode: "existing_project",
+        startingImageCount: 4,
+      },
+    });
+  });
+
   it("runs the no-Generate Flow readiness action without invoking generation or repository mutations", async () => {
     const { repositories, preferences } = createHarness();
     const generate = vi.fn(async () => ({ state: "dispatched" }));

@@ -1,6 +1,7 @@
 .appShell {
   display: grid;
   min-height: 100vh;
+  min-height: 100dvh;
   grid-template-columns: 16rem minmax(0, 1fr);
   background: var(--color-page);
   color: var(--color-text);
@@ -11,7 +12,10 @@
   inset-block-start: 0;
   display: flex;
   height: 100vh;
-  min-height: 40rem;
+  height: 100dvh;
+  min-height: 0;
+  max-height: 100vh;
+  max-height: 100dvh;
   flex-direction: column;
   gap: var(--space-6);
   padding: var(--space-6) var(--space-4);
@@ -21,6 +25,10 @@
     var(--color-surface),
     var(--color-surface-raised)
   );
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .brand {
@@ -747,11 +755,14 @@
   .sidebar {
     position: static;
     height: auto;
+    max-height: none;
     min-height: 0;
     gap: var(--space-3);
     padding: var(--space-3) var(--layout-gutter);
     border-inline-end: 0;
     border-block-end: 1px solid var(--color-border);
+    overflow: visible;
+    scrollbar-gutter: auto;
   }
   .brandMark {
     width: 2.15rem;

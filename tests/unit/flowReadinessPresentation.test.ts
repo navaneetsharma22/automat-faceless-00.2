@@ -1,20 +1,52 @@
 import { describe, expect, it } from "vitest";
-import { flowReadinessReasonLabel } from "../../src/app/features/shared/flowReadinessPresentation";
+import { flowReadinessModeFromInput } from "../../src/app/features/shared/flowReadinessPresentation";
 
-describe("Flow readiness reason presentation", () => {
-  it("does not show the missing-result fallback for a successful null reason", () => {
-    expect(flowReadinessReasonLabel("ready", null)).toBe("none");
-  });
+const sessionId = "3b7a1cd4-eeb5-441d-b9eb-142b3e8a0084";
 
-  it("keeps the diagnostic fallback for a blocked result without a reason", () => {
-    expect(flowReadinessReasonLabel("blocked", null)).toBe(
-      "readiness_result_unavailable",
-    );
-  });
-
-  it("preserves a concrete blocked reason", () => {
+describe("Flow readiness count input", () => {
+  it("preserves an explicitly entered and confirmed count of four", () => {
     expect(
-      flowReadinessReasonLabel("blocked", "connection_stale_document"),
-    ).toBe("connection_stale_document");
+      flowReadinessModeFromInput({
+        mode: "existing_project",
+        countSessionId: sessionId,
+        startingImageCountText: "4",
+        userConfirmed: true,
+      }),
+    ).toEqual({
+      mode: "existing_project",
+      countSessionId: sessionId,
+      startingImageCount: 4,
+      userConfirmed: true,
+    });
   });
+
+  it("preserves a confirmed zero as zero instead of treating it as unavailable", () => {
+    expect(
+      flowReadinessModeFromInput({
+        mode: "existing_project",
+        countSessionId: sessionId,
+        startingImageCountText: "0",
+        userConfirmed: true,
+      }),
+    ).toEqual({
+      mode: "existing_project",
+      countSessionId: sessionId,
+      startingImageCount: 0,
+      userConfirmed: true,
+    });
+  });
+
+  it.each(["", "   ", "1.5", "-1", "100001"])(
+    "does not silently substitute zero for invalid input %j",
+    (startingImageCountText) => {
+      expect(
+        flowReadinessModeFromInput({
+          mode: "existing_project",
+          countSessionId: sessionId,
+          startingImageCountText,
+          userConfirmed: false,
+        }),
+      ).toBeUndefined();
+    },
+  );
 });

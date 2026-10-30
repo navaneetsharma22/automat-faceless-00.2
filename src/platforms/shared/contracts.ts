@@ -136,6 +136,12 @@ export type ConnectionResult =
       >;
       stage: ConnectionFailureStage;
       error: string;
+      reasonCode?:
+        | "stale_connector_live"
+        | "stale_connector_active_observation"
+        | "stale_connector_state_unavailable"
+        | "saved_document_changed_before_replacement"
+        | "stale_connector_replacement_document_changed";
       handshakeDiagnostics?: ConnectionHandshakeDiagnostics;
       permissionRequest?: ProviderAccessRequest;
     };

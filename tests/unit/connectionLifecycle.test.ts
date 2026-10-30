@@ -12,7 +12,7 @@ import {
   type ConnectionProbeRequest,
   type ProviderName,
 } from "../../src/platforms/shared/contracts";
-import { BUILD_ID } from "../../src/shared/buildInfo";
+import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
 
@@ -30,10 +30,15 @@ afterEach(() => {
 function connectionPort(
   provider: ProviderName,
   url: string,
-  options: { gateProbe?: boolean; buildId?: string } = {},
+  options: {
+    gateProbe?: boolean;
+    buildId?: string;
+    replacementBuildId?: string;
+    tabId?: number;
+  } = {},
 ) {
   const tab = providerTabFromUrl(
-    provider === "Flow" ? 9 : 19,
+    options.tabId ?? (provider === "Flow" ? 9 : 19),
     "Selected project",
     url,
   )!;
@@ -52,7 +57,10 @@ function connectionPort(
     canonicalTarget: tab.canonicalTarget,
     projectId: tab.projectId,
     protocolVersion: CONNECTOR_PROTOCOL_VERSION,
-    buildId: options.buildId ?? BUILD_ID,
+    buildId:
+      installed && options.replacementBuildId
+        ? options.replacementBuildId
+        : (options.buildId ?? BUILD_ID),
     attemptId: request.attemptId,
     documentToken: `token-${provider}`,
     capabilities: [CONNECTION_CAPABILITY],
@@ -259,7 +267,151 @@ describe("worker-owned connection lifecycle", () => {
     });
   });
 
-  it("keeps a genuine connector build mismatch blocked without reinjection", async () => {
+  it("refreshes mismatched saved verification metadata without touching a lost attempt", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database);
+    const fixture = connectionPort("Flow", flowUrl, { buildId: BUILD_ID });
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+    );
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+    await repositories.setReconnectIntent("Flow", true);
+    const selected = await repositories.getSelectedTarget("Flow");
+    if (!selected) throw new Error("Flow target fixture missing");
+
+    // Simulate a legacy row whose selected target is Project 1 while its
+    // mutable verification cache still describes Project 2.
+    const previousProjectUrl = "https://flow.google.com/project/project-2";
+    await database.selectedTargets.put({
+      ...selected,
+      verification: "unverified",
+      connectionState: "stale-document",
+      verificationBinding: {
+        provider: "Flow",
+        tabId: 9,
+        canonicalTarget: previousProjectUrl,
+        projectId: "project-2",
+        frameId: 0,
+        documentId: "document-Flow",
+        documentToken: "previous-connector-token",
+        extensionBuildId: "previous-package",
+        extensionProtocolVersion: PROTOCOL_VERSION,
+        connectorBuildId: "previous-package",
+        connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        capability: CONNECTION_CAPABILITY,
+        verifiedAt: 1,
+      },
+    });
+    const lostAttempt = {
+      attemptId: "attempt-lost-observation-fixture",
+      state: "uncertain",
+      provider: "Flow",
+      projectId: "project-1",
+      tabId: 9,
+      documentId: "historical-document",
+      observationSession: { status: "lost", lastSequence: 1 },
+      resultOutcome: { status: "unknown", reason: "binding_changed" },
+    };
+    await database.flowImageAttempts.put(lostAttempt as never);
+    const attemptsBefore = await repositories.getAllFlowImageAttempts();
+
+    const result = await service.revalidate("Flow");
+    expect(result).toMatchObject({
+      ok: true,
+      state: "verified",
+      savedBindingComparison: {
+        savedBindingPresent: true,
+        selectedTabId: "match",
+        selectedProjectId: "mismatch",
+        selectedCanonicalTarget: "mismatch",
+        browserDocumentId: "match",
+        connectorDocumentToken: "mismatch",
+        savedExtensionBuild: "mismatch",
+        savedConnectorBuild: "mismatch",
+        liveConnectorBuild: "current",
+        liveConnectorProtocol: "current",
+      },
+    });
+    const after = await repositories.getSelectedTarget("Flow");
+    expect(after).toMatchObject({
+      verification: "verified",
+      connectionState: "verified",
+      verificationBinding: {
+        tabId: 9,
+        projectId: "project-1",
+        canonicalTarget: flowUrl,
+        documentId: "document-Flow",
+        extensionBuildId: BUILD_ID,
+        connectorBuildId: BUILD_ID,
+      },
+    });
+    expect(after?.lifecycleDiagnostics?.at(-1)).toMatchObject({
+      kind: "revalidation_verified",
+      reason: "saved_verification_binding_refreshed",
+      bindingComparison: result.savedBindingComparison,
+    });
+    expect(JSON.stringify(result.savedBindingComparison)).not.toContain(
+      "project-2",
+    );
+    expect(JSON.stringify(result.savedBindingComparison)).not.toContain(
+      "previous-connector-token",
+    );
+    expect(await repositories.getAllFlowImageAttempts()).toEqual(
+      attemptsBefore,
+    );
+  });
+
+  it("switches from another Flow project back to the old target and verifies the current selection", async () => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const workingUrl = "https://flow.google.com/project/working-project";
+    const oldTarget = connectionPort("Flow", flowUrl);
+    let activePort = oldTarget.port;
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => activePort,
+    );
+
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+    expect(await service.revalidate("Flow", true)).toMatchObject({
+      ok: true,
+      state: "verified",
+    });
+
+    const workingTarget = connectionPort("Flow", workingUrl, { tabId: 10 });
+    await persistSelection(repositories, "Flow", 10, workingUrl);
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      verification: "unverified",
+      verificationBinding: undefined,
+    });
+    activePort = workingTarget.port;
+    expect(await service.revalidate("Flow", true)).toMatchObject({
+      ok: true,
+      state: "verified",
+    });
+
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      verification: "unverified",
+      verificationBinding: undefined,
+    });
+    activePort = oldTarget.port;
+    expect(await service.revalidate("Flow", true)).toMatchObject({
+      ok: true,
+      state: "verified",
+      savedBindingComparison: { savedBindingPresent: false },
+    });
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      tabId: 9,
+      canonicalTarget: flowUrl,
+      verification: "verified",
+      verificationBinding: { projectId: "project-1" },
+    });
+  });
+
+  it("refuses verification when a safe versioned replacement still reports the old live build", async () => {
     const repositories = new ExtensionRepositories(
       createMemoryRepositoryDatabase(),
     );
@@ -271,13 +423,229 @@ describe("worker-owned connection lifecycle", () => {
     expect(await service.revalidate("Vids", true)).toMatchObject({
       ok: false,
       state: "stale-build",
+      reason: "stale_connector_live",
     });
     expect(await repositories.getSelectedTarget("Vids")).toMatchObject({
       verification: "unverified",
       connectionState: "stale-build",
       tabId: 19,
     });
-    expect(port.injectConnector).not.toHaveBeenCalled();
+    expect(port.injectConnector).toHaveBeenCalledOnce();
+    expect(port.releaseConnector).not.toHaveBeenCalled();
+  });
+
+  it("revalidates an old saved binding against the current live connector and persists the new binding", async () => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const fixture = connectionPort("Flow", flowUrl, {
+      buildId: BUILD_ID,
+    });
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+    );
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+    await repositories.setReconnectIntent("Flow", true);
+    const selected = await repositories.getSelectedTarget("Flow");
+    if (!selected) throw new Error("Flow target fixture missing");
+    await repositories.recordTargetVerification(
+      {
+        provider: "Flow",
+        tabId: 9,
+        canonicalTarget: flowUrl,
+        projectId: "project-1",
+        frameId: 0,
+        documentId: "document-Flow",
+        documentToken: "old-token",
+        extensionBuildId: "previous-package",
+        extensionProtocolVersion: PROTOCOL_VERSION,
+        connectorBuildId: "previous-package",
+        connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        capability: CONNECTION_CAPABILITY,
+        verifiedAt: 1,
+      },
+      selected.revision,
+    );
+
+    expect(await service.revalidate("Flow")).toMatchObject({
+      ok: true,
+      state: "verified",
+    });
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      verification: "verified",
+      connectionState: "verified",
+      verificationBinding: {
+        extensionBuildId: BUILD_ID,
+        connectorBuildId: BUILD_ID,
+        documentId: "document-Flow",
+      },
+    });
+    expect(fixture.port.injectConnector).not.toHaveBeenCalled();
+  });
+
+  it("refuses stale connector replacement during an active Flow observation and leaves it untouched", async () => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const fixture = connectionPort("Flow", flowUrl, {
+      buildId: "old-connector-build",
+      replacementBuildId: BUILD_ID,
+    });
+    const activeObservation = {
+      provider: "Flow",
+      tabId: 9,
+      projectId: "project-1",
+      documentId: "document-Flow",
+      observationSession: { status: "active" },
+    };
+    vi.spyOn(repositories, "getAllFlowImageAttempts").mockResolvedValue([
+      activeObservation as never,
+    ]);
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+    );
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+    await repositories.setReconnectIntent("Flow", true);
+    const selected = await repositories.getSelectedTarget("Flow");
+    if (!selected) throw new Error("Flow target fixture missing");
+    await repositories.recordTargetVerification(
+      {
+        provider: "Flow",
+        tabId: 9,
+        canonicalTarget: flowUrl,
+        projectId: "project-1",
+        frameId: 0,
+        documentId: "document-Flow",
+        documentToken: "old-token",
+        extensionBuildId: "previous-package",
+        extensionProtocolVersion: PROTOCOL_VERSION,
+        connectorBuildId: "previous-package",
+        connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        capability: CONNECTION_CAPABILITY,
+        verifiedAt: 1,
+      },
+      selected.revision,
+    );
+
+    expect(await service.revalidate("Flow")).toMatchObject({
+      ok: false,
+      state: "stale-build",
+      reason: "stale_connector_active_observation",
+    });
+    expect(fixture.port.injectConnector).not.toHaveBeenCalled();
+    expect(fixture.port.releaseConnector).not.toHaveBeenCalled();
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      connectionState: "stale-build",
+      verificationBinding: {
+        extensionBuildId: "previous-package",
+        documentId: "document-Flow",
+      },
+    });
+    expect(await repositories.getAllFlowImageAttempts()).toEqual([
+      activeObservation,
+    ]);
+  });
+
+  it("uses the versioned same-document connector replacement when no Flow observation is active", async () => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const fixture = connectionPort("Flow", flowUrl, {
+      buildId: "old-connector-build",
+      replacementBuildId: BUILD_ID,
+    });
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+    );
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+    await repositories.setReconnectIntent("Flow", true);
+    const selected = await repositories.getSelectedTarget("Flow");
+    if (!selected) throw new Error("Flow target fixture missing");
+    await repositories.recordTargetVerification(
+      {
+        provider: "Flow",
+        tabId: 9,
+        canonicalTarget: flowUrl,
+        projectId: "project-1",
+        frameId: 0,
+        documentId: "document-Flow",
+        documentToken: "old-token",
+        extensionBuildId: BUILD_ID,
+        extensionProtocolVersion: PROTOCOL_VERSION,
+        connectorBuildId: "old-connector-build",
+        connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        capability: CONNECTION_CAPABILITY,
+        verifiedAt: 1,
+      },
+      selected.revision,
+    );
+
+    expect(await service.revalidate("Flow")).toMatchObject({
+      ok: true,
+      state: "verified",
+    });
+    expect(fixture.port.injectConnector).toHaveBeenCalledOnce();
+    expect(fixture.port.releaseConnector).not.toHaveBeenCalled();
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      verification: "verified",
+      verificationBinding: {
+        extensionBuildId: BUILD_ID,
+        connectorBuildId: BUILD_ID,
+        documentId: "document-Flow",
+      },
+    });
+  });
+
+  it("does not replace a stale connector when the saved browser document has changed", async () => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const fixture = connectionPort("Flow", flowUrl, {
+      buildId: "old-connector-build",
+      replacementBuildId: BUILD_ID,
+    });
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+    );
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+    await repositories.setReconnectIntent("Flow", true);
+    const selected = await repositories.getSelectedTarget("Flow");
+    if (!selected) throw new Error("Flow target fixture missing");
+    await repositories.recordTargetVerification(
+      {
+        provider: "Flow",
+        tabId: 9,
+        canonicalTarget: flowUrl,
+        projectId: "project-1",
+        frameId: 0,
+        documentId: "document-Flow",
+        documentToken: "old-token",
+        extensionBuildId: "previous-package",
+        extensionProtocolVersion: PROTOCOL_VERSION,
+        connectorBuildId: "old-connector-build",
+        connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        capability: CONNECTION_CAPABILITY,
+        verifiedAt: 1,
+      },
+      selected.revision,
+    );
+    fixture.changeDocument("replacement-browser-document");
+
+    expect(await service.revalidate("Flow")).toMatchObject({
+      ok: false,
+      state: "stale-document",
+      reason: "saved_document_changed_before_replacement",
+    });
+    expect(fixture.port.injectConnector).not.toHaveBeenCalled();
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      verification: "unverified",
+      connectionState: "stale-document",
+      verificationBinding: { documentId: "document-Flow" },
+    });
   });
 
   it("surfaces temporary transport loss and recovers with a bounded read-only check", async () => {
@@ -369,7 +737,7 @@ describe("worker-owned connection lifecycle", () => {
     });
   });
 
-  it("blocks a genuine browser document change and preserves the old binding for diagnosis", async () => {
+  it("reports a saved-document mismatch and refreshes verification only after a fresh current-document handshake", async () => {
     const repositories = new ExtensionRepositories(
       createMemoryRepositoryDatabase(),
     );
@@ -383,14 +751,17 @@ describe("worker-owned connection lifecycle", () => {
     fixture.changeDocument("replacement-browser-document");
 
     expect(await service.revalidate("Flow")).toMatchObject({
-      ok: false,
-      state: "stale-document",
-      reason: "browser_document_id_mismatch",
+      ok: true,
+      state: "verified",
+      savedBindingComparison: { browserDocumentId: "mismatch" },
     });
     expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
-      verification: "unverified",
-      connectionState: "stale-document",
-      verificationBinding: { documentId: "document-Flow" },
+      verification: "verified",
+      connectionState: "verified",
+      verificationBinding: {
+        documentId: "replacement-browser-document",
+        extensionBuildId: BUILD_ID,
+      },
     });
   });
 });

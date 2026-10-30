@@ -200,6 +200,152 @@ describe("Flow no-Generate readiness", () => {
     expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
   });
 
+  it("distinguishes an unavailable qualifying count from a measured zero", async () => {
+    const unavailable = readinessHarness({
+      status: "ready",
+      profile: "populated_tiles",
+      completeForRenderedScope: true,
+      listenersAttached: true,
+      stableBaseline: true,
+      renderedTileCount: 4,
+      distinctCandidateCount: 4,
+      candidateIds: [
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+        "d".repeat(64),
+      ],
+      repeatedCandidateCount: 0,
+      unidentifiedImageCount: 0,
+      unrelatedImageCount: 0,
+      virtualized: false,
+      virtualScrollContainerCount: 1,
+      virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+      loadingSignalCount: 0,
+      captureGaps: [],
+    });
+    const countFourMode = {
+      countMode: { ...existingMode.countMode, startingImageCount: 4 },
+    };
+    const unavailableResult = (await createFlowImageReadinessCheck(
+      unavailable.repositories,
+    )(countFourMode)) as Record<string, unknown>;
+    expect(unavailableResult).toMatchObject({
+      status: "blocked",
+      reason: "baseline_qualifying_count_unavailable",
+    });
+    expect(unavailableResult.qualifyingCandidateCount).toBeUndefined();
+
+    const measuredZero = readinessHarness({
+      status: "ready",
+      profile: "populated_tiles",
+      completeForRenderedScope: true,
+      listenersAttached: true,
+      stableBaseline: true,
+      renderedTileCount: 4,
+      distinctCandidateCount: 4,
+      qualifyingCandidateCount: 0,
+      candidateIds: [
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+        "d".repeat(64),
+      ],
+      repeatedCandidateCount: 0,
+      unidentifiedImageCount: 0,
+      unrelatedImageCount: 0,
+      virtualized: false,
+      virtualScrollContainerCount: 1,
+      virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+      loadingSignalCount: 0,
+      captureGaps: [],
+    });
+    const zeroResult = (await createFlowImageReadinessCheck(
+      measuredZero.repositories,
+    )(countFourMode)) as Record<string, unknown>;
+    expect(zeroResult).toMatchObject({
+      status: "blocked",
+      reason: "existing_count_candidate_count_mismatch",
+      qualifyingCandidateCount: 0,
+    });
+  });
+
+  it("keeps incomplete resources, duplicate candidates, and an attested-count mismatch distinct from a missing measurement", async () => {
+    const countFourMode = {
+      countMode: { ...existingMode.countMode, startingImageCount: 4 },
+    };
+    const cases = [
+      {
+        name: "incomplete resources",
+        startingImageCount: 4,
+        qualifyingCandidateCount: 3,
+        distinctCandidateCount: 4,
+        repeatedCandidateCount: 0,
+        candidateIds: [
+          "a".repeat(64),
+          "b".repeat(64),
+          "c".repeat(64),
+          "d".repeat(64),
+        ],
+      },
+      {
+        name: "duplicate candidate identities",
+        startingImageCount: 4,
+        qualifyingCandidateCount: 3,
+        distinctCandidateCount: 3,
+        repeatedCandidateCount: 1,
+        candidateIds: ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+      },
+      {
+        name: "attested count mismatch",
+        startingImageCount: 3,
+        qualifyingCandidateCount: 4,
+        distinctCandidateCount: 4,
+        repeatedCandidateCount: 0,
+        candidateIds: [
+          "a".repeat(64),
+          "b".repeat(64),
+          "c".repeat(64),
+          "d".repeat(64),
+        ],
+      },
+    ];
+    for (const entry of cases) {
+      const harness = readinessHarness({
+        status: "ready",
+        profile: "populated_tiles",
+        completeForRenderedScope: true,
+        listenersAttached: true,
+        stableBaseline: true,
+        renderedTileCount: 4,
+        distinctCandidateCount: entry.distinctCandidateCount,
+        qualifyingCandidateCount: entry.qualifyingCandidateCount,
+        candidateIds: entry.candidateIds,
+        repeatedCandidateCount: entry.repeatedCandidateCount,
+        unidentifiedImageCount: 0,
+        unrelatedImageCount: 0,
+        virtualized: false,
+        virtualScrollContainerCount: 1,
+        virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+        loadingSignalCount: 0,
+        captureGaps: [],
+      });
+      const result = (await createFlowImageReadinessCheck(harness.repositories)(
+        {
+          countMode: {
+            ...countFourMode.countMode,
+            startingImageCount: entry.startingImageCount,
+          },
+        },
+      )) as Record<string, unknown>;
+      expect(result, entry.name).toMatchObject({
+        status: "blocked",
+        reason: "existing_count_candidate_count_mismatch",
+        qualifyingCandidateCount: entry.qualifyingCandidateCount,
+      });
+    }
+  });
+
   it("blocks existing-project count mode when scrolling was actually observed", async () => {
     const harness = readinessHarness({
       status: "ready",
