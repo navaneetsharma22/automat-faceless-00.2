@@ -33,6 +33,13 @@ export type FlowImageObservationHandlerDependencies = {
 };
 
 const MAX_RECONCILIATIONS = 3;
+const safeExceptionName = (error: unknown): string => {
+  const name =
+    error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(error.name)
+      ? error.name.toLowerCase()
+      : "unknown";
+  return name.slice(0, 32);
+};
 
 export function createFlowImageObservationHandler(
   dependencies: FlowImageObservationHandlerDependencies,
@@ -46,6 +53,7 @@ export function createFlowImageObservationHandler(
       | "observation_timeout"
       | "binding_changed"
       | "event_limit_reached",
+    diagnosticCode: string,
   ) => {
     const declaredVariantCount =
       attempt.settingsConfirmation.declaredVariantCount;
@@ -68,57 +76,83 @@ export function createFlowImageObservationHandler(
         observedFailedCount: attempt.resultOutcome?.observedFailedCount ?? 0,
         updatedAt: now(),
       },
+      ...(attempt.countDecision?.status === "observing"
+        ? {
+            countDecision: {
+              ...attempt.countDecision,
+              status: "interrupted" as const,
+              reason:
+                reason === "observation_timeout"
+                  ? ("observer_timeout" as const)
+                  : reason === "binding_changed"
+                    ? ("binding_changed" as const)
+                    : reason === "event_limit_reached"
+                      ? ("event_limit_reached" as const)
+                      : ("observer_lost" as const),
+              updatedAt: now(),
+            },
+          }
+        : {}),
+      diagnosticCode,
     });
   };
 
   const freshBindingMatches = async (
     attempt: FlowImageAttemptRecord,
-  ): Promise<boolean> => {
-    if (!attempt.documentId || attempt.senderFrameId !== 0) return false;
+  ): Promise<string | null> => {
+    if (!attempt.documentId) return "binding_document_id_missing";
+    if (attempt.senderFrameId !== 0) return "binding_sender_frame_id_mismatch";
     const selected = await dependencies.repositories.getSelectedTarget("Flow");
+    if (!selected) return "binding_selected_target_missing";
+    if (selected.tabId !== attempt.tabId)
+      return "binding_selected_tab_id_mismatch";
     if (
-      !selected ||
-      selected.tabId !== attempt.tabId ||
-      selected.canonicalTarget !==
-        attempt.settingsConfirmation.canonicalTarget ||
-      (await dependencies.port.getSelection())?.tabId !== attempt.tabId
-    ) {
-      return false;
-    }
+      selected.canonicalTarget !== attempt.settingsConfirmation.canonicalTarget
+    )
+      return "binding_selected_canonical_target_mismatch";
+    const activeSelection = await dependencies.port.getSelection();
+    if (!activeSelection) return "binding_active_selection_missing";
+    if (activeSelection.tabId !== attempt.tabId)
+      return "binding_active_selection_tab_id_mismatch";
     const tab = await dependencies.port.getTab(attempt.tabId);
+    if (!tab) return "binding_tab_unavailable";
     const parsed = flowTabFromUrl(attempt.tabId, tab?.title ?? "", tab?.url);
-    if (
-      !parsed ||
-      parsed.projectId !== attempt.projectId ||
-      parsed.canonicalTarget !== selected.canonicalTarget
-    ) {
-      return false;
-    }
+    if (!parsed) return "binding_tab_route_unrecognized";
+    if (parsed.projectId !== attempt.projectId)
+      return "binding_tab_project_id_mismatch";
+    if (parsed.canonicalTarget !== selected.canonicalTarget)
+      return "binding_tab_canonical_target_mismatch";
     const frame = await dependencies.port.readFrame(attempt.tabId);
+    if (!frame) return "binding_frame_unavailable";
+    if (frame.frameId !== attempt.frameId) return "binding_frame_id_mismatch";
+    if (frame.loaderId !== attempt.loaderId)
+      return "binding_loader_id_mismatch";
+    if (frame.documentId !== attempt.documentId)
+      return "binding_document_id_mismatch";
+    if (frame.senderFrameId !== attempt.senderFrameId)
+      return "binding_sender_frame_id_mismatch";
     if (
-      !frame ||
-      frame.frameId !== attempt.frameId ||
-      frame.loaderId !== attempt.loaderId ||
-      frame.documentId !== attempt.documentId ||
-      frame.senderFrameId !== attempt.senderFrameId ||
       flowTabFromUrl(attempt.tabId, "", frame.url)?.canonicalTarget !==
-        selected.canonicalTarget ||
-      !flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt)
-    ) {
-      return false;
-    }
+      selected.canonicalTarget
+    )
+      return "binding_frame_canonical_target_mismatch";
+    if (!flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt))
+      return "binding_result_baseline_mismatch";
     const source = await dependencies.repositories.getFlowImagePromptSnapshot(
       attempt.sourceSnapshotId,
     );
-    return Boolean(
-      source &&
-      source.workspaceId === attempt.workspaceId &&
-      source.batchId === attempt.batchId &&
-      source.itemId === attempt.itemId &&
-      source.promptHash === attempt.promptHash &&
-      source.snapshotId === attempt.sourceSnapshotId &&
-      (await sha256Hex(source.rawJsonBody)) === attempt.promptHash,
-    );
+    if (!source) return "binding_source_snapshot_missing";
+    if (
+      source.workspaceId !== attempt.workspaceId ||
+      source.batchId !== attempt.batchId ||
+      source.itemId !== attempt.itemId ||
+      source.promptHash !== attempt.promptHash ||
+      source.snapshotId !== attempt.sourceSnapshotId
+    )
+      return "binding_source_snapshot_identity_mismatch";
+    if ((await sha256Hex(source.rawJsonBody)) !== attempt.promptHash)
+      return "binding_source_snapshot_hash_mismatch";
+    return null;
   };
 
   const resumeReadOnlyAfterWorkerRestart = async (): Promise<{
@@ -156,19 +190,32 @@ export function createFlowImageObservationHandler(
         continue;
       }
       if (now() >= session.deadlineAt) {
-        await setUnknown(attempt, "observation_timeout");
+        await setUnknown(
+          attempt,
+          "observation_timeout",
+          "observer_deadline_reached",
+        );
         unknown += 1;
         continue;
       }
+      let bindingDiagnostic: string | null;
+      try {
+        bindingDiagnostic = await freshBindingMatches(attempt);
+      } catch (error) {
+        bindingDiagnostic = `binding_check_exception_${safeExceptionName(error)}`;
+      }
       if (
         session.reconciliationCount >= MAX_RECONCILIATIONS ||
-        !(await freshBindingMatches(attempt))
+        bindingDiagnostic
       ) {
         await setUnknown(
           attempt,
           session.reconciliationCount >= MAX_RECONCILIATIONS
             ? "event_limit_reached"
             : "binding_changed",
+          session.reconciliationCount >= MAX_RECONCILIATIONS
+            ? "observer_reconciliation_limit_reached"
+            : bindingDiagnostic!,
         );
         unknown += 1;
         continue;
@@ -181,7 +228,11 @@ export function createFlowImageObservationHandler(
             binding,
           );
           if (resumed !== "resumed") {
-            await setUnknown(attempt, "observation_lost");
+            await setUnknown(
+              attempt,
+              "observation_lost",
+              "observer_resume_refused",
+            );
             unknown += 1;
             continue;
           }
@@ -193,7 +244,11 @@ export function createFlowImageObservationHandler(
         });
         resumed += 1;
       } catch {
-        await setUnknown(attempt, "observation_lost");
+        await setUnknown(
+          attempt,
+          "observation_lost",
+          "observer_resume_exception",
+        );
         unknown += 1;
       }
     }
@@ -255,22 +310,47 @@ export function createFlowImageObservationHandler(
         attemptId: attempt.attemptId,
       };
     }
-    if (attempt.buildId !== message.buildId || attempt.protocolVersion !== message.protocolVersion) {
+    if (
+      attempt.buildId !== message.buildId ||
+      attempt.protocolVersion !== message.protocolVersion
+    ) {
       return {
         accepted: false,
         code: "attempt_build_binding_mismatch",
         attemptId: attempt.attemptId,
       };
     }
-    if (
-      sender.tab?.id !== attempt.tabId ||
-      sender.frameId !== session.senderFrameId ||
-      sender.documentId !== session.documentId ||
-      event.sessionId !== session.sessionId
-    ) {
+    if (sender.tab?.id !== attempt.tabId) {
       return {
         accepted: false,
-        code: "observation_sender_binding_mismatch",
+        code: "observation_sender_tab_binding_mismatch",
+        attemptId: attempt.attemptId,
+      };
+    }
+    if (
+      sender.frameId !== session.senderFrameId ||
+      sender.documentId !== session.documentId
+    ) {
+      await setUnknown(
+        attempt,
+        "binding_changed",
+        "observation_sender_document_binding_mismatch",
+      );
+      return {
+        accepted: false,
+        code: "observation_sender_document_binding_mismatch",
+        attemptId: attempt.attemptId,
+      };
+    }
+    if (event.sessionId !== session.sessionId) {
+      await setUnknown(
+        attempt,
+        "binding_changed",
+        "observation_session_id_mismatch",
+      );
+      return {
+        accepted: false,
+        code: "observation_session_id_mismatch",
         attemptId: attempt.attemptId,
       };
     }
@@ -286,15 +366,54 @@ export function createFlowImageObservationHandler(
             flowStructuralSnapshotFingerprintInput(event.snapshot),
           )))
     ) {
-      await setUnknown(attempt, "binding_changed");
+      await setUnknown(
+        attempt,
+        "binding_changed",
+        "observation_source_baseline_or_capture_fingerprint_mismatch",
+      );
       return {
         accepted: false,
         code: "observation_source_baseline_mismatch",
         attemptId: attempt.attemptId,
       };
     }
+    if (structural && attempt.resultBaseline) {
+      const bindingMismatch = Object.entries(
+        attempt.resultBaseline.binding,
+      ).find(
+        ([key, value]) =>
+          event.binding[key as keyof typeof event.binding] !== value,
+      )?.[0];
+      if (bindingMismatch) {
+        const fieldNames: Record<string, string> = {
+          workspaceId: "workspace_id",
+          batchId: "batch_id",
+          itemId: "item_id",
+          sourceHash: "source_hash",
+          sourceSnapshotId: "source_snapshot_id",
+          attemptId: "attempt_id",
+          provider: "provider",
+          projectId: "project_id",
+          tabId: "tab_id",
+          frameId: "frame_id",
+          loaderId: "loader_id",
+        };
+        const field = fieldNames[bindingMismatch] ?? "unknown";
+        const diagnosticCode = `observation_event_binding_${field}_mismatch`;
+        await setUnknown(attempt, "binding_changed", diagnosticCode);
+        return {
+          accepted: false,
+          code: diagnosticCode,
+          attemptId: attempt.attemptId,
+        };
+      }
+    }
     if (now() >= session.deadlineAt) {
-      await setUnknown(attempt, "observation_timeout");
+      await setUnknown(
+        attempt,
+        "observation_timeout",
+        "observer_deadline_reached",
+      );
       return {
         accepted: false,
         code: "observation_timeout",
@@ -311,17 +430,17 @@ export function createFlowImageObservationHandler(
         attemptId: attempt.attemptId,
       };
     }
-    let fresh: boolean;
+    let bindingDiagnostic: string | null;
     try {
-      fresh = await freshBindingMatches(attempt);
-    } catch {
-      fresh = false;
+      bindingDiagnostic = await freshBindingMatches(attempt);
+    } catch (error) {
+      bindingDiagnostic = `binding_check_exception_${safeExceptionName(error)}`;
     }
-    if (!fresh) {
-      await setUnknown(attempt, "binding_changed");
+    if (bindingDiagnostic) {
+      await setUnknown(attempt, "binding_changed", bindingDiagnostic);
       return {
         accepted: false,
-        code: "observation_binding_changed",
+        code: bindingDiagnostic,
         attemptId: attempt.attemptId,
       };
     }
@@ -345,7 +464,11 @@ export function createFlowImageObservationHandler(
       };
     } catch {
       try {
-        await setUnknown(attempt, "observation_lost");
+        await setUnknown(
+          attempt,
+          "observation_lost",
+          "observation_persistence_or_validation_failed",
+        );
       } catch {
         // A second storage failure leaves the prior durable outcome intact.
       }

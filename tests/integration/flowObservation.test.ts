@@ -218,7 +218,14 @@ async function makeFixture(
     allowSyntheticProfile: true,
   });
   const stored = await repositories.getFlowImageAttempt(attempt.attemptId);
-  return { repositories, handler, attempt: stored!, binding, variantCount };
+  return {
+    repositories,
+    handler,
+    attempt: stored!,
+    binding,
+    variantCount,
+    port,
+  };
 }
 
 function event(
@@ -439,6 +446,125 @@ describe("P05.2 attempt-bound Flow observation", () => {
     ).toMatchObject({ status: "unknown", reason: "binding_changed" });
   });
 
+  it.each([
+    ["document binding", "binding_document_id_mismatch"],
+    ["project binding", "binding_tab_project_id_mismatch"],
+  ])(
+    "records a bounded diagnostic when the %s changes",
+    async (_label, diagnostic) => {
+      const fixture = await makeFixture(1, "production_observation_only");
+      const changedPort = {
+        ...fixture.port,
+        ...(diagnostic === "binding_document_id_mismatch"
+          ? {
+              readFrame: async () => ({
+                frameId: "fixture-frame",
+                loaderId: "fixture-loader",
+                documentId: "changed-document",
+                senderFrameId: 0,
+                url: canonicalTarget,
+              }),
+            }
+          : {
+              getTab: async () => ({
+                id: tabId,
+                title: "fixture",
+                url: `https://flow.google.com/project/changed-project`,
+                provider: "Flow" as const,
+                projectId: "changed-project",
+                canonicalTarget: `https://flow.google.com/project/changed-project`,
+              }),
+            }),
+      };
+      const handler = createFlowImageObservationHandler({
+        extensionId: "fixture-extension",
+        repositories: fixture.repositories,
+        port: changedPort as never,
+        now: () => 1_100,
+        allowSyntheticProfile: true,
+      });
+      const accepted = await handler.handle(
+        {
+          type: "AUTOMAT_FLOW_IMAGE_OBSERVATION",
+          protocolVersion: PROTOCOL_VERSION,
+          buildId: BUILD_ID,
+          observation: await structuralEvent(fixture.attempt, 1),
+        },
+        {
+          id: "fixture-extension",
+          tab: { id: tabId },
+          frameId: 0,
+          documentId,
+        },
+      );
+      expect(accepted).toMatchObject({ accepted: false, code: diagnostic });
+      const saved = await fixture.repositories.getFlowImageAttempt(
+        fixture.attempt.attemptId,
+      );
+      expect(saved?.resultOutcome).toMatchObject({
+        status: "unknown",
+        reason: "binding_changed",
+      });
+      expect(saved?.observationSession?.status).toBe("lost");
+      expect(saved?.observationReceipts ?? []).toHaveLength(0);
+      expect(saved?.events.at(-1)?.code).toBe(diagnostic);
+      expect(JSON.stringify(saved?.events.at(-1))).not.toContain(
+        "changed-project",
+      );
+      expect(JSON.stringify(saved?.events.at(-1))).not.toContain(
+        "changed-document",
+      );
+    },
+  );
+
+  it("blocks and diagnoses an observation from a different session", async () => {
+    const fixture = await makeFixture(1, "production_observation_only");
+    const observation = await structuralEvent(fixture.attempt, 1);
+    observation.sessionId = "b1729ecb-938f-4f6d-85d4-9d46d933a355";
+    expect(await send(fixture, observation)).toMatchObject({
+      accepted: false,
+      code: "observation_session_id_mismatch",
+    });
+    const saved = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect(saved?.observationSession?.status).toBe("lost");
+    expect(saved?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "binding_changed",
+    });
+    expect(saved?.observationReceipts ?? []).toHaveLength(0);
+    expect(saved?.events.at(-1)?.code).toBe("observation_session_id_mismatch");
+  });
+
+  it("blocks and diagnoses a mismatched project field in an otherwise valid event", async () => {
+    const fixture = await makeFixture(1, "production_observation_only");
+    const observation = await structuralEvent(fixture.attempt, 1);
+    observation.binding = {
+      ...observation.binding,
+      projectId: "changed-project",
+    };
+    expect(await send(fixture, observation)).toMatchObject({
+      accepted: false,
+      code: "observation_event_binding_project_id_mismatch",
+    });
+    const saved = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect(saved?.observationSession?.status).toBe("lost");
+    expect(saved?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "binding_changed",
+    });
+    expect(saved?.observationReceipts ?? []).toHaveLength(0);
+    expect(saved?.events.at(-1)?.code).toBe(
+      "observation_event_binding_project_id_mismatch",
+    );
+    expect(JSON.stringify(saved?.events.at(-1))).not.toContain(
+      "changed-project",
+    );
+  });
+
   it("resumes an existing production observation after restart without activation", async () => {
     const fixture = await makeFixture(1, "production_observation_only");
     const result = await fixture.handler.resumeReadOnlyAfterWorkerRestart();
@@ -551,24 +677,28 @@ describe("P05.2 attempt-bound Flow observation", () => {
       fixture.attempt.attemptId,
     );
     expect(saved?.resultLinks).toHaveLength(1);
+    const sessionMismatchFixture = await makeFixture(1);
     expect(
       await send(
-        fixture,
-        event(fixture.attempt, 2, [duplicateThumbnail], {
+        sessionMismatchFixture,
+        event(sessionMismatchFixture.attempt, 1, [duplicateThumbnail], {
           sessionId: "b1729ecb-938f-4f6d-85d4-9d46d933a355",
         }),
       ),
     ).toMatchObject({
       accepted: false,
-      code: "observation_sender_binding_mismatch",
+      code: "observation_session_id_mismatch",
     });
+    const documentMismatchFixture = await makeFixture(1);
     expect(
-      await fixture.handler.handle(
+      await documentMismatchFixture.handler.handle(
         {
           type: "AUTOMAT_FLOW_IMAGE_OBSERVATION",
           protocolVersion: PROTOCOL_VERSION,
           buildId: BUILD_ID,
-          observation: event(fixture.attempt, 2, [duplicateThumbnail]),
+          observation: event(documentMismatchFixture.attempt, 1, [
+            duplicateThumbnail,
+          ]),
         },
         {
           id: "fixture-extension",
@@ -579,8 +709,15 @@ describe("P05.2 attempt-bound Flow observation", () => {
       ),
     ).toMatchObject({
       accepted: false,
-      code: "observation_sender_binding_mismatch",
+      code: "observation_sender_document_binding_mismatch",
     });
+    expect(
+      (
+        await documentMismatchFixture.repositories.getFlowImageAttempt(
+          documentMismatchFixture.attempt.attemptId,
+        )
+      )?.observationSession?.status,
+    ).toBe("lost");
     expect(
       await send(fixture, event(fixture.attempt, 3, [duplicateThumbnail])),
     ).toMatchObject({

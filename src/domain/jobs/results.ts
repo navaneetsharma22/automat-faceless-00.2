@@ -73,6 +73,10 @@ const flowImageObservationSchema = z.discriminatedUnion("profile", [
       profileVersion: z.literal(1),
       renderedTileCount: z.number().int().positive().max(100),
       candidateIds: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(500),
+      qualifyingCandidateIds: z
+        .array(z.string().regex(/^[0-9a-f]{64}$/))
+        .max(500)
+        .optional(),
       candidateMultiplicity: z
         .array(
           z
@@ -668,12 +672,15 @@ export const FlowImageCountDecisionSchema = z
       .enum([
         "baseline_binding_mismatch",
         "baseline_incomplete",
+        "existing_count_candidate_count_mismatch",
         "existing_project_virtualized",
         "loading_or_processing_observed",
         "error_signal_observed",
         "candidate_ownership_ambiguous",
         "extra_candidates",
         "observer_lost",
+        "binding_changed",
+        "event_limit_reached",
         "observer_timeout",
         "observation_gap",
         "observation_truncated",
@@ -745,6 +752,8 @@ export type FlowImageCountBaselineEligibilityInput = {
   priorDeclaredAdditions: number;
   declaredBaselineCandidateIds?: string[];
   declaredBaselineTileCount?: number;
+  qualifyingCandidateCount?: number;
+  candidateOwnershipAmbiguous?: boolean;
 };
 
 export type FlowImageCountBaselineEligibility = {
@@ -759,8 +768,8 @@ export type FlowImageCountBaselineEligibility = {
 /**
  * Shared baseline gate used by both no-Generate readiness and dispatch-time
  * count reduction. A virtual-scroll element alone is descriptive; the caller
- * sets `virtualized` only for measured overflow, nonzero offset, capture-time
- * scrolling, or tile identity recycling.
+ * sets `virtualized` for actual movement or continuity loss. Extent overflow
+ * is recorded separately and may be accepted when attested coverage matches.
  */
 export function evaluateFlowImageCountBaselineEligibility(
   input: FlowImageCountBaselineEligibilityInput,
@@ -774,8 +783,17 @@ export function evaluateFlowImageCountBaselineEligibility(
     reason: NonNullable<FlowImageCountBaselineEligibility["reason"]>,
     detailCode: string,
   ) => ({ status: "ambiguous" as const, reason, detailCode });
-  const virtualizationRisk =
-    input.virtualized || (input.virtualizationEvidence?.length ?? 0) > 0;
+  const evidence = input.virtualizationEvidence ?? [];
+  const actualScroll =
+    evidence.includes("nonzero_scroll_offset") ||
+    evidence.includes("scroll_observed_during_capture");
+  const viewportInconclusive = evidence.includes(
+    "viewport_dimensions_unavailable",
+  );
+  const continuityAmbiguous =
+    input.virtualized ||
+    evidence.includes("tile_identity_recycled") ||
+    input.candidateOwnershipAmbiguous === true;
   if (
     input.startingImageCount < 0 ||
     (input.mode === "new_empty_project" && input.startingImageCount !== 0)
@@ -793,6 +811,11 @@ export function evaluateFlowImageCountBaselineEligibility(
   )
     return blocked("rendered_scope_incomplete");
   if ((input.loadingSignalCount ?? 0) > 0) return blocked("workspace_busy");
+  if (input.candidateOwnershipAmbiguous)
+    return ambiguous(
+      "candidate_ownership_ambiguous",
+      "baseline_candidate_ownership_unresolved",
+    );
   if (input.profile === "flow_empty_workspace_ui") {
     if (input.renderedTileCount !== 0 || input.candidateIds.length !== 0)
       return blocked("empty_profile_contains_rendered_candidates");
@@ -801,6 +824,13 @@ export function evaluateFlowImageCountBaselineEligibility(
   } else if (input.renderedTileCount === 0) {
     return blocked("populated_profile_has_no_rendered_tiles");
   }
+  const qualifyingCandidateCount =
+    input.qualifyingCandidateCount ?? input.candidateIds.length;
+  if (
+    input.mode === "existing_project" &&
+    input.startingImageCount !== qualifyingCandidateCount
+  )
+    return blocked("existing_count_candidate_count_mismatch");
   if (
     input.declaredBaselineCandidateIds &&
     JSON.stringify([...new Set(input.declaredBaselineCandidateIds)].sort()) !==
@@ -829,33 +859,27 @@ export function evaluateFlowImageCountBaselineEligibility(
       JSON.stringify([...(input.virtualizationEvidence ?? [])].sort())
   )
     return blocked("virtualization_evidence_changed");
-  if (input.mode === "existing_project" && virtualizationRisk)
+  if (input.mode === "existing_project" && viewportInconclusive)
     return ambiguous(
       "existing_project_virtualized",
-      input.virtualizationEvidence?.includes("tile_identity_recycled")
-        ? "tile_identity_recycling_observed"
-        : input.virtualizationEvidence?.includes(
-              "viewport_dimensions_unavailable",
-            ) &&
-            !input.virtualizationEvidence.some((evidence) =>
-              [
-                "scroll_extent_exceeds_viewport",
-                "nonzero_scroll_offset",
-                "scroll_observed_during_capture",
-              ].includes(evidence),
-            )
-          ? "virtual_scroll_measurement_inconclusive"
-          : input.virtualizationEvidence?.some((evidence) =>
-                [
-                  "scroll_extent_exceeds_viewport",
-                  "nonzero_scroll_offset",
-                  "viewport_dimensions_unavailable",
-                  "scroll_observed_during_capture",
-                ].includes(evidence),
-              )
-            ? "virtual_scroll_coverage_or_scrolling_observed"
-            : "virtualization_risk_observed_unspecified",
+      "virtual_scroll_measurement_inconclusive",
     );
+  if (
+    input.mode === "existing_project" &&
+    (actualScroll || continuityAmbiguous)
+  )
+    return ambiguous(
+      "existing_project_virtualized",
+      evidence.includes("tile_identity_recycled") || continuityAmbiguous
+        ? "tile_identity_recycling_observed"
+        : "virtual_scroll_coverage_or_scrolling_observed",
+    );
+  const virtualizationRisk =
+    input.virtualized ||
+    actualScroll ||
+    viewportInconclusive ||
+    continuityAmbiguous ||
+    evidence.includes("scroll_extent_exceeds_viewport");
   if (input.mode === "new_empty_project") {
     if (virtualizationRisk)
       return ambiguous(
@@ -1617,6 +1641,7 @@ export function flowResultBaselineMatchesProfile(
         kind: "flow_rendered_tile_candidates";
         renderedTileCount: number;
         candidateIds: string[];
+        qualifyingCandidateIds?: string[];
         candidateMultiplicity: Array<{
           candidateId: string;
           renderedCopies: number;
@@ -1660,6 +1685,10 @@ export function flowResultBaselineMatchesProfile(
       observation.renderedTileCount === profile.renderedTileCount &&
       JSON.stringify([...observation.candidateIds].sort()) ===
         JSON.stringify([...profile.candidateIds].sort()) &&
+      (profile.qualifyingCandidateIds === undefined ||
+        JSON.stringify(
+          [...(observation.qualifyingCandidateIds ?? [])].sort(),
+        ) === JSON.stringify([...profile.qualifyingCandidateIds].sort())) &&
       observation.repeatedCandidateCount === profile.repeatedCandidateCount &&
       observation.unidentifiedImageCount === profile.unidentifiedImageCount &&
       observation.unrelatedImageCount === profile.unrelatedImageCount &&

@@ -170,7 +170,7 @@ export async function flowImageObservationProducer(
   const state = globalScope[stateKey] as ObserverState | undefined;
   if (!state || !sameBinding(state.binding, binding))
     return { status: "missing_or_mismatched" };
-  const context = await scanContext(binding);
+  const context = await scanContext(binding, command === "activate");
   if (!context.ok) {
     await lose(
       state,
@@ -360,7 +360,10 @@ export async function flowImageObservationProducer(
     );
   }
 
-  async function scanContext(binding: FlowImageObservationArmBinding) {
+  async function scanContext(
+    binding: FlowImageObservationArmBinding,
+    requireComposer = true,
+  ) {
     const scopeKey = "__AUTOMAT_FLOW_WORKSPACE_SCOPE_ANALYZER_V1__";
     const analyzer = (
       globalThis as typeof globalThis & {
@@ -368,6 +371,7 @@ export async function flowImageObservationProducer(
           canonicalTarget: string,
           projectId: string,
           install?: boolean,
+          requireComposer?: boolean,
         ) => Promise<FlowWorkspaceScopeAnalysis>;
       }
     )[scopeKey];
@@ -375,11 +379,18 @@ export async function flowImageObservationProducer(
       return { ok: false as const, reason: "scope_analyzer_unavailable" };
     let analysis: FlowWorkspaceScopeAnalysis;
     try {
-      analysis = await analyzer(binding.canonicalTarget, binding.projectId);
+      analysis = await analyzer(
+        binding.canonicalTarget,
+        binding.projectId,
+        false,
+        requireComposer,
+      );
     } catch {
       return { ok: false as const, reason: "scope_analysis_failed" };
     }
-    if (analysis.status !== "ready") {
+    const observationMayCaptureBusyWorkspace =
+      !requireComposer && analysis.status === "workspace_busy";
+    if (analysis.status !== "ready" && !observationMayCaptureBusyWorkspace) {
       return {
         ok: false as const,
         reason:
@@ -398,7 +409,10 @@ export async function flowImageObservationProducer(
                       : "scope_ambiguous",
       };
     }
-    if (!analysis.project || !analysis.composer || !analysis.editor)
+    if (
+      !analysis.project ||
+      (requireComposer && (!analysis.composer || !analysis.editor))
+    )
       return { ok: false as const, reason: "scope_ambiguous" };
     return {
       ok: true as const,
@@ -813,7 +827,7 @@ export async function flowImageObservationProducer(
     if (state.stopped) return;
     if (Date.now() >= state.binding.deadlineAt)
       return void (await lose(state, "duration_limit_reached"));
-    const context = await scanContext(state.binding);
+    const context = await scanContext(state.binding, false);
     if (!context.ok) {
       return void (await lose(
         state,

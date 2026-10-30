@@ -43,12 +43,83 @@ export async function flowImageRuntime(
   readText = readFlowEditorRuntime,
   scopeRuntime?: () => Promise<FlowWorkspaceScopeAnalysis>,
 ): Promise<FlowGenerateDiscovery | HTMLElement | null> {
+  const sameSharedScopeCapture = (
+    first: FlowWorkspaceScopeAnalysis,
+    second: FlowWorkspaceScopeAnalysis,
+  ) =>
+    first.status === second.status &&
+    first.profile === second.profile &&
+    first.project === second.project &&
+    first.composer === second.composer &&
+    first.editor === second.editor &&
+    first.tiles.length === second.tiles.length &&
+    first.tiles.every((tile, index) => tile === second.tiles[index]) &&
+    JSON.stringify({
+      candidateIds: first.candidateIds,
+      candidateMultiplicity: first.candidateMultiplicity,
+      candidateTileRelationships: first.candidateTileRelationships,
+      loadingSignalCount: first.loadingSignalCount,
+      virtualScrollContainerCount: first.virtualScrollContainerCount,
+      virtualizationEvidence: first.virtualizationEvidence,
+      virtualized: first.virtualized,
+      unidentifiedImageCount: first.unidentifiedImageCount,
+      captureGaps: first.captureGaps,
+    }) ===
+      JSON.stringify({
+        candidateIds: second.candidateIds,
+        candidateMultiplicity: second.candidateMultiplicity,
+        candidateTileRelationships: second.candidateTileRelationships,
+        loadingSignalCount: second.loadingSignalCount,
+        virtualScrollContainerCount: second.virtualScrollContainerCount,
+        virtualizationEvidence: second.virtualizationEvidence,
+        virtualized: second.virtualized,
+        unidentifiedImageCount: second.unidentifiedImageCount,
+        captureGaps: second.captureGaps,
+      });
   let sharedScope: FlowWorkspaceScopeAnalysis | undefined;
   if (scopeRuntime) {
     try {
       sharedScope = await scopeRuntime();
     } catch {
       sharedScope = undefined;
+    }
+    if (sharedScope?.status === "ready" && sharedScope.project) {
+      try {
+        const observer = new MutationObserver(() => undefined);
+        observer.observe(sharedScope.project, {
+          attributes: true,
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+        const mutated = observer.takeRecords().length > 0;
+        observer.disconnect();
+        const settledScope = await scopeRuntime();
+        const scopeMatches = sameSharedScopeCapture(sharedScope, settledScope);
+        if (mutated || !scopeMatches) {
+          return {
+            composer: "unsupported",
+            exactPrompt: false,
+            actualCodeUnits: 0,
+            generate: "missing",
+            observation: "unstable",
+            generationAvailable: false,
+          };
+        }
+        sharedScope = settledScope;
+      } catch {
+        return {
+          composer: "unsupported",
+          exactPrompt: false,
+          actualCodeUnits: 999,
+          generate: "missing",
+          observation: "unstable",
+          generationAvailable: false,
+        };
+      }
     }
   }
   const editor = sharedScope
@@ -208,6 +279,7 @@ export async function flowImageRuntime(
             workspaceTag: "flow-project-page",
             renderedTileCount: sharedScope.tiles.length,
             candidateIds: sharedScope.candidateIds,
+            qualifyingCandidateIds: sharedScope.qualifyingCandidateIds,
             candidateMultiplicity: sharedScope.candidateMultiplicity,
             repeatedCandidateCount: sharedScope.repeatedCandidateCount,
             unidentifiedImageCount: sharedScope.unidentifiedImageCount,

@@ -534,6 +534,7 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
       expect([
         "final_preflight_changed",
         "post_intent_preflight_changed",
+        "composer_unsupported",
       ]).toContain(result.code);
       expect(fixture.mouseEvents).toEqual([]);
     });

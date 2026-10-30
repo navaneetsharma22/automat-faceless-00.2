@@ -26,6 +26,7 @@ export default defineConfig({
     "flowImageTileDiagnostic.spec.ts",
     "flowImageLifecycleRecorder.spec.ts",
     "flowObservationProducer.spec.ts",
+    "flowObservationEndToEnd.spec.ts",
     "flowObservationReadback.spec.ts",
     "flowAttemptStorageSchema.spec.ts",
     "flowProductionArm.spec.ts",

@@ -28,6 +28,7 @@ export type FlowWorkspaceScopeAnalysis = {
   tiles: HTMLElement[];
   tileElements: Map<HTMLElement, Element[]>;
   candidateIds: string[];
+  qualifyingCandidateIds: string[];
   candidateMultiplicity: Array<{ candidateId: string; renderedCopies: number }>;
   candidateTileRelationships: Array<{
     tileIndex: number;
@@ -64,6 +65,7 @@ export async function flowWorkspaceScopeAnalyzer(
   canonicalTarget?: string,
   expectedProjectId?: string,
   install = false,
+  requireComposer = true,
 ): Promise<FlowWorkspaceScopeAnalysis | Record<string, unknown>> {
   const analyzerKey = "__AUTOMAT_FLOW_WORKSPACE_SCOPE_ANALYZER_V1__";
   if (install) {
@@ -223,16 +225,21 @@ export async function flowWorkspaceScopeAnalyzer(
     return empty("project_missing", documentScan.elements.length);
   if (projects.length !== 1)
     return empty("project_ambiguous", documentScan.elements.length);
-  if (baseComposers.length === 0)
-    return empty("composer_missing", documentScan.elements.length);
-  if (baseComposers.length > 1 || verified.length > 1)
-    return empty("composer_ambiguous", documentScan.elements.length);
-  if (verified.length !== 1)
-    return empty("composer_unsupported", documentScan.elements.length);
   const project = projects[0]!;
-  const { composer, editor } = verified[0]!;
-  if (!composedPath(composer).nodes.includes(project))
-    return empty("composer_outside_project", documentScan.elements.length);
+  let composer: HTMLElement | null = null;
+  let editor: HTMLElement | null = null;
+  if (requireComposer) {
+    if (baseComposers.length === 0)
+      return empty("composer_missing", documentScan.elements.length);
+    if (baseComposers.length > 1 || verified.length > 1)
+      return empty("composer_ambiguous", documentScan.elements.length);
+    if (verified.length !== 1)
+      return empty("composer_unsupported", documentScan.elements.length);
+    composer = verified[0]!.composer;
+    editor = verified[0]!.editor;
+    if (!composedPath(composer).nodes.includes(project))
+      return empty("composer_outside_project", documentScan.elements.length);
+  }
   const projectScan = scanRoots(project, maxDocumentElements);
   if (projectScan.truncated)
     return {
@@ -252,6 +259,7 @@ export async function flowWorkspaceScopeAnalyzer(
   const tileElements = new Map<HTMLElement, Element[]>();
   const gaps = new Set<string>();
   const multiplicity = new Map<string, number>();
+  const qualifyingCandidates = new Set<string>();
   const candidateTileRelationships: Array<{
     tileIndex: number;
     candidateId: string;
@@ -295,6 +303,15 @@ export async function flowWorkspaceScopeAnalyzer(
       }
       multiplicity.set(candidateId, (multiplicity.get(candidateId) ?? 0) + 1);
       candidateTileRelationships.push({ tileIndex, candidateId });
+      const media = image as HTMLImageElement;
+      if (
+        visible(tile) &&
+        visible(image) &&
+        media.complete &&
+        media.naturalWidth > 0 &&
+        media.naturalHeight > 0
+      )
+        qualifyingCandidates.add(candidateId);
     }
   }
   if (tiles.length > 100) gaps.add("tile_list_truncated");
@@ -305,7 +322,7 @@ export async function flowWorkspaceScopeAnalyzer(
     (element) =>
       ["img", "video", "canvas"].includes(tag(element)) &&
       !imagesWithinTiles.has(element) &&
-      !composedPath(element).nodes.includes(composer),
+      (!composer || !composedPath(element).nodes.includes(composer)),
   ).length;
   const virtualScrollViewports = projectScan.elements.filter(
     (element) =>
@@ -328,7 +345,9 @@ export async function flowWorkspaceScopeAnalyzer(
     if (metrics.scrollTop > 0 || metrics.scrollLeft > 0)
       virtualizationEvidence.add("nonzero_scroll_offset");
   }
-  const virtualized = virtualizationEvidence.size > 0;
+  // Extent overflow describes possible virtual scrolling; it does not prove
+  // that the viewport moved or recycled a rendered tile.
+  const virtualized = virtualizationEvidence.has("nonzero_scroll_offset");
   const loadingSelector =
     '[role="progressbar"], [aria-busy="true"], [data-loading="true"], [data-state="loading"], [data-state="generating"], [class*="spinner" i], [class*="loading" i]';
   const loadingSignalCount = projectScan.elements.filter(
@@ -387,6 +406,7 @@ export async function flowWorkspaceScopeAnalyzer(
     tiles: tiles.slice(0, 100),
     tileElements,
     candidateIds: candidateMultiplicity.map((entry) => entry.candidateId),
+    qualifyingCandidateIds: [...qualifyingCandidates],
     candidateMultiplicity,
     candidateTileRelationships,
     labelledRegionMediaCount,
@@ -415,6 +435,7 @@ export async function flowWorkspaceScopeAnalyzer(
     verifiedComposerCount: 1,
     renderedTileCount: analysis.tiles.length,
     distinctCandidateCount: analysis.candidateIds.length,
+    qualifyingCandidateCount: analysis.qualifyingCandidateIds.length,
     labelledRegionMediaCount: analysis.labelledRegionMediaCount,
     repeatedCandidateCount: analysis.repeatedCandidateCount,
     unidentifiedImageCount: analysis.unidentifiedImageCount,

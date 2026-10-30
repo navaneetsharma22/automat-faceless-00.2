@@ -986,6 +986,7 @@ export class ExtensionRepositories {
     >["armReceipt"];
     countBaseline?: FlowImageAttemptRecord["countBaseline"];
     countDecision?: FlowImageAttemptRecord["countDecision"];
+    diagnosticCode?: string;
   }): Promise<FlowImageAttemptRecord> {
     return this.tables.transaction(["flowImageAttempts"], async () => {
       const current = await this.tables.flowImageAttempts.get(input.attemptId);
@@ -1009,6 +1010,20 @@ export class ExtensionRepositories {
         ...(input.resultOutcome ? { resultOutcome: input.resultOutcome } : {}),
         ...(input.countBaseline ? { countBaseline: input.countBaseline } : {}),
         ...(input.countDecision ? { countDecision: input.countDecision } : {}),
+        ...(input.diagnosticCode &&
+        /^[a-z0-9_]{1,64}$/.test(input.diagnosticCode)
+          ? {
+              events: [
+                ...current.events,
+                {
+                  stage: "observer" as const,
+                  at: input.resultOutcome?.updatedAt ?? this.now(),
+                  method: "none" as const,
+                  code: input.diagnosticCode,
+                },
+              ].slice(-100),
+            }
+          : {}),
         updatedAt: input.resultOutcome?.updatedAt ?? this.now(),
       };
       assertValidFlowImageAttempt(updated);
@@ -1019,7 +1034,9 @@ export class ExtensionRepositories {
         readback.observationSession?.sessionId !== input.sessionId ||
         readback.observationSession.status !==
           updated.observationSession?.status ||
-        readback.resultOutcome?.status !== updated.resultOutcome?.status
+        readback.resultOutcome?.status !== updated.resultOutcome?.status ||
+        readback.countDecision?.status !== updated.countDecision?.status ||
+        readback.countDecision?.reason !== updated.countDecision?.reason
       ) {
         throw new FlowImageAttemptValidationError();
       }

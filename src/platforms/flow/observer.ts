@@ -25,6 +25,7 @@ export type FlowRenderedTileCandidateBaseline = {
   workspaceTag: "flow-project-page";
   renderedTileCount: number;
   candidateIds: string[];
+  qualifyingCandidateIds?: string[];
   candidateMultiplicity: Array<{
     candidateId: string;
     renderedCopies: number;
@@ -94,6 +95,9 @@ export function captureFlowResultBaseline(
             profileVersion: 1,
             renderedTileCount: profile.renderedTileCount,
             candidateIds: profile.candidateIds,
+            ...(profile.qualifyingCandidateIds
+              ? { qualifyingCandidateIds: profile.qualifyingCandidateIds }
+              : {}),
             candidateMultiplicity: profile.candidateMultiplicity,
             repeatedCandidateCount: profile.repeatedCandidateCount,
             unidentifiedImageCount: profile.unidentifiedImageCount,
