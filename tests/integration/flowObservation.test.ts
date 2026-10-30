@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createFlowImageObservationHandler } from "../../src/background/handlers/observations";
 import {
   flowImageResultBaselineFingerprintInput,
@@ -15,7 +15,10 @@ import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import type { FlowImageAttemptRecord } from "../../src/domain/jobs/attempt";
 import { createConnectionLifecycleService } from "../../src/background/connectionLifecycle";
-import { createChromeFlowImageGenerateOncePort } from "../../src/background/handlers/flow";
+import {
+  createChromeFlowImageGenerateOncePort,
+  createFlowCountRebaseline,
+} from "../../src/background/handlers/flow";
 import type { ConnectionPort } from "../../src/platforms/shared/contracts";
 import {
   CONNECTION_CAPABILITY,
@@ -35,10 +38,8 @@ async function makeFixture(
     "fixture_supported" | "production_observation_only" = "fixture_supported",
   leaveDispatchIntent = false,
 ) {
-  const repositories = new ExtensionRepositories(
-    createMemoryRepositoryDatabase(),
-    () => 2_000,
-  );
+  const database = createMemoryRepositoryDatabase();
+  const repositories = new ExtensionRepositories(database, () => 2_000);
   const saved = await repositories.savePromptBatch({
     workspaceId: "default",
     kind: "image",
@@ -52,7 +53,7 @@ async function makeFixture(
     canonicalTarget,
   });
   const attempt = await repositories.createFlowImageAttempt({
-    attemptId: "fixture-attempt",
+    attemptId: "5ee6e225-9a95-4c90-b4ae-c17522c301d3",
     confirmationKey: "fixture-confirmation",
     workspaceId: "default",
     batchId: saved.batch.id,
@@ -226,6 +227,7 @@ async function makeFixture(
   });
   const stored = await repositories.getFlowImageAttempt(attempt.attemptId);
   return {
+    database,
     repositories,
     handler,
     attempt: stored!,
@@ -360,6 +362,254 @@ async function structuralEvent(
 }
 
 describe("P05.2 attempt-bound Flow observation", () => {
+  it("persists interrupted count recovery for one distinct source, preserves the old lock, and refuses an active producer", async () => {
+    const fixture = await makeFixture();
+    const priorCountSessionId = "f34c53b9-89ad-4c4a-a2b2-945b09348a83";
+    const newCountSessionId = "2367a1a1-5206-48f2-8e40-337e75b76f18";
+    const candidateId = "a".repeat(64);
+    const old = fixture.attempt;
+    await fixture.database.flowImageAttempts.put({
+      ...old,
+      countSessionId: priorCountSessionId,
+      countBaseline: {
+        mode: "existing_project",
+        countSessionId: priorCountSessionId,
+        startingImageCount: 1,
+        provenance: "user_attested_existing_image_count",
+        inventoryComplete: false,
+        projectId,
+        canonicalTarget,
+        tabId,
+        documentId,
+        buildId: BUILD_ID,
+        protocolVersion: PROTOCOL_VERSION,
+        capturedAt: 1_030,
+        baselineCandidateIds: [candidateId],
+        qualifyingBaselineCandidateIds: [candidateId],
+        baselineTileTokens: ["tile-1"],
+        virtualized: false,
+        renderedScopeComplete: true,
+        captureGaps: [],
+        priorMatchedAttemptIds: [],
+        priorMatchedCandidateIds: [],
+        priorDeclaredAdditions: 0,
+      },
+      observationSession: { ...old.observationSession!, status: "lost" },
+      resultOutcome: {
+        status: "unknown",
+        reason: "observation_lost",
+        declaredVariantCount: 2,
+        observedSucceededCount: 0,
+        observedFailedCount: 0,
+        updatedAt: 1_100,
+      },
+      countDecision: {
+        schemaVersion: 1,
+        status: "interrupted",
+        reason: "observer_lost",
+        countSessionId: priorCountSessionId,
+        mode: "existing_project",
+        startingImageCount: 1,
+        declaredVariantCount: 2,
+        expectedCumulativeAdditions: 2,
+        expectedTotal: 3,
+        priorMatchedAttemptIds: [],
+        observedEligibleCandidateIds: [],
+        observationSequence: 0,
+        updatedAt: 1_100,
+      },
+    });
+    await fixture.repositories.setReconnectIntent("Flow", true);
+    await fixture.repositories.recordTargetVerification({
+      provider: "Flow",
+      tabId,
+      canonicalTarget,
+      projectId,
+      frameId: 0,
+      documentId,
+      documentToken: "fixture-token",
+      extensionBuildId: BUILD_ID,
+      extensionProtocolVersion: PROTOCOL_VERSION,
+      connectorBuildId: BUILD_ID,
+      connectorProtocolVersion: 1,
+      capability: "read-only-connection-v1",
+      verifiedAt: 1_200,
+    });
+    await fixture.repositories.setTargetConnectionState("Flow", "verified");
+    const nextSource = '{"shot_id":"02","scene":"distinct offline prompt"}';
+    const saved = await fixture.repositories.savePromptBatch({
+      workspaceId: "default",
+      kind: "image",
+      sourceText: nextSource,
+    });
+    const nextItem = saved.items[0]!;
+    const sourceHash = await sha256Hex(nextSource);
+    let producerStatus = "active";
+    const scriptingPort = {
+      executeScript: async (details: { args?: unknown[] }) => {
+        if (!details.args)
+          return [
+            {
+              documentId,
+              frameId: 0,
+              result: { href: canonicalTarget, top: true },
+            },
+          ];
+        if (details.args[2] === "producer")
+          return [
+            {
+              documentId,
+              frameId: 0,
+              result: { available: true, status: producerStatus },
+            },
+          ];
+        if (details.args.length === 4 && details.args[2] === true)
+          return [{ documentId, frameId: 0, result: { installed: true } }];
+        return [
+          {
+            documentId,
+            frameId: 0,
+            result: {
+              status: "ready",
+              candidateIds: [candidateId],
+              qualifyingCandidateIds: [candidateId],
+              tileTokens: ["tile-1"],
+              captureGaps: [],
+              virtualized: false,
+              virtualScrollContainerCount: 0,
+              virtualizationEvidence: [],
+              unidentifiedImageCount: 0,
+              loadingSignalCount: 0,
+            },
+          },
+        ];
+      },
+    };
+    const recover = createFlowCountRebaseline(
+      fixture.repositories,
+      scriptingPort as never,
+    );
+    const request = {
+      oldAttemptId: old.attemptId,
+      workspaceId: "default",
+      promptHash: sourceHash,
+      countSessionId: newCountSessionId,
+      startingImageCount: 1,
+      userConfirmed: true as const,
+    };
+    expect(await recover(request)).toMatchObject({
+      status: "blocked",
+      reason: "active_observation_cannot_be_superseded",
+      generateActivations: 0,
+    });
+    producerStatus = "absent";
+    const failedWrite = vi
+      .spyOn(fixture.database.flowCountRecoveries, "add")
+      .mockRejectedValueOnce(new Error("storage unavailable"));
+    expect(await recover(request)).toMatchObject({
+      status: "blocked",
+      reason: "recovery_atomic_persistence_or_readback_failed",
+      generateActivations: 0,
+    });
+    failedWrite.mockRestore();
+    expect(await fixture.repositories.getFlowCountRecoveries()).toEqual([]);
+    const concurrentResults = await Promise.all([
+      recover(request),
+      recover(request),
+    ]);
+    expect(concurrentResults).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: "recovered" }),
+        expect.objectContaining({ status: "recovered" }),
+      ]),
+    );
+    const oldAfterRecovery = await fixture.repositories.getFlowImageAttempt(
+      old.attemptId,
+    );
+    expect(oldAfterRecovery?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "observation_lost",
+    });
+    expect(oldAfterRecovery?.countDecision?.status).toBe("interrupted");
+    expect(oldAfterRecovery?.activeKey).toBe(old.activeKey);
+    expect((await fixture.repositories.getFlowCountRecoveries()).length).toBe(
+      1,
+    );
+    const distinctAttempt = {
+      ...old,
+      attemptId: "new-distinct-attempt",
+      activeKey: flowImageAttemptActiveKey(nextItem.id, sourceHash),
+      confirmationKey: "new-distinct-confirmation",
+      itemId: nextItem.id,
+      promptHash: sourceHash,
+      sourceSnapshotId: flowImagePromptSnapshotId(nextItem.id, sourceHash),
+      promptCodeUnits: nextSource.length,
+      promptUtf8Bytes: new TextEncoder().encode(nextSource).byteLength,
+      countSessionId: newCountSessionId,
+      state: "preparing" as const,
+      baseline: undefined,
+      resultBaseline: undefined,
+      observationSession: undefined,
+      observationReceipts: undefined,
+      structuralObservations: undefined,
+      resultOutcome: undefined,
+      countBaseline: undefined,
+      countDecision: undefined,
+      events: [
+        { stage: "preparation" as const, at: 1_300, method: "none" as const },
+      ],
+      createdAt: 1_300,
+      updatedAt: 1_300,
+    };
+    await fixture.repositories.createFlowImageAttempt({
+      ...distinctAttempt,
+      sourceSnapshot: {
+        snapshotId: distinctAttempt.sourceSnapshotId,
+        workspaceId: "default",
+        batchId: saved.batch.id,
+        itemId: nextItem.id,
+        promptHash: sourceHash,
+        rawJsonBody: nextSource,
+        promptCodeUnits: nextSource.length,
+        promptUtf8Bytes: new TextEncoder().encode(nextSource).byteLength,
+        createdAt: 1_300,
+      },
+    });
+    const replay = {
+      ...distinctAttempt,
+      attemptId: "old-source-replay",
+      activeKey: old.activeKey,
+      confirmationKey: "old-source-replay-confirmation",
+      itemId: old.itemId,
+      promptHash: old.promptHash,
+      sourceSnapshotId: old.sourceSnapshotId,
+      promptCodeUnits: old.promptCodeUnits,
+      promptUtf8Bytes: old.promptUtf8Bytes,
+      countSessionId: "d95b69a3-e8b0-4233-8f68-4d1e59c8dfe6",
+    };
+    await expect(
+      fixture.repositories.createFlowImageAttempt({
+        ...replay,
+        sourceSnapshot: {
+          snapshotId: old.sourceSnapshotId,
+          workspaceId: old.workspaceId,
+          batchId: old.batchId,
+          itemId: old.itemId,
+          promptHash: old.promptHash,
+          rawJsonBody: prompt,
+          promptCodeUnits: prompt.length,
+          promptUtf8Bytes: new TextEncoder().encode(prompt).byteLength,
+          createdAt: 1_400,
+        },
+      }),
+    ).rejects.toThrow("already exists for this image prompt");
+    expect(
+      await fixture.repositories.getFlowImageAttempt(old.attemptId),
+    ).toMatchObject({
+      state: "dispatched",
+      resultOutcome: { status: "unknown" },
+    });
+  });
   it("durably records production structural observations as unknown without result links", async () => {
     const fixture = await makeFixture(2, "production_observation_only", true);
     const observation = await structuralEvent(fixture.attempt, 1);

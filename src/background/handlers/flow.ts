@@ -47,6 +47,464 @@ import type { ProviderTab } from "../../platforms/shared/contracts";
 import { createFlowObservationInjection } from "../../platforms/flow/observationProducer";
 import { flowWorkspaceScopeAnalyzer } from "../../platforms/flow/workspaceScope";
 
+function inspectFlowCountPageState(
+  canonicalTarget: string,
+  projectId: string,
+  mode: "producer" | "baseline",
+) {
+  const stateKey = "__AUTOMAT_FLOW_IMAGE_OBSERVER_V1__";
+  const state = (globalThis as typeof globalThis & { [key: string]: unknown })[
+    stateKey
+  ] as
+    | {
+        active?: boolean;
+        stopped?: boolean;
+        binding?: { tabId?: number; projectId?: string };
+      }
+    | undefined;
+  if (mode === "producer")
+    return {
+      available: true,
+      status: !state
+        ? "absent"
+        : state.active
+          ? "active"
+          : state.stopped
+            ? "stopped"
+            : "arming",
+      tabId: state?.binding?.tabId ?? null,
+      projectId: state?.binding?.projectId ?? null,
+    };
+  const analyzer = (
+    globalThis as typeof globalThis & {
+      [key: string]: (
+        target: string,
+        project: string,
+        install?: boolean,
+        requireComposer?: boolean,
+      ) => Promise<{
+        status: string;
+        profile: string;
+        candidateIds: string[];
+        qualifyingCandidateIds: string[];
+        tiles: HTMLElement[];
+        captureGaps: string[];
+        virtualized: boolean;
+        virtualScrollContainerCount: number;
+        virtualizationEvidence: string[];
+        unidentifiedImageCount: number;
+        loadingSignalCount: number;
+      }>;
+    }
+  )["__AUTOMAT_FLOW_WORKSPACE_SCOPE_ANALYZER_V1__"];
+  return analyzer
+    ? analyzer(canonicalTarget, projectId, false, false).then((result) => ({
+        available: true,
+        status: result.status,
+        profile: result.profile,
+        candidateIds: result.candidateIds,
+        qualifyingCandidateIds: result.qualifyingCandidateIds,
+        tileTokens: result.tiles.map((_tile, index) => `tile-${index + 1}`),
+        captureGaps: result.captureGaps,
+        virtualized: result.virtualized,
+        virtualScrollContainerCount: result.virtualScrollContainerCount,
+        virtualizationEvidence: result.virtualizationEvidence,
+        unidentifiedImageCount: result.unidentifiedImageCount,
+        loadingSignalCount: result.loadingSignalCount,
+      }))
+    : Promise.resolve({ available: false, status: "analyzer_unavailable" });
+}
+
+/** Enumerates every durable unresolved count attempt for the selected project without touching the page. */
+export function createFlowCountBlockerInspection(
+  repositories: ExtensionRepositories,
+  scriptingPort: Pick<
+    typeof chrome.scripting,
+    "executeScript"
+  > = chrome.scripting,
+) {
+  return async () => {
+    const selected = await repositories.getSelectedTarget("Flow");
+    if (!selected)
+      return { status: "blocked", reason: "no_selected_target", blockers: [] };
+    const selectedProjectId =
+      flowTabFromUrl(
+        selected.tabId,
+        selected.canonicalTarget,
+        selected.canonicalTarget,
+      )?.projectId ?? selected.verificationBinding?.projectId;
+    let attempts: FlowImageAttemptRecord[];
+    try {
+      attempts = await repositories.getAllFlowImageAttempts();
+    } catch {
+      return {
+        status: "blocked",
+        reason: "count_attempt_read_failed",
+        blockers: [],
+      };
+    }
+    let liveProducer: { available?: boolean; status?: string } | undefined;
+    if (selected.verificationBinding?.documentId) {
+      const read = await scriptingPort
+        .executeScript({
+          target: {
+            tabId: selected.tabId,
+            documentIds: [selected.verificationBinding.documentId],
+          },
+          world: "ISOLATED",
+          func: inspectFlowCountPageState,
+          args: [selected.canonicalTarget, selectedProjectId ?? "", "producer"],
+        })
+        .catch(() => undefined);
+      liveProducer = read?.[0]?.result as typeof liveProducer;
+    }
+    const blockers = attempts
+      .filter(
+        (attempt) =>
+          attempt.countSessionId &&
+          attempt.projectId === selectedProjectId &&
+          attempt.state !== "failed-before-dispatch" &&
+          !(
+            attempt.state === "dispatched" &&
+            attempt.countDecision?.status === "count_matched"
+          ),
+      )
+      .map((attempt) => {
+        const sameDocument =
+          attempt.tabId === selected.tabId &&
+          attempt.documentId === selected.verificationBinding?.documentId;
+        const monitoringClassification = !sameDocument
+          ? "other_document_not_inspected"
+          : !liveProducer?.available
+            ? "producer_state_unknown"
+            : liveProducer.status === "active" ||
+                liveProducer.status === "arming"
+              ? "genuinely_active_observation"
+              : attempt.observationSession?.status === "active" ||
+                  attempt.observationSession?.status === "arming"
+                ? "durable_active_but_page_producer_absent_interrupted"
+                : "interrupted_or_lost_monitoring";
+        return {
+          attemptId: attempt.attemptId,
+          sessionId: attempt.observationSession?.sessionId ?? null,
+          sourceHash: attempt.promptHash,
+          state: attempt.state,
+          observationStatus: attempt.observationSession?.status ?? "missing",
+          monitoringClassification,
+          providerOutcome: attempt.resultOutcome?.status ?? "unknown",
+          countDecision: attempt.countDecision?.status ?? "missing",
+          reason:
+            attempt.countDecision?.reason ??
+            attempt.resultOutcome?.reason ??
+            "unresolved",
+        };
+      });
+    return {
+      status: "complete",
+      selectedProjectId: selectedProjectId ?? null,
+      blockers,
+    };
+  };
+}
+
+/** Explicit, no-Generate recovery for one interrupted historical count observation. */
+export function createFlowCountRebaseline(
+  repositories: ExtensionRepositories,
+  scriptingPort: Pick<
+    typeof chrome.scripting,
+    "executeScript"
+  > = chrome.scripting,
+) {
+  let operationTail: Promise<void> = Promise.resolve();
+  const perform = async (input: {
+    oldAttemptId: string;
+    workspaceId: string;
+    promptHash: string;
+    countSessionId: string;
+    startingImageCount: number;
+    userConfirmed: true;
+  }) => {
+    const blocked = (reason: string) => ({
+      status: "blocked",
+      reason,
+      providerOutcome: "unknown",
+      attemptsCreated: 0,
+      generateActivations: 0,
+    });
+    const selected = await repositories.getSelectedTarget("Flow");
+    if (
+      !selected?.verificationBinding ||
+      selected.verification !== "verified" ||
+      selected.connectionState !== "verified"
+    )
+      return blocked("selected_project_unverified");
+    const verifiedProjectId = selected.verificationBinding.projectId;
+    if (
+      selected.verificationBinding.provider !== "Flow" ||
+      selected.verificationBinding.tabId !== selected.tabId ||
+      selected.verificationBinding.canonicalTarget !==
+        selected.canonicalTarget ||
+      selected.verificationBinding.extensionBuildId !== BUILD_ID ||
+      selected.verificationBinding.connectorBuildId !== BUILD_ID ||
+      selected.verificationBinding.extensionProtocolVersion !==
+        PROTOCOL_VERSION ||
+      selected.verificationBinding.connectorProtocolVersion !== 1 ||
+      selected.verificationBinding.capability !== "read-only-connection-v1"
+    )
+      return blocked("selected_project_binding_stale");
+    const attempts = await repositories
+      .getAllFlowImageAttempts()
+      .catch(() => undefined);
+    if (!attempts) return blocked("count_attempt_read_failed");
+    const old = attempts.find(
+      (attempt) => attempt.attemptId === input.oldAttemptId,
+    );
+    if (
+      !old ||
+      !old.countSessionId ||
+      old.resultOutcome?.status !== "unknown" ||
+      old.countDecision?.status !== "interrupted" ||
+      !old.observationSession
+    )
+      return blocked("historical_attempt_not_recoverable");
+    const projectBlockers = attempts.filter(
+      (attempt) =>
+        attempt.countSessionId &&
+        attempt.projectId === verifiedProjectId &&
+        attempt.state !== "failed-before-dispatch" &&
+        !(
+          attempt.state === "dispatched" &&
+          attempt.countDecision?.status === "count_matched"
+        ),
+    );
+    if (
+      projectBlockers.length !== 1 ||
+      projectBlockers[0]?.attemptId !== old.attemptId
+    )
+      return blocked(
+        projectBlockers.length
+          ? "multiple_or_changed_project_blockers"
+          : "historical_blocker_not_current",
+      );
+    if (old.state === "uncertain") return blocked("dispatch_state_uncertain");
+    if (old.state !== "dispatched")
+      return blocked("historical_dispatch_not_confirmed");
+    const source = await repositories
+      .getPromptBatch(input.workspaceId, "image")
+      .catch(() => undefined);
+    const item = source?.items.find(
+      (candidate) => candidate.contentHash === input.promptHash,
+    );
+    if (!item || input.promptHash === old.promptHash)
+      return blocked("distinct_saved_source_required");
+    const target = flowTabFromUrl(
+      selected.tabId,
+      selected.canonicalTarget,
+      selected.canonicalTarget,
+    );
+    if (!target || target.projectId !== selected.verificationBinding.projectId)
+      return blocked("selected_project_binding_invalid");
+    let document: chrome.scripting.InjectionResult[];
+    try {
+      document = await scriptingPort.executeScript({
+        target: { tabId: target.id, frameIds: [0] },
+        func: () => ({ href: location.href, top: window.top === window }),
+      });
+    } catch {
+      return blocked("selected_document_unavailable");
+    }
+    const doc = document[0];
+    if (
+      !doc?.documentId ||
+      doc.frameId !== 0 ||
+      doc.result?.top !== true ||
+      doc.documentId !== selected.verificationBinding.documentId ||
+      flowTabFromUrl(target.id, "", doc.result.href)?.canonicalTarget !==
+        target.canonicalTarget
+    )
+      return blocked("selected_document_binding_changed");
+    const producer = await scriptingPort
+      .executeScript({
+        target: { tabId: target.id, documentIds: [doc.documentId] },
+        world: "ISOLATED",
+        func: inspectFlowCountPageState,
+        args: [target.canonicalTarget, target.projectId, "producer"],
+      })
+      .catch(() => undefined);
+    const producerState = producer?.[0]?.result as
+      { available?: boolean; status?: string } | undefined;
+    if (!producerState?.available) return blocked("producer_state_unavailable");
+    if (producerState.status === "active" || producerState.status === "arming")
+      return blocked("active_observation_cannot_be_superseded");
+    if (producerState.status !== "absent" && producerState.status !== "stopped")
+      return blocked("producer_state_uncertain");
+    const analyzerInstall = await scriptingPort
+      .executeScript({
+        target: { tabId: target.id, documentIds: [doc.documentId] },
+        world: "ISOLATED",
+        func: flowWorkspaceScopeAnalyzer,
+        args: [target.canonicalTarget, target.projectId, true, false],
+      })
+      .catch(() => undefined);
+    if (
+      !analyzerInstall?.[0]?.result ||
+      analyzerInstall[0].documentId !== doc.documentId
+    )
+      return blocked("baseline_capture_unavailable");
+    const captureBaseline = async () =>
+      scriptingPort
+        .executeScript({
+          target: { tabId: target.id, documentIds: [doc.documentId] },
+          world: "ISOLATED",
+          func: inspectFlowCountPageState,
+          args: [target.canonicalTarget, target.projectId, "baseline"],
+        })
+        .then(
+          (result) => result[0]?.result as Record<string, unknown> | undefined,
+        )
+        .catch(() => undefined);
+    const captures = [await captureBaseline(), await captureBaseline()];
+    const first = captures[0] as
+      | {
+          status?: string;
+          candidateIds?: string[];
+          qualifyingCandidateIds?: string[];
+          tileTokens?: string[];
+          captureGaps?: string[];
+          virtualized?: boolean;
+          virtualScrollContainerCount?: number;
+          virtualizationEvidence?: string[];
+          unidentifiedImageCount?: number;
+          loadingSignalCount?: number;
+        }
+      | undefined;
+    const second = captures[1] as typeof first;
+    if (
+      !first ||
+      !second ||
+      first.status !== "ready" ||
+      second.status !== "ready" ||
+      JSON.stringify(first.candidateIds) !==
+        JSON.stringify(second.candidateIds) ||
+      JSON.stringify(first.qualifyingCandidateIds) !==
+        JSON.stringify(second.qualifyingCandidateIds) ||
+      JSON.stringify(first.tileTokens) !== JSON.stringify(second.tileTokens) ||
+      first.captureGaps?.length ||
+      second.captureGaps?.length ||
+      first.unidentifiedImageCount !== 0 ||
+      second.unidentifiedImageCount !== 0 ||
+      first.loadingSignalCount !== 0 ||
+      second.loadingSignalCount !== 0 ||
+      first.virtualized ||
+      second.virtualized ||
+      !Array.isArray(first.candidateIds) ||
+      !Array.isArray(first.qualifyingCandidateIds) ||
+      first.qualifyingCandidateIds.length !== input.startingImageCount
+    )
+      return blocked("fresh_baseline_incomplete_or_count_mismatch");
+    const latestSelection = await repositories.getSelectedTarget("Flow");
+    if (
+      !latestSelection ||
+      latestSelection.tabId !== selected.tabId ||
+      latestSelection.canonicalTarget !== selected.canonicalTarget ||
+      latestSelection.verificationBinding?.documentId !== doc.documentId ||
+      latestSelection.verification !== "verified" ||
+      latestSelection.connectionState !== "verified"
+    )
+      return blocked("selected_project_changed_during_rebaseline");
+    const finalDocument = await scriptingPort
+      .executeScript({
+        target: { tabId: target.id, frameIds: [0] },
+        func: () => ({ href: location.href, top: window.top === window }),
+      })
+      .catch(() => undefined);
+    if (
+      finalDocument?.[0]?.documentId !== doc.documentId ||
+      finalDocument[0]?.frameId !== 0 ||
+      finalDocument[0]?.result?.top !== true ||
+      flowTabFromUrl(target.id, "", finalDocument[0]?.result?.href)
+        ?.canonicalTarget !== target.canonicalTarget
+    )
+      return blocked("selected_document_changed_during_rebaseline");
+    const finalProducer = await scriptingPort
+      .executeScript({
+        target: { tabId: target.id, documentIds: [doc.documentId] },
+        world: "ISOLATED",
+        func: inspectFlowCountPageState,
+        args: [target.canonicalTarget, target.projectId, "producer"],
+      })
+      .catch(() => undefined);
+    const finalProducerState = finalProducer?.[0]?.result as
+      { available?: boolean; status?: string } | undefined;
+    if (!finalProducerState?.available)
+      return blocked("producer_state_unavailable");
+    if (
+      finalProducerState.status === "active" ||
+      finalProducerState.status === "arming"
+    )
+      return blocked("active_observation_cannot_be_superseded");
+    if (
+      finalProducerState.status !== "absent" &&
+      finalProducerState.status !== "stopped"
+    )
+      return blocked("producer_state_uncertain");
+    const recovery = {
+      recoveryId: old.attemptId,
+      oldAttemptId: old.attemptId,
+      oldSessionId: old.observationSession.sessionId,
+      oldSourceHash: old.promptHash,
+      oldOutcome: "unknown" as const,
+      oldMonitoringStatus: old.observationSession.status,
+      oldCountDecisionStatus: old.countDecision.status,
+      producerInspection: "absent_interrupted" as const,
+      newSourceHash: item.contentHash,
+      newWorkspaceId: item.workspaceId,
+      newItemId: item.id,
+      newSnapshotId: flowImagePromptSnapshotId(item.id, item.contentHash),
+      countSessionId: input.countSessionId,
+      projectId: target.projectId,
+      canonicalTarget: target.canonicalTarget,
+      tabId: target.id,
+      documentId: doc.documentId,
+      buildId: BUILD_ID,
+      protocolVersion: PROTOCOL_VERSION,
+      countDeclarationProvenance: "user_attested_existing_image_count" as const,
+      userConfirmed: input.userConfirmed,
+      startingImageCount: input.startingImageCount,
+      baselineCandidateIds: first.candidateIds,
+      qualifyingBaselineCandidateIds: first.qualifyingCandidateIds ?? [],
+      baselineTileTokens: first.tileTokens ?? [],
+      capturedAt: Date.now(),
+    };
+    try {
+      await repositories.persistFlowCountRecovery(recovery);
+    } catch {
+      return blocked("recovery_atomic_persistence_or_readback_failed");
+    }
+    return {
+      status: "recovered",
+      reason: "rebaseline_persisted_for_distinct_source",
+      recoveryId: recovery.recoveryId,
+      oldAttemptId: old.attemptId,
+      oldProviderOutcome: "unknown",
+      oldSourceRemainsBlocked: true,
+      newSourceHash: item.contentHash,
+      startingImageCount: input.startingImageCount,
+      baselineCandidateCount: first.candidateIds.length,
+      attemptsCreated: 0,
+      generateActivations: 0,
+    };
+  };
+  return (input: Parameters<typeof perform>[0]) => {
+    const current = operationTail.then(() => perform(input));
+    operationTail = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    return current;
+  };
+}
+
 /** A separate read-only scope/listener check; it creates no attempt or receipt. */
 export function createFlowImageReadinessCheck(
   repositories: ExtensionRepositories,
@@ -1806,6 +2264,8 @@ export function createFlowImageGenerateOnce(
         (candidate) =>
           candidate.countSessionId === input.countMode.countSessionId,
       );
+      let recoveryAuthorization:
+        import("../../storage/db").FlowCountRecoveryRecord | undefined;
       const duplicateInProgress = priorCountAttempts.find(
         (candidate) =>
           candidate.itemId === item.id &&
@@ -1832,6 +2292,44 @@ export function createFlowImageGenerateOnce(
           ),
       );
       if (unresolvedProjectCountAttempt) {
+        const unresolvedProjectBlockers = allCountAttempts.filter(
+          (candidate) =>
+            candidate.countSessionId !== undefined &&
+            candidate.projectId === target.projectId &&
+            candidate.tabId === target.id &&
+            candidate.documentId === frame.documentId &&
+            candidate.state !== "failed-before-dispatch" &&
+            !(
+              candidate.state === "dispatched" &&
+              candidate.countDecision?.status === "count_matched"
+            ),
+        );
+        const recoveries = await dependencies.repositories
+          .getFlowCountRecoveries()
+          .catch(() => []);
+        const matching =
+          unresolvedProjectBlockers.length === 1
+            ? recoveries.filter(
+                (record) =>
+                  record.oldAttemptId ===
+                    unresolvedProjectCountAttempt.attemptId &&
+                  record.newSourceHash === item.contentHash &&
+                  record.newItemId === item.id &&
+                  record.newWorkspaceId === input.workspaceId &&
+                  record.countSessionId === input.countMode.countSessionId &&
+                  record.projectId === target.projectId &&
+                  record.tabId === target.id &&
+                  record.documentId === frame.documentId &&
+                  record.buildId === BUILD_ID &&
+                  record.protocolVersion === PROTOCOL_VERSION &&
+                  input.countMode.mode === "existing_project" &&
+                  record.startingImageCount ===
+                    input.countMode.startingImageCount,
+              )
+            : [];
+        if (matching.length === 1) recoveryAuthorization = matching[0];
+      }
+      if (unresolvedProjectCountAttempt && !recoveryAuthorization) {
         return response(
           "blocked",
           "count_session_paused",
@@ -2359,6 +2857,25 @@ export function createFlowImageGenerateOnce(
             0,
           ),
         };
+        if (
+          recoveryAuthorization &&
+          (JSON.stringify(countBaseline.baselineCandidateIds) !==
+            JSON.stringify(recoveryAuthorization.baselineCandidateIds) ||
+            JSON.stringify(
+              countBaseline.qualifyingBaselineCandidateIds ?? [],
+            ) !==
+              JSON.stringify(
+                recoveryAuthorization.qualifyingBaselineCandidateIds,
+              ) ||
+            JSON.stringify(countBaseline.baselineTileTokens) !==
+              JSON.stringify(recoveryAuthorization.baselineTileTokens) ||
+            countBaseline.startingImageCount !==
+              recoveryAuthorization.startingImageCount)
+        )
+          return failBefore(
+            "recovery_baseline_changed",
+            "The project candidate baseline changed after rebaseline. The old observation remains unresolved and Generate was not activated.",
+          );
         const initialCountDecision = reduceFlowImageCountDecision({
           declaration: countBaseline,
           declaredVariantCount: input.settingsConfirmation.declaredVariantCount,

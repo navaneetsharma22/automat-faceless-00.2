@@ -8,6 +8,7 @@ import type {
 } from "../../src/storage/db";
 import type { FlowImageAttemptRecord } from "../../src/domain/jobs/attempt";
 import type { FlowImagePromptSnapshotRecord } from "../../src/domain/batches/flowImagePromptSnapshot";
+import type { FlowCountRecoveryRecord } from "../../src/storage/db";
 
 export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const drafts = new Map<string, PromptDraftRecord>();
@@ -20,6 +21,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
     string,
     FlowImagePromptSnapshotRecord
   >();
+  const flowCountRecoveries = new Map<string, FlowCountRecoveryRecord>();
   let transactionTail = Promise.resolve();
 
   const table = <T extends object>(
@@ -79,6 +81,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
       flowImagePromptSnapshots,
       (item) => item.snapshotId,
     ),
+    flowCountRecoveries: table(flowCountRecoveries, (item) => item.recoveryId),
     transaction: async (_tableNames, operation) => {
       let release!: () => void;
       const previous = transactionTail;
@@ -94,6 +97,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
         promptItems,
         flowImageAttempts,
         flowImagePromptSnapshots,
+        flowCountRecoveries,
       ].map((values) => new Map(values));
       try {
         return await operation();
@@ -106,6 +110,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
           promptItems,
           flowImageAttempts,
           flowImagePromptSnapshots,
+          flowCountRecoveries,
         ].forEach((values, index) => {
           values.clear();
           for (const [key, value] of snapshots[index]!) {

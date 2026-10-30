@@ -3,6 +3,8 @@ import {
   createChromeFlowImageGenerateOncePort,
   createFlowImageGenerateOnceForWorker,
   createFlowImageReadinessCheck,
+  createFlowCountBlockerInspection,
+  createFlowCountRebaseline,
   createFlowImageCountDecisionReadback,
   createSavedFlowPromptEntry,
 } from "./handlers/flow";
@@ -57,6 +59,9 @@ const flowImageReadiness = createReadinessAfterConnectionRevalidation(
 );
 const flowImageCountDecision =
   createFlowImageCountDecisionReadback(repositories);
+const flowCountBlockerInspection =
+  createFlowCountBlockerInspection(repositories);
+const flowCountRebaseline = createFlowCountRebaseline(repositories);
 const flowImageObservation = createFlowImageObservationHandler({
   extensionId: chrome.runtime.id,
   repositories,
@@ -250,6 +255,8 @@ chrome.runtime.onMessage.addListener(
     flowImageGenerateOnce,
     flowImageReadiness,
     flowImageCountDecision,
+    flowCountBlockerInspection,
+    flowCountRebaseline,
     flowImageObservation: flowImageObservation.handle,
     revalidateConnection: (provider, enableReconnect) =>
       connectionLifecycle.revalidate(provider, enableReconnect),

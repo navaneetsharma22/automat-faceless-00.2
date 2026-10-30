@@ -77,6 +77,15 @@ export type RequestPayloads = {
         };
   };
   "flow.image.getCountDecision": { attemptId: string };
+  "flow.image.inspectCountBlockers": Record<string, never>;
+  "flow.image.rebaselineForNewPrompt": {
+    oldAttemptId: string;
+    workspaceId: string;
+    promptHash: string;
+    countSessionId: string;
+    startingImageCount: number;
+    userConfirmed: true;
+  };
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };
 };
@@ -108,6 +117,8 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.image.generateOnce": 30_000,
   "flow.image.checkReadiness": 15_000,
   "flow.image.getCountDecision": 10_000,
+  "flow.image.inspectCountBlockers": 10_000,
+  "flow.image.rebaselineForNewPrompt": 20_000,
   "preferences.getTheme": 3000,
   "preferences.setTheme": 3000,
 };

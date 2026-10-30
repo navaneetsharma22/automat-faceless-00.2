@@ -64,6 +64,36 @@ export type SelectedTargetRecord = {
   updatedAt: number;
 };
 
+/** Immutable authorization for one distinct source after an explicit count rebaseline. */
+export type FlowCountRecoveryRecord = {
+  recoveryId: string;
+  oldAttemptId: string;
+  oldSessionId: string;
+  oldSourceHash: string;
+  oldOutcome: "unknown";
+  oldMonitoringStatus: string;
+  oldCountDecisionStatus: string;
+  producerInspection: "absent_interrupted";
+  newSourceHash: string;
+  newWorkspaceId: string;
+  newItemId: string;
+  newSnapshotId: string;
+  countSessionId: string;
+  projectId: string;
+  canonicalTarget: string;
+  tabId: number;
+  documentId: string;
+  buildId: string;
+  protocolVersion: number;
+  countDeclarationProvenance: "user_attested_existing_image_count";
+  userConfirmed: true;
+  startingImageCount: number;
+  baselineCandidateIds: string[];
+  qualifyingBaselineCandidateIds: string[];
+  baselineTileTokens: string[];
+  capturedAt: number;
+};
+
 export type VerificationBindingMatch = "match" | "mismatch" | "missing";
 export type VerificationBindingComparison = {
   savedBindingPresent: boolean;
@@ -122,6 +152,7 @@ export class AutomatDatabase extends Dexie {
   promptItems!: Table<PromptItemRecord, string>;
   flowImageAttempts!: Table<FlowImageAttemptRecord, string>;
   flowImagePromptSnapshots!: Table<FlowImagePromptSnapshotRecord, string>;
+  flowCountRecoveries!: Table<FlowCountRecoveryRecord, string>;
 
   constructor(name = "automat-faceless-app-v1") {
     super(name);
@@ -164,6 +195,19 @@ export class AutomatDatabase extends Dexie {
         "&attemptId, &activeKey, &confirmationKey, workspaceId, batchId, itemId, state, createdAt",
       flowImagePromptSnapshots:
         "&snapshotId, workspaceId, batchId, itemId, promptHash, createdAt",
+    });
+    this.version(6).stores({
+      promptDrafts: "&id, kind, updatedAt",
+      selectedTargets: "&provider, tabId, verification, updatedAt",
+      workflows: "&id, updatedAt",
+      batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
+      promptItems: "&id, batchId, workspaceId, kind, order",
+      flowImageAttempts:
+        "&attemptId, &activeKey, &confirmationKey, workspaceId, batchId, itemId, state, createdAt",
+      flowImagePromptSnapshots:
+        "&snapshotId, workspaceId, batchId, itemId, promptHash, createdAt",
+      flowCountRecoveries:
+        "&recoveryId, oldAttemptId, oldSourceHash, newSourceHash, projectId, createdAt",
     });
   }
 }

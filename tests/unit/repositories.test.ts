@@ -13,6 +13,7 @@ describe("extension repository boundaries", () => {
     expect(appDatabase.name).toBe("automat-faceless-app-v1");
     expect(appDatabase.tables.map((table) => table.name).sort()).toEqual([
       "batches",
+      "flowCountRecoveries",
       "flowImageAttempts",
       "flowImagePromptSnapshots",
       "promptDrafts",

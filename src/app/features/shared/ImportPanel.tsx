@@ -180,6 +180,14 @@ export function ImportPanel({
   const [flowReadinessResult, setFlowReadinessResult] = useState<
     Record<string, unknown> | undefined
   >();
+  const [flowCountBlockerReport, setFlowCountBlockerReport] = useState<
+    Record<string, unknown> | undefined
+  >();
+  const [flowCountRecoveryReport, setFlowCountRecoveryReport] = useState<
+    Record<string, unknown> | undefined
+  >();
+  const [flowCountRecoveryPending, setFlowCountRecoveryPending] =
+    useState(false);
   const fileRequest = useRef(0);
   const lastToastId = useRef(0);
   const label = kind === "image" ? "Image" : "Video";
@@ -668,6 +676,69 @@ export function ImportPanel({
     }
   };
 
+  const inspectFlowCountBlockers = async () => {
+    try {
+      const report = await persistenceClient.request(
+        "flow.image.inspectCountBlockers",
+        {},
+      );
+      setFlowCountBlockerReport(
+        report && typeof report === "object"
+          ? (report as Record<string, unknown>)
+          : {
+              status: "blocked",
+              reason: "invalid_worker_response",
+              blockers: [],
+            },
+      );
+    } catch {
+      setFlowCountBlockerReport({
+        status: "blocked",
+        reason: "readback_failed",
+        blockers: [],
+      });
+    }
+  };
+
+  const rebaselineFlowForNewPrompt = async (oldAttemptId: string) => {
+    const item = snapshot.result?.items[0];
+    if (
+      !item ||
+      kind !== "image" ||
+      flowCountRecoveryPending ||
+      !flowExistingCountConfirmed ||
+      !Number.isInteger(Number(flowStartingImageCount))
+    )
+      return;
+    setFlowCountRecoveryPending(true);
+    try {
+      const report = await persistenceClient.request(
+        "flow.image.rebaselineForNewPrompt",
+        {
+          oldAttemptId,
+          workspaceId,
+          promptHash: await sha256Hex(item.rawBody),
+          countSessionId: flowCountSessionId,
+          startingImageCount: Number(flowStartingImageCount),
+          userConfirmed: true,
+        },
+      );
+      setFlowCountRecoveryReport(
+        report && typeof report === "object"
+          ? (report as Record<string, unknown>)
+          : { status: "blocked", reason: "invalid_worker_response" },
+      );
+    } catch {
+      setFlowCountRecoveryReport({
+        status: "blocked",
+        reason: "recovery_request_failed",
+        providerOutcome: "unknown",
+      });
+    } finally {
+      setFlowCountRecoveryPending(false);
+    }
+  };
+
   const refreshFlowCountDecision = async () => {
     const attemptId = flowGenerateResult?.attemptId;
     if (!attemptId || flowCountDecisionPending) return;
@@ -990,6 +1061,71 @@ export function ImportPanel({
             ; expected total uses starting count plus frozen declarations and is
             arithmetic only.
           </p>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => void inspectFlowCountBlockers()}
+          >
+            Inspect unresolved count observations (read only)
+          </Button>
+          {flowCountBlockerReport ? (
+            <div className={styles.subtleText}>
+              <p>
+                Count blocker inspection:{" "}
+                {String(flowCountBlockerReport.status)}; reason:{" "}
+                {String(flowCountBlockerReport.reason ?? "none")}.
+              </p>
+              {Array.isArray(flowCountBlockerReport.blockers)
+                ? flowCountBlockerReport.blockers.map((entry) => {
+                    const blocker = entry as Record<string, unknown>;
+                    const oldAttemptId =
+                      typeof blocker.attemptId === "string"
+                        ? blocker.attemptId
+                        : "";
+                    return (
+                      <div key={oldAttemptId}>
+                        <p>
+                          Attempt {oldAttemptId}; monitoring{" "}
+                          {String(
+                            blocker.monitoringClassification ??
+                              blocker.observationStatus,
+                          )}
+                          ; provider outcome {String(blocker.providerOutcome)};
+                          count decision {String(blocker.countDecision)}; reason{" "}
+                          {String(blocker.reason)}.
+                        </p>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={
+                            !oldAttemptId ||
+                            flowCountRecoveryPending ||
+                            !flowExistingCountConfirmed ||
+                            !currentValidation ||
+                            currentItemCount !== 1
+                          }
+                          loading={flowCountRecoveryPending}
+                          onClick={() =>
+                            void rebaselineFlowForNewPrompt(oldAttemptId)
+                          }
+                        >
+                          Rebaseline for a new prompt
+                        </Button>
+                      </div>
+                    );
+                  })
+                : null}
+            </div>
+          ) : null}
+          {flowCountRecoveryReport ? (
+            <Notice
+              kind={
+                flowCountRecoveryReport.status === "recovered"
+                  ? "info"
+                  : "warning"
+              }
+            >{`Recovery: ${String(flowCountRecoveryReport.status)}; reason: ${String(flowCountRecoveryReport.reason)}. The historical provider outcome remains unknown. This action did not create an attempt or activate Generate.`}</Notice>
+          ) : null}
           <Button
             type="button"
             disabled={

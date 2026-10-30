@@ -189,6 +189,73 @@ const flowImageAttemptEventSchema = z
   })
   .strict();
 
+export const FlowCountRecoveryRecordSchema = z
+  .object({
+    recoveryId: z.string().uuid(),
+    oldAttemptId: z.string().uuid(),
+    oldSessionId: z.string().uuid(),
+    oldSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    oldOutcome: z.literal("unknown"),
+    oldMonitoringStatus: z.enum([
+      "active",
+      "arming",
+      "lost",
+      "timed_out",
+      "closed",
+    ]),
+    oldCountDecisionStatus: z.literal("interrupted"),
+    producerInspection: z.literal("absent_interrupted"),
+    newSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    newWorkspaceId: z.string().min(1).max(128),
+    newItemId: z.string().min(1).max(256),
+    newSnapshotId: z.string().min(1).max(512),
+    countSessionId: z.string().uuid(),
+    projectId: z.string().min(1).max(512),
+    canonicalTarget: z.string().min(1).max(2048),
+    tabId: z.number().int().nonnegative(),
+    documentId: z.string().min(1).max(256),
+    buildId: z.string().min(1).max(128),
+    protocolVersion: z.number().int().positive(),
+    countDeclarationProvenance: z.literal("user_attested_existing_image_count"),
+    userConfirmed: z.literal(true),
+    startingImageCount: z.number().int().nonnegative().max(100_000),
+    baselineCandidateIds: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(500),
+    qualifyingBaselineCandidateIds: z
+      .array(z.string().regex(/^[0-9a-f]{64}$/))
+      .max(500),
+    baselineTileTokens: z.array(z.string().regex(/^tile-[0-9]{1,6}$/)).max(100),
+    capturedAt: z.number().finite().nonnegative(),
+  })
+  .strict()
+  .superRefine((record, context) => {
+    if (
+      record.oldAttemptId !== record.recoveryId ||
+      record.oldSourceHash === record.newSourceHash
+    )
+      context.addIssue({
+        code: "custom",
+        message: "invalid_recovery_source_binding",
+      });
+    if (
+      new Set(record.baselineCandidateIds).size !==
+        record.baselineCandidateIds.length ||
+      new Set(record.qualifyingBaselineCandidateIds).size !==
+        record.qualifyingBaselineCandidateIds.length ||
+      new Set(record.baselineTileTokens).size !==
+        record.baselineTileTokens.length ||
+      record.qualifyingBaselineCandidateIds.some(
+        (id) => !record.baselineCandidateIds.includes(id),
+      )
+    )
+      context.addIssue({
+        code: "custom",
+        message: "invalid_recovery_baseline",
+      });
+  });
+export type ValidatedFlowCountRecoveryRecord = z.infer<
+  typeof FlowCountRecoveryRecordSchema
+>;
+
 export const FlowImageAttemptRecordSchema = z
   .object({
     attemptId: z.string().min(1).max(128),
@@ -540,6 +607,23 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   requestBase.extend({
     type: z.literal("flow.image.getCountDecision"),
     payload: z.object({ attemptId: z.string().min(1).max(128) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.image.inspectCountBlockers"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.image.rebaselineForNewPrompt"),
+    payload: z
+      .object({
+        oldAttemptId: z.string().uuid(),
+        workspaceId: workspaceIdSchema,
+        promptHash: z.string().regex(/^[0-9a-f]{64}$/),
+        countSessionId: z.string().uuid(),
+        startingImageCount: z.number().int().nonnegative().max(100_000),
+        userConfirmed: z.literal(true),
+      })
+      .strict(),
   }),
   requestBase.extend({
     type: z.literal("preferences.getTheme"),

@@ -6,6 +6,7 @@ import {
   type PromptDraftRecord,
   type SelectedTargetRecord,
   type WorkflowRecord,
+  type FlowCountRecoveryRecord,
 } from "./db";
 import {
   PromptBatchInputSchema,
@@ -13,6 +14,7 @@ import {
   PromptBatchSnapshotSchema,
   FlowImageAttemptRecordSchema,
   FlowImagePromptSnapshotRecordSchema,
+  FlowCountRecoveryRecordSchema,
   PromptItemRecordSchema,
 } from "../shared/schemas";
 import { importPromptBatch } from "../domain/batches/importBatch";
@@ -35,6 +37,10 @@ import {
   reduceFlowImageCountDecision,
   type FlowImageAnyObservationEvent,
 } from "../domain/jobs/results";
+
+const FLOW_IMAGE_ATTEMPTS_AND_COUNT_RECOVERIES = [
+  "flowImageAttempts+flowCountRecoveries",
+];
 
 export type PromptDraftInput = Pick<
   PromptDraftRecord,
@@ -148,6 +154,13 @@ export class FlowImagePromptSnapshotConflictError extends Error {
   }
 }
 
+export class FlowCountRecoveryValidationError extends Error {
+  constructor() {
+    super("The count recovery could not be safely established.");
+    this.name = "FlowCountRecoveryValidationError";
+  }
+}
+
 function isSameBlockingImageSource(
   existing: FlowImageAttemptRecord,
   candidate: FlowImageAttemptRecord,
@@ -186,6 +199,10 @@ export type RepositoryDatabase = {
     Table<FlowImagePromptSnapshotRecord, string>,
     "add" | "get"
   >;
+  flowCountRecoveries: Pick<
+    Table<FlowCountRecoveryRecord, string>,
+    "add" | "get" | "toArray"
+  >;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -203,6 +220,7 @@ export function createDexieRepositoryDatabase(
     promptItems: database.promptItems,
     flowImageAttempts: database.flowImageAttempts,
     flowImagePromptSnapshots: database.flowImagePromptSnapshots,
+    flowCountRecoveries: database.flowCountRecoveries,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -241,6 +259,19 @@ export function createDexieRepositoryDatabase(
           return database.transaction(
             "rw",
             database.flowImagePromptSnapshots,
+            operation,
+          );
+        case "flowCountRecoveries":
+          return database.transaction(
+            "rw",
+            database.flowCountRecoveries,
+            operation,
+          );
+        case "flowImageAttempts+flowCountRecoveries":
+          return database.transaction(
+            "rw",
+            database.flowImageAttempts,
+            database.flowCountRecoveries,
             operation,
           );
         default:
@@ -861,6 +892,77 @@ export class ExtensionRepositories {
     return this.tables.flowImageAttempts.toArray();
   }
 
+  getFlowCountRecoveries(): Promise<FlowCountRecoveryRecord[]> {
+    return this.tables.flowCountRecoveries.toArray().then((records) => {
+      if (
+        records.some(
+          (record) => !FlowCountRecoveryRecordSchema.safeParse(record).success,
+        )
+      )
+        throw new FlowCountRecoveryValidationError();
+      return records;
+    });
+  }
+
+  getFlowCountRecovery(
+    recoveryId: string,
+  ): Promise<FlowCountRecoveryRecord | undefined> {
+    return this.tables.flowCountRecoveries.get(recoveryId).then((record) => {
+      if (record && !FlowCountRecoveryRecordSchema.safeParse(record).success)
+        throw new FlowCountRecoveryValidationError();
+      return record;
+    });
+  }
+
+  async persistFlowCountRecovery(
+    record: FlowCountRecoveryRecord,
+  ): Promise<FlowCountRecoveryRecord> {
+    if (!FlowCountRecoveryRecordSchema.safeParse(record).success)
+      throw new FlowCountRecoveryValidationError();
+    const transactionTables = FLOW_IMAGE_ATTEMPTS_AND_COUNT_RECOVERIES;
+    return this.tables.transaction(transactionTables, async () => {
+      const old = await this.tables.flowImageAttempts.get(record.oldAttemptId);
+      if (
+        !old ||
+        old.state !== "dispatched" ||
+        !old.countSessionId ||
+        old.resultOutcome?.status !== "unknown" ||
+        old.promptHash !== record.oldSourceHash ||
+        old.projectId !== record.projectId ||
+        old.tabId !== record.tabId ||
+        old.documentId !== record.documentId ||
+        old.countDecision?.status !== "interrupted" ||
+        old.observationSession?.sessionId !== record.oldSessionId ||
+        old.observationSession.status !== record.oldMonitoringStatus
+      )
+        throw new FlowCountRecoveryValidationError();
+      const existing = await this.tables.flowCountRecoveries.get(
+        record.recoveryId,
+      );
+      if (existing) {
+        if (
+          JSON.stringify({ ...existing, capturedAt: 0 }) ===
+          JSON.stringify({ ...record, capturedAt: 0 })
+        )
+          return existing;
+        throw new FlowCountRecoveryValidationError();
+      }
+      if (
+        (await this.tables.flowCountRecoveries.toArray()).some(
+          (entry) => entry.oldAttemptId === record.oldAttemptId,
+        )
+      )
+        throw new FlowCountRecoveryValidationError();
+      await this.tables.flowCountRecoveries.add(record);
+      const readback = await this.tables.flowCountRecoveries.get(
+        record.recoveryId,
+      );
+      if (!readback || JSON.stringify(readback) !== JSON.stringify(record))
+        throw new FlowCountRecoveryValidationError();
+      return readback;
+    });
+  }
+
   async recordFlowImageObservation(input: {
     attemptId: string;
     event: FlowImageAnyObservationEvent;
@@ -883,8 +985,15 @@ export class ExtensionRepositories {
       fingerprint: input.fingerprint,
       receivedAt: input.receivedAt,
     };
-    return this.tables.transaction(["flowImageAttempts"], async () => {
+    const transactionTables = FLOW_IMAGE_ATTEMPTS_AND_COUNT_RECOVERIES;
+    return this.tables.transaction(transactionTables, async () => {
       const current = await this.tables.flowImageAttempts.get(input.attemptId);
+      if (
+        (await this.tables.flowCountRecoveries.toArray()).some(
+          (recovery) => recovery.oldAttemptId === input.attemptId,
+        )
+      )
+        throw new FlowImageObservationRejectedError("attempt_superseded");
       if (!current) {
         throw new FlowImageObservationRejectedError("attempt_missing");
       }

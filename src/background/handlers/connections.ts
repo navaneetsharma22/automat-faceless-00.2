@@ -37,6 +37,13 @@ export type FoundationDependencies = {
     >["payload"],
   ) => Promise<unknown>;
   flowImageCountDecision?: (attemptId: string) => Promise<unknown>;
+  flowCountBlockerInspection?: () => Promise<unknown>;
+  flowCountRebaseline?: (
+    input: Extract<
+      AppRequest,
+      { type: "flow.image.rebaselineForNewPrompt" }
+    >["payload"],
+  ) => Promise<unknown>;
   flowImageObservation?: (
     message: unknown,
     sender: ExtensionMessageSender,
@@ -214,6 +221,22 @@ async function dispatch(
         );
       }
       return dependencies.flowImageCountDecision(request.payload.attemptId);
+    case "flow.image.inspectCountBlockers":
+      if (!dependencies.flowCountBlockerInspection)
+        throw new FoundationOperationError(
+          "worker_error",
+          "count_blocker_inspection_unavailable",
+          "Flow count blocker inspection is unavailable.",
+        );
+      return dependencies.flowCountBlockerInspection();
+    case "flow.image.rebaselineForNewPrompt":
+      if (!dependencies.flowCountRebaseline)
+        throw new FoundationOperationError(
+          "worker_error",
+          "count_rebaseline_unavailable",
+          "Flow count recovery is unavailable.",
+        );
+      return dependencies.flowCountRebaseline(request.payload);
     case "preferences.getTheme":
       return { theme: await dependencies.preferences.getTheme() };
     case "preferences.setTheme":
