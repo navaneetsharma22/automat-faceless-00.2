@@ -286,16 +286,21 @@ export class ExtensionRepositories {
   async recordSelectedTarget(
     input: SelectedTargetInput,
   ): Promise<SelectedTargetRecord> {
-    const record: SelectedTargetRecord = {
-      ...input,
-      verification: "unverified",
-      verificationBinding: undefined,
-      reconnectEnabled: false,
-      updatedAt: this.now(),
-    };
-    await this.tables.transaction(["selectedTargets"], () =>
-      this.tables.selectedTargets.put(record).then(() => undefined),
-    );
+    let record!: SelectedTargetRecord;
+    await this.tables.transaction(["selectedTargets"], async () => {
+      const current = await this.tables.selectedTargets.get(input.provider);
+      record = {
+        ...input,
+        verification: "unverified",
+        verificationBinding: undefined,
+        reconnectEnabled: false,
+        connectionState: "disconnected",
+        revision: (current?.revision ?? 0) + 1,
+        lifecycleDiagnostics: current?.lifecycleDiagnostics ?? [],
+        updatedAt: this.now(),
+      };
+      await this.tables.selectedTargets.put(record);
+    });
     return record;
   }
 
@@ -321,6 +326,9 @@ export class ExtensionRepositories {
       await this.tables.selectedTargets.put({
         ...current,
         reconnectEnabled: enabled,
+        verification: enabled ? current.verification : "unverified",
+        connectionState: enabled ? "checking" : "disconnected",
+        revision: (current.revision ?? 0) + 1,
         updatedAt: this.now(),
       });
       return true;
@@ -335,6 +343,16 @@ export class ExtensionRepositories {
         records.map((record) => ({
           ...record,
           verification: "unverified" as const,
+          connectionState:
+            record.reconnectEnabled === false
+              ? ("disconnected" as const)
+              : ("checking" as const),
+          revision: (record.revision ?? 0) + 1,
+          lifecycleDiagnostics: [
+            ...(record.lifecycleDiagnostics ?? []),
+            { kind: "worker_started" as const, at: this.now() },
+          ].slice(-32),
+          updatedAt: this.now(),
         })),
       );
     });
@@ -342,19 +360,79 @@ export class ExtensionRepositories {
 
   async recordTargetVerification(
     binding: NonNullable<SelectedTargetRecord["verificationBinding"]>,
+    expectedRevision?: number,
   ): Promise<boolean> {
     return this.tables.transaction(["selectedTargets"], async () => {
       const current = await this.tables.selectedTargets.get(binding.provider);
       if (
         !current ||
         current.tabId !== binding.tabId ||
-        current.canonicalTarget !== binding.canonicalTarget
+        current.canonicalTarget !== binding.canonicalTarget ||
+        current.reconnectEnabled === false ||
+        (expectedRevision !== undefined &&
+          (current.revision ?? 0) !== expectedRevision)
       )
         return false;
       await this.tables.selectedTargets.put({
         ...current,
         verification: "verified",
         verificationBinding: binding,
+        connectionState: "verified",
+        revision: (current.revision ?? 0) + 1,
+        updatedAt: this.now(),
+      });
+      return true;
+    });
+  }
+
+  async recordConnectionLifecycleDiagnostic(
+    provider: SelectedTargetRecord["provider"],
+    event: NonNullable<SelectedTargetRecord["lifecycleDiagnostics"]>[number],
+    expected?: Pick<SelectedTargetRecord, "tabId" | "canonicalTarget">,
+  ): Promise<boolean> {
+    return this.tables.transaction(["selectedTargets"], async () => {
+      const current = await this.tables.selectedTargets.get(provider);
+      if (
+        !current ||
+        (expected &&
+          (current.tabId !== expected.tabId ||
+            current.canonicalTarget !== expected.canonicalTarget))
+      )
+        return false;
+      await this.tables.selectedTargets.put({
+        ...current,
+        lifecycleDiagnostics: [
+          ...(current.lifecycleDiagnostics ?? []),
+          { ...event, reason: event.reason?.slice(0, 64) },
+        ].slice(-32),
+      });
+      return true;
+    });
+  }
+
+  async setTargetConnectionState(
+    provider: SelectedTargetRecord["provider"],
+    state: NonNullable<SelectedTargetRecord["connectionState"]>,
+    expectedRevision?: number,
+    invalidateVerification = false,
+  ): Promise<boolean> {
+    return this.tables.transaction(["selectedTargets"], async () => {
+      const current = await this.tables.selectedTargets.get(provider);
+      if (
+        !current ||
+        (expectedRevision !== undefined &&
+          (current.revision ?? 0) !== expectedRevision)
+      )
+        return false;
+      await this.tables.selectedTargets.put({
+        ...current,
+        connectionState: state,
+        verification: invalidateVerification
+          ? "unverified"
+          : current.verification,
+        revision: invalidateVerification
+          ? (current.revision ?? 0) + 1
+          : current.revision,
         updatedAt: this.now(),
       });
       return true;

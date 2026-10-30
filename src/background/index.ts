@@ -8,17 +8,20 @@ import {
 } from "./handlers/flow";
 import { createFlowImageObservationHandler } from "./handlers/observations";
 import { registerDashboardAction } from "./openDashboard";
+import {
+  createConnectionLifecycleService,
+  createReadinessAfterConnectionRevalidation,
+} from "./connectionLifecycle";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
-import { FOUNDATION_WORKER_RESTARTED } from "../shared/messages";
+import {
+  CONNECTION_STATE_CHANGED_MESSAGE,
+  FOUNDATION_WORKER_RESTARTED,
+} from "../shared/messages";
 import {
   ChromePreferenceRepository,
   ExtensionRepositories,
 } from "../storage/repositories";
 import { providerTabFromUrl } from "../platforms/shared/connection";
-import {
-  CONNECTION_CAPABILITY,
-  CONNECTOR_PROTOCOL_VERSION,
-} from "../platforms/shared/contracts";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -31,7 +34,27 @@ const flowImageGenerateOnce = createFlowImageGenerateOnceForWorker(
   repositories,
   flowPort,
 );
-const flowImageReadiness = createFlowImageReadinessCheck(repositories);
+const connectionLifecycle = createConnectionLifecycleService(
+  repositories,
+  undefined,
+  (provider, state, reason) => {
+    void chrome.runtime
+      .sendMessage({
+        type: CONNECTION_STATE_CHANGED_MESSAGE,
+        buildId: BUILD_ID,
+        protocolVersion: PROTOCOL_VERSION,
+        provider,
+        state,
+        reason,
+      })
+      .catch(() => undefined);
+  },
+);
+const flowImageReadinessCheck = createFlowImageReadinessCheck(repositories);
+const flowImageReadiness = createReadinessAfterConnectionRevalidation(
+  connectionLifecycle.revalidate,
+  flowImageReadinessCheck,
+);
 const flowImageCountDecision =
   createFlowImageCountDecisionReadback(repositories);
 const flowImageObservation = createFlowImageObservationHandler({
@@ -47,6 +70,176 @@ const workerReady = Promise.all([
   .then(() => undefined);
 void workerReady.catch(() => undefined);
 
+// Persist only bounded lifecycle categories. URLs, titles and account data are
+// intentionally excluded; these are browser-observed events, not refresh causes.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  void (async () => {
+    for (const provider of ["Flow", "Vids"] as const) {
+      const selected = await repositories.getSelectedTarget(provider);
+      if (selected?.tabId !== tabId) continue;
+      if (changeInfo.discarded === true) {
+        const updated = await repositories.setTargetConnectionState(
+          provider,
+          "temporarily-unreachable",
+          selected.revision,
+          true,
+        );
+        if (updated) {
+          await repositories.recordConnectionLifecycleDiagnostic(
+            provider,
+            {
+              kind: "tab_discarded",
+              reason: "browser_discard_signal",
+              at: Date.now(),
+            },
+            selected,
+          );
+          void chrome.runtime
+            .sendMessage({
+              type: CONNECTION_STATE_CHANGED_MESSAGE,
+              buildId: BUILD_ID,
+              protocolVersion: PROTOCOL_VERSION,
+              provider,
+              state: "temporarily-unreachable",
+              reason: "browser_discard_signal",
+            })
+            .catch(() => undefined);
+        }
+      }
+      const observed = changeInfo.url
+        ? providerTabFromUrl(tabId, "", changeInfo.url)
+        : undefined;
+      const routeMismatch = Boolean(
+        changeInfo.url &&
+        observed?.canonicalTarget !== selected.canonicalTarget,
+      );
+      if (changeInfo.status === "loading" || routeMismatch) {
+        const reason = routeMismatch
+          ? "project_route_changed"
+          : "browser_loading_signal";
+        const updated = await repositories.setTargetConnectionState(
+          provider,
+          "stale-document",
+          selected.revision,
+          true,
+        );
+        if (updated) {
+          await repositories.recordConnectionLifecycleDiagnostic(
+            provider,
+            {
+              kind: routeMismatch ? "document_changed" : "tab_reload_signal",
+              reason,
+              at: Date.now(),
+            },
+            selected,
+          );
+          void chrome.runtime
+            .sendMessage({
+              type: CONNECTION_STATE_CHANGED_MESSAGE,
+              buildId: BUILD_ID,
+              protocolVersion: PROTOCOL_VERSION,
+              provider,
+              state: "stale-document",
+              reason,
+            })
+            .catch(() => undefined);
+        }
+      } else if (changeInfo.url) {
+        await repositories.recordConnectionLifecycleDiagnostic(
+          provider,
+          {
+            kind: "document_changed",
+            reason: "url_changed_same_project",
+            at: Date.now(),
+          },
+          selected,
+        );
+      }
+      if (
+        changeInfo.status === "complete" &&
+        selected.reconnectEnabled !== false
+      )
+        void connectionLifecycle.revalidate(provider);
+    }
+  })().catch(() => undefined);
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void (async () => {
+    for (const provider of ["Flow", "Vids"] as const) {
+      const selected = await repositories.getSelectedTarget(provider);
+      if (selected?.tabId !== tabId) continue;
+      const updated = await repositories.setTargetConnectionState(
+        provider,
+        "disconnected",
+        selected.revision,
+        true,
+      );
+      if (!updated) continue;
+      await repositories.recordConnectionLifecycleDiagnostic(
+        provider,
+        {
+          kind: "tab_closed",
+          reason: "browser_tab_removed",
+          at: Date.now(),
+        },
+        selected,
+      );
+      void chrome.runtime
+        .sendMessage({
+          type: CONNECTION_STATE_CHANGED_MESSAGE,
+          buildId: BUILD_ID,
+          protocolVersion: PROTOCOL_VERSION,
+          provider,
+          state: "disconnected",
+          reason: "browser_tab_removed",
+        })
+        .catch(() => undefined);
+    }
+  })().catch(() => undefined);
+});
+chrome.tabs.onReplaced.addListener((_addedTabId, removedTabId) => {
+  void (async () => {
+    for (const provider of ["Flow", "Vids"] as const) {
+      const selected = await repositories.getSelectedTarget(provider);
+      if (selected?.tabId !== removedTabId) continue;
+      const updated = await repositories.setTargetConnectionState(
+        provider,
+        "stale-document",
+        selected.revision,
+        true,
+      );
+      if (!updated) continue;
+      await repositories.recordConnectionLifecycleDiagnostic(
+        provider,
+        {
+          kind: "tab_replaced",
+          reason: "browser_tab_replaced",
+          at: Date.now(),
+        },
+        selected,
+      );
+      void chrome.runtime
+        .sendMessage({
+          type: CONNECTION_STATE_CHANGED_MESSAGE,
+          buildId: BUILD_ID,
+          protocolVersion: PROTOCOL_VERSION,
+          provider,
+          state: "stale-document",
+          reason: "browser_tab_replaced",
+        })
+        .catch(() => undefined);
+    }
+  })().catch(() => undefined);
+});
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  void (async () => {
+    for (const provider of ["Flow", "Vids"] as const) {
+      const selected = await repositories.getSelectedTarget(provider);
+      if (selected?.tabId === tabId && selected.reconnectEnabled !== false)
+        void connectionLifecycle.revalidate(provider);
+    }
+  })().catch(() => undefined);
+});
 // Register extension listeners synchronously during worker evaluation.
 chrome.runtime.onMessage.addListener(
   createConnectionMessageListener(chrome.runtime.id, {
@@ -58,61 +251,8 @@ chrome.runtime.onMessage.addListener(
     flowImageReadiness,
     flowImageCountDecision,
     flowImageObservation: flowImageObservation.handle,
-    recordConnectionVerification: async (binding) => {
-      if (
-        binding.extensionBuildId !== BUILD_ID ||
-        binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
-        binding.connectorBuildId !== BUILD_ID ||
-        binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
-        binding.capability !== CONNECTION_CAPABILITY
-      )
-        return { recorded: false, reason: "verification_metadata_mismatch" };
-      const target = providerTabFromUrl(
-        binding.tabId,
-        binding.canonicalTarget,
-        binding.canonicalTarget,
-      );
-      if (
-        !target ||
-        target.provider !== binding.provider ||
-        target.projectId !== binding.projectId
-      )
-        return { recorded: false, reason: "verification_selection_mismatch" };
-      try {
-        const tab = await chrome.tabs.get(binding.tabId);
-        if (
-          !tab.url ||
-          providerTabFromUrl(binding.tabId, "", tab.url)?.canonicalTarget !==
-            binding.canonicalTarget
-        )
-          return { recorded: false, reason: "verification_selection_mismatch" };
-        const current = await chrome.scripting.executeScript({
-          target: { tabId: binding.tabId, frameIds: [0] },
-          func: () => ({ top: window.top === window, href: location.href }),
-        });
-        const document = current[0];
-        if (
-          document?.frameId !== 0 ||
-          document.documentId !== binding.documentId ||
-          document.result?.top !== true ||
-          providerTabFromUrl(binding.tabId, "", document.result.href)
-            ?.canonicalTarget !== binding.canonicalTarget
-        )
-          return { recorded: false, reason: "verification_stale_document" };
-      } catch {
-        return {
-          recorded: false,
-          reason: "verification_transport_unavailable",
-        };
-      }
-      return {
-        recorded: await repositories.recordTargetVerification({
-          ...binding,
-          verifiedAt: Date.now(),
-        }),
-        reason: null,
-      };
-    },
+    revalidateConnection: (provider, enableReconnect) =>
+      connectionLifecycle.revalidate(provider, enableReconnect),
   }),
 );
 registerDashboardAction(chrome);

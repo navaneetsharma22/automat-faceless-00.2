@@ -4,6 +4,8 @@ import type { AppRequest } from "./schemas";
 export { BUILD_ID, PROTOCOL_VERSION };
 export const FOUNDATION_WORKER_RESTARTED =
   "AUTOMAT_FOUNDATION_WORKER_RESTARTED";
+export const CONNECTION_STATE_CHANGED_MESSAGE =
+  "AUTOMAT_CONNECTION_STATE_CHANGED";
 export {
   AppRequestSchema,
   AppResponseSchema,
@@ -26,21 +28,11 @@ export type RequestPayloads = {
     tabId: number;
     canonicalTarget: string;
   };
-  "connections.recordVerification": {
-    provider: "Flow" | "Vids";
-    tabId: number;
-    canonicalTarget: string;
-    projectId: string;
-    frameId: 0;
-    documentId: string;
-    documentToken: string;
-    extensionBuildId: string;
-    extensionProtocolVersion: number;
-    connectorBuildId: string;
-    connectorProtocolVersion: number;
-    capability: "read-only-connection-v1";
-  };
   "connections.getSelection": { provider: "Flow" | "Vids" };
+  "connections.revalidate": {
+    provider: "Flow" | "Vids";
+    enableReconnect?: boolean;
+  };
   "connections.setReconnectIntent": {
     provider: "Flow" | "Vids";
     enabled: boolean;
@@ -109,8 +101,8 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "promptBatch.put": 30_000,
   "promptBatch.get": 30_000,
   "connections.recordSelection": 5000,
-  "connections.recordVerification": 5000,
   "connections.getSelection": 5000,
+  "connections.revalidate": 10_000,
   "connections.setReconnectIntent": 5000,
   "flow.prompt.fill": 20_000,
   "flow.image.generateOnce": 30_000,

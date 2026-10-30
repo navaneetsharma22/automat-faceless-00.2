@@ -304,6 +304,27 @@ async function setup(options: Parameters<typeof makePort>[0] = {}) {
     tabId: selectedTab.id,
     canonicalTarget: selectedTab.canonicalTarget,
   });
+  await repositories.setReconnectIntent("Flow", true);
+  const selected = await repositories.getSelectedTarget("Flow");
+  if (!selected) throw new Error("Flow selection fixture missing");
+  await repositories.recordTargetVerification(
+    {
+      provider: "Flow",
+      tabId: selectedTab.id,
+      canonicalTarget: selectedTab.canonicalTarget,
+      projectId: selectedTab.projectId,
+      frameId: 0,
+      documentId: frame.documentId,
+      documentToken: "fixture-connector-document-token",
+      extensionBuildId: BUILD_ID,
+      extensionProtocolVersion: PROTOCOL_VERSION,
+      connectorBuildId: BUILD_ID,
+      connectorProtocolVersion: 1,
+      capability: "read-only-connection-v1",
+      verifiedAt: 1_000,
+    },
+    selected.revision,
+  );
   const fixture = makePort(options);
   let id = 0;
   const fillCalls: Array<{ sourceText: string; expectedFrame: unknown }> = [];

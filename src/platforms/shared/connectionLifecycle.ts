@@ -1,5 +1,8 @@
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
-import { FOUNDATION_WORKER_RESTARTED } from "../../shared/messages";
+import {
+  CONNECTION_STATE_CHANGED_MESSAGE,
+  FOUNDATION_WORKER_RESTARTED,
+} from "../../shared/messages";
 import { isSameProviderTargetUrl } from "./connection";
 import type { ProviderTab } from "./contracts";
 
@@ -8,6 +11,47 @@ export type WorkerStartEvent = {
   workerInstanceId: string;
   protocolVersion: number;
 };
+
+export type ConnectionStateChangedEvent = {
+  provider: "Flow" | "Vids";
+  state:
+    | "checking"
+    | "verified"
+    | "temporarily-unreachable"
+    | "stale-document"
+    | "stale-build"
+    | "disconnected";
+  reason: string;
+};
+
+export function readConnectionStateChangedEvent(
+  message: unknown,
+): ConnectionStateChangedEvent | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  const event = message as Record<string, unknown>;
+  if (
+    event.type !== CONNECTION_STATE_CHANGED_MESSAGE ||
+    event.buildId !== BUILD_ID ||
+    event.protocolVersion !== PROTOCOL_VERSION ||
+    (event.provider !== "Flow" && event.provider !== "Vids") ||
+    ![
+      "checking",
+      "verified",
+      "temporarily-unreachable",
+      "stale-document",
+      "stale-build",
+      "disconnected",
+    ].includes(String(event.state)) ||
+    typeof event.reason !== "string" ||
+    !/^[a-z0-9_]{1,64}$/.test(event.reason)
+  )
+    return undefined;
+  return {
+    provider: event.provider,
+    state: event.state as ConnectionStateChangedEvent["state"],
+    reason: event.reason,
+  };
+}
 
 export function readWorkerStartEvent(
   message: unknown,

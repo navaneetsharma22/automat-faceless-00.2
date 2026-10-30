@@ -11,6 +11,7 @@ import {
 import { flowImagePromptSnapshotId } from "../../src/domain/batches/flowImagePromptSnapshot";
 import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
 import type { ProviderTab } from "../../src/platforms/shared/contracts";
+import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 
 const prompt = JSON.stringify({
   shot_id: "01",
@@ -35,6 +36,35 @@ const frameTree = {
     },
   },
 };
+
+async function persistVerifiedSelection(repositories: ExtensionRepositories) {
+  await repositories.recordSelectedTarget({
+    provider: "Flow",
+    tabId: selectedTab.id,
+    canonicalTarget: selectedTab.canonicalTarget,
+  });
+  await repositories.setReconnectIntent("Flow", true);
+  const selected = await repositories.getSelectedTarget("Flow");
+  if (!selected) throw new Error("Flow selection fixture missing");
+  await repositories.recordTargetVerification(
+    {
+      provider: "Flow",
+      tabId: selectedTab.id,
+      canonicalTarget: selectedTab.canonicalTarget,
+      projectId: selectedTab.projectId,
+      frameId: 0,
+      documentId: "fixture-document",
+      documentToken: "fixture-token",
+      extensionBuildId: BUILD_ID,
+      extensionProtocolVersion: PROTOCOL_VERSION,
+      connectorBuildId: BUILD_ID,
+      connectorProtocolVersion: 1,
+      capability: "read-only-connection-v1",
+      verifiedAt: 1,
+    },
+    selected.revision,
+  );
+}
 
 function makePort(
   options: {
@@ -144,6 +174,7 @@ describe("bounded Flow prompt entry", () => {
       createMemoryRepositoryDatabase(),
       () => 123,
     );
+    await persistVerifiedSelection(repositories);
     const batch = await repositories.savePromptBatch({
       workspaceId: "workspace-p04",
       kind: "image",
@@ -176,6 +207,7 @@ describe("bounded Flow prompt entry", () => {
     const repositories = new ExtensionRepositories(
       createMemoryRepositoryDatabase(),
     );
+    await persistVerifiedSelection(repositories);
     await repositories.savePromptBatch({
       workspaceId: "workspace-p04",
       kind: "image",

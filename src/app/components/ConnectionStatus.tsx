@@ -1,26 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  connectionWorkerFailureDetail,
-  withPendingCleanup,
-} from "../connectionAttempt";
+import { connectionWorkerFailureDetail } from "../connectionAttempt";
 import { ConnectionError } from "./ConnectionError";
 import { createChromeFoundationClient } from "../../shared/messageClient";
 import {
   isCurrentConnectionAttempt,
   isCurrentWorkerStart,
   providerDocumentNeedsReverification,
+  readConnectionStateChangedEvent,
   readWorkerStartEvent,
   workerStartAction,
 } from "../../platforms/shared/connectionLifecycle";
-import {
-  attachToSelectedTab,
-  formatHandshakeDiagnostics,
-  providerTabFromUrl,
-  verifyPersistedTarget,
-} from "../../platforms/shared/connection";
+import { providerTabFromUrl } from "../../platforms/shared/connection";
 import {
   createChromeConnectionPort,
-  connectionApiDiagnostic,
   hasTabListingAccess,
   listOpenProviderTabs,
   requestProviderAccess,
@@ -37,12 +29,6 @@ import type {
   ProviderName,
   ProviderTab,
 } from "../../platforms/shared/contracts";
-import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
-import {
-  CONNECTION_CAPABILITY,
-  CONNECTOR_PROTOCOL_VERSION,
-} from "../../platforms/shared/contracts";
-import { useToast } from "./ToastHost";
 import styles from "../Dashboard.module.css";
 
 type TargetMetadata = {
@@ -76,47 +62,13 @@ function connectionStatusLabel(status: ConnectionStateName): string {
     case "permission-needed":
       return "Permission needed";
     case "wrong-target":
-      return "Wrong target";
+      return "Stale document / wrong target";
     case "stale-build":
       return "Outdated connector";
     case "failed":
-      return "Not connected";
+      return "Temporarily unreachable";
     case "disconnected":
       return "Not connected";
-  }
-}
-
-function connectionFailureDetail(
-  result: Extract<ConnectionResult, { ok: false }>,
-): string {
-  return `${result.stage}: ${result.error}${result.handshakeDiagnostics ? formatHandshakeDiagnostics(result.handshakeDiagnostics) : ""}`;
-}
-
-async function persistConnectionVerification(
-  result: Extract<ConnectionResult, { ok: true }>,
-): Promise<void> {
-  const response = (await createChromeFoundationClient().request(
-    "connections.recordVerification",
-    {
-      provider: result.tab.provider,
-      tabId: result.tab.id,
-      canonicalTarget: result.tab.canonicalTarget,
-      projectId: result.tab.projectId,
-      frameId: 0,
-      documentId: result.documentId,
-      documentToken: result.documentToken,
-      extensionBuildId: BUILD_ID,
-      extensionProtocolVersion: PROTOCOL_VERSION,
-      connectorBuildId: BUILD_ID,
-      connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
-      capability: CONNECTION_CAPABILITY,
-    },
-  )) as { recorded?: boolean; reason?: string | null };
-  if (!response.recorded) {
-    throw new Error(
-      response.reason ??
-        "The current document verification could not be saved.",
-    );
   }
 }
 
@@ -156,7 +108,6 @@ export function ConnectionStatus() {
   const [listError, setListError] = useState("");
   const [needsTabListingAccess, setNeedsTabListingAccess] = useState(false);
   const [busy, setBusy] = useState<ProviderName | undefined>();
-  const toast = useToast();
   const statesRef = useRef(states);
   const savedRef = useRef(saved);
   const reconnectEnabledRef = useRef<Record<ProviderName, boolean>>({
@@ -168,7 +119,12 @@ export function ConnectionStatus() {
     Partial<
       Record<
         ProviderName,
-        { key: string; trigger: string; task: Promise<void> }
+        {
+          key: string;
+          trigger: string;
+          enableReconnect: boolean;
+          task: Promise<void>;
+        }
       >
     >
   >({});
@@ -209,11 +165,13 @@ export function ConnectionStatus() {
     provider: ProviderName,
     target: TargetMetadata,
     trigger: string,
+    enableReconnect = false,
   ): Promise<void> => {
-    if (!reconnectEnabledRef.current[provider]) return;
+    if (!reconnectEnabledRef.current[provider] && !enableReconnect) return;
     const key = `${target.tabId}:${target.canonicalTarget}`;
     const active = verificationTasksRef.current[provider];
-    if (active?.key === key && active.trigger === trigger) return active.task;
+    if (active?.key === key && (!enableReconnect || active.enableReconnect))
+      return active.task;
 
     const attemptRevision = ++connectionRevision.current[provider];
     setBusy(provider);
@@ -221,91 +179,98 @@ export function ConnectionStatus() {
       ...current,
       [provider]: {
         status: "pending",
-        message: "Checking connection…",
+        message: "Checking connection...",
         detail:
-          "Verifying the previously selected project with a read-only handshake…",
+          "Verifying the previously selected project with the worker's read-only handshake.",
       },
     }));
 
     const task = (async () => {
       try {
-        const port = createChromeConnectionPort();
-        let result: ConnectionResult;
-        if (!port) {
-          const selectedTab = providerTabFromUrl(
-            target.tabId,
-            "",
-            target.canonicalTarget,
-          );
-          const diagnostic = selectedTab
-            ? await connectionApiDiagnostic("connection_setup", selectedTab)
-            : "saved_target_invalid; stage=target_validation";
-          result = {
-            ok: false,
-            state: "failed",
-            stage: "extension_context",
-            error: diagnostic,
-          };
-        } else {
-          try {
-            const currentTab = await port.getTab(target.tabId);
-            if (
-              currentTab?.provider === provider &&
-              currentTab.canonicalTarget === target.canonicalTarget
-            ) {
-              setTabs((current) => [
-                ...current.filter((tab) => tab.id !== currentTab.id),
-                currentTab,
-              ]);
-            }
-          } catch {
-            // verifyPersistedTarget reports the scoped tab-read failure below.
-          }
-          result = await verifyPersistedTarget(provider, target, port);
-        }
+        const result = (await createChromeFoundationClient().request(
+          "connections.revalidate",
+          { provider, enableReconnect },
+        )) as {
+          ok: boolean;
+          state: string;
+          reason: string;
+          tab?: ProviderTab;
+          documentId?: string;
+          documentToken?: string;
+          permissionRequest?: Extract<
+            ConnectionResult,
+            { ok: false }
+          >["permissionRequest"];
+        };
         if (
           !isCurrentConnectionAttempt(
             connectionRevision.current[provider],
             attemptRevision,
-            reconnectEnabledRef.current[provider],
+            reconnectEnabledRef.current[provider] || enableReconnect,
           )
-        ) {
-          const currentTarget = savedRef.current[provider];
-          const stillIntended =
-            reconnectEnabledRef.current[provider] &&
-            currentTarget?.tabId === target.tabId &&
-            currentTarget.canonicalTarget === target.canonicalTarget;
-          if (!stillIntended && result.ok && port) {
-            await port.releaseConnector(result.tab.id, result.documentId);
-          }
+        )
           return;
-        }
         if (!result.ok) {
+          const status: ConnectionStateName =
+            result.state === "permission-needed"
+              ? "permission-needed"
+              : result.state === "stale-build"
+                ? "stale-build"
+                : result.state === "stale-document" ||
+                    result.state === "wrong-target"
+                  ? "wrong-target"
+                  : result.state === "disconnected"
+                    ? "disconnected"
+                    : "failed";
           setStates((current) => ({
             ...current,
             [provider]: {
-              status: result.state,
-              message: connectionStatusLabel(result.state),
-              detail: connectionFailureDetail(result),
+              status,
+              message:
+                status === "failed"
+                  ? "Temporarily unreachable"
+                  : connectionStatusLabel(status),
+              detail: `revalidation_${result.reason}: ${
+                status === "wrong-target"
+                  ? "The selected project or document changed. Select the same intended project and verify it again."
+                  : status === "stale-build"
+                    ? "The connector build is stale. Reconnect with the currently loaded package; the provider tab was not navigated."
+                    : status === "permission-needed"
+                      ? "Grant the requested provider access, then retry verification."
+                      : status === "disconnected"
+                        ? "This target is manually disconnected. Choose Connect to verify it again."
+                        : "The selected document could not be reached. Retry the bounded check without refreshing the provider tab."
+              }`,
               permissionRequest: result.permissionRequest,
             },
           }));
           return;
         }
-        await persistConnectionVerification(result);
-        if (
-          !isCurrentConnectionAttempt(
-            connectionRevision.current[provider],
-            attemptRevision,
-            reconnectEnabledRef.current[provider],
-          )
-        )
+        if (!result.tab || !result.documentId || !result.documentToken) {
+          setStates((current) => ({
+            ...current,
+            [provider]: {
+              status: "failed",
+              message: "Temporarily unreachable",
+              detail: "revalidation_response_incomplete",
+            },
+          }));
           return;
-        setTabs((current) => {
-          const withoutTab = current.filter((tab) => tab.id !== result.tab.id);
-          return [...withoutTab, result.tab];
-        });
-        setSaved((current) => ({ ...current, [provider]: target }));
+        }
+        reconnectEnabledRef.current[provider] = true;
+        const live = {
+          tab: result.tab,
+          documentId: result.documentId,
+          documentToken: result.documentToken,
+        };
+        setTabs((current) => [
+          ...current.filter((tab) => tab.id !== result.tab!.id),
+          result.tab!,
+        ]);
+        setSaved((current) => ({
+          ...current,
+          [provider]: { ...target, reconnectEnabled: true },
+        }));
         setSelected((current) => ({
           ...current,
           [provider]: String(target.tabId),
@@ -313,52 +278,35 @@ export function ConnectionStatus() {
         setSelectionSaved((current) => ({ ...current, [provider]: true }));
         setStates((current) => ({
           ...current,
-          [provider]: {
-            status: "connected",
-            message: "Connected",
-            live: {
-              tab: result.tab,
-              documentId: result.documentId,
-              documentToken: result.documentToken,
-            },
-          },
+          [provider]: { status: "connected", message: "Connected", live },
         }));
       } catch (error) {
-        if (
-          isCurrentConnectionAttempt(
-            connectionRevision.current[provider],
-            attemptRevision,
-            reconnectEnabledRef.current[provider],
-          )
-        ) {
+        if (connectionRevision.current[provider] === attemptRevision) {
           setStates((current) => ({
             ...current,
             [provider]: {
               status: "failed",
-              message: "Not connected",
+              message: "Temporarily unreachable",
               detail: connectionWorkerFailureDetail(error),
             },
           }));
         }
       } finally {
-        if (
-          isCurrentConnectionAttempt(
-            connectionRevision.current[provider],
-            attemptRevision,
-            reconnectEnabledRef.current[provider],
-          )
-        ) {
+        if (connectionRevision.current[provider] === attemptRevision)
           setBusy(undefined);
-        }
       }
     })();
-    verificationTasksRef.current[provider] = { key, trigger, task };
+    verificationTasksRef.current[provider] = {
+      key,
+      trigger,
+      enableReconnect,
+      task,
+    };
     try {
       await task;
     } finally {
-      if (verificationTasksRef.current[provider]?.task === task) {
+      if (verificationTasksRef.current[provider]?.task === task)
         delete verificationTasksRef.current[provider];
-      }
     }
   };
   verifySavedRef.current = verifySavedConnection;
@@ -445,6 +393,98 @@ export function ConnectionStatus() {
     chrome.tabs?.onRemoved.addListener(onRemoved);
     chrome.tabs?.onUpdated.addListener(onUpdated);
     const onRuntimeMessage = (message: unknown) => {
+      const stateChange = readConnectionStateChangedEvent(message);
+      if (stateChange) {
+        const provider = stateChange.provider;
+        void createChromeFoundationClient()
+          .request("connections.getSelection", { provider })
+          .then((value) => {
+            const current = value as {
+              tabId: number;
+              canonicalTarget: string;
+              reconnectEnabled?: boolean;
+              verification: "unverified" | "verified";
+              connectionState?: string;
+              verificationBinding?: {
+                documentId: string;
+                documentToken: string;
+              };
+            } | null;
+            const intended = savedRef.current[provider];
+            if (
+              !current ||
+              !intended ||
+              current.tabId !== intended.tabId ||
+              current.canonicalTarget !== intended.canonicalTarget
+            )
+              return;
+            const reconnectEnabled = current.reconnectEnabled !== false;
+            reconnectEnabledRef.current[provider] = reconnectEnabled;
+            if (
+              current.connectionState === "verified" &&
+              current.verification === "verified" &&
+              current.verificationBinding?.documentId &&
+              current.verificationBinding.documentToken
+            ) {
+              const tab =
+                tabs.find(
+                  (candidate) =>
+                    candidate.id === current.tabId &&
+                    candidate.canonicalTarget === current.canonicalTarget,
+                ) ??
+                providerTabFromUrl(current.tabId, "", current.canonicalTarget);
+              if (tab) {
+                setStates((statesNow) => ({
+                  ...statesNow,
+                  [provider]: {
+                    status: "connected",
+                    message: "Connected",
+                    live: {
+                      tab,
+                      documentId: current.verificationBinding!.documentId,
+                      documentToken: current.verificationBinding!.documentToken,
+                    },
+                  },
+                }));
+                return;
+              }
+            }
+            const state = current.connectionState ?? "disconnected";
+            const status: ConnectionStateName =
+              state === "checking"
+                ? "pending"
+                : state === "stale-build"
+                  ? "stale-build"
+                  : state === "stale-document"
+                    ? "wrong-target"
+                    : state === "temporarily-unreachable"
+                      ? "failed"
+                      : "disconnected";
+            setStates((statesNow) => ({
+              ...statesNow,
+              [provider]: {
+                status,
+                message:
+                  status === "failed"
+                    ? "Temporarily unreachable"
+                    : connectionStatusLabel(status),
+                detail: `connection_${stateChange.reason}: ${
+                  state === "stale-document"
+                    ? "The saved document binding no longer matches the selected tab. Verify the same intended project explicitly."
+                    : state === "stale-build"
+                      ? "The saved connector build is stale. Select the intended project and reconnect with the current package."
+                      : state === "temporarily-unreachable"
+                        ? "The selected project could not be reached by a bounded check. Retry when it is available."
+                        : state === "checking"
+                          ? "A bounded read-only verification is in progress."
+                          : "This target is manually disconnected. Choose Connect to verify it again."
+                }`,
+              },
+            }));
+          })
+          .catch(() => undefined);
+        return;
+      }
       const event = readWorkerStartEvent(message);
       if (!event || workerInstanceIdsRef.current.has(event.workerInstanceId)) {
         return;
@@ -709,153 +749,16 @@ export function ConnectionStatus() {
       }));
       return;
     }
-    const port = createChromeConnectionPort();
-    if (!port) {
-      setBusy(provider);
-      setStates((current) => ({
-        ...current,
-        [provider]: {
-          status: "pending",
-          message: "Checking extension access",
-          detail: "Checking dashboard context and connection APIsâ€¦",
-        },
-      }));
-      await withPendingCleanup(
-        async () => {
-          const diagnostic = await connectionApiDiagnostic(
-            "connection_setup",
-            tab,
-          );
-          const contextInvalidated = diagnostic.startsWith(
-            "extension_context_invalidated",
-          );
-          setStates((current) => ({
-            ...current,
-            [provider]: {
-              status: "failed",
-              message: "Not connected",
-              detail: contextInvalidated
-                ? `${diagnostic}. Reopen the extension dashboard and retry.`
-                : `${diagnostic}. Open the packaged extension dashboard to connect.`,
-            },
-          }));
-        },
-        () => setBusy(undefined),
-      );
-      return;
-    }
-
-    const wasConnected = states[provider].status === "connected";
-    const attemptRevision = ++connectionRevision.current[provider];
-    const previousLive = states[provider].live;
-    setBusy(provider);
-    setStates((current) => ({
-      ...current,
-      [provider]: {
-        status: "pending",
-        message: "Connecting",
-        detail: "Validating the selected project and read-only connector…",
-      },
-    }));
-
-    try {
-      await withPendingCleanup(
-        async () => {
-          if (previousLive) {
-            await port.releaseConnector(
-              previousLive.tab.id,
-              previousLive.documentId,
-            );
-          }
-          const result: ConnectionResult = await attachToSelectedTab(
-            provider,
-            tab,
-            port,
-          );
-          if (connectionRevision.current[provider] !== attemptRevision) {
-            const currentTarget = savedRef.current[provider];
-            const stillIntended =
-              reconnectEnabledRef.current[provider] &&
-              currentTarget?.tabId === tab.id &&
-              currentTarget.canonicalTarget === tab.canonicalTarget;
-            if (result.ok && !stillIntended) {
-              await port.releaseConnector(result.tab.id, result.documentId);
-            }
-            return;
-          }
-          if (!result.ok) {
-            setStates((current) => ({
-              ...current,
-              [provider]: {
-                status: result.state,
-                message: connectionStatusLabel(result.state),
-                detail: connectionFailureDetail(result),
-                permissionRequest: result.permissionRequest,
-              },
-            }));
-            return;
-          }
-          await persistConnectionVerification(result);
-          if (connectionRevision.current[provider] !== attemptRevision) return;
-          const reconnectWasEnabled = reconnectEnabledRef.current[provider];
-          reconnectEnabledRef.current[provider] = true;
-          let reconnectIntentError: string | undefined;
-          try {
-            const update = (await createChromeFoundationClient().request(
-              "connections.setReconnectIntent",
-              { provider, enabled: true },
-            )) as { updated?: boolean };
-            if (!update.updated) {
-              throw new Error("The selected target was not saved.");
-            }
-          } catch {
-            reconnectEnabledRef.current[provider] = reconnectWasEnabled;
-            reconnectIntentError =
-              "Reconnect intent could not be saved; this Connected status may need manual verification after the next worker restart.";
-          }
-          if (connectionRevision.current[provider] !== attemptRevision) return;
-          setStates((current) => ({
-            ...current,
-            [provider]: {
-              status: "connected",
-              message: "Connected",
-              ...(reconnectIntentError ? { detail: reconnectIntentError } : {}),
-              live: {
-                tab: result.tab,
-                documentId: result.documentId,
-                documentToken: result.documentToken,
-              },
-            },
-          }));
-          if (!wasConnected) {
-            toast.add({
-              kind: "success",
-              message: `${provider} read-only connection confirmed. Generation remains unavailable.`,
-              urgent: false,
-              actionable: false,
-            });
-          }
-        },
-        () => {
-          if (connectionRevision.current[provider] === attemptRevision) {
-            setBusy(undefined);
-          }
-        },
-      );
-    } catch {
-      if (connectionRevision.current[provider] === attemptRevision) {
-        setStates((current) => ({
-          ...current,
-          [provider]: {
-            status: "failed",
-            message: "Not connected",
-            detail: `connect_orchestration: The ${provider} connection could not finish. Check extension errors and retry without refreshing the provider page.`,
-          },
-        }));
-      }
-    }
+    const target = {
+      tabId: tab.id,
+      canonicalTarget: tab.canonicalTarget,
+      reconnectEnabled: true,
+    };
+    reconnectEnabledRef.current[provider] = true;
+    savedRef.current = { ...savedRef.current, [provider]: target };
+    setSaved((current) => ({ ...current, [provider]: target }));
+    await verifySavedConnection(provider, target, "user-connect", true);
   };
-
   const allowProviderAccess = (provider: ProviderName) => {
     const request = states[provider].permissionRequest;
     if (!request) return;

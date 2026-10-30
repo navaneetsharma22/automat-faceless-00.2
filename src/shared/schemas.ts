@@ -495,27 +495,17 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
       .strict(),
   }),
   requestBase.extend({
-    type: z.literal("connections.recordVerification"),
+    type: z.literal("connections.getSelection"),
+    payload: z.object({ provider: z.enum(["Flow", "Vids"]) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("connections.revalidate"),
     payload: z
       .object({
         provider: z.enum(["Flow", "Vids"]),
-        tabId: z.number().int().nonnegative(),
-        canonicalTarget: z.string().min(1).max(2048),
-        projectId: z.string().min(1).max(512),
-        frameId: z.literal(0),
-        documentId: z.string().min(1).max(256),
-        documentToken: z.string().min(1).max(256),
-        extensionBuildId: z.string().min(1).max(128),
-        extensionProtocolVersion: z.number().int().positive(),
-        connectorBuildId: z.string().min(1).max(128),
-        connectorProtocolVersion: z.number().int().positive(),
-        capability: z.literal("read-only-connection-v1"),
+        enableReconnect: z.boolean().optional(),
       })
       .strict(),
-  }),
-  requestBase.extend({
-    type: z.literal("connections.getSelection"),
-    payload: z.object({ provider: z.enum(["Flow", "Vids"]) }).strict(),
   }),
   requestBase.extend({
     type: z.literal("connections.setReconnectIntent"),

@@ -36,6 +36,7 @@ function readinessHarness(finalResult: unknown) {
     tabId: 9,
     canonicalTarget: "https://flow.google.com/project/project-1",
     verification: "verified",
+    connectionState: "verified",
     verificationBinding: {
       provider: "Flow",
       tabId: 9,
@@ -51,7 +52,7 @@ function readinessHarness(finalResult: unknown) {
       capability: "read-only-connection-v1",
       verifiedAt: 1,
     },
-    reconnectEnabled: false,
+    reconnectEnabled: true,
     updatedAt: 1,
   });
   const executeScript = vi
@@ -414,7 +415,8 @@ describe("Flow no-Generate readiness", () => {
         tabId: 9,
         canonicalTarget: "https://flow.google.com/project/project-1",
         verification: entry.verification,
-        reconnectEnabled: false,
+        connectionState: "verified",
+        reconnectEnabled: true,
         updatedAt: 1,
         ...(entry.bindingPatch
           ? {

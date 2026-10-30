@@ -29,6 +29,7 @@ describe("persisted connection verification", () => {
       tabId: binding.tabId,
       canonicalTarget: binding.canonicalTarget,
     });
+    await repositories.setReconnectIntent("Flow", true);
 
     expect(await repositories.recordTargetVerification(binding)).toBe(true);
     expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
@@ -47,6 +48,7 @@ describe("persisted connection verification", () => {
       tabId: binding.tabId,
       canonicalTarget: binding.canonicalTarget,
     });
+    await repositories.setReconnectIntent("Flow", true);
     expect(
       await repositories.recordTargetVerification({ ...binding, tabId: 10 }),
     ).toBe(false);

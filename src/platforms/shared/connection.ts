@@ -99,7 +99,6 @@ async function attach(
   selected: ProviderTab,
   port: ConnectionPort,
 ): Promise<ConnectionResult> {
-  let replacingStaleConnector = false;
   let stage: ConnectionFailureStage = "permission_check";
   if (selected.provider !== provider) {
     return failed(
@@ -151,6 +150,13 @@ async function attach(
       (firstResponse.buildId !== BUILD_ID ||
         firstResponse.protocolVersion !== CONNECTOR_PROTOCOL_VERSION),
     );
+    if (firstResponseIsStale) {
+      return failed(
+        "stale-build",
+        "The selected document is responding through a connector from another build or protocol. Revalidation is blocked; the connector was left unchanged and the provider page was not navigated.",
+        "connector_ping",
+      );
+    }
     if (
       firstResponse?.projectId &&
       !sameReportedProject(firstResponse, selected) &&
@@ -164,22 +170,19 @@ async function attach(
     }
 
     const responseIsCurrent = isCompatibleConnector(firstResponse, request);
-    replacingStaleConnector = firstResponseIsStale;
     let identity;
     if (responseIsCurrent) {
       stage = "document_validation";
       identity = await port.identifyDocument(selected.id, selected);
     } else {
-      // This also safely replaces a known stale extension-owned listener.
+      // Injection is limited to a missing listener; stale identities block.
       stage = "connector_injection";
       identity = await port.injectConnector(selected.id, selected);
     }
     if (!identity || identity.frameId !== 0 || !identity.documentId) {
       return failed(
-        replacingStaleConnector ? "stale-build" : "failed",
-        replacingStaleConnector
-          ? "The stale connector could not be safely replaced. Connection is blocked; the provider page was left unchanged."
-          : "The top-frame document identity could not be confirmed. The provider page was left unchanged.",
+        "failed",
+        "The top-frame document identity could not be confirmed. The provider page was left unchanged.",
         stage,
       );
     }
@@ -294,13 +297,6 @@ async function attach(
         "failed",
         `extension_context_invalidated; stage=${stage}; runtime.id=${typeof chrome !== "undefined" && chrome.runtime?.id ? "present" : "absent"}. Reopen the extension dashboard and retry; the provider page was not changed.`,
         "extension_context",
-      );
-    }
-    if (replacingStaleConnector) {
-      return failed(
-        "stale-build",
-        "The stale connector could not be safely replaced. Connection is blocked; the provider page was left unchanged.",
-        "connector_injection",
       );
     }
     return failed("failed", errorMessageForStage(provider, stage), stage);

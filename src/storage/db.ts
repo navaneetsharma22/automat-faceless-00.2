@@ -36,6 +36,30 @@ export type SelectedTargetRecord = {
     verifiedAt: number;
   };
   reconnectEnabled?: boolean;
+  connectionState?:
+    | "checking"
+    | "verified"
+    | "temporarily-unreachable"
+    | "stale-document"
+    | "stale-build"
+    | "disconnected";
+  /** Monotonic per-provider write token used to reject late handshake results. */
+  revision?: number;
+  lifecycleDiagnostics?: Array<{
+    kind:
+      | "worker_started"
+      | "revalidation_started"
+      | "revalidation_verified"
+      | "transport_unavailable"
+      | "document_changed"
+      | "tab_reload_signal"
+      | "tab_discarded"
+      | "tab_closed"
+      | "tab_replaced"
+      | "revalidation_refused";
+    reason?: string;
+    at: number;
+  }>;
   updatedAt: number;
 };
 

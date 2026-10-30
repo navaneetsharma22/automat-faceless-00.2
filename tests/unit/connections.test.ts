@@ -811,7 +811,7 @@ describe("explicit read-only Flow/Vids attachment", () => {
     });
   });
 
-  it("safely replaces a stale connector and blocks when replacement cannot be confirmed", async () => {
+  it("blocks stale connector builds without reinjection or page replacement", async () => {
     const tab = makeTab();
     const replaced = makePort(tab);
     vi.mocked(replaced.port.pingTopFrame).mockImplementationOnce(
@@ -823,9 +823,9 @@ describe("explicit read-only Flow/Vids attachment", () => {
           canonicalTarget: "https://labs.google/fx/tools/flow/stale-project",
         }),
     );
-    const connected = await attachToSelectedTab("Flow", tab, replaced.port);
-    expect(connected).toMatchObject({ ok: true, state: "connected" });
-    expect(replaced.port.injectConnector).toHaveBeenCalledOnce();
+    const stale = await attachToSelectedTab("Flow", tab, replaced.port);
+    expect(stale).toMatchObject({ ok: false, state: "stale-build" });
+    expect(replaced.port.injectConnector).not.toHaveBeenCalled();
 
     const blocked = makePort(tab);
     vi.mocked(blocked.port.pingTopFrame).mockImplementationOnce(
@@ -833,8 +833,9 @@ describe("explicit read-only Flow/Vids attachment", () => {
         makeResponse(tab, request, { buildId: "old-build", ok: false }),
     );
     vi.mocked(blocked.port.injectConnector).mockResolvedValueOnce(undefined);
-    const stale = await attachToSelectedTab("Flow", tab, blocked.port);
-    expect(stale).toMatchObject({ ok: false, state: "stale-build" });
+    const stillStale = await attachToSelectedTab("Flow", tab, blocked.port);
+    expect(stillStale).toMatchObject({ ok: false, state: "stale-build" });
+    expect(blocked.port.injectConnector).not.toHaveBeenCalled();
   });
 
   it("requires response correlation and exact protocol/build/capability identity", async () => {

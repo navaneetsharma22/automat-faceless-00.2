@@ -13,11 +13,20 @@ Baseline: 28 October 2026.
 | Existing native splitter               | Legacy implementation + recorded two-clip media verification                     |
 | New extension application              | TOOLCHAIN_READY; P02 corrected-route connections USER_REPORTED_PASS              |
 | Provider connection evidence           | SCREENSHOT_EVIDENCE: Flow/Vids shown Connected; listed checks USER_REPORTED_PASS |
+| Worker-owned connection lifecycle      | OFFLINE_VERIFIED; live retest NOT_RUN; historical Vids refresh cause unknown     |
 | New UI visual sign-off                 | USER_APPROVED; specified interaction/layout confirmations USER_REPORTED_PASS     |
 | Vids preservation / lifecycle limits   | Empty-document test shown; generated scenes and worker suspension unverified     |
-| New packaging/release                  | NOT_STARTED                                                                      |
+| New packaging/release                  | OFFLINE_PACKAGE_BUILT; live installation not confirmed                           |
 
 The application includes the dashboard, bounded read-only provider connections, exact JSON import/preservation, P04.1/P04.2 offline/local-fixture scope, and the P04.3 evidence-backed discovery/fill-only compatibility implementation recorded below. **USER_REPORTED_PASS:** Flow and Vids now connect after the shared route-parser correction, including the account-prefixed Flow context. The user-supplied diagnostic exposed a visible contenteditable candidate and the local implementation now supports that exact observed host structure. The new package has not been confirmed in the user's loaded browser. Live fill/readback and generation remain unverified. Vids preservation evidence remains limited to the shown empty-document test.
+
+Connection lifecycle changes are verified offline for worker-owned revalidation, readiness preservation, stale binding refusal, and non-navigation recovery. The reported readiness-triggered disconnect and Vids automatic refresh were not reproduced from the current extension paths; their historical triggers remain unknown. The current package is `automat-faceless-0.1.0-mvupqp7p`; the connection/readiness live retest remains **NOT_RUN**.
+
+## Connection lifecycle validation — 30 October 2026
+
+The worker-owned Connection → readiness flow, durable same-target binding, restart revalidation, bounded lifecycle diagnostics, and Flow action guards are covered by offline tests. The readiness regression uses a real browser fixture and Dexie persistence; it preserves verification across repeated readiness checks, does not create attempts or release the connector, and leaves synthetic Vids editor text unchanged. FlowGenerateOnce browser fixtures now carry a valid same-document/build binding so their action-boundary assertions exercise production preflight rather than an absent-connection refusal.
+
+Final offline checks: Playwright **60/60 PASS**; Vitest **23 files / 247 tests PASS**; typecheck PASS; ESLint PASS; Prettier check PASS; production package build and shared dashboard/worker/connector build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvupqp7p`**. Live connection/readiness retest remains **NOT_RUN**. No Generate, provider navigation/refresh, historical mutation, lock release, or Phase 06 work occurred.
 
 ## Phase ledger
 

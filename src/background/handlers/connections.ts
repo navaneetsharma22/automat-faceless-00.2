@@ -41,11 +41,9 @@ export type FoundationDependencies = {
     message: unknown,
     sender: ExtensionMessageSender,
   ) => Promise<unknown>;
-  recordConnectionVerification?: (
-    input: Extract<
-      AppRequest,
-      { type: "connections.recordVerification" }
-    >["payload"],
+  revalidateConnection?: (
+    provider: "Flow" | "Vids",
+    enableReconnect?: boolean,
   ) => Promise<unknown>;
 };
 
@@ -155,20 +153,23 @@ async function dispatch(
         reconnectEnabled: record.reconnectEnabled,
       };
     }
-    case "connections.recordVerification":
-      if (!dependencies.recordConnectionVerification) {
-        throw new FoundationOperationError(
-          "worker_error",
-          "connection_verification_unavailable",
-          "Connection verification could not be persisted. Reconnect to the selected provider project.",
-        );
-      }
-      return dependencies.recordConnectionVerification(request.payload);
     case "connections.getSelection":
       return (
         (await dependencies.repositories.getSelectedTarget(
           request.payload.provider,
         )) ?? null
+      );
+    case "connections.revalidate":
+      if (!dependencies.revalidateConnection) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "connection_revalidation_unavailable",
+          "The selected provider connection cannot be revalidated in this worker.",
+        );
+      }
+      return dependencies.revalidateConnection(
+        request.payload.provider,
+        request.payload.enableReconnect,
       );
     case "connections.setReconnectIntent":
       return {

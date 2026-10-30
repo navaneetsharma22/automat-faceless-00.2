@@ -168,6 +168,27 @@ async function createLocalAttempt(
     tabId: selectedTab.id,
     canonicalTarget: selectedTab.canonicalTarget,
   });
+  await repositories.setReconnectIntent("Flow", true);
+  const selected = await repositories.getSelectedTarget("Flow");
+  if (!selected) throw new Error("local_flow_selection_missing");
+  await repositories.recordTargetVerification(
+    {
+      provider: "Flow",
+      tabId: selectedTab.id,
+      canonicalTarget: selectedTab.canonicalTarget,
+      projectId: selectedTab.projectId,
+      frameId: 0,
+      documentId: frame.documentId,
+      documentToken: "local-connector-document-token",
+      extensionBuildId: "local-p04-2-fixture",
+      extensionProtocolVersion: 4,
+      connectorBuildId: "local-p04-2-fixture",
+      connectorProtocolVersion: 1,
+      capability: "read-only-connection-v1",
+      verifiedAt: 1_000,
+    },
+    selected.revision,
+  );
 
   const mouseEvents: string[] = [];
   let mutationInjected = false;

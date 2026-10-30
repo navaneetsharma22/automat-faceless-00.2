@@ -48,6 +48,7 @@ describe("extension repository boundaries", () => {
     expect(selected.verification).toBe("unverified");
     expect(selected.reconnectEnabled).toBe(false);
     expect(await repositories.setReconnectIntent("Vids", false)).toBe(true);
+    expect(await repositories.setReconnectIntent("Vids", true)).toBe(true);
     expect(
       await repositories.recordTargetVerification({
         provider: "Vids",
@@ -84,7 +85,7 @@ describe("extension repository boundaries", () => {
     await repositories.markTargetsUnverified();
     expect(await repositories.getSelectedTarget("Vids")).toMatchObject({
       verification: "unverified",
-      reconnectEnabled: false,
+      reconnectEnabled: true,
     });
     expect(await repositories.setReconnectIntent("Flow", false)).toBe(false);
   });

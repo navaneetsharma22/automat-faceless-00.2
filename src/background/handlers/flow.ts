@@ -51,6 +51,9 @@ import { flowWorkspaceScopeAnalyzer } from "../../platforms/flow/workspaceScope"
 /** A separate read-only scope/listener check; it creates no attempt or receipt. */
 export function createFlowImageReadinessCheck(
   repositories: ExtensionRepositories,
+  scriptingPort:
+    | Pick<typeof chrome.scripting, "executeScript">
+    | undefined = typeof chrome === "undefined" ? undefined : chrome.scripting,
 ): (input: { countMode: FlowImageReadinessMode }) => Promise<unknown> {
   return async ({ countMode }) => {
     const countModeEligibility = (
@@ -97,6 +100,46 @@ export function createFlowImageReadinessCheck(
         "no_selected_target",
         "Select an already open Flow project in Connections, then connect it.",
         { selectedTarget: "absent" },
+      );
+    const savedVerificationBinding = selected.verificationBinding;
+    const savedBindingBuildStale = Boolean(
+      savedVerificationBinding &&
+      (savedVerificationBinding.extensionBuildId !== BUILD_ID ||
+        savedVerificationBinding.connectorBuildId !== BUILD_ID),
+    );
+    const savedBindingProtocolStale = Boolean(
+      savedVerificationBinding &&
+      (savedVerificationBinding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+        savedVerificationBinding.connectorProtocolVersion !== 1),
+    );
+    if (selected.connectionState === "stale-build" || savedBindingBuildStale)
+      return blocked(
+        "verification_stale_build",
+        "The verification came from another extension or connector build. Reconnect with the currently loaded package.",
+        { verification: "stale_build" },
+      );
+    if (savedBindingProtocolStale)
+      return blocked(
+        "verification_stale_protocol",
+        "The verification uses an older connection protocol. Reconnect using the current extension package.",
+        { verification: "stale_protocol" },
+      );
+    if (
+      selected.verification !== "verified" ||
+      selected.connectionState !== "verified" ||
+      selected.reconnectEnabled === false
+    )
+      return blocked(
+        selected.connectionState === "stale-document"
+          ? "verification_stale_document"
+          : selected.connectionState === "temporarily-unreachable"
+            ? "verification_transport_unavailable"
+            : "saved_target_unverified",
+        "The selected Flow connection is not currently verified. Recheck the same selected project in Connections before checking readiness.",
+        {
+          selectedTarget: selected.connectionState ?? selected.verification,
+          reconnectEnabled: String(selected.reconnectEnabled !== false),
+        },
       );
     const verification = selected.verificationBinding;
     if (!verification && selected.verification !== "verified")
@@ -157,7 +200,7 @@ export function createFlowImageReadinessCheck(
         "The selected connection did not confirm the required read-only capability. Connect to a supported Flow project.",
         { verification: "capability_missing" },
       );
-    if (typeof chrome === "undefined" || !chrome.scripting)
+    if (!scriptingPort)
       return blocked(
         "readiness_capability_missing",
         "Chrome document inspection is unavailable. Open the packaged extension dashboard and check its scripting permission.",
@@ -178,7 +221,7 @@ export function createFlowImageReadinessCheck(
       );
     let bound: chrome.scripting.InjectionResult[];
     try {
-      bound = await chrome.scripting.executeScript({
+      bound = await scriptingPort.executeScript({
         target: { tabId: target.id, frameIds: [0] },
         func: () => ({ href: location.href, top: window.top === window }),
       });
@@ -295,7 +338,7 @@ export function createFlowImageReadinessCheck(
       documentIds: [document.documentId],
     };
     try {
-      const installed = await chrome.scripting.executeScript({
+      const installed = await scriptingPort.executeScript({
         target: bindingTarget,
         world: "ISOLATED",
         func: flowWorkspaceScopeAnalyzer,
@@ -312,7 +355,7 @@ export function createFlowImageReadinessCheck(
           { analyzerInstall: "document_changed_or_failed" },
         );
       }
-      const checked = await chrome.scripting.executeScript({
+      const checked = await scriptingPort.executeScript({
         target: bindingTarget,
         world: "ISOLATED",
         func: async (canonicalTarget: string, expectedProjectId: string) => {
@@ -505,6 +548,37 @@ export function createFlowImageReadinessCheck(
           "verification_stale_document",
           "The Flow document changed during readiness inspection. Reconnect and run the no-Generate check again.",
           { documentBinding: "changed_during_check" },
+        );
+      const currentSelection = await repositories.getSelectedTarget("Flow");
+      if (
+        !currentSelection ||
+        currentSelection.provider !== selected.provider ||
+        currentSelection.tabId !== selected.tabId ||
+        currentSelection.canonicalTarget !== selected.canonicalTarget ||
+        currentSelection.reconnectEnabled === false ||
+        currentSelection.verification !== "verified" ||
+        currentSelection.connectionState !== "verified" ||
+        currentSelection.verificationBinding?.documentId !==
+          verification.documentId ||
+        currentSelection.verificationBinding?.documentToken !==
+          verification.documentToken ||
+        currentSelection.verificationBinding?.extensionBuildId !== BUILD_ID ||
+        currentSelection.verificationBinding?.connectorBuildId !== BUILD_ID
+      )
+        return blocked(
+          currentSelection?.connectionState === "stale-document"
+            ? "verification_stale_document"
+            : currentSelection?.connectionState === "stale-build"
+              ? "verification_stale_build"
+              : currentSelection?.connectionState === "temporarily-unreachable"
+                ? "verification_transport_unavailable"
+                : "saved_target_unverified",
+          "The saved Flow connection changed during readiness inspection. Recheck the same selected project in Connections before continuing.",
+          {
+            selectedTarget:
+              currentSelection?.connectionState ?? "selection_changed",
+            verification: currentSelection?.verification ?? "unverified",
+          },
         );
       const result = checked[0]?.result as Record<string, unknown> | undefined;
       const profile =
@@ -1430,6 +1504,26 @@ export function createFlowImageGenerateOnce(
           "blocked",
           "flow_target_changed",
           "The selected Flow target changed. Reconfirm settings before generating.",
+        );
+      }
+      const connectionBinding = selectedRecord.verificationBinding;
+      if (
+        selectedRecord.verification !== "verified" ||
+        selectedRecord.connectionState !== "verified" ||
+        selectedRecord.reconnectEnabled === false ||
+        !connectionBinding ||
+        connectionBinding.provider !== "Flow" ||
+        connectionBinding.tabId !== selected.tabId ||
+        connectionBinding.canonicalTarget !== selected.canonicalTarget ||
+        connectionBinding.extensionBuildId !== BUILD_ID ||
+        connectionBinding.connectorBuildId !== BUILD_ID ||
+        connectionBinding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+        connectionBinding.connectorProtocolVersion !== 1
+      ) {
+        return response(
+          "blocked",
+          "flow_connection_unverified",
+          "The selected Flow connection is not verified for this extension build. Recheck the same selected project before generating.",
         );
       }
       const tab = await port.getTab(selected.tabId);
@@ -2388,6 +2482,24 @@ export function createSavedFlowPromptEntry(
   promptHash: string;
 }) => Promise<FlowPromptEntryResult> {
   return async ({ workspaceId, promptHash }) => {
+    const selected = await repositories.getSelectedTarget("Flow");
+    const binding = selected?.verificationBinding;
+    if (
+      !selected ||
+      selected.verification !== "verified" ||
+      selected.connectionState !== "verified" ||
+      selected.reconnectEnabled === false ||
+      !binding ||
+      binding.provider !== "Flow" ||
+      binding.tabId !== selected.tabId ||
+      binding.canonicalTarget !== selected.canonicalTarget ||
+      binding.extensionBuildId !== BUILD_ID ||
+      binding.connectorBuildId !== BUILD_ID ||
+      binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+      binding.connectorProtocolVersion !== 1
+    ) {
+      throw new Error("flow_connection_unverified");
+    }
     const batch = await repositories.getPromptBatch(workspaceId, "image");
     if (!batch || batch.items.length !== 1) {
       throw new Error("flow_saved_single_prompt_required");
