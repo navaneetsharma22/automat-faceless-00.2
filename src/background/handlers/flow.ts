@@ -26,7 +26,6 @@ import { flowImagePromptSnapshotId } from "../../domain/batches/flowImagePromptS
 import {
   flowImageResultBaselineFingerprintInput,
   FlowImageObservationArmReceiptSchema,
-  FlowStructuralSnapshotSchema,
   reduceFlowImageCountDecision,
   evaluateFlowImageCountBaselineEligibility,
   flowResultBaselineMatchesAttempt,
@@ -720,7 +719,7 @@ export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
         status: "started";
         receipt: import("../../domain/jobs/results").FlowImageObservationArmReceipt;
       }
-    | { status: "unsupported" }
+    | { status: "unsupported"; diagnostic?: FlowObservationArmDiagnostic }
     | "started"
     | "unsupported"
   >;
@@ -737,6 +736,55 @@ export type FlowImageGenerateOncePort = FlowPromptEntryPort & {
     binding: FlowImageObservationArmBinding,
   ) => Promise<"resumed" | "unsupported">;
   productionObservationSupported?: boolean;
+};
+
+/** Fixed, privacy-safe arm diagnostics. Never include exception messages or page data. */
+export type FlowObservationArmDiagnostic = {
+  phase: "scope_install" | "arm_injection" | "receipt_validation";
+  reason:
+    | "wrong_tab"
+    | "scripting_unavailable"
+    | "injection_exception"
+    | "result_missing"
+    | "document_mismatch"
+    | "frame_mismatch"
+    | "scope_not_ready"
+    | "scope_capture_gaps"
+    | "producer_refused_scope"
+    | "producer_refused_baseline_changed"
+    | "producer_refused_capture"
+    | "producer_runtime_unavailable"
+    | "producer_already_present"
+    | "producer_invalid_binding"
+    | "producer_unexpected_status"
+    | "receipt_binding_mismatch"
+    | "receipt_schema_invalid"
+    | "receipt_incomplete";
+  exceptionName?:
+    | "Error"
+    | "TypeError"
+    | "ReferenceError"
+    | "SecurityError"
+    | "NotAllowedError"
+    | "UnknownError";
+};
+
+const flowArmExceptionName = (
+  error: unknown,
+): NonNullable<FlowObservationArmDiagnostic["exceptionName"]> => {
+  const name = error instanceof Error ? error.name : "";
+  return (
+    (
+      [
+        "Error",
+        "TypeError",
+        "ReferenceError",
+        "SecurityError",
+        "NotAllowedError",
+        "UnknownError",
+      ] as const
+    ).find((candidate) => candidate === name) ?? "UnknownError"
+  );
 };
 
 export function createChromeFlowImageGenerateOncePort(
@@ -783,8 +831,9 @@ export function createChromeFlowImageGenerateOncePort(
   const installScopeAnalyzer = async (
     tabId: number,
     binding: FlowImageObservationArmBinding,
-  ) => {
-    if (!chrome.scripting?.executeScript) return false;
+  ): Promise<FlowObservationArmDiagnostic | undefined> => {
+    if (!chrome.scripting?.executeScript)
+      return { phase: "scope_install", reason: "scripting_unavailable" };
     const results = await chrome.scripting.executeScript({
       target: { tabId, documentIds: [binding.documentId] },
       world: "ISOLATED",
@@ -794,21 +843,44 @@ export function createChromeFlowImageGenerateOncePort(
     const result = results[0];
     const diagnostic = result?.result as
       { status?: string; captureGaps?: string[] } | undefined;
-    return Boolean(
-      result?.documentId === binding.documentId &&
-      result.frameId === binding.senderFrameId &&
-      diagnostic?.status === "ready" &&
-      diagnostic.captureGaps?.length === 0,
-    );
+    if (!result) return { phase: "scope_install", reason: "result_missing" };
+    if (result.documentId !== binding.documentId)
+      return { phase: "scope_install", reason: "document_mismatch" };
+    if (result.frameId !== binding.senderFrameId)
+      return { phase: "scope_install", reason: "frame_mismatch" };
+    if (diagnostic?.status !== "ready")
+      return { phase: "scope_install", reason: "scope_not_ready" };
+    if (diagnostic.captureGaps?.length)
+      return { phase: "scope_install", reason: "scope_capture_gaps" };
+    return undefined;
   };
   const parseArmReceipt = (
     result: chrome.scripting.InjectionResult<unknown> | undefined,
     binding: FlowImageObservationArmBinding,
-  ):
-    | import("../../domain/jobs/results").FlowImageObservationArmReceipt
-    | undefined => {
+  ): {
+    receipt?: import("../../domain/jobs/results").FlowImageObservationArmReceipt;
+    diagnostic?: FlowObservationArmDiagnostic;
+  } => {
     const receipt = result?.result as Record<string, unknown> | undefined;
-    if (!result || !receipt) return undefined;
+    if (!result)
+      return {
+        diagnostic: { phase: "receipt_validation", reason: "result_missing" },
+      };
+    if (result.documentId !== binding.documentId)
+      return {
+        diagnostic: {
+          phase: "receipt_validation",
+          reason: "document_mismatch",
+        },
+      };
+    if (result.frameId !== binding.senderFrameId)
+      return {
+        diagnostic: { phase: "receipt_validation", reason: "frame_mismatch" },
+      };
+    if (!receipt)
+      return {
+        diagnostic: { phase: "receipt_validation", reason: "result_missing" },
+      };
     const validBinding = Boolean(
       result.documentId === binding.documentId &&
       result.frameId === binding.senderFrameId &&
@@ -831,52 +903,48 @@ export function createChromeFlowImageGenerateOncePort(
       receipt.baseline !== null &&
       typeof receipt.baseline === "object",
     );
-    if (!validBinding) return undefined;
-    const baseline = FlowStructuralSnapshotSchema.safeParse(receipt.baseline);
-    if (!baseline.success || typeof receipt.capturedAt !== "number")
-      return undefined;
+    if (!validBinding)
+      return {
+        diagnostic: {
+          phase: "receipt_validation",
+          reason: "receipt_binding_mismatch",
+        },
+      };
+    if (typeof receipt.capturedAt !== "number")
+      return {
+        diagnostic: {
+          phase: "receipt_validation",
+          reason: "receipt_schema_invalid",
+        },
+      };
     const armReceipt = FlowImageObservationArmReceiptSchema.safeParse({
       capturedAt: receipt.capturedAt,
       sourceBaselineFingerprint: receipt.sourceBaselineFingerprint,
       captureFingerprint: receipt.captureFingerprint,
       listenerRootCount: receipt.listenerRoots,
-      baseline: {
-        completeForRenderedScope: baseline.data.completeForRenderedScope,
-        virtualized: baseline.data.virtualized,
-        tileCount: baseline.data.tiles.length,
-        mediaCandidateCount: baseline.data.mediaCandidates.length,
-        identityCandidateCount: baseline.data.identityCandidates.length,
-        identityCandidatesTruncated: baseline.data.identityCandidatesTruncated,
-        unidentifiedImageCount: baseline.data.unidentifiedImageCount,
-        lifecycleSignalCount: baseline.data.lifecycleSignals.length,
-        resourceEventCount: baseline.data.resourceEvents.length,
-        candidateIds: [
-          ...new Set(
-            baseline.data.mediaCandidates.map((item) => item.candidateId),
-          ),
-        ],
-        tileTokens: [
-          ...new Set(baseline.data.tiles.map((item) => item.tileToken)),
-        ],
-        candidateTileRelationships: baseline.data.mediaCandidates.map(
-          (item) => ({
-            candidateId: item.candidateId,
-            tileToken: item.tileToken,
-          }),
-        ),
-        captureGaps: baseline.data.captureGaps,
-      },
+      baseline: receipt.baseline,
     });
-    if (!armReceipt.success) return undefined;
-    const capturedBaseline = baseline.data;
+    if (!armReceipt.success)
+      return {
+        diagnostic: {
+          phase: "receipt_validation",
+          reason: "receipt_schema_invalid",
+        },
+      };
+    const capturedBaseline = armReceipt.data.baseline;
     if (
       !capturedBaseline.completeForRenderedScope ||
       capturedBaseline.captureGaps.length > 0 ||
       capturedBaseline.unidentifiedImageCount > 0 ||
       capturedBaseline.identityCandidatesTruncated
     )
-      return undefined;
-    return armReceipt.data;
+      return {
+        diagnostic: {
+          phase: "receipt_validation",
+          reason: "receipt_incomplete",
+        },
+      };
+    return { receipt: armReceipt.data };
   };
   return {
     ...base,
@@ -892,16 +960,32 @@ export function createChromeFlowImageGenerateOncePort(
       activateFlowImageGenerate(base, tabId, position.x, position.y),
     productionObservationSupported: true,
     startObservation: async (tabId, binding) => {
-      if (tabId !== binding.tabId || !chrome.scripting?.executeScript)
-        return "unsupported";
+      if (tabId !== binding.tabId)
+        return {
+          status: "unsupported",
+          diagnostic: { phase: "scope_install", reason: "wrong_tab" },
+        };
+      if (!chrome.scripting?.executeScript)
+        return {
+          status: "unsupported",
+          diagnostic: {
+            phase: "scope_install",
+            reason: "scripting_unavailable",
+          },
+        };
+      let phase: FlowObservationArmDiagnostic["phase"] = "scope_install";
       try {
-        if (!(await installScopeAnalyzer(tabId, binding))) return "unsupported";
+        const scopeDiagnostic = await installScopeAnalyzer(tabId, binding);
+        if (scopeDiagnostic)
+          return { status: "unsupported", diagnostic: scopeDiagnostic };
+        phase = "arm_injection";
         const results = await chrome.scripting.executeScript(
           createFlowObservationInjection(binding, "arm"),
         );
         const armResult = results[0];
-        const receipt = parseArmReceipt(armResult, binding);
-        if (receipt) return { status: "started", receipt };
+        const parsed = parseArmReceipt(armResult, binding);
+        if (parsed.receipt)
+          return { status: "started", receipt: parsed.receipt };
         if (
           (armResult?.result as { status?: string } | undefined)?.status ===
           "armed"
@@ -910,9 +994,42 @@ export function createChromeFlowImageGenerateOncePort(
             createFlowObservationInjection(binding, "stop"),
           );
         }
-        return { status: "unsupported" };
-      } catch {
-        return "unsupported";
+        const armStatus = armResult?.result as
+          { status?: string; reason?: string } | undefined;
+        const refusalReason: FlowObservationArmDiagnostic["reason"] =
+          armStatus?.status === "arm_refused"
+            ? armStatus.reason === "baseline_changed_during_arm"
+              ? "producer_refused_baseline_changed"
+              : armStatus.reason === "scope_refused"
+                ? "producer_refused_scope"
+                : "producer_refused_capture"
+            : armStatus?.status === "runtime_unavailable"
+              ? "producer_runtime_unavailable"
+              : armStatus?.status === "observer_already_present"
+                ? "producer_already_present"
+                : armStatus?.status === "invalid_binding_or_frame"
+                  ? "producer_invalid_binding"
+                  : armStatus?.status
+                    ? "producer_unexpected_status"
+                    : (parsed.diagnostic?.reason ?? "result_missing");
+        return {
+          status: "unsupported",
+          diagnostic: {
+            phase: armStatus?.status
+              ? "arm_injection"
+              : (parsed.diagnostic?.phase ?? phase),
+            reason: refusalReason,
+          },
+        };
+      } catch (error) {
+        return {
+          status: "unsupported",
+          diagnostic: {
+            phase,
+            reason: "injection_exception",
+            exceptionName: flowArmExceptionName(error),
+          },
+        };
       }
     },
     activateObservation: async (tabId, binding) => {
@@ -1031,6 +1148,7 @@ export function createFlowImageGenerateOnce(
     let currentStage: FlowImageAttemptStage = "preparation";
     let observationArmed = false;
     let observationArmBinding: FlowImageObservationArmBinding | undefined;
+    let observationArmDiagnostic: FlowObservationArmDiagnostic | undefined;
     let storageOperation = "unclassified_storage_operation";
     let storageFailure: FlowImageGenerateOnceResult["storageFailure"];
     let failureRecordPersistence: NonNullable<
@@ -1124,7 +1242,11 @@ export function createFlowImageGenerateOnce(
                   stage: failureStage,
                   at: now(),
                   method: "none",
-                  code,
+                  code:
+                    code === "observation_start_unsupported" &&
+                    observationArmDiagnostic
+                      ? `observer_${observationArmDiagnostic.phase}_${observationArmDiagnostic.reason}`
+                      : code,
                 },
                 ...(attempt.observationSession &&
                 (attempt.observationSession.status === "arming" ||
@@ -1794,6 +1916,20 @@ export function createFlowImageGenerateOnce(
             "production_observation_only" &&
             !armReceiptMatchesAttempt)
         ) {
+          observationArmDiagnostic =
+            typeof armed === "object" && armed.status === "unsupported"
+              ? armed.diagnostic
+              : typeof armed === "object" && armed.status === "started"
+                ? {
+                    phase: "receipt_validation",
+                    reason: !armReceipt
+                      ? "receipt_schema_invalid"
+                      : armReceipt.sourceBaselineFingerprint !==
+                          armBinding.sourceBaselineFingerprint
+                        ? "receipt_binding_mismatch"
+                        : "receipt_incomplete",
+                  }
+                : undefined;
           return failBefore(
             "observation_start_unsupported",
             "The bound Flow observer could not start. Generate was not activated.",

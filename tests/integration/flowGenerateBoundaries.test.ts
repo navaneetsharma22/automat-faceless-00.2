@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createFlowImageGenerateOnce } from "../../src/background/handlers/flow";
+import {
+  createFlowImageGenerateOnce,
+  type FlowObservationArmDiagnostic,
+} from "../../src/background/handlers/flow";
 import {
   flowGenerateResponseLostOutcome,
   formatFlowGenerateOutcome,
@@ -111,6 +114,7 @@ function makePort(
     };
     postDispatchReadFailure?: boolean;
     observationArm?: "started" | "unsupported" | "failed";
+    observationArmDiagnostic?: FlowObservationArmDiagnostic;
     observationProfileSupported?: boolean;
     productionObservationSupported?: boolean;
     omitProductionArmReceipt?: boolean;
@@ -175,7 +179,13 @@ function makePort(
       observationBindings.push(binding);
       if (options.observationArm === "failed")
         throw new Error("fixture observer start failed");
-      if (options.observationArm === "unsupported") return "unsupported";
+      if (options.observationArm === "unsupported")
+        return options.observationArmDiagnostic
+          ? {
+              status: "unsupported",
+              diagnostic: options.observationArmDiagnostic,
+            }
+          : "unsupported";
       if (productionObservationSupported) {
         if (options.omitProductionArmReceipt) return "started";
         return {
@@ -561,6 +571,11 @@ describe("P04 durable Flow image Generate attempt", () => {
     const test = await setup({
       observationProfileSupported: true,
       observationArm: "unsupported",
+      observationArmDiagnostic: {
+        phase: "arm_injection",
+        reason: "injection_exception",
+        exceptionName: "Error",
+      },
     });
 
     const result = await test.generate(test.payload);
@@ -574,6 +589,9 @@ describe("P04 durable Flow image Generate attempt", () => {
     });
     expect(test.fixture.activations).toBe(0);
     expect(attempt?.state).toBe("failed-before-dispatch");
+    expect(attempt?.events.at(-1)?.code).toBe(
+      "observer_arm_injection_injection_exception",
+    );
     expect(attempt?.observationSession?.status).toBe("closed");
     expect(attempt?.resultOutcome).toMatchObject({
       status: "unknown",

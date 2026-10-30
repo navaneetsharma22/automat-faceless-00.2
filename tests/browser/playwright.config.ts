@@ -28,6 +28,7 @@ export default defineConfig({
     "flowObservationProducer.spec.ts",
     "flowObservationReadback.spec.ts",
     "flowAttemptStorageSchema.spec.ts",
+    "flowProductionArm.spec.ts",
   ],
   reporter: "list",
   use: {
