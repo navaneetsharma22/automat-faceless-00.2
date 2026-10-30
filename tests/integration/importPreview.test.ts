@@ -44,7 +44,7 @@ function renderImportPanel(
 ) {
   const props = {
     session,
-    exampleSource: '{"scene":"SYNTHETIC example"}',
+    legacyFlowSetup: createElement("p", null, "Manual Flow setup"),
     wrapLines: false,
     setWrapLines: () => undefined,
     editorExpanded: false,
@@ -82,11 +82,7 @@ describe("P03.3 import preview integration", () => {
     expect(imageMarkup).toContain("&quot;shot_id&quot;:&quot;3&quot;");
     expect(videoMarkup).toContain("&quot;shot_id&quot;:&quot;02&quot;");
 
-    const example = new ImportPreviewSession("image");
-    example.setSource('{"scene":"SYNTHETIC example"}');
-    expect(renderImportPanel("image", example)).toContain(
-      "Synthetic example loaded. This is test content",
-    );
+    expect(imageMarkup).not.toContain("Load synthetic example");
   });
 
   it("shows only current complete result counts and IDs with provider-safe wording", () => {
@@ -113,6 +109,13 @@ describe("P03.3 import preview integration", () => {
     expect(markup).toContain("Export saved source");
     expect(markup).toMatch(/<button[^>]*>Save validated batch<\/button>/);
     expect(markup).not.toContain("<pre");
+    expect(markup.indexOf("Validate &amp; Preview")).toBeLessThan(
+      markup.indexOf("Save validated batch"),
+    );
+    expect(markup.indexOf("Save validated batch")).toBeLessThan(
+      markup.indexOf("Legacy count-mode and one-shot tools"),
+    );
+    expect(markup).toContain("Technical details");
   });
 
   it("retains the previous successful preview as stale after edits or failure", () => {

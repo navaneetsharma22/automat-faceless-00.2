@@ -643,6 +643,7 @@ export class ExtensionRepositories {
     const { sourceSnapshot, ...attemptInput } = input;
     const record: FlowImageAttemptRecord = {
       ...attemptInput,
+      revision: attemptInput.revision ?? 0,
       sourceSnapshotId: sourceSnapshot.snapshotId,
       activeKey: flowImageAttemptActiveKey(
         attemptInput.itemId,
@@ -828,6 +829,7 @@ export class ExtensionRepositories {
       const next: FlowImageAttemptRecord = {
         ...current,
         state: input.next,
+        revision: (current.revision ?? 0) + 1,
         ...(input.next === "failed-before-dispatch"
           ? { activeKey: undefined }
           : {}),
@@ -872,6 +874,7 @@ export class ExtensionRepositories {
         throw new FlowImageAttemptValidationError();
       const next: FlowImageAttemptRecord = {
         ...current,
+        revision: (current.revision ?? 0) + 1,
         countDecision: {
           ...current.countDecision,
           dispatchBoundaryAt: input.boundaryAt,
@@ -916,7 +919,7 @@ export class ExtensionRepositories {
 
   async persistFlowCountRecovery(
     record: FlowCountRecoveryRecord,
-    expectedOldAttemptUpdatedAt: number,
+    expectedOldAttemptRevision: number,
   ): Promise<FlowCountRecoveryRecord> {
     if (!FlowCountRecoveryRecordSchema.safeParse(record).success)
       throw new FlowCountRecoveryValidationError();
@@ -933,7 +936,7 @@ export class ExtensionRepositories {
         old.tabId !== record.tabId ||
         old.documentId !== record.documentId ||
         old.countDecision?.status !== "interrupted" ||
-        old.updatedAt !== expectedOldAttemptUpdatedAt ||
+        (old.revision ?? 0) !== expectedOldAttemptRevision ||
         old.observationSession?.sessionId !== record.oldSessionId ||
         old.observationSession.status !== record.oldMonitoringStatus
       )
@@ -1143,12 +1146,14 @@ export class ExtensionRepositories {
         ...(structuralObservations ? { structuralObservations } : {}),
         events: current.events,
         updatedAt: input.receivedAt,
+        revision: (current.revision ?? 0) + 1,
       };
       assertValidFlowImageAttempt(attempt);
       await this.tables.flowImageAttempts.put(attempt);
       const readback = await this.tables.flowImageAttempts.get(input.attemptId);
       if (
         !readback ||
+        readback.revision !== attempt.revision ||
         readback.observationSession?.lastSequence !== receipt.sequence ||
         readback.observationReceipts?.at(-1)?.fingerprint !==
           receipt.fingerprint ||
@@ -1165,6 +1170,7 @@ export class ExtensionRepositories {
   async updateFlowImageObservationSession(input: {
     attemptId: string;
     sessionId: string;
+    expectedRevision: number;
     sessionStatus?: NonNullable<
       FlowImageAttemptRecord["observationSession"]
     >["status"];
@@ -1186,8 +1192,32 @@ export class ExtensionRepositories {
       ) {
         throw new FlowImageObservationRejectedError("session_not_found");
       }
+      if ((current.revision ?? 0) !== input.expectedRevision)
+        throw new FlowImageObservationRejectedError("attempt_revision_changed");
+      const terminalSession = [
+        "lost",
+        "timed_out",
+        "closed",
+        "unsupported",
+      ].includes(current.observationSession.status);
+      if (
+        (terminalSession &&
+          (input.sessionStatus === "active" ||
+            input.sessionStatus === "arming")) ||
+        (input.countDecision?.status === "observing" &&
+          (terminalSession ||
+            current.countDecision?.status === "interrupted")) ||
+        (current.countDecision?.status === "interrupted" &&
+          input.countDecision !== undefined &&
+          input.countDecision.status !== "interrupted")
+      ) {
+        throw new FlowImageObservationRejectedError(
+          "terminal_observation_cannot_resume",
+        );
+      }
       const updated: FlowImageAttemptRecord = {
         ...current,
+        revision: (current.revision ?? 0) + 1,
         observationSession: {
           ...current.observationSession,
           ...(input.armReceipt ? { armReceipt: input.armReceipt } : {}),
@@ -1220,6 +1250,7 @@ export class ExtensionRepositories {
       const readback = await this.tables.flowImageAttempts.get(input.attemptId);
       if (
         !readback ||
+        readback.revision !== updated.revision ||
         readback.observationSession?.sessionId !== input.sessionId ||
         readback.observationSession.status !==
           updated.observationSession?.status ||
@@ -1258,6 +1289,7 @@ export class ExtensionRepositories {
         const at = this.now();
         const next: FlowImageAttemptRecord = {
           ...current,
+          revision: (current.revision ?? 0) + 1,
           ...(nextState ? { state: nextState } : {}),
           ...(nextState === "failed-before-dispatch"
             ? { activeKey: undefined }

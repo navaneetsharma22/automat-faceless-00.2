@@ -4,7 +4,6 @@ import type { FoundationClient } from "../../../shared/messageClient";
 
 export function VideoImportPanel({
   session,
-  exampleSource,
   wrapLines,
   setWrapLines,
   editorExpanded,
@@ -13,7 +12,6 @@ export function VideoImportPanel({
   persistenceClient,
 }: {
   session: ImportPreviewSession;
-  exampleSource: string;
   wrapLines: boolean;
   setWrapLines: (value: boolean) => void;
   editorExpanded: boolean;
@@ -27,7 +25,6 @@ export function VideoImportPanel({
       workspaceId={workspaceId}
       persistenceClient={persistenceClient}
       session={session}
-      exampleSource={exampleSource}
       wrapLines={wrapLines}
       setWrapLines={setWrapLines}
       editorExpanded={editorExpanded}

@@ -511,6 +511,33 @@ describe("P05.2 attempt-bound Flow observation", () => {
       resultOutcome: { status: "unknown" },
       countDecision: { status: "interrupted" },
     });
+    await expect(
+      fixture.repositories.updateFlowImageObservationSession({
+        attemptId: old.attemptId,
+        sessionId: persistedHistorical!.observationSession!.sessionId,
+        expectedRevision: (persistedHistorical!.revision ?? 0) - 1,
+        sessionStatus: "active",
+        countDecision: {
+          ...persistedHistorical!.countDecision!,
+          status: "observing",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "attempt_revision_changed" });
+    await expect(
+      fixture.repositories.updateFlowImageObservationSession({
+        attemptId: old.attemptId,
+        sessionId: persistedHistorical!.observationSession!.sessionId,
+        expectedRevision: persistedHistorical!.revision ?? 0,
+        sessionStatus: "active",
+        countDecision: {
+          ...persistedHistorical!.countDecision!,
+          status: "observing",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "terminal_observation_cannot_resume" });
+    expect(
+      await fixture.repositories.getFlowImageAttempt(old.attemptId),
+    ).toEqual(persistedHistorical);
     producerStatus = "absent";
     const inspected = await inspect();
     expect(inspected).toMatchObject({
@@ -603,18 +630,16 @@ describe("P05.2 attempt-bound Flow observation", () => {
       "persistFlowCountRecovery",
     );
     const actualPersistRecovery = persistRecovery.getMockImplementation()!;
-    persistRecovery.mockImplementationOnce(
-      async (record, expectedUpdatedAt) => {
-        const current = await fixture.repositories.getFlowImageAttempt(
-          old.attemptId,
-        );
-        await fixture.database.flowImageAttempts.put({
-          ...current!,
-          updatedAt: current!.updatedAt + 1,
-        });
-        return actualPersistRecovery(record, expectedUpdatedAt);
-      },
-    );
+    persistRecovery.mockImplementationOnce(async (record, expectedRevision) => {
+      const current = await fixture.repositories.getFlowImageAttempt(
+        old.attemptId,
+      );
+      await fixture.database.flowImageAttempts.put({
+        ...current!,
+        revision: (current!.revision ?? 0) + 1,
+      });
+      return actualPersistRecovery(record, expectedRevision);
+    });
     expect(await recover(request)).toMatchObject({
       status: "blocked",
       reason: "recovery_atomic_persistence_or_readback_failed",
@@ -1896,6 +1921,7 @@ describe("P05.2 attempt-bound Flow observation", () => {
     await fixture.repositories.updateFlowImageObservationSession({
       attemptId: attempt!.attemptId,
       sessionId,
+      expectedRevision: attempt!.revision ?? 0,
       sessionStatus: "timed_out",
       resultOutcome: {
         status: "unknown",

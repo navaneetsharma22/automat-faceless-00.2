@@ -301,6 +301,7 @@ export const FlowImageAttemptRecordSchema = z
       })
       .strict(),
     state: z.enum(FLOW_IMAGE_ATTEMPT_STATES),
+    revision: z.number().int().nonnegative().optional(),
     baseline: z
       .union([
         z

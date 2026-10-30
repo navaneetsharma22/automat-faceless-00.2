@@ -1,12 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "./components/Button";
 import { ConnectionStatus } from "./components/ConnectionStatus";
+import controlStyles from "./components/controls.module.css";
 import { Field } from "./components/Field";
 import { Navigation, type Workspace } from "./components/Navigation";
-import { Notice } from "./components/Notice";
-import { ProgressPanel } from "./components/ProgressPanel";
 import { SettingsConfirmation } from "./components/SettingsConfirmation";
-import { ToastHost, useToast } from "./components/ToastHost";
+import { ToastHost } from "./components/ToastHost";
 import { BUILD_ID } from "../shared/buildInfo";
 import type { FlowSettingsConfirmation } from "../shared/schemas";
 import { createFoundationClient } from "../shared/messageClient";
@@ -16,33 +15,6 @@ import { ImageImportPanel } from "./features/image-batch/ImportPanel";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import styles from "./Dashboard.module.css";
-import type { DownloadPreviewState } from "./previewState";
-
-const demoJson = `{
-  "batch": "DEMO ONLY — synthetic image prompts",
-  "prompts": [
-${Array.from({ length: 28 }, (_, index) => `    { "shot_id": "SHOT-${String(index + 1).padStart(3, "0")}", "prompt": "Illustrative long prompt ${index + 1}: cinematic studio portrait, soft window light, natural detail, composed for a 16:9 frame." }`).join(",\n")}
-  ]
-}`;
-
-const demoVideoJson = `{
-  "batch": "DEMO ONLY — synthetic video prompts",
-  "prompts": [
-${Array.from({ length: 18 }, (_, index) => `    { "shot_id": "SHOT-${String(index + 1).padStart(3, "0")}", "prompt": "Independent example video prompt ${index + 1}: slow cinematic camera drift, natural motion, soft environmental light, preserve subject identity." }`).join(",\n")}
-  ]
-}`;
-
-const demoRows = [
-  { label: "SHOT-001", detail: "Example · ready", value: 100 },
-  { label: "SHOT-002", detail: "Example · in progress", value: 62 },
-  { label: "SHOT-003", detail: "Example · waiting", value: 0 },
-];
-
-const referenceCards = [
-  { id: "SHOT-001", title: "Studio portrait", tone: "warm" },
-  { id: "SHOT-002", title: "Rainy street", tone: "cool" },
-  { id: "SHOT-004", title: "Empty reference", tone: "empty" },
-];
 
 function Dashboard() {
   const [workspace, setWorkspace] = useState<Workspace>("Images");
@@ -67,8 +39,6 @@ function Dashboard() {
   );
   const [videoWrapLines, setVideoWrapLines] = useState(false);
   const [videoEditorExpanded, setVideoEditorExpanded] = useState(false);
-  const [downloadPreview, setDownloadPreview] =
-    useState<DownloadPreviewState>("empty");
   const [imageSettingsConfirmation, setImageSettingsConfirmation] =
     useState<FlowSettingsConfirmation | null>(null);
   const [imageVariantCount, setImageVariantCount] = useState("");
@@ -79,10 +49,6 @@ function Dashboard() {
   >();
   const [videoConfirmed, setVideoConfirmed] = useState(false);
   const [destination, setDestination] = useState<"Flow" | "Vids">("Flow");
-  const [selectedReferences, setSelectedReferences] = useState<string[]>([
-    "SHOT-001",
-  ]);
-  const toast = useToast();
 
   const updateImageSettingsConfirmation = async (
     checked: boolean,
@@ -172,21 +138,6 @@ function Dashboard() {
     return registerDashboardFocusResponder(chrome);
   }, []);
 
-  const toggleReference = (id: string) => {
-    setSelectedReferences((current) =>
-      current.includes(id)
-        ? current.filter((item) => item !== id)
-        : [...current, id],
-    );
-    toast.add({
-      kind: "info",
-      message:
-        "Demo reference selection updated. No image was captured or assigned.",
-      urgent: false,
-      actionable: false,
-    });
-  };
-
   return (
     <main className={styles.appShell}>
       <aside className={styles.sidebar}>
@@ -216,9 +167,6 @@ function Dashboard() {
             <strong>{workspace}</strong>
           </div>
           <div className={styles.topActions}>
-            <span className={styles.previewLabel}>
-              <span aria-hidden="true">●</span> PREVIEW MODE
-            </span>
             <button
               className={`${styles.themeToggle} motion-control`}
               type="button"
@@ -257,12 +205,7 @@ function Dashboard() {
               setSettingsConfirmation={updateImageSettingsConfirmation}
             />
           </div>
-          {workspace === "References" ? (
-            <ReferencesView
-              selected={selectedReferences}
-              onToggle={toggleReference}
-            />
-          ) : null}
+          {workspace === "References" ? <ReferencesView /> : null}
           <div hidden={workspace !== "Videos"}>
             <VideosView
               session={videoImportSession}
@@ -277,21 +220,16 @@ function Dashboard() {
               setConfirmed={setVideoConfirmed}
             />
           </div>
-          {workspace === "Downloads" ? (
-            <DownloadsView
-              state={downloadPreview}
-              onStateChange={setDownloadPreview}
-            />
-          ) : null}
+          {workspace === "Downloads" ? <DownloadsView /> : null}
           <details className={styles.advanced}>
             <summary>
               Advanced details <span>Technical preview information</span>
             </summary>
             <div className={styles.advancedContent}>
               <p>
-                Workspace assets and progress remain P01.3 demo data. The
-                connection panel is the source of current read-only target
-                status; it does not indicate generation capability.
+                Provider connections are checked against the currently selected
+                project. Image GenerateOnce remains a separately guarded legacy
+                action; batch queueing is unavailable.
               </p>
               <dl>
                 <div>
@@ -313,10 +251,10 @@ function Dashboard() {
 
 function workspaceSubtitle(workspace: Workspace) {
   return {
-    Images: "Import an image JSON batch. Example progress stays separate.",
-    References: "Review example image selections by their stable shot IDs.",
-    Videos: "Inspect example image-to-video pairs and destination choices.",
-    Downloads: "Review example delivery states in one calm workspace.",
+    Images: "Import, validate, and save an image JSON source.",
+    References: "Reference capture and assignment status.",
+    Videos: "Prepare a video source and review destination requirements.",
+    Downloads: "Check available generated results and downloads.",
   }[workspace];
 }
 
@@ -361,104 +299,121 @@ function ImagesView({
           workspaceId="default"
           persistenceClient={persistenceClient}
           settingsConfirmation={settingsConfirmation ?? undefined}
-          exampleSource={demoJson}
+          legacyFlowSetup={
+            <>
+              <SettingsConfirmation
+                id="image-settings-confirm"
+                provider="Flow"
+                checked={settingsConfirmation !== null}
+                contextLabel={`${declaredVariantCount || "variant count required"} variants`}
+                onChange={(checked) =>
+                  void setSettingsConfirmation(checked, declaredVariantCount)
+                }
+                disabled={confirmationPending}
+                error={confirmationError}
+              />
+              <Field
+                id="image-variant-count"
+                label="Flow variants selected"
+                hint="Enter the count you selected manually in Flow. This records your declaration; Automat Faceless does not inspect or change Flow settings."
+                required
+              >
+                <input
+                  id="image-variant-count"
+                  className={controlStyles.control}
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={1}
+                  inputMode="numeric"
+                  value={declaredVariantCount}
+                  onChange={(event) =>
+                    setDeclaredVariantCount(event.currentTarget.value)
+                  }
+                  aria-label="Number of Flow image variants manually selected"
+                />
+              </Field>
+            </>
+          }
           wrapLines={wrapLines}
           setWrapLines={setWrapLines}
           editorExpanded={editorExpanded}
           setEditorExpanded={setEditorExpanded}
         />
-        <SettingsConfirmation
-          id="image-settings-confirm"
-          provider="Flow"
-          checked={settingsConfirmation !== null}
-          contextLabel={`${declaredVariantCount || "variant count required"} variants`}
-          onChange={(checked) =>
-            void setSettingsConfirmation(checked, declaredVariantCount)
-          }
-          disabled={confirmationPending}
-          error={confirmationError}
-        />
-        <Field
-          id="image-variant-count"
-          label="Flow variants selected"
-          hint="Enter the count you selected manually in Flow. This records your declaration; Automat Faceless does not inspect or change Flow settings."
-          required
-        >
-          <input
-            id="image-variant-count"
-            type="number"
-            min={1}
-            max={100}
-            step={1}
-            inputMode="numeric"
-            value={declaredVariantCount}
-            onChange={(event) =>
-              setDeclaredVariantCount(event.currentTarget.value)
-            }
-            aria-label="Number of Flow image variants manually selected"
-          />
-        </Field>
-        <div className={styles.actionRow}>
-          <Button disabled aria-describedby="image-disabled-reason">
-            Start image batch
-          </Button>
-          <p id="image-disabled-reason" className={styles.disabledReason}>
-            Unavailable: provider connection and image workflow are not
-            implemented.
-          </p>
-        </div>
       </section>
-      <ProgressPanel items={demoRows} />
+      <ValidatedPromptPanel session={session} />
     </div>
   );
 }
 
-function ReferencesView({
-  selected,
-  onToggle,
+export function ValidatedPromptPanel({
+  session,
 }: {
-  selected: string[];
-  onToggle: (id: string) => void;
+  session: ImportPreviewSession;
 }) {
+  const snapshot = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+    session.getSnapshot,
+  );
+  const validated =
+    snapshot.status === "success" &&
+    snapshot.result !== undefined &&
+    snapshot.resultRevision === snapshot.revision;
+  const items = validated ? (snapshot.result?.items ?? []) : [];
+
+  return (
+    <section
+      className={`${styles.panel} ${styles.sourceSummary}`}
+      aria-labelledby="image-source-summary-title"
+    >
+      <div className={styles.panelHeading}>
+        <div>
+          <p className={styles.kicker}>SOURCE SUMMARY</p>
+          <h2 id="image-source-summary-title">
+            {items.length
+              ? `${items.length} validated prompt${items.length === 1 ? "" : "s"}`
+              : "No validated prompts"}
+          </h2>
+        </div>
+      </div>
+      {items.length ? (
+        <>
+          <p className={styles.sourceStatus}>Validated · Not sent to Flow</p>
+          <ol className={styles.sourcePromptList}>
+            {items.map((item, index) => (
+              <li
+                className={styles.sourcePrompt}
+                key={`${item.shotId ?? "prompt"}:${item.sourceSpan.start}`}
+              >
+                <strong>{item.shotId ?? `Prompt ${index + 1}`}</strong>
+                <span>Not sent</span>
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : (
+        <p className={styles.sourceEmpty}>
+          Validate a source to see its prompts here. Nothing is sent to Flow.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ReferencesView() {
   return (
     <div className={styles.workspaceGrid}>
       <section className={styles.panel} aria-labelledby="references-title">
         <PanelHeader
-          kicker="REFERENCE LIBRARY · DEMO"
+          kicker="REFERENCES"
           title="Shot references"
           id="references-title"
         />
-        <div className={styles.referenceGrid}>
-          {referenceCards.map((card) => {
-            const isSelected = selected.includes(card.id);
-            return (
-              <button
-                key={card.id}
-                type="button"
-                className={`${styles.referenceCard} ${styles[`reference${card.tone[0].toUpperCase()}${card.tone.slice(1)}`]} ${isSelected ? styles.referenceSelected : ""} motion-card`}
-                aria-pressed={isSelected}
-                onClick={() => onToggle(card.id)}
-              >
-                <span className={styles.referenceImage} aria-hidden="true">
-                  {card.tone === "empty"
-                    ? "+"
-                    : card.tone === "warm"
-                      ? "01"
-                      : "02"}
-                </span>
-                <span className={styles.shotId}>{card.id}</span>
-                <strong>{card.title}</strong>
-                <span className={styles.referenceState}>
-                  {isSelected
-                    ? "Selected · demo"
-                    : card.tone === "empty"
-                      ? "No image · demo"
-                      : "Available · demo"}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <p className={styles.sourceEmpty}>
+          No captured references are available. Reference capture and assignment
+          are not implemented yet.
+        </p>
         <div className={styles.actionRow}>
           <Button disabled aria-describedby="reference-disabled-reason">
             Confirm references
@@ -468,12 +423,6 @@ function ReferencesView({
           </p>
         </div>
       </section>
-      <ProgressPanel
-        items={[
-          { label: "SHOT-001", detail: "Example · selected", value: 100 },
-          { label: "SHOT-002", detail: "Example · available", value: 0 },
-        ]}
-      />
     </div>
   );
 }
@@ -516,47 +465,17 @@ export function VideosView({
           session={session}
           workspaceId="default"
           persistenceClient={persistenceClient}
-          exampleSource={demoVideoJson}
           wrapLines={wrapLines}
           setWrapLines={setWrapLines}
           editorExpanded={editorExpanded}
           setEditorExpanded={setEditorExpanded}
         />
-        <section
-          className={styles.pairPreview}
-          aria-labelledby="video-pairs-demo-title"
-        >
-          <div className={styles.pairPreviewHeading}>
-            <p className={styles.kicker}>INDEPENDENT DEMO DATA</p>
-            <h3 id="video-pairs-demo-title">Pairing examples</h3>
-          </div>
-          <div className={styles.pairList}>
-            <PairRow
-              id="SHOT-001"
-              image="Image SHOT-001 · demo"
-              prompt="Video prompt SHOT-001 · demo"
-              state="Matched example"
-            />
-            <PairRow
-              id="SHOT-002"
-              image="Image SHOT-003 · demo"
-              prompt="Video prompt SHOT-002 · demo"
-              state="Shot ID mismatch · demo error"
-              error
-            />
-            <PairRow
-              id="SHOT-003"
-              image="No image · demo"
-              prompt="Video prompt SHOT-003 · demo"
-              state="Missing image · demo error"
-              error
-            />
-          </div>
-        </section>
+        <p className={styles.sourceEmpty}>
+          No saved image/video pairing is available. Shot matching uses stable
+          IDs from validated sources; no gallery-position matching is shown.
+        </p>
         <fieldset className={styles.destinationGroup}>
-          <legend>
-            Video destination <span>Choose one for this demo</span>
-          </legend>
+          <legend>Video destination</legend>
           <div className={styles.destinationOptions}>
             {(["Flow", "Vids"] as const).map((item) => (
               <label
@@ -572,9 +491,7 @@ export function VideosView({
                 />
                 <span>
                   <strong>{item}</strong>
-                  <small>
-                    {item === "Flow" ? "Not connected" : "Not connected"}
-                  </small>
+                  <small>See Connections for current project status.</small>
                 </span>
               </label>
             ))}
@@ -583,14 +500,10 @@ export function VideosView({
         <SettingsConfirmation
           id="video-settings-confirm"
           provider={destination}
-          contextLabel="demo video batch"
+          contextLabel="current video source"
           checked={confirmed}
           onChange={setConfirmed}
         />
-        <Notice kind="error" announce={false}>
-          Example pairing errors remain visible. Resolve shot IDs before a real
-          batch can be available.
-        </Notice>
         <div className={styles.actionRow}>
           <Button disabled aria-describedby="video-disabled-reason">
             Start video batch
@@ -601,130 +514,24 @@ export function VideosView({
           </p>
         </div>
       </section>
-      <ProgressPanel
-        items={[
-          { label: "SHOT-001", detail: "Example · pair matched", value: 100 },
-          { label: "SHOT-002", detail: "Example · ID mismatch", value: 0 },
-          { label: "SHOT-003", detail: "Example · missing image", value: 0 },
-        ]}
-      />
     </div>
   );
 }
 
-function PairRow({
-  id,
-  image,
-  prompt,
-  state,
-  error = false,
-}: {
-  id: string;
-  image: string;
-  prompt: string;
-  state: string;
-  error?: boolean;
-}) {
-  return (
-    <article className={`${styles.pairRow} ${error ? styles.pairError : ""}`}>
-      <span className={styles.shotId}>{id}</span>
-      <div className={styles.pairSides}>
-        <span>{image}</span>
-        <span>{prompt}</span>
-      </div>
-      <strong className={error ? styles.errorText : styles.successText}>
-        {state}
-      </strong>
-    </article>
-  );
-}
-
-export function DownloadsView({
-  state,
-  onStateChange,
-}: {
-  state: DownloadPreviewState;
-  onStateChange: (state: DownloadPreviewState) => void;
-}) {
+export function DownloadsView() {
   return (
     <section
       className={`${styles.panel} ${styles.downloadsPanel}`}
       aria-labelledby="downloads-title"
     >
-      <PanelHeader
-        kicker="DELIVERY · DEMO"
-        title="Downloads"
-        id="downloads-title"
-      />
-      <fieldset className={styles.downloadStateSelector}>
-        <legend>Preview state</legend>
-        <label className={styles.downloadStateOption}>
-          <input
-            type="radio"
-            name="download-preview-state"
-            value="empty"
-            checked={state === "empty"}
-            onChange={() => onStateChange("empty")}
-          />
-          <span>Empty</span>
-        </label>
-        <label className={styles.downloadStateOption}>
-          <input
-            type="radio"
-            name="download-preview-state"
-            value="examples"
-            checked={state === "examples"}
-            onChange={() => onStateChange("examples")}
-          />
-          <span>Example downloads</span>
-        </label>
-      </fieldset>
-      {state === "empty" ? (
-        <article className={`${styles.downloadCard} ${styles.downloadEmpty}`}>
-          <span className={styles.fileIcon} aria-hidden="true">
-            —
-          </span>
-          <h3>No downloads yet</h3>
-          <p>Nothing is being downloaded in this preview.</p>
-        </article>
-      ) : (
-        <div className={styles.downloadGrid} aria-label="Example downloads">
-          <article className={`${styles.downloadCard} motion-card`}>
-            <span className={styles.fileIcon} aria-hidden="true">
-              MP4
-            </span>
-            <h3>SHOT-001_example.mp4</h3>
-            <p>Example file · 18.4 MB</p>
-            <div
-              className={styles.progressTrack}
-              role="img"
-              aria-label="Example download progress 68 percent"
-            >
-              <span style={{ width: "68%" }} />
-            </div>
-            <strong className={styles.progressValue}>
-              68% example progress
-            </strong>
-          </article>
-          <article className={`${styles.downloadCard} motion-card`}>
-            <span className={styles.fileIcon} aria-hidden="true">
-              MP4
-            </span>
-            <h3>SHOT-002_example.mp4</h3>
-            <p>Example file · waiting</p>
-            <div
-              className={styles.progressTrack}
-              role="img"
-              aria-label="Example download progress 0 percent"
-            >
-              <span style={{ width: "0%" }} />
-            </div>
-            <strong className={styles.progressValue}>
-              Not started · example
-            </strong>
-          </article>
-        </div>
-      )}
+      <PanelHeader kicker="DELIVERY" title="Downloads" id="downloads-title" />
+      <article className={`${styles.downloadCard} ${styles.downloadEmpty}`}>
+        <span className={styles.fileIcon} aria-hidden="true">
+          —
+        </span>
+        <h3>No eligible downloads</h3>
+        <p>Generated results and a download workflow are not available yet.</p>
+      </article>
       <div className={`${styles.actionRow} ${styles.downloadActionRow}`}>
         <Button disabled aria-describedby="download-disabled-reason">
           Download selected files
@@ -737,7 +544,6 @@ export function DownloadsView({
     </section>
   );
 }
-
 function PanelHeader({
   kicker,
   title,

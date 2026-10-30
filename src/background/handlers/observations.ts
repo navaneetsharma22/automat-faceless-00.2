@@ -106,6 +106,7 @@ export function createFlowImageObservationHandler(
     await dependencies.repositories.updateFlowImageObservationSession({
       attemptId: attempt.attemptId,
       sessionId: attempt.observationSession.sessionId,
+      expectedRevision: attempt.revision ?? 0,
       sessionStatus:
         reason === "observation_timeout"
           ? "timed_out"
@@ -319,6 +320,7 @@ export function createFlowImageObservationHandler(
         await dependencies.repositories.updateFlowImageObservationSession({
           attemptId: attempt.attemptId,
           sessionId: session.sessionId,
+          expectedRevision: attempt.revision ?? 0,
           reconciliationCount: session.reconciliationCount + 1,
         });
         resumed += 1;

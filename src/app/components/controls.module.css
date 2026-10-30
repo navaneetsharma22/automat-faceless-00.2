@@ -124,8 +124,8 @@
 }
 
 .editor {
-  min-height: 10.5rem;
-  max-height: min(42vh, 28rem);
+  min-height: 14rem;
+  max-height: min(52vh, 32rem);
   overflow: auto;
   resize: vertical;
   font-family: var(--font-mono);

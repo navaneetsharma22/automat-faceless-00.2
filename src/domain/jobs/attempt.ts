@@ -110,6 +110,8 @@ export type FlowImageAttemptRecord = {
     declaredVariantCount?: number;
   };
   state: FlowImageAttemptState;
+  /** Monotonic durable compare-and-set revision; absent on pre-P05 records. */
+  revision?: number;
   baseline?: FlowImageAttemptBaseline;
   /** Optional for compatibility with attempts written before P05.1. */
   resultBaseline?: FlowImageResultBaseline;

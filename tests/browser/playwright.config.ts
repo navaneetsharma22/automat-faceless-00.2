@@ -33,6 +33,7 @@ export default defineConfig({
     "connectionLifecycle.spec.ts",
     "flowReadinessProduction.spec.ts",
     "sidebarLayout.spec.ts",
+    "dashboardCleanup.spec.ts",
   ],
   reporter: "list",
   use: {

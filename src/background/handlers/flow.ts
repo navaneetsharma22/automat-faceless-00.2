@@ -115,6 +115,82 @@ function inspectFlowCountPageState(
     : Promise.resolve({ available: false, status: "analyzer_unavailable" });
 }
 
+type FlowCountRecoveryEligibilityCode =
+  | "attempt_row_missing"
+  | "count_session_id_missing"
+  | "provider_outcome_missing"
+  | "provider_outcome_not_unknown"
+  | "count_decision_missing"
+  | "count_decision_not_interrupted"
+  | "observation_session_missing"
+  | "observation_session_active"
+  | "observation_session_not_interrupted"
+  | "historical_dispatch_not_confirmed"
+  | "dispatch_state_uncertain"
+  | "multiple_or_changed_project_blockers"
+  | "historical_blocker_not_current";
+
+function evaluateFlowCountRecoveryEligibility(
+  attempt: FlowImageAttemptRecord | undefined,
+  attemptId: string,
+  projectId: string,
+  attempts: FlowImageAttemptRecord[],
+):
+  | { eligible: true }
+  | { eligible: false; code: FlowCountRecoveryEligibilityCode } {
+  if (!attempt || attempt.attemptId !== attemptId)
+    return { eligible: false, code: "attempt_row_missing" };
+  if (!attempt.countSessionId)
+    return { eligible: false, code: "count_session_id_missing" };
+  if (!attempt.resultOutcome)
+    return { eligible: false, code: "provider_outcome_missing" };
+  if (attempt.resultOutcome.status !== "unknown")
+    return { eligible: false, code: "provider_outcome_not_unknown" };
+  if (!attempt.countDecision)
+    return { eligible: false, code: "count_decision_missing" };
+  if (attempt.countDecision.status !== "interrupted")
+    return { eligible: false, code: "count_decision_not_interrupted" };
+  if (!attempt.observationSession)
+    return { eligible: false, code: "observation_session_missing" };
+  if (
+    attempt.observationSession.status === "active" ||
+    attempt.observationSession.status === "arming"
+  )
+    return { eligible: false, code: "observation_session_active" };
+  if (
+    attempt.observationSession.status !== "lost" &&
+    attempt.observationSession.status !== "timed_out" &&
+    attempt.observationSession.status !== "closed"
+  )
+    return { eligible: false, code: "observation_session_not_interrupted" };
+  if (attempt.state === "uncertain")
+    return { eligible: false, code: "dispatch_state_uncertain" };
+  if (attempt.state !== "dispatched")
+    return { eligible: false, code: "historical_dispatch_not_confirmed" };
+
+  const projectBlockers = attempts.filter(
+    (candidate) =>
+      candidate.countSessionId &&
+      candidate.projectId === projectId &&
+      candidate.state !== "failed-before-dispatch" &&
+      !(
+        candidate.state === "dispatched" &&
+        candidate.countDecision?.status === "count_matched"
+      ),
+  );
+  if (
+    projectBlockers.length !== 1 ||
+    projectBlockers[0]?.attemptId !== attempt.attemptId
+  )
+    return {
+      eligible: false,
+      code: projectBlockers.length
+        ? "multiple_or_changed_project_blockers"
+        : "historical_blocker_not_current",
+    };
+  return { eligible: true };
+}
+
 /** Enumerates every durable unresolved count attempt for the selected project without touching the page. */
 export function createFlowCountBlockerInspection(
   repositories: ExtensionRepositories,
@@ -170,6 +246,12 @@ export function createFlowCountBlockerInspection(
           ),
       )
       .map((attempt) => {
+        const eligibility = evaluateFlowCountRecoveryEligibility(
+          attempt,
+          attempt.attemptId,
+          selectedProjectId ?? "",
+          attempts,
+        );
         const sameDocument =
           attempt.tabId === selected.tabId &&
           attempt.documentId === selected.verificationBinding?.documentId;
@@ -205,6 +287,8 @@ export function createFlowCountBlockerInspection(
             attempt.resultOutcome?.status ?? "missing",
           countDecision: attempt.countDecision?.status ?? "missing",
           countDecisionReason: attempt.countDecision?.reason ?? "missing",
+          recoveryEligible: eligibility.eligible,
+          recoveryBlockReason: eligibility.eligible ? null : eligibility.code,
           reason:
             attempt.countDecision?.reason ??
             attempt.resultOutcome?.reason ??
@@ -277,64 +361,30 @@ export function createFlowCountRebaseline(
     const old = attempts.find(
       (attempt) => attempt.attemptId === input.oldAttemptId,
     );
-    if (!old)
-      return blocked(
-        "historical_attempt_not_recoverable",
-        "attempt_row_missing",
-      );
-    if (!old.countSessionId)
-      return blocked(
-        "historical_attempt_not_recoverable",
-        "count_session_id_missing",
-      );
-    if (!old.resultOutcome)
-      return blocked(
-        "historical_attempt_not_recoverable",
-        "provider_outcome_missing",
-      );
-    if (old.resultOutcome.status !== "unknown")
-      return blocked(
-        "historical_attempt_not_recoverable",
-        "provider_outcome_not_unknown",
-      );
-    if (!old.countDecision)
-      return blocked(
-        "historical_attempt_not_recoverable",
-        "count_decision_missing",
-      );
-    if (old.countDecision.status !== "interrupted")
-      return blocked(
-        "historical_attempt_not_recoverable",
-        "count_decision_not_interrupted",
-        old.countDecision.status,
-      );
-    if (!old.observationSession)
-      return blocked(
-        "historical_attempt_not_recoverable",
-        "observation_session_missing",
-      );
-    const projectBlockers = attempts.filter(
-      (attempt) =>
-        attempt.countSessionId &&
-        attempt.projectId === verifiedProjectId &&
-        attempt.state !== "failed-before-dispatch" &&
-        !(
-          attempt.state === "dispatched" &&
-          attempt.countDecision?.status === "count_matched"
-        ),
+    const eligibility = evaluateFlowCountRecoveryEligibility(
+      old,
+      input.oldAttemptId,
+      verifiedProjectId,
+      attempts,
     );
-    if (
-      projectBlockers.length !== 1 ||
-      projectBlockers[0]?.attemptId !== old.attemptId
-    )
+    if (!eligibility.eligible)
       return blocked(
-        projectBlockers.length
-          ? "multiple_or_changed_project_blockers"
-          : "historical_blocker_not_current",
+        eligibility.code === "dispatch_state_uncertain"
+          ? "dispatch_state_uncertain"
+          : eligibility.code === "historical_dispatch_not_confirmed"
+            ? "historical_dispatch_not_confirmed"
+            : eligibility.code === "observation_session_active"
+              ? "active_observation_cannot_be_superseded"
+              : eligibility.code === "multiple_or_changed_project_blockers" ||
+                  eligibility.code === "historical_blocker_not_current"
+                ? eligibility.code
+                : "historical_attempt_not_recoverable",
+        eligibility.code,
+        old?.countDecision?.status,
       );
-    if (old.state === "uncertain") return blocked("dispatch_state_uncertain");
-    if (old.state !== "dispatched")
-      return blocked("historical_dispatch_not_confirmed");
+    if (!old) return blocked("historical_attempt_not_recoverable");
+    if (!old.observationSession || !old.countDecision || !old.resultOutcome)
+      return blocked("historical_attempt_not_recoverable");
     const source = await repositories
       .getPromptBatch(input.workspaceId, "image")
       .catch(() => undefined);
@@ -523,13 +573,13 @@ export function createFlowCountRebaseline(
       capturedAt: Date.now(),
     };
     try {
-      await repositories.persistFlowCountRecovery(recovery, old.updatedAt);
+      await repositories.persistFlowCountRecovery(recovery, old.revision ?? 0);
     } catch {
       const current = await repositories
         .getFlowImageAttempt(old.attemptId)
         .catch(() => undefined);
       if (
-        current?.updatedAt !== old.updatedAt ||
+        (current?.revision ?? 0) !== (old.revision ?? 0) ||
         current?.countDecision?.status !== "interrupted"
       )
         return blocked(
@@ -2964,6 +3014,7 @@ export function createFlowImageGenerateOnce(
           await dependencies.repositories.updateFlowImageObservationSession({
             attemptId: attempt.attemptId,
             sessionId: observationSession.sessionId,
+            expectedRevision: attempt.revision ?? 0,
             sessionStatus: "active",
             ...(armReceipt ? { armReceipt } : {}),
             countBaseline,

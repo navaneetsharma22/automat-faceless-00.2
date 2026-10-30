@@ -2,10 +2,10 @@ import { ImportPanel as SharedImportPanel } from "../shared/ImportPanel";
 import type { ImportPreviewSession } from "../shared/importPreviewSession";
 import type { FoundationClient } from "../../../shared/messageClient";
 import type { FlowSettingsConfirmation } from "../../../shared/schemas";
+import type { ReactNode } from "react";
 
 export function ImageImportPanel({
   session,
-  exampleSource,
   wrapLines,
   setWrapLines,
   editorExpanded,
@@ -13,9 +13,10 @@ export function ImageImportPanel({
   workspaceId,
   persistenceClient,
   settingsConfirmation,
+  legacyFlowSetup,
 }: {
   session: ImportPreviewSession;
-  exampleSource: string;
+  legacyFlowSetup: ReactNode;
   wrapLines: boolean;
   setWrapLines: (value: boolean) => void;
   editorExpanded: boolean;
@@ -31,8 +32,8 @@ export function ImageImportPanel({
       persistenceClient={persistenceClient}
       flowSettingsConfirmed={settingsConfirmation !== undefined}
       flowSettingsConfirmation={settingsConfirmation}
+      legacyFlowSetup={legacyFlowSetup}
       session={session}
-      exampleSource={exampleSource}
       wrapLines={wrapLines}
       setWrapLines={setWrapLines}
       editorExpanded={editorExpanded}

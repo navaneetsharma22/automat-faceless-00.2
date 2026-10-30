@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { importPromptBatch } from "../../../domain/batches/importBatch";
 import { sha256Hex } from "../../../domain/batches/hashPrompt";
 import { INPUT_POLICY } from "../../../domain/batches/inputPolicy";
@@ -11,6 +17,7 @@ import { Field } from "../../components/Field";
 import { JsonEditor } from "../../components/JsonEditor";
 import { Notice } from "../../components/Notice";
 import { useToast } from "../../components/ToastHost";
+import controlStyles from "../../components/controls.module.css";
 import type { ImportPreviewSession } from "./importPreviewSession";
 import { readJsonSourceFile } from "./importFile";
 import {
@@ -23,9 +30,7 @@ import {
   flowReadinessReasonLabel,
 } from "./flowReadinessPresentation";
 
-type ExampleConfirmation =
-  | { type: "example"; revision: number }
-  | { type: "file"; revision: number; file: File };
+type FileReplacementConfirmation = { revision: number; file: File };
 
 export type FlowGenerateOutcomeMessage = {
   state?: string;
@@ -74,7 +79,7 @@ export function flowGenerateResponseLostOutcome(): FlowGenerateOutcomeMessage {
 export type ImportPanelProps = {
   kind: PromptKind;
   session: ImportPreviewSession;
-  exampleSource: string;
+  legacyFlowSetup?: ReactNode;
   wrapLines: boolean;
   setWrapLines: (value: boolean) => void;
   editorExpanded: boolean;
@@ -88,7 +93,7 @@ export type ImportPanelProps = {
 export function ImportPanel({
   kind,
   session,
-  exampleSource,
+  legacyFlowSetup,
   wrapLines,
   setWrapLines,
   editorExpanded,
@@ -104,9 +109,8 @@ export function ImportPanel({
     session.getSnapshot,
   );
   const toast = useToast();
-  const [replacement, setReplacement] = useState<ExampleConfirmation | null>(
-    null,
-  );
+  const [replacement, setReplacement] =
+    useState<FileReplacementConfirmation | null>(null);
   const [fileError, setFileError] = useState<string | undefined>();
   const [fileLoading, setFileLoading] = useState(false);
   const [selectedPreview, setSelectedPreview] = useState<number | null>(null);
@@ -117,7 +121,6 @@ export function ImportPanel({
     string | undefined
   >();
   const [savedSource, setSavedSource] = useState<string | undefined>();
-  const [savedAt, setSavedAt] = useState<number | undefined>();
   const [confirmLoad, setConfirmLoad] = useState(false);
   const [exportingSavedSource, setExportingSavedSource] = useState(false);
   const [exportError, setExportError] = useState<string | undefined>();
@@ -195,23 +198,16 @@ export function ImportPanel({
   useEffect(() => {
     if (
       snapshot.validationId <= lastToastId.current ||
-      (snapshot.status !== "success" && snapshot.status !== "error")
+      snapshot.status !== "error"
     ) {
       return;
     }
     lastToastId.current = snapshot.validationId;
-    if (snapshot.status === "success") {
-      toast.add({
-        kind: "success",
-        message: `${label} import preview is ready. Nothing was sent to a provider.`,
-      });
-    } else {
-      toast.add({
-        kind: "error",
-        message: `${label} import validation failed. Review the inline details.`,
-        urgent: false,
-      });
-    }
+    toast.add({
+      kind: "error",
+      message: `${label} import validation failed. Review the inline details.`,
+      urgent: false,
+    });
   }, [label, snapshot.status, snapshot.validationId, toast]);
 
   const updateSource = (source: string) => {
@@ -249,15 +245,6 @@ export function ImportPanel({
     }
   };
 
-  const requestExample = () => {
-    setFileError(undefined);
-    if (snapshot.source.length === 0) {
-      updateSource(exampleSource);
-      return;
-    }
-    setReplacement({ type: "example", revision: snapshot.revision });
-  };
-
   const selectFile = (file: File | undefined) => {
     if (!file) return;
     fileRequest.current += 1;
@@ -270,7 +257,7 @@ export function ImportPanel({
       return;
     }
     if (snapshot.source.length > 0) {
-      setReplacement({ type: "file", file, revision: snapshot.revision });
+      setReplacement({ file, revision: snapshot.revision });
       return;
     }
     void loadFile(file, snapshot.revision);
@@ -281,17 +268,13 @@ export function ImportPanel({
     if (session.getSnapshot().revision !== replacement.revision) {
       setReplacement(null);
       setFileError(
-        "The draft changed after the replacement was selected. Select the example or file again.",
+        "The draft changed after the replacement was selected. Select the file again.",
       );
       return;
     }
     const selected = replacement;
     setReplacement(null);
-    if (selected.type === "example") {
-      updateSource(exampleSource);
-    } else {
-      void loadFile(selected.file, selected.revision);
-    }
+    void loadFile(selected.file, selected.revision);
   };
 
   const stale =
@@ -315,6 +298,40 @@ export function ImportPanel({
     snapshot.resultRevision !== snapshot.revision;
   const changedSinceSave =
     savedSource !== undefined && snapshot.source !== savedSource;
+  const currentSettingsConfirmationWasRejected = Boolean(
+    flowSettingsConfirmation?.confirmationId &&
+      flowGenerateLockConfirmationId ===
+        flowSettingsConfirmation.confirmationId &&
+      ["attempt_already_active", "duplicate_generate_click"].includes(
+        flowGenerateResult?.code ?? "",
+      ),
+  );
+  const existingCountIsUnconfirmed =
+    flowCountMode === "existing_project" &&
+    (!flowExistingCountConfirmed ||
+      flowStartingImageCount.trim() === "" ||
+      !Number.isInteger(Number(flowStartingImageCount)) ||
+      Number(flowStartingImageCount) < 0);
+  const generateDisabledReason = flowGenerateRequiresReview
+    ? "Inspect the durable attempt before continuing; dispatch may have occurred."
+    : !currentValidation
+      ? "Validate the current image source before enabling Generate once."
+      : currentItemCount !== 1
+        ? "Flow single-prompt action requires exactly one validated prompt."
+        : savedSource !== snapshot.source
+          ? "Save the current validated prompt before enabling Generate once."
+          : !flowSettingsConfirmation
+            ? "Confirm the manual image settings for the selected Flow project."
+            : currentSettingsConfirmationWasRejected
+              ? "An attempt already matches this settings confirmation. Inspect its durable status before continuing."
+              : flowEntryPending || flowGeneratePending
+                ? "A Flow action is already in progress. Wait for its current result."
+                : persistenceStatus === "saving" ||
+                    persistenceStatus === "loading"
+                  ? "Wait for the current saved-source operation to finish."
+                  : existingCountIsUnconfirmed
+                    ? "Confirm a valid starting image count for the selected project."
+                    : undefined;
 
   const readSnapshot = (value: unknown) => {
     const parsed = PromptBatchSnapshotSchema.safeParse(value);
@@ -361,7 +378,6 @@ export function ImportPanel({
         );
       }
       setSavedSource(source);
-      setSavedAt(saved.batch.updatedAt);
       setPersistenceStatus("saved");
       saveSucceeded = true;
     } catch (error) {
@@ -425,7 +441,6 @@ export function ImportPanel({
         );
       }
       setSavedSource(saved.batch.sourceText);
-      setSavedAt(saved.batch.updatedAt);
       setPersistenceStatus("saved");
       session.setSource(saved.batch.sourceText);
       session.validate();
@@ -725,8 +740,15 @@ export function ImportPanel({
       );
       setFlowCountRecoveryReport(
         report && typeof report === "object"
-          ? (report as Record<string, unknown>)
-          : { status: "blocked", reason: "invalid_worker_response" },
+          ? {
+              ...(report as Record<string, unknown>),
+              attemptId: oldAttemptId,
+            }
+          : {
+              status: "blocked",
+              reason: "invalid_worker_response",
+              attemptId: oldAttemptId,
+            },
       );
       try {
         const refreshedInspection = await persistenceClient.request(
@@ -745,6 +767,7 @@ export function ImportPanel({
         status: "blocked",
         reason: "recovery_request_failed",
         providerOutcome: "unknown",
+        attemptId: oldAttemptId,
       });
     } finally {
       setFlowCountRecoveryPending(false);
@@ -890,6 +913,7 @@ export function ImportPanel({
         onWrapLinesChange={setWrapLines}
         expanded={editorExpanded}
         onExpandedChange={setEditorExpanded}
+        showCharacterCount={false}
         placeholder={`Paste ${kind} JSON here`}
         aria-describedby={`${kind}-import-instructions`}
       />
@@ -897,401 +921,6 @@ export function ImportPanel({
         Validation runs only when you choose Validate &amp; Preview. No draft is
         sent to a provider.
       </p>
-      {snapshot.source === exampleSource ? (
-        <Notice kind="info" announce={false}>
-          Synthetic example loaded. This is test content, not a user production
-          prompt.
-        </Notice>
-      ) : null}
-
-      <div className={styles.sourceActions}>
-        <Button type="button" onClick={requestExample} variant="secondary">
-          Load synthetic example
-        </Button>
-        <Field
-          id={`${kind}-json-file`}
-          label="Load UTF-8 JSON file"
-          hint={`Files over ${INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()} bytes are rejected before reading.`}
-        >
-          <input
-            id={`${kind}-json-file`}
-            className={styles.fileInput}
-            type="file"
-            accept=".json,application/json"
-            aria-label={`Choose ${kind} JSON file`}
-            disabled={fileLoading}
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = "";
-              selectFile(file);
-            }}
-          />
-        </Field>
-      </div>
-      {kind === "image" ? (
-        <div className={styles.sourceActions}>
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={flowReadinessPending || flowGeneratePending}
-            loading={flowReadinessPending}
-            loadingLabel="Checking Flow readiness…"
-            onClick={() => void checkFlowReadiness()}
-          >
-            Check Flow readiness (no Generate)
-          </Button>
-          <p className={styles.subtleText}>
-            Point-in-time read-only scope and observer check. It does not
-            authorize Generate or change attempts/settings confirmation.
-          </p>
-          {flowReadinessResult ? (
-            <>
-              <Notice
-                kind={
-                  flowReadinessResult.status === "ready" ? "success" : "warning"
-                }
-              >
-                {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; mode ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.mode ?? flowCountMode)}; mode eligibility ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.status ?? "unavailable")}; mode blocker ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.detailCode ?? (flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.reason ?? "none")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; qualifying owned candidates ${String(flowReadinessResult.qualifyingCandidateCount ?? "unavailable")}; virtual-scroll containers ${String(flowReadinessResult.virtualScrollContainerCount ?? 0)}; viewport overflow ${String(flowReadinessResult.viewportOverflowObserved ?? false)}; actual scrolling ${String(flowReadinessResult.actualScrollingObserved ?? false)}; candidate continuity ${String(flowReadinessResult.candidateIdentityContinuity ?? "unresolved")}; ownership ambiguous ${String(flowReadinessResult.candidateOwnershipAmbiguous ?? false)}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory completeness and provider identity remain unverified; terminal completion is unsupported.`}
-              </Notice>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => void copyFlowReadiness()}
-              >
-                Copy sanitized readiness report
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={downloadFlowReadiness}
-              >
-                Download sanitized readiness JSON
-              </Button>
-              {flowReadinessExportStatus ? (
-                <p className={styles.subtleText}>
-                  Report export: {flowReadinessExportStatus}.
-                </p>
-              ) : null}
-            </>
-          ) : null}
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={
-              !currentValidation ||
-              !flowSettingsConfirmed ||
-              flowEntryPending ||
-              flowGeneratePending ||
-              flowGenerateRequiresReview ||
-              flowGenerateLockConfirmationId ===
-                flowSettingsConfirmation?.confirmationId ||
-              flowEntryRequiresReview ||
-              currentItemCount !== 1
-            }
-            loading={flowEntryPending}
-            loadingLabel="Inspecting Flow composer…"
-            onClick={() => void fillFlowPrompt()}
-          >
-            Inspect and fill Flow prompt (no Generate)
-          </Button>
-          {!flowSettingsConfirmed ? (
-            <p className={styles.subtleText}>
-              Confirm that you manually selected Image mode, model, ratio, and
-              variants in Flow.
-            </p>
-          ) : null}
-          <Field
-            id="flow-count-mode"
-            label="Flow project count mode"
-            hint="This declaration controls a separate heuristic count. It does not prove provider inventory, identity, or success."
-          >
-            <select
-              id="flow-count-mode"
-              value={flowCountMode}
-              onChange={(event) => {
-                setFlowCountMode(
-                  event.currentTarget.value as
-                    "new_empty_project" | "existing_project",
-                );
-                setFlowExistingCountConfirmed(false);
-                setFlowCountSessionId(crypto.randomUUID());
-                setFlowCountDecisionReport(undefined);
-              }}
-            >
-              <option value="new_empty_project">New empty project</option>
-              <option value="existing_project">Existing project</option>
-            </select>
-          </Field>
-          {flowCountMode === "existing_project" ? (
-            <>
-              <Field
-                id="flow-starting-image-count"
-                label="Starting image count in this project"
-                hint="User-attested count only. The visible DOM inventory remains incomplete."
-                required
-              >
-                <input
-                  id="flow-starting-image-count"
-                  type="number"
-                  min={0}
-                  max={100000}
-                  step={1}
-                  value={flowStartingImageCount}
-                  onChange={(event) => {
-                    setFlowStartingImageCount(event.currentTarget.value);
-                    setFlowExistingCountConfirmed(false);
-                    setFlowCountSessionId(crypto.randomUUID());
-                    setFlowCountDecisionReport(undefined);
-                  }}
-                />
-              </Field>
-              <label className={styles.subtleText}>
-                <input
-                  type="checkbox"
-                  checked={flowExistingCountConfirmed}
-                  onChange={(event) =>
-                    setFlowExistingCountConfirmed(event.currentTarget.checked)
-                  }
-                  disabled={
-                    flowStartingImageCount.trim() === "" ||
-                    !Number.isInteger(Number(flowStartingImageCount)) ||
-                    Number(flowStartingImageCount) < 0
-                  }
-                />{" "}
-                I confirm this starting image count for the selected project.
-              </label>
-            </>
-          ) : null}
-          <p className={styles.subtleText}>
-            Starting count:{" "}
-            {flowCountMode === "new_empty_project"
-              ? "0 (observed empty UI scope)"
-              : flowStartingImageCount || "not confirmed"}
-            ; expected additions for this prompt:{" "}
-            {flowSettingsConfirmation?.declaredVariantCount ??
-              "confirm Flow variants"}
-            ; expected total uses starting count plus frozen declarations and is
-            arithmetic only.
-          </p>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => void inspectFlowCountBlockers()}
-          >
-            Inspect unresolved count observations (read only)
-          </Button>
-          {flowCountBlockerReport ? (
-            <div className={styles.subtleText}>
-              <p>
-                Count blocker inspection:{" "}
-                {String(flowCountBlockerReport.status)}; reason:{" "}
-                {String(flowCountBlockerReport.reason ?? "none")}.
-              </p>
-              {Array.isArray(flowCountBlockerReport.blockers)
-                ? flowCountBlockerReport.blockers.map((entry) => {
-                    const blocker = entry as Record<string, unknown>;
-                    const oldAttemptId =
-                      typeof blocker.attemptId === "string"
-                        ? blocker.attemptId
-                        : "";
-                    return (
-                      <div key={oldAttemptId}>
-                        <p>
-                          Attempt {oldAttemptId}; action state{" "}
-                          {String(blocker.state)}; monitoring{" "}
-                          {String(
-                            blocker.monitoringClassification ??
-                              blocker.observationStatus,
-                          )}
-                          ; count session{" "}
-                          {String(blocker.countSessionPresent ?? "unreported")};
-                          observation session{" "}
-                          {String(blocker.observationStatus ?? "unreported")};
-                          producer{" "}
-                          {String(blocker.producerStatus ?? "unreported")};
-                          observation record{" "}
-                          {String(
-                            blocker.observationSessionPresent ?? "unreported",
-                          )}
-                          ; persisted provider outcome{" "}
-                          {String(
-                            blocker.providerOutcomePersistedStatus ??
-                              "unreported",
-                          )}
-                          ; count decision {String(blocker.countDecision)};
-                          count reason{" "}
-                          {String(blocker.countDecisionReason ?? "unreported")}
-                          reason {String(blocker.reason)}.
-                        </p>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          disabled={
-                            !oldAttemptId ||
-                            flowCountRecoveryPending ||
-                            !flowExistingCountConfirmed ||
-                            !currentValidation ||
-                            currentItemCount !== 1
-                          }
-                          loading={flowCountRecoveryPending}
-                          onClick={() =>
-                            void rebaselineFlowForNewPrompt(oldAttemptId)
-                          }
-                        >
-                          Rebaseline for a new prompt
-                        </Button>
-                      </div>
-                    );
-                  })
-                : null}
-            </div>
-          ) : null}
-          {flowCountRecoveryReport ? (
-            <Notice
-              kind={
-                flowCountRecoveryReport.status === "recovered"
-                  ? "info"
-                  : "warning"
-              }
-            >{`Recovery: ${String(flowCountRecoveryReport.status)}; reason: ${String(flowCountRecoveryReport.reason)}${flowCountRecoveryReport.detailReason ? `; detail: ${String(flowCountRecoveryReport.detailReason)}` : ""}${flowCountRecoveryReport.currentCountDecisionStatus ? `; current count decision: ${String(flowCountRecoveryReport.currentCountDecisionStatus)}` : ""}. The historical provider outcome remains unchanged. This action did not create an attempt or activate Generate.`}</Notice>
-          ) : null}
-          <Button
-            type="button"
-            disabled={
-              !currentValidation ||
-              !flowSettingsConfirmation ||
-              savedSource !== snapshot.source ||
-              persistenceStatus === "saving" ||
-              persistenceStatus === "loading" ||
-              flowEntryPending ||
-              flowGeneratePending ||
-              flowGenerateRequiresReview ||
-              flowGenerateLockConfirmationId ===
-                flowSettingsConfirmation?.confirmationId ||
-              currentItemCount !== 1 ||
-              (flowCountMode === "existing_project" &&
-                (!flowExistingCountConfirmed ||
-                  flowStartingImageCount.trim() === "" ||
-                  !Number.isInteger(Number(flowStartingImageCount)) ||
-                  Number(flowStartingImageCount) < 0))
-            }
-            loading={flowGeneratePending}
-            loadingLabel="Preparing one Generate attempt…"
-            onClick={() => void generateFlowImageOnce()}
-          >
-            Generate once in Flow
-          </Button>
-          {!flowSettingsConfirmation ? (
-            <p className={styles.subtleText}>
-              Confirm manual image settings for the currently selected Flow
-              project before this one-shot action.
-            </p>
-          ) : null}
-          {savedSource !== snapshot.source ? (
-            <p className={styles.subtleText}>
-              Save the current validated one-prompt batch before enabling
-              Generate once.
-            </p>
-          ) : null}
-          {!currentValidation ? (
-            <p className={styles.subtleText}>
-              Validate the current image source before Flow composer inspection
-              is available.
-            </p>
-          ) : currentItemCount !== 1 ? (
-            <p className={styles.subtleText}>
-              Flow single-prompt fill requires exactly one validated JSON body.
-            </p>
-          ) : null}
-          {flowEntryRequiresReview ? (
-            <p className={styles.subtleText}>
-              The last fill result is uncertain or mismatched. Inspect the
-              selected Flow editor before continuing; this panel will not retry
-              input.
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      {flowEntryPending ? (
-        <Notice kind="info">
-          Flow composer discovery and prompt preflight are pending. No Generate
-          action is available.
-        </Notice>
-      ) : null}
-      {flowGeneratePending ? (
-        <Notice kind="info">
-          Preparing the saved prompt and checking the selected Flow document. No
-          Generate input has been sent at this point.
-        </Notice>
-      ) : null}
-      {flowGenerateResult ? (
-        <Notice
-          kind={
-            flowGenerateResult.state === "dispatched"
-              ? "info"
-              : flowGenerateResult.state === "uncertain"
-                ? "warning"
-                : flowGenerateResult.state === "blocked"
-                  ? "warning"
-                  : "error"
-          }
-        >
-          {formatFlowGenerateOutcome(flowGenerateResult)}
-        </Notice>
-      ) : null}
-      {flowGenerateResult?.attemptId ? (
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={flowCountDecisionPending}
-          loading={flowCountDecisionPending}
-          loadingLabel="Reading durable count decision…"
-          onClick={() => void refreshFlowCountDecision()}
-        >
-          Refresh count decision (read-only)
-        </Button>
-      ) : null}
-      {flowCountDecisionReport ? (
-        <Notice kind="info">
-          {`${(flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status === "count_matched" ? "Count matched — heuristic observation. " : ""}${String(flowCountDecisionReport.message ?? "Durable count decision read back.")} Decision ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status ?? flowCountDecisionReport.status ?? "unavailable")}; reason ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.reason ?? flowCountDecisionReport.reason ?? "none")}; expected additions ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedCumulativeAdditions ?? "unknown")}; expected total ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedTotal ?? "unknown")}; observed eligible candidates ${String(((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.observedEligibleCandidateIds as unknown[] | undefined)?.length ?? "unknown")}. Provider outcome ${String(flowCountDecisionReport.providerOutcome ?? "unknown")}; this count match is heuristic observation only.`}
-        </Notice>
-      ) : null}
-      {flowGenerateRequiresReview ||
-      flowGenerateLockConfirmationId ===
-        flowSettingsConfirmation?.confirmationId ? (
-        <p className={styles.subtleText}>
-          {flowGenerateRequiresReview
-            ? flowGenerateResult?.state === "blocked"
-              ? "No Generate input was reported, but durable attempt state needs review. Do not activate again until you inspect the stored attempt."
-              : "This attempt is dispatched or uncertain. Do not activate Generate again; inspect its durable attempt status first."
-            : "This settings confirmation was already used. Reconfirm the manual settings before starting another attempt."}
-        </p>
-      ) : null}
-      {flowEntryResult ? (
-        <Notice kind={flowEntryResult.fillVerified ? "success" : "error"}>
-          {[
-            `${flowEntryResult.stage ?? "Flow entry"}: ${flowEntryResult.message ?? "Flow prompt entry did not complete."}`,
-            flowEntryResult.expectedCodeUnits !== undefined
-              ? `Expected ${flowEntryResult.expectedCodeUnits} code units; actual ${flowEntryResult.actualCodeUnits ?? "unavailable"}. Entry method: ${flowEntryResult.inputMethod ?? "none"}. Fill verified: ${flowEntryResult.fillVerified ? "yes" : "no"}. Generate: unavailable.`
-              : "",
-            flowEntryResult.composer
-              ? `Connector reachable: ${flowEntryResult.connectorReachable ? "yes" : "no"}; composer: ${flowEntryResult.composer}; entry method compatible: ${flowEntryResult.methodCompatible ? "yes" : "no"}.`
-              : "",
-            flowEntryResult.textReadback
-              ? `Editor: ${flowEntryResult.editorKind}; profile: ${flowEntryResult.composerProfile}; readback: ${flowEntryResult.textReadback}.`
-              : "",
-            flowEntryResult.expectedSha256
-              ? `Expected SHA-256 ${flowEntryResult.expectedSha256}; actual ${flowEntryResult.actualSha256 ?? "unavailable"}.`
-              : "",
-            flowEntryResult.immediateMatch !== undefined
-              ? `Immediate match: ${flowEntryResult.immediateMatch ? "yes" : "no"}; settled match: ${flowEntryResult.settledMatch ? "yes" : "no"}. Mismatch: ${flowEntryResult.mismatchCategory ?? "none"}${flowEntryResult.firstDifferenceOffset !== undefined ? ` at offset ${flowEntryResult.firstDifferenceOffset}` : ""}.`
-              : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-        </Notice>
-      ) : null}
-
       {replacement ? (
         <div
           className={styles.replacePrompt}
@@ -1299,8 +928,7 @@ export function ImportPanel({
           aria-label="Confirm source replacement"
         >
           <p>
-            Replace the current {label.toLowerCase()} draft with this{" "}
-            {replacement.type === "example" ? "synthetic example" : "file"}? The
+            Replace the current {label.toLowerCase()} draft with this file? The
             existing draft will be replaced in memory.
           </p>
           <div className={styles.sourceActions}>
@@ -1323,7 +951,31 @@ export function ImportPanel({
       ) : null}
       {fileError ? <Notice kind="error">{fileError}</Notice> : null}
 
-      <div className={styles.sourceActions}>
+      <div
+        className={styles.sourceToolbar}
+        role="group"
+        aria-label={`${label} source actions`}
+      >
+        <Field
+          id={`${kind}-json-file`}
+          label="Load JSON"
+        >
+          <input
+            id={`${kind}-json-file`}
+            className={styles.fileInput}
+            type="file"
+            accept=".json,application/json"
+            aria-label={`Choose ${kind} JSON file`}
+            aria-describedby={`${kind}-json-file-hint`}
+            disabled={fileLoading}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              selectFile(file);
+            }}
+          />
+        </Field>
+        <div className={styles.sourceToolbarButtons}>
         <Button
           type="button"
           variant="secondary"
@@ -1338,20 +990,7 @@ export function ImportPanel({
             ? "Loading saved batch…"
             : "Load saved batch"}
         </Button>
-        <Button
-          type="button"
-          disabled={
-            !currentValidation ||
-            persistenceStatus === "saving" ||
-            persistenceStatus === "loading" ||
-            exportingSavedSource
-          }
-          loading={persistenceStatus === "saving"}
-          loadingLabel="Saving…"
-          onClick={() => void saveValidatedBatch()}
-        >
-          Save validated batch
-        </Button>
+
         <Button
           type="button"
           variant="secondary"
@@ -1366,24 +1005,12 @@ export function ImportPanel({
         >
           Export saved source
         </Button>
+        </div>
       </div>
-      <p role="status" aria-live="polite">
-        {persistenceStatus === "saving"
-          ? "Saving the complete validated batch…"
-          : persistenceStatus === "loading"
-            ? "Reading the saved batch from extension storage…"
-            : changedSinceSave
-              ? "Changed since save. The current draft is not the saved batch."
-              : changedSinceValidation
-                ? "Changed since validation. Validate the current draft before saving."
-                : currentValidation && savedSource === snapshot.source
-                  ? `Saved${savedAt === undefined ? "" : ` at ${new Date(savedAt).toLocaleString()}`}.`
-                  : currentValidation
-                    ? "Validated. Save is available for this exact revision."
-                    : persistenceStatus === "saved"
-                      ? `Saved${savedAt === undefined ? "" : ` at ${new Date(savedAt).toLocaleString()}`}.`
-                      : "Draft. Validate before saving."}
+      <p className={styles.sourceHelper} id={`${kind}-json-file-hint`}>
+        UTF-8 JSON. Maximum {INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()} bytes.
       </p>
+
       {confirmLoad ? (
         <div
           className={styles.replacePrompt}
@@ -1418,12 +1045,12 @@ export function ImportPanel({
       {exportDetails ? (
         <div className={styles.exportDetails} role="status" aria-live="polite">
           <p>Saved source download started: {exportDetails.fileName}</p>
-          <p>
-            {exportDetails.codeUnits.toLocaleString()} JavaScript code units ·{" "}
-            {exportDetails.byteCount.toLocaleString()} UTF-8 bytes
-          </p>
           <details>
-            <summary>SHA-256</summary>
+            <summary>Technical export details</summary>
+            <p>
+              {exportDetails.codeUnits.toLocaleString()} JavaScript code units ·{" "}
+              {exportDetails.byteCount.toLocaleString()} UTF-8 bytes
+            </p>
             <code>{exportDetails.sha256}</code>
           </details>
         </div>
@@ -1446,28 +1073,6 @@ export function ImportPanel({
         ) : null}
       </div>
 
-      <details className={styles.policyDetails}>
-        <summary>Provisional application limits</summary>
-        <p>
-          These limits protect the extension UI and importer. They do not state
-          Flow or Vids acceptance or model capacity.
-        </p>
-        <ul>
-          <li>
-            Per prompt: {INPUT_POLICY.maxPromptCodeUnits.toLocaleString()}{" "}
-            JavaScript code units and{" "}
-            {INPUT_POLICY.maxPromptUtf8Bytes.toLocaleString()} UTF-8 bytes.
-          </li>
-          <li>
-            Total input: {INPUT_POLICY.maxBatchCodeUnits.toLocaleString()}{" "}
-            JavaScript code units and{" "}
-            {INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()} UTF-8 bytes.
-          </li>
-          <li>Prompt count: {INPUT_POLICY.maxPromptCount}.</li>
-          <li>JSON nesting depth: {INPUT_POLICY.maxJsonNestingDepth}.</li>
-        </ul>
-      </details>
-
       {snapshot.status === "error" && snapshot.error ? (
         <Notice kind="error">
           {`${snapshot.error.message}${snapshot.error.itemIndex === undefined ? "" : ` Item ${snapshot.error.itemIndex + 1}.`} Line ${snapshot.error.location.line}, column ${snapshot.error.location.column} (source offset ${snapshot.error.location.offset}).`}
@@ -1489,9 +1094,6 @@ export function ImportPanel({
                 {snapshot.result.items.length === 1 ? "" : "s"} detected
               </h3>
             </div>
-            <span className={styles.resultMode}>
-              {snapshot.result.mode.replaceAll("_", " ")}
-            </span>
           </div>
           {stale ? (
             <Notice kind="warning">
@@ -1499,19 +1101,10 @@ export function ImportPanel({
               current draft; validate again to refresh it.
             </Notice>
           ) : (
-            <Notice kind="success">
+            <p role="status" className={styles.subtleText}>
               Validated preview. Nothing has been sent to a provider.
-            </Notice>
+            </p>
           )}
-          <p className={styles.totalMeasurement}>
-            Total prompt bodies:{" "}
-            {snapshot.result.total.stringCodeUnits.toLocaleString()} JavaScript
-            code units · {snapshot.result.total.utf8Bytes.toLocaleString()}{" "}
-            UTF-8 bytes
-            {snapshot.elapsedMs === undefined
-              ? ""
-              : ` · validated in ${snapshot.elapsedMs.toFixed(1)} ms`}
-          </p>
           <ol className={styles.importItems}>
             {snapshot.result.items.map((item, index) => (
               <li
@@ -1526,11 +1119,6 @@ export function ImportPanel({
                         ? "No shot ID"
                         : `Shot ID ${item.shotId}`}
                     </span>
-                    <small>
-                      {item.measurement.stringCodeUnits.toLocaleString()}{" "}
-                      JavaScript code units ·{" "}
-                      {item.measurement.utf8Bytes.toLocaleString()} UTF-8 bytes
-                    </small>
                   </div>
                   <Button
                     type="button"
@@ -1567,6 +1155,509 @@ export function ImportPanel({
             ))}
           </ol>
         </section>
+      ) : null}
+      <details className={styles.technicalDetails}>
+        <summary>Technical details</summary>
+        <dl>
+          <div>
+            <dt>Source size</dt>
+            <dd>
+              {snapshot.source.length.toLocaleString()} JavaScript code units ·{" "}
+              {new TextEncoder()
+                .encode(snapshot.source)
+                .byteLength.toLocaleString()}{" "}
+              UTF-8 bytes
+            </dd>
+          </div>
+          {snapshot.result ? (
+            <>
+              <div>
+                <dt>Import format</dt>
+                <dd>{snapshot.result.mode.replaceAll("_", " ")}</dd>
+              </div>
+              <div>
+                <dt>Validation time</dt>
+                <dd>
+                  {snapshot.elapsedMs === undefined
+                    ? "unavailable"
+                    : `${snapshot.elapsedMs.toFixed(1)} ms`}
+                </dd>
+              </div>
+              <div>
+                <dt>Prompt body sizes</dt>
+                <dd>
+                  {snapshot.result.items
+                    .map(
+                      (item, index) =>
+                        `Prompt ${index + 1}: ${item.measurement.stringCodeUnits.toLocaleString()} code units / ${item.measurement.utf8Bytes.toLocaleString()} bytes`,
+                    )
+                    .join("; ") || "none"}
+                </dd>
+              </div>
+            </>
+          ) : null}
+        </dl>
+        <details className={styles.policyDetails}>
+          <summary>Provisional application limits</summary>
+          <p>
+            These limits protect the extension UI and importer. They do not
+            state Flow or Vids acceptance or model capacity.
+          </p>
+          <ul>
+            <li>
+              Per prompt: {INPUT_POLICY.maxPromptCodeUnits.toLocaleString()}{" "}
+              JavaScript code units and{" "}
+              {INPUT_POLICY.maxPromptUtf8Bytes.toLocaleString()} UTF-8 bytes.
+            </li>
+            <li>
+              Total input: {INPUT_POLICY.maxBatchCodeUnits.toLocaleString()}{" "}
+              JavaScript code units and{" "}
+              {INPUT_POLICY.maxBatchUtf8Bytes.toLocaleString()} UTF-8 bytes.
+            </li>
+            <li>Prompt count: {INPUT_POLICY.maxPromptCount}.</li>
+            <li>JSON nesting depth: {INPUT_POLICY.maxJsonNestingDepth}.</li>
+          </ul>
+        </details>
+      </details>
+      <div className={styles.saveRow}>
+        <Button
+          type="button"
+          disabled={
+            !currentValidation ||
+            persistenceStatus === "saving" ||
+            persistenceStatus === "loading" ||
+            exportingSavedSource
+          }
+          loading={persistenceStatus === "saving"}
+          loadingLabel="Savingâ€¦"
+          onClick={() => void saveValidatedBatch()}
+        >
+          Save validated batch
+        </Button>
+        <p role="status" aria-live="polite">
+          {persistenceStatus === "saving"
+            ? "Saving validated sourceâ€¦"
+            : persistenceStatus === "loading"
+              ? "Reading saved sourceâ€¦"
+              : changedSinceSave
+                ? "Unsaved changes. The current draft differs from the saved source."
+                : changedSinceValidation
+                  ? "Unsaved changes. Validate the current draft before saving."
+                  : currentValidation && savedSource === snapshot.source
+                    ? "Saved."
+                    : currentValidation
+                      ? "Validated. Save is available for this exact revision."
+                      : persistenceStatus === "saved"
+                        ? "Saved source is unchanged."
+                        : "Not saved. Validate before saving."}
+        </p>
+      </div>
+      {kind === "image" ? (
+        <details className={styles.legacyTools}>
+          <summary>
+            Legacy count-mode and one-shot tools
+            <span>Guarded diagnostics and GenerateOnce</span>
+          </summary>
+          <div className={styles.legacyToolsContent}>
+            {legacyFlowSetup}
+            {kind === "image" ? (
+              <div className={styles.sourceActions}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={flowReadinessPending || flowGeneratePending}
+                  loading={flowReadinessPending}
+                  loadingLabel="Checking Flow readiness…"
+                  onClick={() => void checkFlowReadiness()}
+                >
+                  Check Flow readiness (no Generate)
+                </Button>
+                <p className={styles.subtleText}>
+                  Point-in-time read-only scope and observer check. It does not
+                  authorize Generate or change attempts/settings confirmation.
+                </p>
+                {flowReadinessResult ? (
+                  <>
+                    <Notice
+                      kind={
+                        flowReadinessResult.status === "ready"
+                          ? "success"
+                          : "warning"
+                      }
+                    >
+                      {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; mode ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.mode ?? flowCountMode)}; mode eligibility ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.status ?? "unavailable")}; mode blocker ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.detailCode ?? (flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.reason ?? "none")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; qualifying owned candidates ${String(flowReadinessResult.qualifyingCandidateCount ?? "unavailable")}; virtual-scroll containers ${String(flowReadinessResult.virtualScrollContainerCount ?? 0)}; viewport overflow ${String(flowReadinessResult.viewportOverflowObserved ?? false)}; actual scrolling ${String(flowReadinessResult.actualScrollingObserved ?? false)}; candidate continuity ${String(flowReadinessResult.candidateIdentityContinuity ?? "unresolved")}; ownership ambiguous ${String(flowReadinessResult.candidateOwnershipAmbiguous ?? false)}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory completeness and provider identity remain unverified; terminal completion is unsupported.`}
+                    </Notice>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => void copyFlowReadiness()}
+                    >
+                      Copy sanitized readiness report
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={downloadFlowReadiness}
+                    >
+                      Download sanitized readiness JSON
+                    </Button>
+                    {flowReadinessExportStatus ? (
+                      <p className={styles.subtleText}>
+                        Report export: {flowReadinessExportStatus}.
+                      </p>
+                    ) : null}
+                  </>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={
+                    !currentValidation ||
+                    !flowSettingsConfirmed ||
+                    flowEntryPending ||
+                    flowGeneratePending ||
+                    flowGenerateRequiresReview ||
+                    flowGenerateLockConfirmationId ===
+                      flowSettingsConfirmation?.confirmationId ||
+                    flowEntryRequiresReview ||
+                    currentItemCount !== 1
+                  }
+                  loading={flowEntryPending}
+                  loadingLabel="Inspecting Flow composer…"
+                  onClick={() => void fillFlowPrompt()}
+                >
+                  Inspect and fill Flow prompt (no Generate)
+                </Button>
+                {!flowSettingsConfirmed ? (
+                  <p className={styles.subtleText}>
+                    Confirm that you manually selected Image mode, model, ratio,
+                    and variants in Flow.
+                  </p>
+                ) : null}
+                <Field
+                  id="flow-count-mode"
+                  label="Flow project count mode"
+                  hint="This declaration controls a separate heuristic count. It does not prove provider inventory, identity, or success."
+                >
+                  <select
+                    id="flow-count-mode"
+                    className={`${controlStyles.control} ${controlStyles.select}`}
+                    value={flowCountMode}
+                    onChange={(event) => {
+                      setFlowCountMode(
+                        event.currentTarget.value as
+                          "new_empty_project" | "existing_project",
+                      );
+                      setFlowExistingCountConfirmed(false);
+                      setFlowCountSessionId(crypto.randomUUID());
+                      setFlowCountDecisionReport(undefined);
+                    }}
+                  >
+                    <option value="new_empty_project">New empty project</option>
+                    <option value="existing_project">Existing project</option>
+                  </select>
+                </Field>
+                {flowCountMode === "existing_project" ? (
+                  <>
+                    <Field
+                      id="flow-starting-image-count"
+                      label="Starting image count in this project"
+                      hint="User-attested count only. The visible DOM inventory remains incomplete."
+                      required
+                    >
+                      <input
+                        id="flow-starting-image-count"
+                        className={controlStyles.control}
+                        type="number"
+                        min={0}
+                        max={100000}
+                        step={1}
+                        value={flowStartingImageCount}
+                        onChange={(event) => {
+                          setFlowStartingImageCount(event.currentTarget.value);
+                          setFlowExistingCountConfirmed(false);
+                          setFlowCountSessionId(crypto.randomUUID());
+                          setFlowCountDecisionReport(undefined);
+                        }}
+                      />
+                    </Field>
+                    <label className={styles.subtleText}>
+                      <input
+                        type="checkbox"
+                        checked={flowExistingCountConfirmed}
+                        onChange={(event) =>
+                          setFlowExistingCountConfirmed(
+                            event.currentTarget.checked,
+                          )
+                        }
+                        disabled={
+                          flowStartingImageCount.trim() === "" ||
+                          !Number.isInteger(Number(flowStartingImageCount)) ||
+                          Number(flowStartingImageCount) < 0
+                        }
+                      />{" "}
+                      I confirm this starting image count for the selected
+                      project.
+                    </label>
+                  </>
+                ) : null}
+                <p className={styles.subtleText}>
+                  Starting count:{" "}
+                  {flowCountMode === "new_empty_project"
+                    ? "0 (observed empty UI scope)"
+                    : flowStartingImageCount || "not confirmed"}
+                  ; expected additions for this prompt:{" "}
+                  {flowSettingsConfirmation?.declaredVariantCount ??
+                    "confirm Flow variants"}
+                  ; expected total uses starting count plus frozen declarations
+                  and is arithmetic only.
+                </p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void inspectFlowCountBlockers()}
+                >
+                  Inspect unresolved count observations (read only)
+                </Button>
+                {flowCountBlockerReport ? (
+                  <div className={styles.subtleText}>
+                    <p>
+                      Count blocker inspection:{" "}
+                      {String(flowCountBlockerReport.status)}; reason:{" "}
+                      {String(flowCountBlockerReport.reason ?? "none")}.
+                    </p>
+                    {Array.isArray(flowCountBlockerReport.blockers)
+                      ? flowCountBlockerReport.blockers.map((entry) => {
+                          const blocker = entry as Record<string, unknown>;
+                          const oldAttemptId =
+                            typeof blocker.attemptId === "string"
+                              ? blocker.attemptId
+                              : "";
+                          const canRecover = blocker.recoveryEligible === true;
+                          const missingPrerequisite =
+                            !flowExistingCountConfirmed
+                              ? "Confirm the current image count for the selected project."
+                              : !currentValidation || currentItemCount !== 1
+                                ? "Validate one new prompt before rebaseline."
+                                : flowCountRecoveryPending
+                                  ? "Recovery is already running for a selected blocker."
+                                  : "";
+                          const recoveryReason = canRecover
+                            ? missingPrerequisite
+                            : `Unavailable: ${String(blocker.recoveryBlockReason ?? "session_not_recoverable")}.`;
+                          return (
+                            <article
+                              className={styles.recoveryCard}
+                              key={oldAttemptId || `blocker-${String(entry)}`}
+                              aria-labelledby={`count-blocker-${oldAttemptId}`}
+                            >
+                              <h3 id={`count-blocker-${oldAttemptId}`}>
+                                Attempt{" "}
+                                <code>{oldAttemptId || "ID unavailable"}</code>
+                              </h3>
+                              <p>
+                                Action state: {String(blocker.state)} ·
+                                Observation:{" "}
+                                {String(
+                                  blocker.observationStatus ?? "unreported",
+                                )}{" "}
+                                · Monitoring:{" "}
+                                {String(
+                                  blocker.monitoringClassification ??
+                                    "unreported",
+                                )}
+                              </p>
+                              <p>
+                                Monitoring scope:{" "}
+                                {String(
+                                  blocker.monitoringClassification ===
+                                    "other_document_not_inspected"
+                                    ? "another document; current document was not inspected"
+                                    : "selected Flow document",
+                                )}
+                              </p>
+                              <p>
+                                Count session:{" "}
+                                {String(
+                                  blocker.countSessionPresent ?? "unreported",
+                                )}{" "}
+                                · Producer:{" "}
+                                {String(blocker.producerStatus ?? "unreported")}{" "}
+                                · Provider outcome:{" "}
+                                {String(
+                                  blocker.providerOutcomePersistedStatus ??
+                                    "unreported",
+                                )}{" "}
+                                · Count decision:{" "}
+                                {String(blocker.countDecision ?? "unreported")}
+                                {blocker.countDecisionReason
+                                  ? ` (${String(blocker.countDecisionReason)})`
+                                  : ""}
+                              </p>
+                              <p>
+                                Recovery eligibility:{" "}
+                                {canRecover ? "Eligible" : "Blocked"}
+                                {recoveryReason ? ` · ${recoveryReason}` : ""}
+                              </p>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                disabled={
+                                  !oldAttemptId ||
+                                  !canRecover ||
+                                  flowCountRecoveryPending ||
+                                  !flowExistingCountConfirmed ||
+                                  !currentValidation ||
+                                  currentItemCount !== 1
+                                }
+                                loading={flowCountRecoveryPending}
+                                onClick={() =>
+                                  void rebaselineFlowForNewPrompt(oldAttemptId)
+                                }
+                              >
+                                Rebaseline for a new prompt
+                              </Button>
+                              <p className={styles.subtleText}>
+                                This action applies only to attempt{" "}
+                                {oldAttemptId || "unavailable"}.
+                              </p>
+                              {flowCountRecoveryReport?.attemptId ===
+                              oldAttemptId ? (
+                                <Notice
+                                  kind={
+                                    flowCountRecoveryReport.status ===
+                                    "recovered"
+                                      ? "info"
+                                      : "warning"
+                                  }
+                                >{`Attempt ${oldAttemptId}: recovery ${String(flowCountRecoveryReport.status)}; reason ${String(flowCountRecoveryReport.reason ?? "unavailable")}${flowCountRecoveryReport.detailReason ? `; detail ${String(flowCountRecoveryReport.detailReason)}` : ""}${flowCountRecoveryReport.currentCountDecisionStatus ? `; current count decision ${String(flowCountRecoveryReport.currentCountDecisionStatus)}` : ""}. Historical provider outcome and observations remain unchanged.`}</Notice>
+                              ) : null}
+                            </article>
+                          );
+                        })
+                      : null}
+                  </div>
+                ) : null}
+                {flowCountRecoveryReport &&
+                !(
+                  Array.isArray(flowCountBlockerReport?.blockers) &&
+                  flowCountBlockerReport.blockers.some(
+                    (entry) =>
+                      (entry as Record<string, unknown>).attemptId ===
+                      flowCountRecoveryReport.attemptId,
+                  )
+                ) ? (
+                  <article className={styles.recoveryCard}>
+                    <h3>
+                      Recovery response for attempt{" "}
+                      <code>
+                        {String(
+                          flowCountRecoveryReport.attemptId ?? "unavailable",
+                        )}
+                      </code>
+                    </h3>
+                    <Notice
+                      kind={
+                        flowCountRecoveryReport.status === "recovered"
+                          ? "info"
+                          : "warning"
+                      }
+                    >{`Recovery ${String(flowCountRecoveryReport.status)}; reason ${String(flowCountRecoveryReport.reason ?? "unavailable")}${flowCountRecoveryReport.detailReason ? `; detail ${String(flowCountRecoveryReport.detailReason)}` : ""}. The historical outcome and observations remain unchanged.`}</Notice>
+                  </article>
+                ) : null}
+                <Button
+                  type="button"
+                  disabled={Boolean(generateDisabledReason)}
+                  loading={flowGeneratePending}
+                  loadingLabel="Preparing one Generate attempt…"
+                  onClick={() => void generateFlowImageOnce()}
+                >
+                  Generate once in Flow
+                </Button>
+                {generateDisabledReason ? (
+                  <p className={styles.subtleText}>
+                    {generateDisabledReason}
+                  </p>
+                ) : null}
+                {flowEntryRequiresReview ? (
+                  <p className={styles.subtleText}>
+                    The last fill result is uncertain or mismatched. Inspect the
+                    selected Flow editor before continuing; this panel will not
+                    retry input.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            {flowEntryPending ? (
+              <Notice kind="info">
+                Flow composer discovery and prompt preflight are pending. No
+                Generate action is available.
+              </Notice>
+            ) : null}
+            {flowGeneratePending ? (
+              <Notice kind="info">
+                Preparing the saved prompt and checking the selected Flow
+                document. No Generate input has been sent at this point.
+              </Notice>
+            ) : null}
+            {flowGenerateResult ? (
+              <Notice
+                kind={
+                  flowGenerateResult.state === "dispatched"
+                    ? "info"
+                    : flowGenerateResult.state === "uncertain"
+                      ? "warning"
+                      : flowGenerateResult.state === "blocked"
+                        ? "warning"
+                        : "error"
+                }
+              >
+                {formatFlowGenerateOutcome(flowGenerateResult)}
+              </Notice>
+            ) : null}
+            {flowGenerateResult?.attemptId ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={flowCountDecisionPending}
+                loading={flowCountDecisionPending}
+                loadingLabel="Reading durable count decision…"
+                onClick={() => void refreshFlowCountDecision()}
+              >
+                Refresh count decision (read-only)
+              </Button>
+            ) : null}
+            {flowCountDecisionReport ? (
+              <Notice kind="info">
+                {`${(flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status === "count_matched" ? "Count matched — heuristic observation. " : ""}${String(flowCountDecisionReport.message ?? "Durable count decision read back.")} Decision ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.status ?? flowCountDecisionReport.status ?? "unavailable")}; reason ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.reason ?? flowCountDecisionReport.reason ?? "none")}; expected additions ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedCumulativeAdditions ?? "unknown")}; expected total ${String((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.expectedTotal ?? "unknown")}; observed eligible candidates ${String(((flowCountDecisionReport.countDecision as Record<string, unknown> | undefined)?.observedEligibleCandidateIds as unknown[] | undefined)?.length ?? "unknown")}. Provider outcome ${String(flowCountDecisionReport.providerOutcome ?? "unknown")}; this count match is heuristic observation only.`}
+              </Notice>
+            ) : null}
+            {flowEntryResult ? (
+              <Notice kind={flowEntryResult.fillVerified ? "success" : "error"}>
+                {[
+                  `${flowEntryResult.stage ?? "Flow entry"}: ${flowEntryResult.message ?? "Flow prompt entry did not complete."}`,
+                  flowEntryResult.expectedCodeUnits !== undefined
+                    ? `Expected ${flowEntryResult.expectedCodeUnits} code units; actual ${flowEntryResult.actualCodeUnits ?? "unavailable"}. Entry method: ${flowEntryResult.inputMethod ?? "none"}. Fill verified: ${flowEntryResult.fillVerified ? "yes" : "no"}. Generate: unavailable.`
+                    : "",
+                  flowEntryResult.composer
+                    ? `Connector reachable: ${flowEntryResult.connectorReachable ? "yes" : "no"}; composer: ${flowEntryResult.composer}; entry method compatible: ${flowEntryResult.methodCompatible ? "yes" : "no"}.`
+                    : "",
+                  flowEntryResult.textReadback
+                    ? `Editor: ${flowEntryResult.editorKind}; profile: ${flowEntryResult.composerProfile}; readback: ${flowEntryResult.textReadback}.`
+                    : "",
+                  flowEntryResult.expectedSha256
+                    ? `Expected SHA-256 ${flowEntryResult.expectedSha256}; actual ${flowEntryResult.actualSha256 ?? "unavailable"}.`
+                    : "",
+                  flowEntryResult.immediateMatch !== undefined
+                    ? `Immediate match: ${flowEntryResult.immediateMatch ? "yes" : "no"}; settled match: ${flowEntryResult.settledMatch ? "yes" : "no"}. Mismatch: ${flowEntryResult.mismatchCategory ?? "none"}${flowEntryResult.firstDifferenceOffset !== undefined ? ` at offset ${flowEntryResult.firstDifferenceOffset}` : ""}.`
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+              </Notice>
+            ) : null}
+          </div>
+        </details>
       ) : null}
     </div>
   );

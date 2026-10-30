@@ -141,15 +141,6 @@
 }
 .connectionListButton {
   width: 100%;
-  min-height: var(--control-height-compact);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-xs);
-  font-weight: 650;
 }
 .providerConnection {
   display: grid;
@@ -179,19 +170,9 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-2);
 }
-.connectionLabel {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-}
 .connectionSelect {
   width: 100%;
   min-width: 0;
-  min-height: var(--control-height-compact);
-  padding: var(--space-2);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-  color: var(--color-text);
   font-size: var(--font-size-xs);
 }
 .connectionError {
@@ -270,20 +251,6 @@
 .topActions {
   justify-content: flex-end;
 }
-.previewLabel {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: 750;
-  letter-spacing: 0.1em;
-  white-space: nowrap;
-}
-.previewLabel span {
-  color: var(--color-accent);
-  font-size: 0.55rem;
-}
 .themeToggle {
   display: inline-flex;
   min-height: 2.5rem;
@@ -324,13 +291,18 @@
   letter-spacing: -0.045em;
   line-height: var(--line-height-tight);
 }
-.lede,
 .workspaceGrid {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1.55fr) minmax(17rem, 0.75fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
   align-items: start;
   gap: var(--space-4);
+}
+.lede {
+  max-width: 54ch;
+  margin: 0;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-relaxed);
 }
 .panel {
   display: grid;
@@ -361,56 +333,6 @@
   font-size: var(--font-size-lg);
   letter-spacing: -0.02em;
 }
-.progressPanel {
-  gap: var(--space-4);
-}
-.progressList {
-  display: grid;
-  gap: var(--space-3);
-}
-.progressCard {
-  display: grid;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card-compact);
-  background: color-mix(
-    in srgb,
-    var(--color-surface) 76%,
-    var(--color-surface-raised)
-  );
-}
-.progressMeta {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-.progressMeta strong {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
-.progressMeta span {
-  color: var(--color-text-muted);
-  font-size: 0.75rem;
-  text-align: end;
-}
-.progressTrack {
-  height: 0.38rem;
-  overflow: hidden;
-  border-radius: var(--radius-pill);
-  background: var(--color-disabled-surface);
-}
-.progressTrack span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--color-accent);
-}
-.progressValue {
-  color: var(--color-text-muted);
-  font-size: 0.75rem;
-}
 .actionRow {
   display: grid;
   justify-items: start;
@@ -421,125 +343,6 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   line-height: var(--line-height-relaxed);
-}
-.referenceGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-.referenceCard {
-  display: grid;
-  min-width: 0;
-  align-content: start;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card-compact);
-  background: linear-gradient(
-    145deg,
-    var(--color-surface),
-    var(--color-surface-raised)
-  );
-  box-shadow: var(--shadow-card);
-  color: var(--color-text);
-  cursor: pointer;
-  text-align: start;
-}
-.referenceSelected {
-  border-color: var(--color-accent);
-  box-shadow:
-    inset 0 0 0 1px var(--color-accent),
-    var(--shadow-card-selected);
-}
-.referenceImage {
-  display: grid;
-  min-height: 8rem;
-  place-items: center;
-  border: 1px solid var(--color-border);
-  border-radius: 0.625rem;
-  background: linear-gradient(
-    155deg,
-    var(--color-surface-raised),
-    var(--color-surface)
-  );
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: 1.8rem;
-}
-.referenceEmpty .referenceImage {
-  border-style: dashed;
-  font-size: 2rem;
-}
-.shotId {
-  color: var(--color-accent);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  font-weight: 750;
-}
-.referenceCard strong {
-  overflow-wrap: anywhere;
-  font-size: var(--font-size-sm);
-}
-.referenceState {
-  color: var(--color-text-muted);
-  font-size: 0.75rem;
-}
-.pairList {
-  display: grid;
-  gap: var(--space-2);
-}
-.pairPreview {
-  display: grid;
-  gap: var(--space-3);
-  padding-block-start: var(--space-4);
-  border-block-start: 1px solid var(--color-border);
-}
-.pairPreviewHeading {
-  display: grid;
-  gap: var(--space-1);
-}
-.pairPreviewHeading h3 {
-  margin: 0;
-  font-size: var(--font-size-md);
-}
-.pairRow {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 5.25rem minmax(0, 1fr);
-  gap: var(--space-2) var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card-compact);
-  background: var(--color-surface);
-}
-.pairSides {
-  display: grid;
-  min-width: 0;
-  gap: var(--space-1);
-}
-.pairSides span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-}
-.pairRow > strong {
-  grid-column: 2;
-  font-size: 0.7rem;
-}
-.pairError {
-  border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
-  background: color-mix(
-    in srgb,
-    var(--color-error-surface) 45%,
-    var(--color-surface)
-  );
-}
-.errorText {
-  color: var(--color-error);
-}
-.successText {
-  color: var(--color-success);
 }
 .destinationGroup {
   display: grid;
@@ -596,47 +399,6 @@
 .downloadsPanel {
   gap: var(--space-5);
 }
-.downloadStateSelector {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.downloadStateSelector legend {
-  margin-block-end: var(--space-2);
-  font-size: var(--font-size-sm);
-  font-weight: 700;
-}
-.downloadStateOption {
-  display: inline-flex;
-  min-height: var(--control-height-compact);
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-}
-.downloadStateOption:has(input:checked) {
-  border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface));
-  box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--color-accent) 45%, transparent);
-}
-.downloadStateOption input {
-  accent-color: var(--color-accent);
-}
-.downloadGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
 .downloadCard {
   display: grid;
   min-width: 0;
@@ -681,9 +443,6 @@
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
-}
-.downloadCard .progressTrack {
-  width: 100%;
 }
 .advanced {
   overflow: clip;
@@ -743,9 +502,6 @@
   .workspaceGrid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .progressPanel {
-    grid-row: 2;
-  }
 }
 
 @media (max-width: 760px) {
@@ -797,13 +553,6 @@
   .pageHeading {
     align-items: flex-start;
   }
-  .referenceGrid,
-  .downloadGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .referenceImage {
-    min-height: 7rem;
-  }
 }
 
 @media (max-width: 480px) {
@@ -816,23 +565,95 @@
   .panel {
     padding: var(--space-4);
   }
-  .referenceGrid,
-  .downloadGrid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .referenceImage {
-    min-height: 9rem;
-  }
   .destinationOptions {
     grid-template-columns: minmax(0, 1fr);
   }
-  .pairRow {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .pairRow > strong {
-    grid-column: 1;
-  }
   .advanced summary {
     flex-wrap: wrap;
+  }
+}
+
+.sourceSummary {
+  gap: var(--space-3);
+}
+.sourcePromptList {
+  display: grid;
+  max-height: min(58vh, 42rem);
+  overflow-y: auto;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sourcePrompt {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+.sourcePrompt strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+.sourcePrompt span,
+.sourceStatus,
+.sourceEmpty {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+.sourcePrompt span {
+  flex: 0 0 auto;
+}
+.sourceEmpty {
+  margin: 0;
+  line-height: var(--line-height-relaxed);
+}
+.connectionAdvanced {
+  margin-block-start: var(--space-1);
+  padding-block-start: var(--space-2);
+  border-block-start: 1px solid var(--color-border);
+}
+.connectionAdvanced summary {
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+}
+.connectionAdvancedContent {
+  display: grid;
+  gap: var(--space-2);
+  padding-block-start: var(--space-2);
+}
+.connectionAdvancedContent dl {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+.connectionAdvancedContent dl div {
+  display: grid;
+  grid-template-columns: minmax(5rem, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+}
+.connectionAdvancedContent dt {
+  color: var(--color-text);
+  font-weight: 650;
+}
+.connectionAdvancedContent dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .sourcePromptList {
+    max-height: none;
   }
 }

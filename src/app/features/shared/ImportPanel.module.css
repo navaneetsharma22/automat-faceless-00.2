@@ -4,8 +4,8 @@
   gap: var(--space-4);
 }
 
-.subtleText,
-.totalMeasurement {
+.subtleText {
+  min-width: 0;
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
@@ -17,10 +17,6 @@
   display: grid;
   min-width: 0;
   gap: var(--space-1);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  background: var(--color-surface-raised);
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   overflow-wrap: anywhere;
@@ -55,7 +51,7 @@
   display: block;
   width: 100%;
   min-width: 0;
-  min-height: var(--control-height-compact);
+  min-height: var(--control-height);
   padding: var(--space-2);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-control);
@@ -155,17 +151,6 @@
   font-size: var(--font-size-md);
 }
 
-.resultMode {
-  max-width: 100%;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  text-transform: capitalize;
-  overflow-wrap: anywhere;
-}
-
 .importItems {
   display: grid;
   gap: var(--space-2);
@@ -233,10 +218,166 @@
   overflow-wrap: anywhere;
 }
 
+.sourceToolbar {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.sourceToolbar > * {
+  min-width: 0;
+}
+
+.sourceToolbarButtons {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.sourceHelper {
+  margin: calc(var(--space-3) * -1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-relaxed);
+}
+
+.saveRow {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
+}
+
+.saveRow p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-relaxed);
+}
+
+.technicalDetails {
+  overflow: clip;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+}
+
+.technicalDetails > summary {
+  display: flex;
+  min-height: var(--control-height-compact);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+
+.technicalDetails > dl {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+}
+
+.technicalDetails > dl div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  font-size: var(--font-size-xs);
+}
+
+.technicalDetails dt {
+  color: var(--color-text);
+  font-weight: 650;
+}
+
+.technicalDetails dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.legacyTools {
+  overflow: clip;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+}
+
+.legacyTools > summary {
+  display: flex;
+  min-height: var(--control-height-compact);
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+
+.legacyTools > summary span {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+}
+
+.legacyToolsContent {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
+}
+
+.recoveryCard {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card-compact);
+  background: var(--color-surface);
+}
+
+.recoveryCard h3,
+.recoveryCard p {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.recoveryCard h3 code {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  word-break: break-all;
+}
+
 @media (max-width: 480px) {
   .sourceActions,
   .validateRow {
     align-items: stretch;
+  }
+
+  .sourceToolbar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .sourceToolbarButtons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .sourceActions > *,

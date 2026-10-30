@@ -17,6 +17,7 @@ export type JsonEditorProps = Omit<
   onWrapLinesChange?: (wrap: boolean) => void;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
+  showCharacterCount?: boolean;
 };
 
 export function JsonEditor({
@@ -30,6 +31,7 @@ export function JsonEditor({
   onWrapLinesChange,
   expanded = false,
   onExpandedChange,
+  showCharacterCount = true,
   ...textareaProps
 }: JsonEditorProps) {
   return (
@@ -71,9 +73,11 @@ export function JsonEditor({
           />
         </Field>
       ) : null}
-      <p className={styles.fieldMeta} aria-live="off">
-        Character count: {value.length.toLocaleString()} JavaScript code units
-      </p>
+      {showCharacterCount ? (
+        <p className={styles.fieldMeta} aria-live="off">
+          Character count: {value.length.toLocaleString()} JavaScript code units
+        </p>
+      ) : null}
       {expanded ? (
         <dialog
           className={`${styles.editorDialog} motion-dialog-enter`}

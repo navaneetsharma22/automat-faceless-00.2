@@ -1014,6 +1014,15 @@ export function reduceFlowImageCountDecision(
     updatedAt: input.now,
   });
 
+  // A terminal observation decision is immutable. Check it before validating
+  // fresh or stale baseline inputs so a later reduction cannot rewrite an
+  // interrupted historical decision as observing (or another state).
+  if (
+    input.previous &&
+    ["blocked", "ambiguous", "interrupted"].includes(input.previous.status)
+  )
+    return input.previous;
+
   if (
     declaration.projectId !== resultBaseline.binding.projectId ||
     declaration.tabId !== resultBaseline.binding.tabId ||
@@ -1107,11 +1116,6 @@ export function reduceFlowImageCountDecision(
   const baselineTiles = new Set(declaration.baselineTileTokens);
   const seen = new Set(input.previous?.observedEligibleCandidateIds ?? []);
   let lastSequence = input.previous?.observationSequence ?? 0;
-  if (
-    input.previous &&
-    ["blocked", "ambiguous", "interrupted"].includes(input.previous.status)
-  )
-    return input.previous;
   for (const event of events) {
     if (event.sequence <= lastSequence) continue;
     lastSequence = event.sequence;

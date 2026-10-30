@@ -308,6 +308,26 @@ describe("P05 revised count observation decision", () => {
     });
   });
 
+  it("preserves an interrupted decision before evaluating any refreshed baseline or stale events", () => {
+    const interrupted = reduce("new_empty_project", [
+      structuralEvent(1, { kind: "observer_lost" }),
+    ]);
+    expect(interrupted.status).toBe("interrupted");
+    const staleBaseline = {
+      ...resultBaseline("empty"),
+      binding: {
+        ...resultBaseline("empty").binding,
+        projectId: "another-project",
+      },
+    };
+    expect(
+      reduce("new_empty_project", [structuralEvent(2, { loading: true })], {
+        previous: interrupted,
+        baseline: staleBaseline,
+      }),
+    ).toEqual(interrupted);
+  });
+
   it("does not count a resource load, a disappeared loading marker, or pre-dispatch candidates", () => {
     const loadOnly = structuralEvent(1);
     loadOnly.snapshot.resourceEvents.push({

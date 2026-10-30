@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { connectionWorkerFailureDetail } from "../connectionAttempt";
 import { ConnectionError } from "./ConnectionError";
+import { Button } from "./Button";
+import { Field } from "./Field";
+import controlStyles from "./controls.module.css";
 import { createChromeFoundationClient } from "../../shared/messageClient";
 import {
   isCurrentConnectionAttempt,
@@ -925,26 +928,30 @@ export function ConnectionStatus() {
         <h2 id="connection-title">Connections</h2>
       </div>
       <p className={styles.connectionHint}>
-        Select a project explicitly. Connection checks are read-only; generation
-        is unavailable.
+        Select the intended open project. This panel verifies the connection;
+        guarded image actions are under Legacy tools.
       </p>
-      <button
-        className={`${styles.connectionListButton} motion-control`}
+      <Button
+        variant="secondary"
+        size="compact"
+        className={styles.connectionListButton}
         type="button"
         disabled={!extensionAvailable() || busy !== undefined}
         onClick={() => void findOpenTabs()}
       >
         Find open projects
-      </button>
+      </Button>
       {needsTabListingAccess && extensionAvailable() ? (
-        <button
-          className={`${styles.connectionListButton} motion-control`}
+        <Button
+          variant="secondary"
+          size="compact"
+          className={styles.connectionListButton}
           type="button"
           disabled={busy !== undefined}
           onClick={() => void allowTabListingAccess()}
         >
           Allow tab access for discovery
-        </button>
+        </Button>
       ) : null}
       {!extensionAvailable() ? (
         <p className={styles.connectionHint}>
@@ -971,31 +978,35 @@ export function ConnectionStatus() {
                   connectionStatusLabel(state.status)}
               </strong>
             </div>
-            <label
-              className={styles.connectionLabel}
-              htmlFor={`selected-${provider.toLowerCase()}-tab`}
-            >
-              Already-open {provider} project
-            </label>
-            <select
-              className={styles.connectionSelect}
+            <Field
               id={`selected-${provider.toLowerCase()}-tab`}
-              value={selectedId}
-              disabled={busy !== undefined}
-              onChange={(event) =>
-                void chooseTarget(provider, event.currentTarget.value)
-              }
+              label={`Already-open ${provider} project`}
             >
-              <option value="">Select an open {provider} project</option>
-              {options.map((tab) => (
-                <option key={`${tab.id}:${tab.canonicalTarget}`} value={tab.id}>
-                  {tab.title} · {tab.projectId} · tab {tab.id}
-                </option>
-              ))}
-            </select>
+              <select
+                className={`${controlStyles.control} ${controlStyles.select} ${styles.connectionSelect}`}
+                id={`selected-${provider.toLowerCase()}-tab`}
+                value={selectedId}
+                disabled={busy !== undefined}
+                onChange={(event) =>
+                  void chooseTarget(provider, event.currentTarget.value)
+                }
+              >
+                <option value="">Choose {provider} project…</option>
+                {options.map((tab) => (
+                  <option
+                    key={`${tab.id}:${tab.canonicalTarget}`}
+                    value={tab.id}
+                  >
+                    {tab.title} · {tab.projectId} · tab {tab.id}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <div className={styles.connectionActions}>
-              <button
-                className={`${styles.connectionListButton} motion-control`}
+              <Button
+                variant="secondary"
+                size="compact"
+                className={styles.connectionListButton}
                 type="button"
                 disabled={
                   busy !== undefined || !selectedId || !selectionSaved[provider]
@@ -1010,32 +1021,35 @@ export function ConnectionStatus() {
                   : state.status === "connected"
                     ? "Reconnect"
                     : "Connect"}
-              </button>
+              </Button>
               {state.status === "connected" ? (
-                <button
-                  className={`${styles.connectionListButton} motion-control`}
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  className={styles.connectionListButton}
                   type="button"
                   disabled={busy !== undefined}
                   onClick={() => disconnect(provider)}
                 >
                   Disconnect
-                </button>
+                </Button>
               ) : null}
             </div>
             {state.permissionRequest ? (
-              <button
-                className={`${styles.connectionListButton} motion-control`}
+              <Button
+                variant="secondary"
+                size="compact"
+                className={styles.connectionListButton}
                 type="button"
                 disabled={busy !== undefined}
                 onClick={() => allowProviderAccess(provider)}
               >
                 Allow requested {provider} access
-              </button>
+              </Button>
             ) : null}
             {state.status === "connected" ? (
               <p className={styles.connectionHint}>
-                Connector reachable · read-only capability · no generation
-                capability.
+                Selected project is verified for this session.
               </p>
             ) : null}
             {state.detail && state.status === "pending" ? (
@@ -1046,6 +1060,43 @@ export function ConnectionStatus() {
             {state.detail && state.status !== "pending" ? (
               <ConnectionError detail={state.detail} />
             ) : null}
+            <details className={styles.connectionAdvanced}>
+              <summary>Connection details</summary>
+              <div className={styles.connectionAdvancedContent}>
+                <dl>
+                  <div>
+                    <dt>Selected target</dt>
+                    <dd>
+                      {state.live
+                        ? `${state.live.tab.projectId} · tab ${state.live.tab.id}`
+                        : selectedId
+                          ? `Tab ${selectedId} · verification required`
+                          : "No project selected"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Verification</dt>
+                    <dd>
+                      {state.status === "connected"
+                        ? "Current selected document verified"
+                        : "Not currently verified"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Available here</dt>
+                    <dd>
+                      {state.status === "connected"
+                        ? "Project connection and document checks"
+                        : "Project selection and connection checks"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Image action</dt>
+                    <dd>Guarded GenerateOnce is in Legacy tools.</dd>
+                  </div>
+                </dl>
+              </div>
+            </details>
           </div>
         );
       })}
