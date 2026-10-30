@@ -7,6 +7,7 @@ import { flowImageRuntimeExpression } from "../../src/platforms/flow/images";
 import type { FlowPromptEntryPort } from "../../src/platforms/flow/promptEntry";
 import { importPromptBatch } from "../../src/domain/batches/importBatch";
 import { rolldown } from "rolldown";
+import { setLocalFlowFixture } from "./flowFixturePage";
 
 const fixturePath = resolve(
   process.cwd(),
@@ -22,7 +23,9 @@ const observedFixturePath = resolve(
 );
 
 async function installObservedComposer(page: Page) {
-  await page.setContent(await readFile(observedFixturePath, "utf8"));
+  await setLocalFlowFixture(page, await readFile(observedFixturePath, "utf8"), {
+    resultsRegion: true,
+  });
   await page.evaluate(() => {
     const state = { clicks: 0, submits: 0 };
     Object.assign(window, { localComposerEvents: state });

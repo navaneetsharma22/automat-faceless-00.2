@@ -335,10 +335,11 @@ export async function flowWorkspaceScopeAnalyzer(
     (element) => element.matches(loadingSelector) && visible(element),
   ).length;
   const markerPhrase = "Start creating or drop media";
-  const hasEmptyMarker = projectScan.elements.some(
+  const emptyMarkerCount = projectScan.elements.filter(
     (element) =>
       element.textContent?.trim() === markerPhrase && visible(element),
-  );
+  ).length;
+  const hasEmptyMarker = emptyMarkerCount > 0;
   const labelledRegions = projectScan.elements.filter((element) => {
     const label = element.getAttribute("aria-label")?.trim() ?? "";
     return (
@@ -363,7 +364,10 @@ export async function flowWorkspaceScopeAnalyzer(
   const status: FlowWorkspaceScopeAnalysis["status"] =
     tileTruncated || tiles.length > 100
       ? "tile_scan_truncated"
-      : tiles.length === 0 && labelledRegions.length > 1
+      : tiles.length === 0 &&
+          (labelledRegions.length > 1 ||
+            (hasEmptyMarker && labelledRegions.length > 0) ||
+            emptyMarkerCount > 1)
         ? "baseline_ambiguous"
         : profile === "unsupported"
           ? "unsupported_baseline_profile"

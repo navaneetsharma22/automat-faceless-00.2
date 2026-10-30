@@ -13,6 +13,7 @@ import type { FlowSettingsConfirmation } from "../../src/shared/schemas";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import type { ProviderTab } from "../../src/platforms/shared/contracts";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
+import { setLocalFlowFixture } from "./flowFixturePage";
 
 const source = '{"shot_id":"01","scene":"SYNTHETIC local P04.2 fixture"}';
 const observedFixturePath = resolve(
@@ -47,12 +48,12 @@ async function installImageComposer(
   page: Page,
   actionName = "Start generation",
 ) {
-  await page.setContent(await readFile(observedFixturePath, "utf8"));
+  await setLocalFlowFixture(page, await readFile(observedFixturePath, "utf8"));
   await page.evaluate((actionName) => {
     const results = document.createElement("main");
     results.innerHTML =
       '<section role="region" aria-label="Generated results"><img alt="Existing local fixture result" /></section>';
-    document.body.prepend(results);
+    document.querySelector("flow-project-page")?.prepend(results);
     const submit = document.querySelector(
       "flow-base-prompt-box button:last-of-type",
     );
@@ -65,7 +66,7 @@ async function installImageComposer(
 }
 
 async function installObservedEmptyWorkspace(page: Page) {
-  await page.setContent(await readFile(observedFixturePath, "utf8"));
+  await setLocalFlowFixture(page, await readFile(observedFixturePath, "utf8"));
   await page.evaluate(() => {
     const composer = document.querySelector("flow-base-prompt-box");
     if (!composer) throw new Error("fixture_composer_missing");
@@ -257,6 +258,34 @@ async function createLocalAttempt(
         sameBaseline(discovery.baseline, baseline)
       );
     },
+    startObservation: async (_tabId: number, binding: unknown) => ({
+      status: "started",
+      receipt: {
+        capturedAt: 1_100,
+        sourceBaselineFingerprint: (
+          binding as { sourceBaselineFingerprint: string }
+        ).sourceBaselineFingerprint,
+        captureFingerprint: "c".repeat(64),
+        listenerRootCount: 1,
+        baseline: {
+          completeForRenderedScope: true,
+          virtualized: false,
+          tileCount: 0,
+          mediaCandidateCount: 0,
+          identityCandidateCount: 0,
+          identityCandidatesTruncated: false,
+          unidentifiedImageCount: 0,
+          lifecycleSignalCount: 0,
+          resourceEventCount: 0,
+          captureGaps: [],
+          candidateIds: [],
+          tileTokens: [],
+          candidateTileRelationships: [],
+        },
+      },
+    }),
+    activateObservation: async () => "started",
+    stopObservation: async () => undefined,
     buttonPosition: async (_tabId: number, buttonId: string) => {
       const buttons = page.locator(
         'flow-base-prompt-box button[aria-label="Start generation"]',
@@ -268,6 +297,7 @@ async function createLocalAttempt(
     },
     activate: (tabId: number, position: { x: number; y: number }) =>
       activateFlowImageGenerate(commandPort, tabId, position.x, position.y),
+    productionObservationSupported: true,
   } as unknown as FlowImageGenerateOncePort;
 
   const generate = createFlowImageGenerateOnce({
@@ -302,6 +332,18 @@ async function createLocalAttempt(
       workspaceId: "default",
       promptHash: await sha256Hex(saved.items[0]!.rawJsonBody),
       settingsConfirmation,
+      countMode: options.emptyWorkspace
+        ? {
+            mode: "new_empty_project" as const,
+            countSessionId: "b317581d-9fe5-49bc-87c2-bd4e516a0db8",
+            startingImageCount: 0 as const,
+          }
+        : {
+            mode: "existing_project" as const,
+            countSessionId: "b317581d-9fe5-49bc-87c2-bd4e516a0db9",
+            startingImageCount: 1,
+            userConfirmed: true as const,
+          },
     },
   };
 }
@@ -367,7 +409,7 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
 
     const discovery = await inspectLocalComposer(page, source);
     expect(discovery).toMatchObject({
-      observation: "unsupported",
+      observation: "missing",
     });
     expect(discovery.baseline).toBeUndefined();
   });
@@ -388,11 +430,14 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
     expect(discovery.baseline).toBeUndefined();
   });
 
-  test("visible loading state blocks empty baseline", async ({ page }) => {
+  test("visible loading state blocks readiness while reporting the marker baseline", async ({
+    page,
+  }) => {
     await installObservedEmptyWorkspace(page);
     await page.evaluate(() => {
       const loading = document.createElement("div");
       loading.setAttribute("data-state", "loading");
+      loading.style.cssText = "display:block;min-height:40px";
       document.querySelector("flow-project-page")?.append(loading);
     });
     await fillFixturePrompt(page);
@@ -401,7 +446,10 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
     expect(discovery).toMatchObject({
       observation: "unsupported",
     });
-    expect(discovery.baseline).toBeUndefined();
+    expect(discovery.baseline).toMatchObject({
+      kind: "flow_empty_workspace_ui",
+      markerCount: 1,
+    });
   });
 
   test("conflicting visible results surface blocks empty baseline", async ({
@@ -412,15 +460,19 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
       const results = document.createElement("section");
       results.setAttribute("role", "region");
       results.setAttribute("aria-label", "Generated results");
+      results.style.cssText = "display:block;min-height:40px";
       document.querySelector("flow-project-page")?.append(results);
     });
     await fillFixturePrompt(page);
 
     const discovery = await inspectLocalComposer(page, source);
     expect(discovery).toMatchObject({
-      observation: "unsupported",
+      observation: "ambiguous",
     });
-    expect(discovery.baseline).toBeUndefined();
+    expect(discovery.baseline).toMatchObject({
+      kind: "flow_empty_workspace_ui",
+      markerCount: 1,
+    });
   });
 
   test("hidden unowned media do not become generated results", async ({
@@ -603,7 +655,7 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
   test("successful local preflight permits exactly one activation pair", async ({
     page,
   }) => {
-    const fixture = await createLocalAttempt(page);
+    const fixture = await createLocalAttempt(page, { emptyWorkspace: true });
 
     const result = await fixture.generate(fixture.payload);
 
@@ -625,7 +677,7 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
 
     expect(result).toMatchObject({
       state: "failed-before-dispatch",
-      code: "observation_missing",
+      code: "composer_unsupported",
       activationCount: 0,
     });
     expect(fixture.mouseEvents).toEqual([]);
@@ -652,7 +704,7 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
   test("repeated activation requests do not duplicate submission", async ({
     page,
   }) => {
-    const fixture = await createLocalAttempt(page);
+    const fixture = await createLocalAttempt(page, { emptyWorkspace: true });
     expect((await fixture.generate(fixture.payload)).state).toBe("dispatched");
 
     const repeated = await fixture.generate(fixture.payload);
@@ -664,7 +716,10 @@ test.describe("P04.3 local browser Flow fixtures only", () => {
   test("partial dispatch remains uncertain and is not automatically replayed", async ({
     page,
   }) => {
-    const fixture = await createLocalAttempt(page, { failRelease: true });
+    const fixture = await createLocalAttempt(page, {
+      emptyWorkspace: true,
+      failRelease: true,
+    });
 
     const first = await fixture.generate(fixture.payload);
     const repeated = await fixture.generate(fixture.payload);
