@@ -98,10 +98,27 @@ export class FlowImageAttemptTransitionError extends Error {
 }
 
 export class FlowImageAttemptValidationError extends Error {
-  constructor() {
+  readonly schemaIssuePaths: string[];
+  readonly schemaIssueCodes: string[];
+
+  constructor(
+    issues: readonly { code: string; path: readonly PropertyKey[] }[] = [],
+  ) {
     super("The image attempt record failed validation.");
     this.name = "FlowImageAttemptValidationError";
+    this.schemaIssuePaths = issues
+      .slice(0, 16)
+      .map((issue) => issue.path.map(String).join(".") || "$root");
+    this.schemaIssueCodes = issues
+      .slice(0, 16)
+      .map((issue) => issue.code.slice(0, 40));
   }
+}
+
+function assertValidFlowImageAttempt(record: FlowImageAttemptRecord): void {
+  const parsed = FlowImageAttemptRecordSchema.safeParse(record);
+  if (!parsed.success)
+    throw new FlowImageAttemptValidationError(parsed.error.issues);
 }
 
 export class FlowImageObservationRejectedError extends Error {
@@ -538,9 +555,7 @@ export class ExtensionRepositories {
     ) {
       throw new FlowImagePromptSnapshotConflictError();
     }
-    if (!FlowImageAttemptRecordSchema.safeParse(record).success) {
-      throw new FlowImageAttemptValidationError();
-    }
+    assertValidFlowImageAttempt(record);
     try {
       await this.tables.transaction(
         ["flowImageAttempts+flowImagePromptSnapshots"],
@@ -720,9 +735,7 @@ export class ExtensionRepositories {
         events: [...current.events, input.event],
         updatedAt: input.event.at,
       };
-      if (!FlowImageAttemptRecordSchema.safeParse(next).success) {
-        throw new FlowImageAttemptValidationError();
-      }
+      assertValidFlowImageAttempt(next);
       await this.tables.flowImageAttempts.put(next);
       return next;
     });
@@ -757,8 +770,7 @@ export class ExtensionRepositories {
         },
         updatedAt: input.boundaryAt,
       };
-      if (!FlowImageAttemptRecordSchema.safeParse(next).success)
-        throw new FlowImageAttemptValidationError();
+      assertValidFlowImageAttempt(next);
       await this.tables.flowImageAttempts.put(next);
       const readback = await this.tables.flowImageAttempts.get(input.attemptId);
       if (readback?.countDecision?.dispatchBoundaryAt !== input.boundaryAt)
@@ -943,9 +955,7 @@ export class ExtensionRepositories {
         events: current.events,
         updatedAt: input.receivedAt,
       };
-      if (!FlowImageAttemptRecordSchema.safeParse(attempt).success) {
-        throw new FlowImageAttemptValidationError();
-      }
+      assertValidFlowImageAttempt(attempt);
       await this.tables.flowImageAttempts.put(attempt);
       const readback = await this.tables.flowImageAttempts.get(input.attemptId);
       if (
@@ -1001,9 +1011,7 @@ export class ExtensionRepositories {
         ...(input.countDecision ? { countDecision: input.countDecision } : {}),
         updatedAt: input.resultOutcome?.updatedAt ?? this.now(),
       };
-      if (!FlowImageAttemptRecordSchema.safeParse(updated).success) {
-        throw new FlowImageAttemptValidationError();
-      }
+      assertValidFlowImageAttempt(updated);
       await this.tables.flowImageAttempts.put(updated);
       const readback = await this.tables.flowImageAttempts.get(input.attemptId);
       if (
@@ -1108,9 +1116,7 @@ export class ExtensionRepositories {
             : {}),
           updatedAt: at,
         };
-        if (!FlowImageAttemptRecordSchema.safeParse(next).success) {
-          throw new FlowImageAttemptValidationError();
-        }
+        assertValidFlowImageAttempt(next);
         await this.tables.flowImageAttempts.put(next);
         if (nextState === "uncertain" || activeCountObservationInterrupted)
           uncertain += 1;

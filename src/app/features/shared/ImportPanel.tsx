@@ -35,6 +35,15 @@ export type FlowGenerateOutcomeMessage = {
   releaseAttempted?: boolean;
   activationCount?: number;
   countDecision?: Record<string, unknown>;
+  storageFailure?: {
+    operation?: string;
+    exceptionClass?: string;
+    schemaIssuePaths?: string[];
+    schemaIssueCodes?: string[];
+    attemptStateBeforeFailure?: string;
+    failedWriteOutcome?: string;
+    failureRecordPersistence?: string;
+  };
 };
 
 export function formatFlowGenerateOutcome(
@@ -42,7 +51,10 @@ export function formatFlowGenerateOutcome(
 ): string {
   const evidence = (value: boolean | undefined) =>
     value === undefined ? "unknown" : value ? "sent or uncertain" : "not sent";
-  return `Action state: ${result.state ?? "unknown"}. Failure stage: ${result.failureStage ?? "unknown"}. Code: ${result.code ?? "unavailable"}. Provider outcome: ${result.providerOutcome ?? "unknown"}. ${result.message ?? "The Generate attempt did not complete."} Activation-pair attempts: ${result.activationCount === undefined ? "unknown" : result.activationCount}. Press: ${evidence(result.pressAttempted)}; release: ${evidence(result.releaseAttempted)}.${result.attemptId ? ` Attempt ${result.attemptId}.` : ""}`;
+  const storageDetail = result.storageFailure
+    ? ` Storage operation: ${result.storageFailure.operation ?? "unavailable"}; exception: ${result.storageFailure.exceptionClass ?? "unavailable"}; schema issue codes: ${(result.storageFailure.schemaIssueCodes ?? []).join(",") || "none"}; schema issue paths: ${(result.storageFailure.schemaIssuePaths ?? []).join(",") || "none"}; attempt state before failure: ${result.storageFailure.attemptStateBeforeFailure ?? "none"}; failed write outcome: ${result.storageFailure.failedWriteOutcome ?? "unknown"}; failure record persistence: ${result.storageFailure.failureRecordPersistence ?? "unknown"}.`
+    : "";
+  return `Action state: ${result.state ?? "unknown"}. Failure stage: ${result.failureStage ?? "unknown"}. Code: ${result.code ?? "unavailable"}. Provider outcome: ${result.providerOutcome ?? "unknown"}. ${result.message ?? "The Generate attempt did not complete."} Activation-pair attempts: ${result.activationCount === undefined ? "unknown" : result.activationCount}. Press: ${evidence(result.pressAttempted)}; release: ${evidence(result.releaseAttempted)}.${result.attemptId ? ` Attempt ${result.attemptId}.` : ""}${storageDetail}`;
 }
 
 export function flowGenerateResponseLostOutcome(): FlowGenerateOutcomeMessage {

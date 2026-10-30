@@ -41,6 +41,7 @@ import {
   FlowCountSessionActiveError,
   DuplicateFlowImageConfirmationError,
   FlowImageAttemptTransitionError,
+  FlowImageAttemptValidationError,
   FlowImagePromptSnapshotConflictError,
   sha256Hex,
 } from "../../storage/repositories";
@@ -998,6 +999,16 @@ type FlowImageGenerateOnceResult = {
   pressAttempted?: boolean;
   releaseAttempted?: boolean;
   activationCount?: number;
+  storageFailure?: {
+    operation: string;
+    exceptionClass: string;
+    schemaIssuePaths?: string[];
+    schemaIssueCodes?: string[];
+    attemptStateBeforeFailure?: FlowImageAttemptRecord["state"];
+    failedWriteOutcome?: "validation_rejected_before_put" | "unknown";
+    failureRecordPersistence?:
+      "confirmed" | "not_applicable" | "not_attempted" | "failed";
+  };
   generationAvailable: true;
 };
 
@@ -1020,6 +1031,35 @@ export function createFlowImageGenerateOnce(
     let currentStage: FlowImageAttemptStage = "preparation";
     let observationArmed = false;
     let observationArmBinding: FlowImageObservationArmBinding | undefined;
+    let storageOperation = "unclassified_storage_operation";
+    let storageFailure: FlowImageGenerateOnceResult["storageFailure"];
+    let failureRecordPersistence: NonNullable<
+      FlowImageGenerateOnceResult["storageFailure"]
+    >["failureRecordPersistence"] = "not_applicable";
+
+    const captureStorageFailure = (error: unknown) => {
+      if (storageFailure) return;
+      const exceptionClass =
+        error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+          ? error.name
+          : "Error";
+      const validationError =
+        error instanceof FlowImageAttemptValidationError ? error : undefined;
+      storageFailure = {
+        operation: storageOperation,
+        exceptionClass,
+        ...(validationError?.schemaIssuePaths.length
+          ? { schemaIssuePaths: validationError.schemaIssuePaths.slice(0, 16) }
+          : {}),
+        ...(validationError?.schemaIssueCodes.length
+          ? { schemaIssueCodes: validationError.schemaIssueCodes.slice(0, 16) }
+          : {}),
+        ...(attempt ? { attemptStateBeforeFailure: attempt.state } : {}),
+        ...(validationError?.schemaIssuePaths.length
+          ? { failedWriteOutcome: "validation_rejected_before_put" as const }
+          : { failedWriteOutcome: "unknown" as const }),
+      };
+    };
 
     const response = (
       state: FlowImageGenerateOnceResult["state"],
@@ -1036,6 +1076,9 @@ export function createFlowImageGenerateOnce(
             ? "unknown"
             : "not_started",
       ...(attempt ? { attemptId: attempt.attemptId } : {}),
+      ...(storageFailure
+        ? { storageFailure: { ...storageFailure, failureRecordPersistence } }
+        : {}),
       code,
       message,
       ...(!activationStarted
@@ -1062,6 +1105,7 @@ export function createFlowImageGenerateOnce(
         observationArmed = false;
       }
       let failureRecordPersisted = !attempt;
+      if (!attempt) failureRecordPersistence = "not_attempted";
       if (attempt && !activationStarted) {
         const expected = attempt.state;
         if (
@@ -1070,6 +1114,7 @@ export function createFlowImageGenerateOnce(
           expected === "dispatch-intent"
         ) {
           try {
+            storageOperation = "persist_pre_dispatch_failure_state";
             attempt =
               await dependencies.repositories.transitionFlowImageAttempt({
                 attemptId: attempt.attemptId,
@@ -1102,8 +1147,11 @@ export function createFlowImageGenerateOnce(
                   : {}),
               });
             failureRecordPersisted = true;
-          } catch {
+            failureRecordPersistence = "confirmed";
+          } catch (error) {
             // Keeping an active persisted state blocks replay if storage failed.
+            failureRecordPersistence = "failed";
+            captureStorageFailure(error);
           }
         }
       }
@@ -1121,6 +1169,7 @@ export function createFlowImageGenerateOnce(
     const markUncertain = async (code: string) => {
       if (!attempt || attempt.state !== "dispatch-intent") return;
       try {
+        storageOperation = "persist_uncertain_attempt_state";
         attempt = await dependencies.repositories.transitionFlowImageAttempt({
           attemptId: attempt.attemptId,
           expected: "dispatch-intent",
@@ -1146,9 +1195,10 @@ export function createFlowImageGenerateOnce(
             ? { ...attempt.observationSession, status: "lost" }
             : undefined,
         });
-      } catch {
+      } catch (error) {
         // The durable dispatch-intent remains active and restart reconciliation
         // will move it to uncertain. It can never authorize replay.
+        captureStorageFailure(error);
       }
     };
 
@@ -1193,6 +1243,7 @@ export function createFlowImageGenerateOnce(
         );
       }
       currentStage = "storage";
+      storageOperation = "read_selected_flow_target";
       const selectedRecord =
         await dependencies.repositories.getSelectedTarget("Flow");
       currentStage = "preflight";
@@ -1233,6 +1284,7 @@ export function createFlowImageGenerateOnce(
         );
       }
       currentStage = "storage";
+      storageOperation = "read_saved_image_batch";
       const snapshot = await dependencies.repositories.getPromptBatch(
         input.workspaceId,
         "image",
@@ -1286,6 +1338,7 @@ export function createFlowImageGenerateOnce(
           "The selected Flow document changed during preparation.",
         );
       }
+      storageOperation = "read_count_session_attempts";
       const allCountAttempts =
         await dependencies.repositories.getAllFlowImageAttempts();
       const priorCountAttempts = allCountAttempts.filter(
@@ -1377,6 +1430,7 @@ export function createFlowImageGenerateOnce(
         createdAt: at,
       };
       currentStage = "storage";
+      storageOperation = "create_attempt_and_source_snapshot";
       try {
         attempt = await dependencies.repositories.createFlowImageAttempt({
           attemptId: makeId(),
@@ -1454,6 +1508,7 @@ export function createFlowImageGenerateOnce(
             "The immutable saved-prompt snapshot conflicted with an existing revision. Generate was not activated.",
           );
         }
+        captureStorageFailure(error);
         return response(
           "blocked",
           "preparation_persist_failed",
@@ -1465,6 +1520,7 @@ export function createFlowImageGenerateOnce(
       currentStage = "preparation";
       try {
         currentStage = "storage";
+        storageOperation = "read_immutable_source_snapshot";
         const persistedSource =
           await dependencies.repositories.getFlowImagePromptSnapshot(
             attempt.sourceSnapshotId,
@@ -1488,7 +1544,8 @@ export function createFlowImageGenerateOnce(
           );
         }
         promptSource = persistedSource.rawJsonBody;
-      } catch {
+      } catch (error) {
+        captureStorageFailure(error);
         return failBefore(
           "source_snapshot_unavailable",
           "The immutable saved-prompt snapshot could not be verified. Generate was not activated.",
@@ -1507,6 +1564,7 @@ export function createFlowImageGenerateOnce(
         );
       }
       currentStage = "storage";
+      storageOperation = "transition_preparing_to_verified";
       attempt = await dependencies.repositories.transitionFlowImageAttempt({
         attemptId: attempt.attemptId,
         expected: "preparing",
@@ -1650,6 +1708,7 @@ export function createFlowImageGenerateOnce(
       }
 
       currentStage = "storage";
+      storageOperation = "transition_verified_to_dispatch_intent";
       attempt = await dependencies.repositories.transitionFlowImageAttempt({
         attemptId: attempt.attemptId,
         expected: "verified",
@@ -1814,6 +1873,7 @@ export function createFlowImageGenerateOnce(
               : "The selected project does not have a complete supported count baseline. Generate was not activated.",
           );
         }
+        storageOperation = "persist_observation_session_and_count_baseline";
         attempt =
           await dependencies.repositories.updateFlowImageObservationSession({
             attemptId: attempt.attemptId,
@@ -1870,6 +1930,7 @@ export function createFlowImageGenerateOnce(
       }
 
       currentStage = "storage";
+      storageOperation = "persist_count_dispatch_boundary";
       attempt =
         await dependencies.repositories.recordFlowImageCountDispatchBoundary({
           attemptId: attempt.attemptId,
@@ -1912,6 +1973,7 @@ export function createFlowImageGenerateOnce(
         );
       }
       currentStage = "storage";
+      storageOperation = "transition_dispatch_intent_to_dispatched";
       try {
         attempt = await dependencies.repositories.transitionFlowImageAttempt({
           attemptId: attempt.attemptId,
@@ -1924,7 +1986,8 @@ export function createFlowImageGenerateOnce(
             code: "activation_pair_sent",
           },
         });
-      } catch {
+      } catch (error) {
+        captureStorageFailure(error);
         await markUncertain("post_dispatch_persistence_failed");
         return response(
           "uncertain",
@@ -1938,6 +2001,7 @@ export function createFlowImageGenerateOnce(
         "One Generate activation pair was dispatched. Provider acceptance and results are not verified.",
       );
     } catch (error) {
+      if (currentStage === "storage") captureStorageFailure(error);
       if (activationStarted) {
         currentStage =
           error instanceof FlowImageAttemptTransitionError

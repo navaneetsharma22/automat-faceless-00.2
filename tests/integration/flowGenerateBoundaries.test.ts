@@ -26,6 +26,7 @@ import type { FlowSettingsConfirmation } from "../../src/shared/schemas";
 import {
   ChromePreferenceRepository,
   ExtensionRepositories,
+  FlowImageAttemptValidationError,
 } from "../../src/storage/repositories";
 import type { ProviderTab } from "../../src/platforms/shared/contracts";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
@@ -1445,7 +1446,12 @@ describe("P04 durable Flow image Generate attempt", () => {
     );
     test.repositories.transitionFlowImageAttempt = async (input) => {
       if (input.next === "dispatch-intent")
-        throw new Error("controlled storage failure");
+        throw new FlowImageAttemptValidationError([
+          {
+            code: "unrecognized_keys",
+            path: ["baseline"],
+          },
+        ]);
       return transition(input);
     };
     const result = await test.generate(test.payload);
@@ -1454,7 +1460,19 @@ describe("P04 durable Flow image Generate attempt", () => {
       failureStage: "storage",
       providerOutcome: "not_started",
       activationCount: 0,
+      storageFailure: {
+        operation: "transition_verified_to_dispatch_intent",
+        exceptionClass: "FlowImageAttemptValidationError",
+        schemaIssuePaths: ["baseline"],
+        schemaIssueCodes: ["unrecognized_keys"],
+        attemptStateBeforeFailure: "verified",
+        failedWriteOutcome: "validation_rejected_before_put",
+        failureRecordPersistence: "confirmed",
+      },
     });
+    expect(formatFlowGenerateOutcome(result)).toContain(
+      "Storage operation: transition_verified_to_dispatch_intent; exception: FlowImageAttemptValidationError",
+    );
     expect(test.fixture.activations).toBe(0);
     expect((await test.repositories.getAllFlowImageAttempts())[0]?.state).toBe(
       "failed-before-dispatch",

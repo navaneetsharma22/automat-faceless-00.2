@@ -274,6 +274,24 @@ export const FlowImageAttemptRecordSchema = z
             repeatedCandidateCount: z.number().int().nonnegative().max(10_000),
             unidentifiedImageCount: z.number().int().nonnegative().max(1000),
             unrelatedImageCount: z.number().int().nonnegative().max(10_000),
+            virtualScrollContainerCount: z
+              .number()
+              .int()
+              .nonnegative()
+              .max(32)
+              .optional(),
+            virtualizationEvidence: z
+              .array(
+                z.enum([
+                  "scroll_extent_exceeds_viewport",
+                  "nonzero_scroll_offset",
+                  "viewport_dimensions_unavailable",
+                  "scroll_observed_during_capture",
+                  "tile_identity_recycled",
+                ]),
+              )
+              .max(8)
+              .optional(),
             virtualized: z.boolean(),
             loadingSignalCount: z.number().int().nonnegative().max(10_000),
             captureGaps: z.array(z.string().min(1).max(64)).max(16),
