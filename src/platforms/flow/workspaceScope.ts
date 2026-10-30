@@ -29,11 +29,22 @@ export type FlowWorkspaceScopeAnalysis = {
   tileElements: Map<HTMLElement, Element[]>;
   candidateIds: string[];
   candidateMultiplicity: Array<{ candidateId: string; renderedCopies: number }>;
+  candidateTileRelationships: Array<{
+    tileIndex: number;
+    candidateId: string;
+  }>;
   labelledRegionMediaCount: number;
   repeatedCandidateCount: number;
   unidentifiedImageCount: number;
   unrelatedImageCount: number;
   loadingSignalCount: number;
+  virtualScrollContainerCount: number;
+  virtualizationEvidence: Array<
+    | "scroll_extent_exceeds_viewport"
+    | "nonzero_scroll_offset"
+    | "viewport_dimensions_unavailable"
+  >;
+  /** True only when the visible DOM demonstrates incomplete/recycled coverage. */
   virtualized: boolean;
   documentElementCount: number;
   projectElementCount: number;
@@ -128,11 +139,14 @@ export async function flowWorkspaceScopeAnalyzer(
     tileElements: new Map(),
     candidateIds: [],
     candidateMultiplicity: [],
+    candidateTileRelationships: [],
     labelledRegionMediaCount: 0,
     repeatedCandidateCount: 0,
     unidentifiedImageCount: 0,
     unrelatedImageCount: 0,
     loadingSignalCount: 0,
+    virtualScrollContainerCount: 0,
+    virtualizationEvidence: [],
     virtualized: false,
     documentElementCount,
     projectElementCount: 0,
@@ -238,10 +252,15 @@ export async function flowWorkspaceScopeAnalyzer(
   const tileElements = new Map<HTMLElement, Element[]>();
   const gaps = new Set<string>();
   const multiplicity = new Map<string, number>();
+  const candidateTileRelationships: Array<{
+    tileIndex: number;
+    candidateId: string;
+  }> = [];
   const imagesWithinTiles = new Set<Element>();
   let tileTruncated = false;
   let unidentifiedImageCount = 0;
   for (const tile of tiles.slice(0, 100)) {
+    const tileIndex = tiles.indexOf(tile);
     const tileScan = scanRoots(tile, maxTileElements);
     if (tileScan.truncated) {
       tileTruncated = true;
@@ -275,6 +294,7 @@ export async function flowWorkspaceScopeAnalyzer(
         continue;
       }
       multiplicity.set(candidateId, (multiplicity.get(candidateId) ?? 0) + 1);
+      candidateTileRelationships.push({ tileIndex, candidateId });
     }
   }
   if (tiles.length > 100) gaps.add("tile_list_truncated");
@@ -287,9 +307,28 @@ export async function flowWorkspaceScopeAnalyzer(
       !imagesWithinTiles.has(element) &&
       !composedPath(element).nodes.includes(composer),
   ).length;
-  const virtualized = projectScan.elements.some(
-    (element) => tag(element) === "cdk-virtual-scroll-viewport",
+  const virtualScrollViewports = projectScan.elements.filter(
+    (element) =>
+      tag(element) === "cdk-virtual-scroll-viewport" && visible(element),
   );
+  const virtualizationEvidence = new Set<
+    | "scroll_extent_exceeds_viewport"
+    | "nonzero_scroll_offset"
+    | "viewport_dimensions_unavailable"
+  >();
+  for (const viewport of virtualScrollViewports) {
+    const metrics = viewport as HTMLElement;
+    if (metrics.clientWidth <= 0 || metrics.clientHeight <= 0)
+      virtualizationEvidence.add("viewport_dimensions_unavailable");
+    if (
+      metrics.scrollHeight > metrics.clientHeight + 1 ||
+      metrics.scrollWidth > metrics.clientWidth + 1
+    )
+      virtualizationEvidence.add("scroll_extent_exceeds_viewport");
+    if (metrics.scrollTop > 0 || metrics.scrollLeft > 0)
+      virtualizationEvidence.add("nonzero_scroll_offset");
+  }
+  const virtualized = virtualizationEvidence.size > 0;
   const loadingSelector =
     '[role="progressbar"], [aria-busy="true"], [data-loading="true"], [data-state="loading"], [data-state="generating"], [class*="spinner" i], [class*="loading" i]';
   const loadingSignalCount = projectScan.elements.filter(
@@ -345,6 +384,7 @@ export async function flowWorkspaceScopeAnalyzer(
     tileElements,
     candidateIds: candidateMultiplicity.map((entry) => entry.candidateId),
     candidateMultiplicity,
+    candidateTileRelationships,
     labelledRegionMediaCount,
     repeatedCandidateCount: [...multiplicity.values()].reduce(
       (total, count) => total + Math.max(0, count - 1),
@@ -353,6 +393,8 @@ export async function flowWorkspaceScopeAnalyzer(
     unidentifiedImageCount,
     unrelatedImageCount,
     loadingSignalCount,
+    virtualScrollContainerCount: virtualScrollViewports.length,
+    virtualizationEvidence: [...virtualizationEvidence],
     virtualized,
     documentElementCount: documentScan.elements.length,
     projectElementCount: projectScan.elements.length,
@@ -374,6 +416,8 @@ export async function flowWorkspaceScopeAnalyzer(
     unidentifiedImageCount: analysis.unidentifiedImageCount,
     unrelatedImageCount: analysis.unrelatedImageCount,
     virtualized: analysis.virtualized,
+    virtualScrollContainerCount: analysis.virtualScrollContainerCount,
+    virtualizationEvidence: analysis.virtualizationEvidence,
     loadingSignalCount: analysis.loadingSignalCount,
     captureGaps: analysis.captureGaps,
     completeForRenderedScope: analysis.captureGaps.length === 0,

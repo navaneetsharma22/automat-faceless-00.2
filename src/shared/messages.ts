@@ -70,7 +70,20 @@ export type RequestPayloads = {
           userConfirmed: true;
         };
   };
-  "flow.image.checkReadiness": Record<string, never>;
+  "flow.image.checkReadiness": {
+    countMode:
+      | {
+          mode: "new_empty_project";
+          countSessionId: string;
+          startingImageCount: 0;
+        }
+      | {
+          mode: "existing_project";
+          countSessionId: string;
+          startingImageCount: number;
+          userConfirmed: boolean;
+        };
+  };
   "flow.image.getCountDecision": { attemptId: string };
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };

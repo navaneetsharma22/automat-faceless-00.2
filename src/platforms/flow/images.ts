@@ -212,6 +212,9 @@ export async function flowImageRuntime(
             repeatedCandidateCount: sharedScope.repeatedCandidateCount,
             unidentifiedImageCount: sharedScope.unidentifiedImageCount,
             unrelatedImageCount: sharedScope.unrelatedImageCount,
+            virtualScrollContainerCount:
+              sharedScope.virtualScrollContainerCount,
+            virtualizationEvidence: sharedScope.virtualizationEvidence,
             virtualized: sharedScope.virtualized,
             loadingSignalCount: sharedScope.loadingSignalCount,
             captureGaps: sharedScope.captureGaps,

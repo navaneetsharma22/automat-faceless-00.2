@@ -9,6 +9,7 @@ import {
   FlowImageCountBaselineDeclarationSchema,
   FlowImageCountDecisionSchema,
   FlowImageCountModeRequestSchema,
+  FlowImageReadinessModeSchema,
   FlowImageObservationOutcomeSchema,
   FlowImageObservationReceiptSchema,
   FlowImageObservationSessionSchema,
@@ -513,7 +514,7 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   }),
   requestBase.extend({
     type: z.literal("flow.image.checkReadiness"),
-    payload: z.object({}).strict(),
+    payload: z.object({ countMode: FlowImageReadinessModeSchema }).strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.image.getCountDecision"),

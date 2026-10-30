@@ -30,7 +30,12 @@ export type FoundationDependencies = {
   flowImageGenerateOnce?: (
     input: Extract<AppRequest, { type: "flow.image.generateOnce" }>["payload"],
   ) => Promise<unknown>;
-  flowImageReadiness?: () => Promise<unknown>;
+  flowImageReadiness?: (
+    input: Extract<
+      AppRequest,
+      { type: "flow.image.checkReadiness" }
+    >["payload"],
+  ) => Promise<unknown>;
   flowImageCountDecision?: (attemptId: string) => Promise<unknown>;
   flowImageObservation?: (
     message: unknown,
@@ -198,7 +203,7 @@ async function dispatch(
           "Flow readiness inspection is unavailable in this worker context.",
         );
       }
-      return dependencies.flowImageReadiness();
+      return dependencies.flowImageReadiness(request.payload);
     case "flow.image.getCountDecision":
       if (!dependencies.flowImageCountDecision) {
         throw new FoundationOperationError(

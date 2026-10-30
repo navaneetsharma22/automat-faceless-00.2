@@ -32,6 +32,14 @@ export type FlowRenderedTileCandidateBaseline = {
   repeatedCandidateCount: number;
   unidentifiedImageCount: number;
   unrelatedImageCount: number;
+  virtualScrollContainerCount?: number;
+  virtualizationEvidence?: Array<
+    | "scroll_extent_exceeds_viewport"
+    | "nonzero_scroll_offset"
+    | "viewport_dimensions_unavailable"
+    | "scroll_observed_during_capture"
+    | "tile_identity_recycled"
+  >;
   virtualized: boolean;
   loadingSignalCount: number;
   captureGaps: string[];
@@ -90,6 +98,9 @@ export function captureFlowResultBaseline(
             repeatedCandidateCount: profile.repeatedCandidateCount,
             unidentifiedImageCount: profile.unidentifiedImageCount,
             unrelatedImageCount: profile.unrelatedImageCount,
+            virtualScrollContainerCount:
+              profile.virtualScrollContainerCount ?? 0,
+            virtualizationEvidence: profile.virtualizationEvidence ?? [],
             virtualized: profile.virtualized,
             loadingSignalCount: profile.loadingSignalCount,
             captureGaps: profile.captureGaps,

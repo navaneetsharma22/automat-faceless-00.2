@@ -593,7 +593,25 @@ export function ImportPanel({
     try {
       const report = await persistenceClient.request(
         "flow.image.checkReadiness",
-        {},
+        {
+          countMode:
+            flowCountMode === "new_empty_project"
+              ? {
+                  mode: "new_empty_project",
+                  countSessionId: flowCountSessionId,
+                  startingImageCount: 0,
+                }
+              : {
+                  mode: "existing_project",
+                  countSessionId: flowCountSessionId,
+                  startingImageCount: Number.isInteger(
+                    Number(flowStartingImageCount),
+                  )
+                    ? Number(flowStartingImageCount)
+                    : 0,
+                  userConfirmed: flowExistingCountConfirmed,
+                },
+        },
       );
       if (report && typeof report === "object")
         setFlowReadinessResult(report as Record<string, unknown>);
@@ -653,6 +671,7 @@ export function ImportPanel({
       reason: flowReadinessResult.reason ?? null,
       message: flowReadinessResult.message ?? null,
       gates: flowReadinessResult.gates ?? null,
+      countModeEligibility: flowReadinessResult.countModeEligibility ?? null,
       profile: flowReadinessResult.profile ?? null,
       listenerRoots: flowReadinessResult.listenerRoots ?? null,
       listenersAttached: flowReadinessResult.listenersAttached ?? false,
@@ -666,6 +685,9 @@ export function ImportPanel({
         flowReadinessResult.unidentifiedImageCount ?? null,
       unrelatedImageCount: flowReadinessResult.unrelatedImageCount ?? null,
       virtualized: flowReadinessResult.virtualized ?? null,
+      virtualScrollContainerCount:
+        flowReadinessResult.virtualScrollContainerCount ?? null,
+      virtualizationEvidence: flowReadinessResult.virtualizationEvidence ?? [],
       loadingSignalCount: flowReadinessResult.loadingSignalCount ?? null,
       captureGaps: flowReadinessResult.captureGaps ?? [],
       inventoryComplete: false,
@@ -691,6 +713,7 @@ export function ImportPanel({
       reason: flowReadinessResult.reason ?? null,
       message: flowReadinessResult.message ?? null,
       gates: flowReadinessResult.gates ?? null,
+      countModeEligibility: flowReadinessResult.countModeEligibility ?? null,
       profile: flowReadinessResult.profile ?? null,
       listenerRoots: flowReadinessResult.listenerRoots ?? null,
       listenersAttached: flowReadinessResult.listenersAttached ?? false,
@@ -704,6 +727,9 @@ export function ImportPanel({
         flowReadinessResult.unidentifiedImageCount ?? null,
       unrelatedImageCount: flowReadinessResult.unrelatedImageCount ?? null,
       virtualized: flowReadinessResult.virtualized ?? null,
+      virtualScrollContainerCount:
+        flowReadinessResult.virtualScrollContainerCount ?? null,
+      virtualizationEvidence: flowReadinessResult.virtualizationEvidence ?? [],
       loadingSignalCount: flowReadinessResult.loadingSignalCount ?? null,
       captureGaps: flowReadinessResult.captureGaps ?? [],
       inventoryComplete: false,
@@ -804,7 +830,7 @@ export function ImportPanel({
                   flowReadinessResult.status === "ready" ? "success" : "warning"
                 }
               >
-                {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory and identity remain incomplete/unverified; terminal completion is unsupported.`}
+                {`${String(flowReadinessResult.message ?? "Read-only readiness check finished.")} Readiness ${String(flowReadinessResult.status ?? "unknown")}; reason ${flowReadinessReasonLabel(flowReadinessResult.status, flowReadinessResult.reason)}; mode ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.mode ?? flowCountMode)}; mode eligibility ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.status ?? "unavailable")}; mode blocker ${String((flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.detailCode ?? (flowReadinessResult.countModeEligibility as Record<string, unknown> | undefined)?.reason ?? "none")}; gates ${JSON.stringify(flowReadinessResult.gates ?? {})}; profile ${String(flowReadinessResult.profile ?? "unknown")}; virtual-scroll containers ${String(flowReadinessResult.virtualScrollContainerCount ?? 0)}; measured virtualization risk ${String(flowReadinessResult.virtualized ?? false)}; listeners attached ${String(flowReadinessResult.listenersAttached ?? false)}; stable baseline ${String(flowReadinessResult.stableBaseline ?? false)}. Inventory and identity remain incomplete/unverified; terminal completion is unsupported.`}
               </Notice>
               <Button
                 type="button"

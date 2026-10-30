@@ -74,6 +74,9 @@ export async function flowImageObservationProducer(
       lastFingerprint: "",
       captureGaps: new Set(),
       resourceEvents: [],
+      virtualScrollChanged: false,
+      tileCandidatesByToken: new Map(),
+      tileOwnershipRecycled: false,
       onPageHide: () => undefined,
       documentObserver: null,
     };
@@ -128,7 +131,10 @@ export async function flowImageObservationProducer(
         listenerRoots: state.roots.size,
         baseline: {
           completeForRenderedScope: after.completeForRenderedScope,
+          virtualScrollContainerCount: after.virtualScrollContainerCount,
+          virtualizationEvidence: after.virtualizationEvidence,
           virtualized: after.virtualized,
+          tileOwnershipRecycled: after.tileOwnershipRecycled,
           tileCount: after.tiles.length,
           mediaCandidateCount: after.mediaCandidates.length,
           identityCandidateCount: after.identityCandidates.length,
@@ -208,7 +214,16 @@ export async function flowImageObservationProducer(
   };
   type StructuralSnapshot = {
     completeForRenderedScope: boolean;
+    virtualScrollContainerCount: number;
+    virtualizationEvidence: Array<
+      | "scroll_extent_exceeds_viewport"
+      | "nonzero_scroll_offset"
+      | "viewport_dimensions_unavailable"
+      | "scroll_observed_during_capture"
+      | "tile_identity_recycled"
+    >;
     virtualized: boolean;
+    tileOwnershipRecycled: boolean;
     unidentifiedImageCount: number;
     tiles: Array<{
       tileToken: string;
@@ -282,6 +297,9 @@ export async function flowImageObservationProducer(
     lastFingerprint: string;
     captureGaps: Set<string>;
     resourceEvents: StructuralSnapshot["resourceEvents"];
+    virtualScrollChanged: boolean;
+    tileCandidatesByToken: Map<string, string[]>;
+    tileOwnershipRecycled: boolean;
     onPageHide: () => void;
     documentObserver: MutationObserver | null;
   };
@@ -523,11 +541,37 @@ export async function flowImageObservationProducer(
     }
     if (context.projectScan.truncated) gaps.add("project_scan_truncated");
     if (unidentifiedImageCount > 0) gaps.add("media_identity_missing");
+    const candidatesByTile = new Map<string, string[]>();
+    for (const media of mediaCandidates)
+      candidatesByTile.set(media.tileToken, [
+        ...(candidatesByTile.get(media.tileToken) ?? []),
+        media.candidateId,
+      ]);
+    for (const [tileToken, ids] of candidatesByTile) {
+      const currentIds = [...new Set(ids)].sort();
+      const previousIds = state.tileCandidatesByToken.get(tileToken);
+      if (
+        previousIds &&
+        JSON.stringify(previousIds) !== JSON.stringify(currentIds)
+      )
+        state.tileOwnershipRecycled = true;
+      state.tileCandidatesByToken.set(tileToken, currentIds);
+    }
+    const virtualizationEvidence = new Set<
+      | (typeof context.virtualizationEvidence)[number]
+      | "scroll_observed_during_capture"
+      | "tile_identity_recycled"
+    >(context.virtualizationEvidence);
+    if (state.virtualScrollChanged)
+      virtualizationEvidence.add("scroll_observed_during_capture");
+    if (state.tileOwnershipRecycled)
+      virtualizationEvidence.add("tile_identity_recycled");
     return {
       completeForRenderedScope: gaps.size === 0,
-      virtualized: relevantElements.some(
-        (element) => element.localName === "cdk-virtual-scroll-viewport",
-      ),
+      virtualScrollContainerCount: context.virtualScrollContainerCount,
+      virtualizationEvidence: [...virtualizationEvidence],
+      virtualized: virtualizationEvidence.size > 0,
+      tileOwnershipRecycled: state.tileOwnershipRecycled,
       unidentifiedImageCount,
       tiles,
       mediaCandidates,
@@ -705,7 +749,18 @@ export async function flowImageObservationProducer(
         subtree: true,
       });
       const listener: EventListener = (event) => {
-        const image = event.target as HTMLImageElement | null;
+        const target = event.target as Element | null;
+        if (
+          event.type === "scroll" &&
+          target?.localName === "cdk-virtual-scroll-viewport"
+        ) {
+          state.virtualScrollChanged = true;
+          state.dirty = true;
+          if (!state.active) state.armingChanged = true;
+          schedule(state);
+          return;
+        }
+        const image = target as HTMLImageElement | null;
         if (image?.localName !== "img") return;
         state.dirty = true;
         if (!state.active) state.armingChanged = true;
@@ -728,6 +783,7 @@ export async function flowImageObservationProducer(
       };
       root.addEventListener("load", listener, true);
       root.addEventListener("error", listener, true);
+      root.addEventListener("scroll", listener, true);
       state.roots.set(root, { observer, listener });
     }
   }
@@ -901,6 +957,7 @@ export async function flowImageObservationProducer(
       entry.observer.disconnect();
       root.removeEventListener("load", entry.listener, true);
       root.removeEventListener("error", entry.listener, true);
+      root.removeEventListener("scroll", entry.listener, true);
     }
     state.roots.clear();
   }

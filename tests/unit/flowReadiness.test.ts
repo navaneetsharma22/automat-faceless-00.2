@@ -5,6 +5,21 @@ import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 
 const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+const newEmptyMode = {
+  countMode: {
+    mode: "new_empty_project" as const,
+    countSessionId: "8ca777a9-09a4-4640-82e1-8ece47164153",
+    startingImageCount: 0 as const,
+  },
+};
+const existingMode = {
+  countMode: {
+    mode: "existing_project" as const,
+    countSessionId: "3b7a1cd4-eeb5-441d-b9eb-142b3e8a0084",
+    startingImageCount: 9,
+    userConfirmed: true,
+  },
+};
 afterEach(() => {
   Object.defineProperty(globalThis, "chrome", {
     configurable: true,
@@ -66,25 +81,32 @@ function readinessHarness(finalResult: unknown) {
 }
 
 describe("Flow no-Generate readiness", () => {
-  it("captures a sanitized point-in-time result without creating attempts or issuing input", async () => {
+  it("checks new-empty mode without creating attempts or issuing input", async () => {
     const harness = readinessHarness({
       status: "ready",
-      profile: "populated_tiles",
+      profile: "empty_marker",
+      completeForRenderedScope: true,
       listenersAttached: true,
       stableBaseline: true,
-      renderedTileCount: 2,
-      distinctCandidateCount: 2,
-      repeatedCandidateCount: 1,
+      renderedTileCount: 0,
+      distinctCandidateCount: 0,
+      candidateIds: [],
+      repeatedCandidateCount: 0,
       unidentifiedImageCount: 0,
       unrelatedImageCount: 0,
-      virtualized: true,
+      virtualized: false,
+      virtualScrollContainerCount: 1,
+      virtualizationEvidence: [],
       loadingSignalCount: 0,
       captureGaps: [],
       terminalSemanticsSupported: false,
     });
-    const result = await createFlowImageReadinessCheck(harness.repositories)();
+    const result = await createFlowImageReadinessCheck(harness.repositories)(
+      newEmptyMode,
+    );
     expect(result).toMatchObject({
       status: "ready",
+      countModeEligibility: { status: "eligible", mode: "new_empty_project" },
       attemptsCreated: 0,
       confirmationConsumed: false,
       productionReceiptCreated: false,
@@ -108,13 +130,156 @@ describe("Flow no-Generate readiness", () => {
       reason: "unsupported_baseline_profile",
       captureGaps: [],
     });
-    const result = await createFlowImageReadinessCheck(harness.repositories)();
+    const result = await createFlowImageReadinessCheck(harness.repositories)(
+      newEmptyMode,
+    );
     expect(result).toMatchObject({
       status: "blocked",
       reason: "unsupported_baseline_profile",
       attemptsCreated: 0,
       confirmationConsumed: false,
     });
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
+  });
+
+  it("does not treat a harmless virtual-scroll container as an existing-project blocker", async () => {
+    const harness = readinessHarness({
+      status: "ready",
+      profile: "populated_tiles",
+      completeForRenderedScope: true,
+      listenersAttached: true,
+      stableBaseline: true,
+      renderedTileCount: 2,
+      distinctCandidateCount: 2,
+      candidateIds: ["a".repeat(64), "b".repeat(64)],
+      repeatedCandidateCount: 0,
+      unidentifiedImageCount: 0,
+      unrelatedImageCount: 0,
+      virtualized: false,
+      virtualScrollContainerCount: 1,
+      virtualizationEvidence: [],
+      loadingSignalCount: 0,
+      captureGaps: [],
+    });
+    const result = await createFlowImageReadinessCheck(harness.repositories)(
+      existingMode,
+    );
+    expect(result).toMatchObject({
+      status: "ready",
+      virtualScrollContainerCount: 1,
+      virtualized: false,
+      countModeEligibility: { status: "eligible", mode: "existing_project" },
+      attemptsCreated: 0,
+      confirmationConsumed: false,
+      productionReceiptCreated: false,
+    });
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
+  });
+
+  it("blocks existing-project count mode on measured scroll coverage or recycling evidence", async () => {
+    const harness = readinessHarness({
+      status: "ready",
+      profile: "populated_tiles",
+      completeForRenderedScope: true,
+      listenersAttached: true,
+      stableBaseline: true,
+      renderedTileCount: 2,
+      distinctCandidateCount: 2,
+      candidateIds: ["a".repeat(64), "b".repeat(64)],
+      repeatedCandidateCount: 0,
+      unidentifiedImageCount: 0,
+      unrelatedImageCount: 0,
+      virtualized: true,
+      virtualScrollContainerCount: 1,
+      virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+      loadingSignalCount: 0,
+      captureGaps: [],
+    });
+    const result = await createFlowImageReadinessCheck(harness.repositories)(
+      existingMode,
+    );
+    expect(result).toMatchObject({
+      status: "blocked",
+      countModeEligibility: {
+        status: "ambiguous",
+        reason: "existing_project_virtualized",
+        detailCode: "virtual_scroll_coverage_or_scrolling_observed",
+      },
+      reason: "virtual_scroll_coverage_or_scrolling_observed",
+      message: expect.stringContaining("measured virtual-scroll overflow"),
+      attemptsCreated: 0,
+      confirmationConsumed: false,
+      productionReceiptCreated: false,
+    });
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
+  });
+
+  it("keeps existing-project count mode blocked when a visible virtual-scroll viewport cannot be measured", async () => {
+    const harness = readinessHarness({
+      status: "ready",
+      profile: "populated_tiles",
+      completeForRenderedScope: true,
+      listenersAttached: true,
+      stableBaseline: true,
+      renderedTileCount: 2,
+      distinctCandidateCount: 2,
+      candidateIds: ["a".repeat(64), "b".repeat(64)],
+      repeatedCandidateCount: 0,
+      unidentifiedImageCount: 0,
+      unrelatedImageCount: 0,
+      virtualized: true,
+      virtualScrollContainerCount: 1,
+      virtualizationEvidence: ["viewport_dimensions_unavailable"],
+      loadingSignalCount: 0,
+      captureGaps: [],
+    });
+    const result = await createFlowImageReadinessCheck(harness.repositories)(
+      existingMode,
+    );
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "virtual_scroll_measurement_inconclusive",
+      message: expect.stringContaining("could not be measured"),
+      countModeEligibility: {
+        status: "ambiguous",
+        reason: "existing_project_virtualized",
+        detailCode: "virtual_scroll_measurement_inconclusive",
+      },
+      attemptsCreated: 0,
+      confirmationConsumed: false,
+      productionReceiptCreated: false,
+    });
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
+  });
+
+  it("reports an unconfirmed existing count before document inspection or mutation", async () => {
+    const harness = readinessHarness({ status: "ready" });
+    const unconfirmed = {
+      countMode: {
+        ...existingMode.countMode,
+        userConfirmed: false,
+      },
+    };
+    const result = await createFlowImageReadinessCheck(harness.repositories)(
+      unconfirmed,
+    );
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "count_declaration_unconfirmed",
+      countModeEligibility: {
+        mode: "existing_project",
+        status: "blocked",
+        detailCode: "count_declaration_unconfirmed",
+      },
+      attemptsCreated: 0,
+      confirmationConsumed: false,
+      productionReceiptCreated: false,
+    });
+    expect(harness.executeScript).not.toHaveBeenCalled();
     expect(harness.sendCommand).not.toHaveBeenCalled();
     expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
   });
@@ -132,9 +297,9 @@ describe("Flow no-Generate readiness", () => {
         debugger: { sendCommand: vi.fn() },
       },
     });
-    const result = (await createFlowImageReadinessCheck(
-      repositories,
-    )()) as Record<string, unknown>;
+    const result = (await createFlowImageReadinessCheck(repositories)(
+      newEmptyMode,
+    )) as Record<string, unknown>;
     expect(result).toMatchObject({
       status: "blocked",
       reason: "no_selected_target",
@@ -213,9 +378,9 @@ describe("Flow no-Generate readiness", () => {
             }
           : {}),
       });
-      const result = (await createFlowImageReadinessCheck(
-        harness.repositories,
-      )()) as Record<string, unknown>;
+      const result = (await createFlowImageReadinessCheck(harness.repositories)(
+        newEmptyMode,
+      )) as Record<string, unknown>;
       expect(result).toMatchObject({
         status: "blocked",
         reason: entry.expectedReason,
@@ -237,7 +402,7 @@ describe("Flow no-Generate readiness", () => {
     ]);
     const result = (await createFlowImageReadinessCheck(
       staleDocument.repositories,
-    )()) as Record<string, unknown>;
+    )(newEmptyMode)) as Record<string, unknown>;
     expect(result).toMatchObject({
       status: "blocked",
       reason: "verification_stale_document",

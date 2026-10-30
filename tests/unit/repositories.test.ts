@@ -49,8 +49,38 @@ describe("extension repository boundaries", () => {
     expect(selected.reconnectEnabled).toBe(false);
     expect(await repositories.setReconnectIntent("Vids", false)).toBe(true);
     expect(
-      await repositories.markTargetVerified("Vids", selected.canonicalTarget),
+      await repositories.recordTargetVerification({
+        provider: "Vids",
+        tabId: selected.tabId,
+        canonicalTarget: selected.canonicalTarget,
+        projectId: "demo",
+        frameId: 0,
+        documentId: "browser-document-1",
+        documentToken: "connector-document-1",
+        extensionBuildId: "build-current",
+        extensionProtocolVersion: 4,
+        connectorBuildId: "build-current",
+        connectorProtocolVersion: 1,
+        capability: "read-only-connection-v1",
+        verifiedAt: 100,
+      }),
     ).toBe(true);
+    expect(await repositories.getSelectedTarget("Vids")).toMatchObject({
+      verification: "verified",
+      verificationBinding: {
+        provider: "Vids",
+        tabId: selected.tabId,
+        canonicalTarget: selected.canonicalTarget,
+        projectId: "demo",
+        frameId: 0,
+        documentId: "browser-document-1",
+        extensionBuildId: "build-current",
+        extensionProtocolVersion: 4,
+        connectorBuildId: "build-current",
+        connectorProtocolVersion: 1,
+        capability: "read-only-connection-v1",
+      },
+    });
     await repositories.markTargetsUnverified();
     expect(await repositories.getSelectedTarget("Vids")).toMatchObject({
       verification: "unverified",

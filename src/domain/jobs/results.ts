@@ -86,6 +86,25 @@ const flowImageObservationSchema = z.discriminatedUnion("profile", [
       repeatedCandidateCount: z.number().int().nonnegative().max(10_000),
       unidentifiedImageCount: z.number().int().nonnegative().max(1000),
       unrelatedImageCount: z.number().int().nonnegative().max(10_000),
+      /** DOM container presence is diagnostic only; `virtualized` is measured risk. */
+      virtualScrollContainerCount: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(32)
+        .optional(),
+      virtualizationEvidence: z
+        .array(
+          z.enum([
+            "scroll_extent_exceeds_viewport",
+            "nonzero_scroll_offset",
+            "viewport_dimensions_unavailable",
+            "scroll_observed_during_capture",
+            "tile_identity_recycled",
+          ]),
+        )
+        .max(8)
+        .optional(),
       virtualized: z.boolean(),
       loadingSignalCount: z.number().int().nonnegative().max(10_000),
       captureGaps: z.array(z.string().min(1).max(64)).max(16),
@@ -143,6 +162,24 @@ export const FlowImageObservationArmReceiptSchema = z
     baseline: z
       .object({
         completeForRenderedScope: z.boolean(),
+        virtualScrollContainerCount: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(32)
+          .optional(),
+        virtualizationEvidence: z
+          .array(
+            z.enum([
+              "scroll_extent_exceeds_viewport",
+              "nonzero_scroll_offset",
+              "viewport_dimensions_unavailable",
+              "scroll_observed_during_capture",
+              "tile_identity_recycled",
+            ]),
+          )
+          .max(8)
+          .optional(),
         virtualized: z.boolean(),
         tileCount: z.number().int().nonnegative().max(100),
         mediaCandidateCount: z.number().int().nonnegative().max(500),
@@ -163,6 +200,7 @@ export const FlowImageObservationArmReceiptSchema = z
               .strict(),
           )
           .max(500),
+        tileOwnershipRecycled: z.boolean().optional(),
         captureGaps: z.array(z.string().min(1).max(64)).max(16),
       })
       .strict(),
@@ -339,7 +377,26 @@ const FlowStructuralLifecycleSignalSchema = z
 export const FlowStructuralSnapshotSchema = z
   .object({
     completeForRenderedScope: z.boolean(),
+    virtualScrollContainerCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(32)
+      .optional(),
+    virtualizationEvidence: z
+      .array(
+        z.enum([
+          "scroll_extent_exceeds_viewport",
+          "nonzero_scroll_offset",
+          "viewport_dimensions_unavailable",
+          "scroll_observed_during_capture",
+          "tile_identity_recycled",
+        ]),
+      )
+      .max(8)
+      .optional(),
     virtualized: z.boolean(),
+    tileOwnershipRecycled: z.boolean().optional(),
     unidentifiedImageCount: z.number().int().nonnegative().max(1000),
     tiles: z.array(FlowStructuralTileSnapshotSchema).max(100),
     mediaCandidates: z.array(FlowStructuralMediaCandidateSchema).max(500),
@@ -506,7 +563,26 @@ export const FlowImageCountBaselineDeclarationSchema = z
         baselineTileTokens: z
           .array(z.string().regex(/^tile-[0-9]{1,6}$/))
           .max(100),
+        virtualScrollContainerCount: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(32)
+          .optional(),
+        virtualizationEvidence: z
+          .array(
+            z.enum([
+              "scroll_extent_exceeds_viewport",
+              "nonzero_scroll_offset",
+              "viewport_dimensions_unavailable",
+              "scroll_observed_during_capture",
+              "tile_identity_recycled",
+            ]),
+          )
+          .max(8)
+          .optional(),
         virtualized: z.boolean(),
+        tileOwnershipRecycled: z.boolean().optional(),
         renderedScopeComplete: z.boolean(),
         captureGaps: z.array(z.string().min(1).max(64)).max(16),
         priorMatchedAttemptIds: z.array(z.string().min(1).max(128)).max(100),
@@ -533,6 +609,28 @@ export const FlowImageCountBaselineDeclarationSchema = z
   });
 export type FlowImageCountBaselineDeclaration = z.infer<
   typeof FlowImageCountBaselineDeclarationSchema
+>;
+
+/** Read-only selection passed to readiness; unlike dispatch it never consumes a confirmation. */
+export const FlowImageReadinessModeSchema = z.discriminatedUnion("mode", [
+  z
+    .object({
+      mode: z.literal("new_empty_project"),
+      countSessionId: z.string().uuid(),
+      startingImageCount: z.literal(0),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("existing_project"),
+      countSessionId: z.string().uuid(),
+      startingImageCount: z.number().int().nonnegative().max(100_000),
+      userConfirmed: z.boolean(),
+    })
+    .strict(),
+]);
+export type FlowImageReadinessMode = z.infer<
+  typeof FlowImageReadinessModeSchema
 >;
 
 export const FlowImageCountModeRequestSchema = z.discriminatedUnion("mode", [
@@ -622,6 +720,170 @@ export type FlowImageCountReductionInput = {
   now: number;
 };
 
+export type FlowImageCountBaselineEligibilityInput = {
+  mode: "new_empty_project" | "existing_project";
+  startingImageCount: number;
+  profile:
+    | "flow_empty_workspace_ui"
+    | "flow_rendered_tile_candidates"
+    | "flow_labelled_results_region"
+    | "unsupported";
+  renderedTileCount: number;
+  candidateIds: string[];
+  renderedScopeComplete: boolean;
+  captureGaps: string[];
+  unidentifiedImageCount: number;
+  loadingSignalCount?: number;
+  virtualized: boolean;
+  virtualizationEvidence?: string[];
+  virtualScrollContainerCount: number;
+  declaredVirtualized?: boolean;
+  declaredVirtualizationEvidence?: string[];
+  declaredVirtualScrollContainerCount?: number;
+  priorMatchedAttemptIds: string[];
+  priorMatchedCandidateIds: string[];
+  priorDeclaredAdditions: number;
+  declaredBaselineCandidateIds?: string[];
+  declaredBaselineTileCount?: number;
+};
+
+export type FlowImageCountBaselineEligibility = {
+  status: "eligible" | "blocked" | "ambiguous";
+  reason?:
+    | "baseline_incomplete"
+    | "existing_project_virtualized"
+    | "candidate_ownership_ambiguous";
+  detailCode?: string;
+};
+
+/**
+ * Shared baseline gate used by both no-Generate readiness and dispatch-time
+ * count reduction. A virtual-scroll element alone is descriptive; the caller
+ * sets `virtualized` only for measured overflow, nonzero offset, capture-time
+ * scrolling, or tile identity recycling.
+ */
+export function evaluateFlowImageCountBaselineEligibility(
+  input: FlowImageCountBaselineEligibilityInput,
+): FlowImageCountBaselineEligibility {
+  const blocked = (detailCode: string) => ({
+    status: "blocked" as const,
+    reason: "baseline_incomplete" as const,
+    detailCode,
+  });
+  const ambiguous = (
+    reason: NonNullable<FlowImageCountBaselineEligibility["reason"]>,
+    detailCode: string,
+  ) => ({ status: "ambiguous" as const, reason, detailCode });
+  const virtualizationRisk =
+    input.virtualized || (input.virtualizationEvidence?.length ?? 0) > 0;
+  if (
+    input.startingImageCount < 0 ||
+    (input.mode === "new_empty_project" && input.startingImageCount !== 0)
+  )
+    return blocked("starting_count_invalid_for_mode");
+  if (
+    input.profile === "flow_labelled_results_region" ||
+    input.profile === "unsupported"
+  )
+    return blocked("baseline_profile_unsupported");
+  if (
+    !input.renderedScopeComplete ||
+    input.captureGaps.length > 0 ||
+    input.unidentifiedImageCount > 0
+  )
+    return blocked("rendered_scope_incomplete");
+  if ((input.loadingSignalCount ?? 0) > 0) return blocked("workspace_busy");
+  if (input.profile === "flow_empty_workspace_ui") {
+    if (input.renderedTileCount !== 0 || input.candidateIds.length !== 0)
+      return blocked("empty_profile_contains_rendered_candidates");
+    if (input.mode === "existing_project" && input.startingImageCount > 0)
+      return blocked("existing_count_conflicts_with_empty_scope");
+  } else if (input.renderedTileCount === 0) {
+    return blocked("populated_profile_has_no_rendered_tiles");
+  }
+  if (
+    input.declaredBaselineCandidateIds &&
+    JSON.stringify([...new Set(input.declaredBaselineCandidateIds)].sort()) !==
+      JSON.stringify([...new Set(input.candidateIds)].sort())
+  )
+    return blocked("candidate_baseline_changed");
+  if (
+    input.declaredBaselineTileCount !== undefined &&
+    input.declaredBaselineTileCount !== input.renderedTileCount
+  )
+    return blocked("tile_baseline_changed");
+  if (
+    input.declaredVirtualized !== undefined &&
+    input.declaredVirtualized !== input.virtualized
+  )
+    return blocked("virtualization_baseline_changed");
+  if (
+    input.declaredVirtualScrollContainerCount !== undefined &&
+    input.declaredVirtualScrollContainerCount !==
+      input.virtualScrollContainerCount
+  )
+    return blocked("virtual_scroll_container_count_changed");
+  if (
+    input.declaredVirtualizationEvidence !== undefined &&
+    JSON.stringify([...input.declaredVirtualizationEvidence].sort()) !==
+      JSON.stringify([...(input.virtualizationEvidence ?? [])].sort())
+  )
+    return blocked("virtualization_evidence_changed");
+  if (input.mode === "existing_project" && virtualizationRisk)
+    return ambiguous(
+      "existing_project_virtualized",
+      input.virtualizationEvidence?.includes("tile_identity_recycled")
+        ? "tile_identity_recycling_observed"
+        : input.virtualizationEvidence?.includes(
+              "viewport_dimensions_unavailable",
+            ) &&
+            !input.virtualizationEvidence.some((evidence) =>
+              [
+                "scroll_extent_exceeds_viewport",
+                "nonzero_scroll_offset",
+                "scroll_observed_during_capture",
+              ].includes(evidence),
+            )
+          ? "virtual_scroll_measurement_inconclusive"
+          : input.virtualizationEvidence?.some((evidence) =>
+                [
+                  "scroll_extent_exceeds_viewport",
+                  "nonzero_scroll_offset",
+                  "viewport_dimensions_unavailable",
+                  "scroll_observed_during_capture",
+                ].includes(evidence),
+              )
+            ? "virtual_scroll_coverage_or_scrolling_observed"
+            : "virtualization_risk_observed_unspecified",
+    );
+  if (input.mode === "new_empty_project") {
+    if (virtualizationRisk)
+      return ambiguous(
+        "candidate_ownership_ambiguous",
+        "new_empty_scope_has_virtualization_or_recycling_evidence",
+      );
+    if (input.priorMatchedAttemptIds.length === 0) {
+      if (
+        input.profile !== "flow_empty_workspace_ui" ||
+        input.renderedTileCount !== 0 ||
+        input.candidateIds.length !== 0
+      )
+        return blocked("new_empty_mode_requires_empty_first_baseline");
+    } else if (
+      input.priorMatchedCandidateIds.length !== input.priorDeclaredAdditions ||
+      input.candidateIds.some(
+        (candidateId) => !input.priorMatchedCandidateIds.includes(candidateId),
+      )
+    ) {
+      return ambiguous(
+        "candidate_ownership_ambiguous",
+        "baseline_candidates_not_fully_accounted_for_by_prior_matches",
+      );
+    }
+  }
+  return { status: "eligible" };
+}
+
 /**
  * Bounded structural heuristic. `count_matched` is deliberately separate
  * from FlowImageObservationOutcome and cannot establish provider success.
@@ -667,48 +929,68 @@ export function reduceFlowImageCountDecision(
     declaration.protocolVersion !== resultBaseline.capture.protocolVersion
   )
     return make("blocked", "baseline_binding_mismatch");
-  if (
-    !declaration.renderedScopeComplete ||
-    declaration.captureGaps.length > 0 ||
-    resultBaseline.observation.profile === "flow_labelled_results_region" ||
-    (resultBaseline.completeness === "incomplete" &&
-      resultBaseline.observation.profile !== "flow_rendered_tile_candidates")
-  )
-    return make("blocked", "baseline_incomplete");
-  if (resultBaseline.observation.profile === "flow_empty_workspace_ui") {
-    if (
-      declaration.baselineCandidateIds.length !== 0 ||
-      declaration.baselineTileTokens.length !== 0
-    )
-      return make("blocked", "baseline_incomplete");
-  } else if (
-    resultBaseline.observation.profile === "flow_rendered_tile_candidates" &&
-    (JSON.stringify([...new Set(declaration.baselineCandidateIds)].sort()) !==
-      JSON.stringify(
-        [...new Set(resultBaseline.observation.candidateIds)].sort(),
-      ) ||
-      declaration.baselineTileTokens.length !==
-        resultBaseline.observation.renderedTileCount ||
-      declaration.virtualized !== resultBaseline.observation.virtualized)
-  ) {
-    return make("blocked", "baseline_incomplete");
-  }
-  if (declaration.mode === "new_empty_project") {
-    if (
-      declaration.startingImageCount !== 0 ||
-      (resultBaseline.observation.profile !== "flow_empty_workspace_ui" &&
-        (resultBaseline.observation.profile !==
-          "flow_rendered_tile_candidates" ||
-          resultBaseline.observation.renderedTileCount === 0))
-    )
-      return make("blocked", "baseline_incomplete");
-  } else if (
-    declaration.virtualized ||
-    (resultBaseline.observation.profile === "flow_rendered_tile_candidates" &&
-      resultBaseline.observation.virtualized)
-  ) {
-    return make("ambiguous", "existing_project_virtualized");
-  }
+  const observation = resultBaseline.observation;
+  const eligibility = evaluateFlowImageCountBaselineEligibility({
+    mode: declaration.mode,
+    startingImageCount: declaration.startingImageCount,
+    profile: observation.profile,
+    renderedTileCount:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? observation.renderedTileCount
+        : 0,
+    candidateIds:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? observation.candidateIds
+        : [],
+    renderedScopeComplete:
+      declaration.renderedScopeComplete &&
+      (resultBaseline.completeness !== "incomplete" ||
+        observation.profile === "flow_rendered_tile_candidates"),
+    captureGaps: [
+      ...declaration.captureGaps,
+      ...(observation.profile === "flow_rendered_tile_candidates"
+        ? observation.captureGaps
+        : []),
+    ],
+    unidentifiedImageCount:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? observation.unidentifiedImageCount
+        : 0,
+    loadingSignalCount:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? observation.loadingSignalCount
+        : 0,
+    virtualized:
+      observation.profile === "flow_rendered_tile_candidates" &&
+      observation.virtualized,
+    virtualizationEvidence:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? (observation.virtualizationEvidence ?? [])
+        : [],
+    ...(observation.profile === "flow_rendered_tile_candidates"
+      ? {
+          declaredVirtualized: declaration.virtualized,
+          declaredVirtualizationEvidence:
+            declaration.virtualizationEvidence ?? [],
+          declaredVirtualScrollContainerCount:
+            declaration.virtualScrollContainerCount,
+        }
+      : {}),
+    virtualScrollContainerCount:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? (observation.virtualScrollContainerCount ?? 0)
+        : 0,
+    priorMatchedAttemptIds: declaration.priorMatchedAttemptIds,
+    priorMatchedCandidateIds: declaration.priorMatchedCandidateIds,
+    priorDeclaredAdditions: declaration.priorDeclaredAdditions,
+    declaredBaselineCandidateIds: declaration.baselineCandidateIds,
+    declaredBaselineTileCount: declaration.baselineTileTokens.length,
+  });
+  if (eligibility.status !== "eligible")
+    return make(
+      eligibility.status,
+      eligibility.reason ?? "baseline_incomplete",
+    );
 
   const priorIds = new Set([
     ...declaration.baselineCandidateIds,
@@ -722,26 +1004,6 @@ export function reduceFlowImageCountDecision(
     ["blocked", "ambiguous", "interrupted"].includes(input.previous.status)
   )
     return input.previous;
-  if (
-    declaration.mode === "new_empty_project" &&
-    declaration.priorMatchedAttemptIds.length === 0 &&
-    (priorIds.size > 0 ||
-      baselineTiles.size > 0 ||
-      resultBaseline.observation.profile !== "flow_empty_workspace_ui")
-  )
-    return make("blocked", "baseline_incomplete");
-  if (
-    declaration.mode === "new_empty_project" &&
-    declaration.priorMatchedAttemptIds.length > 0 &&
-    (declaration.virtualized ||
-      declaration.priorMatchedCandidateIds.length !==
-        declaration.priorDeclaredAdditions ||
-      declaration.baselineCandidateIds.some(
-        (candidateId) =>
-          !declaration.priorMatchedCandidateIds.includes(candidateId),
-      ))
-  )
-    return make("ambiguous", "candidate_ownership_ambiguous");
   for (const event of events) {
     if (event.sequence <= lastSequence) continue;
     lastSequence = event.sequence;
@@ -759,7 +1021,9 @@ export function reduceFlowImageCountDecision(
     if (event.snapshot.virtualized)
       return make(
         "ambiguous",
-        "existing_project_virtualized",
+        declaration.mode === "existing_project"
+          ? "existing_project_virtualized"
+          : "candidate_ownership_ambiguous",
         [...seen],
         lastSequence,
       );
@@ -1360,6 +1624,8 @@ export function flowResultBaselineMatchesProfile(
         repeatedCandidateCount: number;
         unidentifiedImageCount: number;
         unrelatedImageCount: number;
+        virtualScrollContainerCount?: number;
+        virtualizationEvidence?: string[];
         virtualized: boolean;
         loadingSignalCount: number;
         captureGaps: string[];
@@ -1397,6 +1663,12 @@ export function flowResultBaselineMatchesProfile(
       observation.repeatedCandidateCount === profile.repeatedCandidateCount &&
       observation.unidentifiedImageCount === profile.unidentifiedImageCount &&
       observation.unrelatedImageCount === profile.unrelatedImageCount &&
+      (profile.virtualScrollContainerCount === undefined ||
+        observation.virtualScrollContainerCount ===
+          profile.virtualScrollContainerCount) &&
+      (profile.virtualizationEvidence === undefined ||
+        JSON.stringify(observation.virtualizationEvidence ?? []) ===
+          JSON.stringify(profile.virtualizationEvidence)) &&
       observation.virtualized === profile.virtualized &&
       observation.loadingSignalCount === profile.loadingSignalCount &&
       observation.captureGaps.join("|") === profile.captureGaps.join("|") &&

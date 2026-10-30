@@ -28,9 +28,11 @@ import {
   FlowImageObservationArmReceiptSchema,
   FlowStructuralSnapshotSchema,
   reduceFlowImageCountDecision,
+  evaluateFlowImageCountBaselineEligibility,
   flowResultBaselineMatchesAttempt,
   flowResultBaselineMatchesProfile,
   type FlowImageObservationArmBinding,
+  type FlowImageReadinessMode,
 } from "../../domain/jobs/results";
 import { captureFlowResultBaseline } from "../../platforms/flow/observer";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
@@ -49,8 +51,22 @@ import { flowWorkspaceScopeAnalyzer } from "../../platforms/flow/workspaceScope"
 /** A separate read-only scope/listener check; it creates no attempt or receipt. */
 export function createFlowImageReadinessCheck(
   repositories: ExtensionRepositories,
-): () => Promise<unknown> {
-  return async () => {
+): (input: { countMode: FlowImageReadinessMode }) => Promise<unknown> {
+  return async ({ countMode }) => {
+    const countModeEligibility = (
+      status: "eligible" | "blocked" | "ambiguous",
+      reason: string | null,
+      detailCode: string,
+    ) => ({
+      mode: countMode.mode,
+      startingImageCount: countMode.startingImageCount,
+      status,
+      reason,
+      detailCode,
+      inventoryComplete: false,
+      providerIdentityVerified: false,
+      terminalSemanticsSupported: false,
+    });
     const selected = await repositories.getSelectedTarget("Flow");
     const blocked = (
       reason: string,
@@ -61,10 +77,21 @@ export function createFlowImageReadinessCheck(
       reason,
       message,
       gates,
+      selectedCountMode: {
+        mode: countMode.mode,
+        startingImageCount: countMode.startingImageCount,
+      },
+      countModeEligibility: countModeEligibility("blocked", reason, reason),
       attemptsCreated: 0,
       confirmationConsumed: false,
       productionReceiptCreated: false,
     });
+    if (countMode.mode === "existing_project" && !countMode.userConfirmed)
+      return blocked(
+        "count_declaration_unconfirmed",
+        "Confirm the starting image count for this selected project before checking existing-project count eligibility. No attempt or settings confirmation was created or consumed.",
+        { countMode: "starting_count_not_confirmed" },
+      );
     if (!selected)
       return blocked(
         "no_selected_target",
@@ -183,6 +210,86 @@ export function createFlowImageReadinessCheck(
         "The saved Flow connection must be freshly rechecked after worker startup. Choose Connect in Connections.",
         { selectedTarget: "saved_unverified" },
       );
+    let allCountAttempts: FlowImageAttemptRecord[];
+    try {
+      allCountAttempts = await repositories.getAllFlowImageAttempts();
+    } catch {
+      return blocked(
+        "count_attempt_read_failed",
+        "The durable Flow count-session state could not be read. Retry readiness after storage is available; no attempt was created.",
+        { countSession: "read_failed" },
+      );
+    }
+    const sessionAttempts = allCountAttempts.filter(
+      (attempt) => attempt.countSessionId === countMode.countSessionId,
+    );
+    if (
+      sessionAttempts.some(
+        (attempt) =>
+          attempt.countBaseline &&
+          (attempt.projectId !== target.projectId ||
+            attempt.tabId !== target.id ||
+            attempt.documentId !== document.documentId ||
+            attempt.buildId !== BUILD_ID ||
+            attempt.protocolVersion !== PROTOCOL_VERSION ||
+            attempt.countBaseline.mode !== countMode.mode ||
+            attempt.countBaseline.startingImageCount !==
+              countMode.startingImageCount),
+      )
+    )
+      return blocked(
+        "count_session_binding_changed",
+        "This count session is bound to a different Flow project, document, build, or starting-count declaration. Start a fresh read-only count session for the current selection.",
+        { countSession: "binding_mismatch" },
+      );
+    const unresolvedForDocument = allCountAttempts.find(
+      (attempt) =>
+        attempt.countSessionId !== undefined &&
+        attempt.projectId === target.projectId &&
+        attempt.tabId === target.id &&
+        attempt.documentId === document.documentId &&
+        attempt.state !== "failed-before-dispatch" &&
+        !(
+          attempt.state === "dispatched" &&
+          attempt.countDecision?.status === "count_matched"
+        ),
+    );
+    if (unresolvedForDocument)
+      return blocked(
+        "count_session_paused",
+        "An earlier count observation for this exact Flow document is unresolved. Inspect that durable attempt before using count mode; readiness will not bypass it.",
+        { countSession: "unresolved_attempt" },
+      );
+    const unresolvedInSession = sessionAttempts.find(
+      (attempt) =>
+        attempt.state !== "failed-before-dispatch" &&
+        !(
+          attempt.state === "dispatched" &&
+          attempt.countDecision?.status === "count_matched"
+        ),
+    );
+    if (unresolvedInSession)
+      return blocked(
+        "count_session_paused",
+        "A prior prompt in this count session is unresolved or ambiguous. Inspect that attempt before continuing.",
+        { countSession: "unresolved_session_attempt" },
+      );
+    const priorMatchedAttempts = sessionAttempts.filter(
+      (attempt) =>
+        attempt.state === "dispatched" &&
+        attempt.countDecision?.status === "count_matched",
+    );
+    const priorMatchedAttemptIds = priorMatchedAttempts.map(
+      (attempt) => attempt.attemptId,
+    );
+    const priorMatchedCandidateIds = priorMatchedAttempts.flatMap(
+      (attempt) => attempt.countDecision?.observedEligibleCandidateIds ?? [],
+    );
+    const priorDeclaredAdditions = priorMatchedAttempts.reduce(
+      (total, attempt) =>
+        total + (attempt.settingsConfirmation.declaredVariantCount ?? 0),
+      0,
+    );
     const bindingTarget = {
       tabId: target.id,
       documentIds: [document.documentId],
@@ -228,11 +335,18 @@ export function createFlowImageReadinessCheck(
                   candidateId: string;
                   renderedCopies: number;
                 }>;
+                candidateTileRelationships: Array<{
+                  tileIndex: number;
+                  candidateId: string;
+                }>;
                 repeatedCandidateCount: number;
                 unidentifiedImageCount: number;
                 unrelatedImageCount: number;
+                virtualScrollContainerCount: number;
+                virtualizationEvidence: string[];
                 virtualized: boolean;
                 loadingSignalCount: number;
+                completeForRenderedScope?: boolean;
               }>;
             }
           )[key];
@@ -245,9 +359,22 @@ export function createFlowImageReadinessCheck(
               reason: before.status,
               profile: before.profile,
               captureGaps: before.captureGaps,
+              renderedTileCount: before.tiles.length,
+              distinctCandidateCount: before.candidateIds.length,
+              candidateIds: before.candidateIds,
+              repeatedCandidateCount: before.repeatedCandidateCount,
+              unidentifiedImageCount: before.unidentifiedImageCount,
+              unrelatedImageCount: before.unrelatedImageCount,
+              virtualized: before.virtualized,
+              virtualScrollContainerCount: before.virtualScrollContainerCount,
+              virtualizationEvidence: before.virtualizationEvidence,
+              completeForRenderedScope:
+                before.captureGaps.length === 0 &&
+                before.unidentifiedImageCount === 0,
             };
           const records: MutationRecord[] = [];
           let resourceEvent = false;
+          let virtualScrollChanged = false;
           const roots: Array<Document | ShadowRoot | Element> = [
             before.project,
             ...before.roots.filter((root: Node) => root instanceof ShadowRoot),
@@ -255,6 +382,14 @@ export function createFlowImageReadinessCheck(
           const observers: MutationObserver[] = [];
           const onResource = (event: Event) => {
             const target = event.target;
+            if (
+              event.type === "scroll" &&
+              target instanceof Element &&
+              target.localName === "cdk-virtual-scroll-viewport"
+            ) {
+              virtualScrollChanged = true;
+              return;
+            }
             if (
               target instanceof HTMLImageElement &&
               before.tiles.some((tile: Element) => tile.contains(target))
@@ -275,6 +410,7 @@ export function createFlowImageReadinessCheck(
               observers.push(observer);
               root.addEventListener("load", onResource, true);
               root.addEventListener("error", onResource, true);
+              root.addEventListener("scroll", onResource, true);
             }
             const second = await analyzer(canonicalTarget, expectedProjectId);
             for (const observer of observers)
@@ -286,25 +422,58 @@ export function createFlowImageReadinessCheck(
               before.profile === second.profile &&
               JSON.stringify(before.candidateMultiplicity) ===
                 JSON.stringify(second.candidateMultiplicity) &&
+              JSON.stringify(before.candidateTileRelationships) ===
+                JSON.stringify(second.candidateTileRelationships) &&
               before.tiles.length === second.tiles.length &&
+              before.virtualScrollContainerCount ===
+                second.virtualScrollContainerCount &&
+              JSON.stringify(before.virtualizationEvidence) ===
+                JSON.stringify(second.virtualizationEvidence) &&
+              !virtualScrollChanged &&
               before.loadingSignalCount === second.loadingSignalCount;
+            const tileOwnershipChanged =
+              JSON.stringify(before.candidateTileRelationships) !==
+              JSON.stringify(second.candidateTileRelationships);
+            const virtualizationEvidence = [
+              ...new Set([
+                ...before.virtualizationEvidence,
+                ...(virtualScrollChanged
+                  ? ["scroll_observed_during_capture"]
+                  : []),
+                ...(tileOwnershipChanged ? ["tile_identity_recycled"] : []),
+              ]),
+            ];
             return {
               status: stable ? "ready" : "blocked",
               reason: stable
                 ? null
-                : second.status !== "ready"
-                  ? second.status
-                  : "baseline_changed_during_arm",
+                : virtualScrollChanged
+                  ? "virtual_scroll_changed_during_readiness"
+                  : tileOwnershipChanged
+                    ? "tile_ownership_changed_during_readiness"
+                    : second.status !== "ready"
+                      ? second.status
+                      : "baseline_changed_during_arm",
               profile: before.profile,
               listenerRoots: roots.length,
               listenersAttached: observers.length === roots.length,
               stableBaseline: stable,
               renderedTileCount: before.tiles.length,
               distinctCandidateCount: before.candidateIds.length,
+              candidateIds: before.candidateIds,
               repeatedCandidateCount: before.repeatedCandidateCount,
               unidentifiedImageCount: before.unidentifiedImageCount,
               unrelatedImageCount: before.unrelatedImageCount,
-              virtualized: before.virtualized,
+              virtualScrollContainerCount: before.virtualScrollContainerCount,
+              virtualizationEvidence,
+              completeForRenderedScope:
+                before.captureGaps.length === 0 &&
+                before.unidentifiedImageCount === 0,
+              virtualized:
+                before.virtualized ||
+                virtualScrollChanged ||
+                tileOwnershipChanged,
+              tileOwnershipRecycled: tileOwnershipChanged,
               loadingSignalCount: before.loadingSignalCount,
               captureGaps: before.captureGaps,
               inventoryComplete: false,
@@ -322,6 +491,7 @@ export function createFlowImageReadinessCheck(
             roots.forEach((root) => {
               root.removeEventListener("load", onResource, true);
               root.removeEventListener("error", onResource, true);
+              root.removeEventListener("scroll", onResource, true);
             });
           }
         },
@@ -337,27 +507,128 @@ export function createFlowImageReadinessCheck(
           { documentBinding: "changed_during_check" },
         );
       const result = checked[0]?.result as Record<string, unknown> | undefined;
-      if (result?.status === "blocked")
-        return {
-          ...result,
-          reason:
-            typeof result.reason === "string" && result.reason
-              ? result.reason
-              : "readiness_capture_blocked",
-          message:
-            typeof result.message === "string" && result.message
-              ? result.message
-              : "The read-only Flow capture could not establish a complete stable baseline. Resolve the reported capture gate and retry.",
-          attemptsCreated: 0,
-          confirmationConsumed: false,
-          productionReceiptCreated: false,
-        };
+      const profile =
+        result?.profile === "empty_marker"
+          ? "flow_empty_workspace_ui"
+          : result?.profile === "populated_tiles"
+            ? "flow_rendered_tile_candidates"
+            : result?.profile === "labelled_region"
+              ? "flow_labelled_results_region"
+              : "unsupported";
+      const captureGaps = Array.isArray(result?.captureGaps)
+        ? result.captureGaps.filter(
+            (gap): gap is string => typeof gap === "string",
+          )
+        : [];
+      const virtualizationEvidence = Array.isArray(
+        result?.virtualizationEvidence,
+      )
+        ? result.virtualizationEvidence.filter(
+            (entry): entry is string => typeof entry === "string",
+          )
+        : [];
+      const candidateIds = Array.isArray(result?.candidateIds)
+        ? result.candidateIds.filter(
+            (candidate): candidate is string => typeof candidate === "string",
+          )
+        : [];
+      const modeGate = evaluateFlowImageCountBaselineEligibility({
+        mode: countMode.mode,
+        startingImageCount: countMode.startingImageCount,
+        profile,
+        renderedTileCount:
+          typeof result?.renderedTileCount === "number"
+            ? result.renderedTileCount
+            : 0,
+        candidateIds,
+        renderedScopeComplete:
+          result?.completeForRenderedScope === true &&
+          result.stableBaseline === true &&
+          captureGaps.length === 0 &&
+          Number(result.unidentifiedImageCount ?? 0) === 0,
+        captureGaps,
+        unidentifiedImageCount: Number(result?.unidentifiedImageCount ?? 0),
+        loadingSignalCount: Number(result?.loadingSignalCount ?? 0),
+        virtualized:
+          result?.virtualized === true ||
+          result?.tileOwnershipRecycled === true,
+        virtualizationEvidence,
+        virtualScrollContainerCount: Number(
+          result?.virtualScrollContainerCount ?? 0,
+        ),
+        priorMatchedAttemptIds,
+        priorMatchedCandidateIds,
+        priorDeclaredAdditions,
+      });
+      const modeReport = countModeEligibility(
+        modeGate.status,
+        modeGate.reason ?? null,
+        modeGate.detailCode ?? modeGate.reason ?? "eligible",
+      );
+      const eligible =
+        result?.status === "ready" && modeGate.status === "eligible";
+      const reason = eligible
+        ? null
+        : result?.status !== "ready"
+          ? String(result?.reason ?? "readiness_capture_blocked") ||
+            "readiness_capture_blocked"
+          : (modeGate.detailCode ?? modeGate.reason ?? "count_mode_blocked");
+      const message = eligible
+        ? "The selected count mode passed its read-only baseline and listener checks. This does not authorize Generate or establish provider result identity or completion."
+        : modeGate.detailCode ===
+            "virtual_scroll_coverage_or_scrolling_observed"
+          ? "The selected project has measured virtual-scroll overflow, a nonzero scroll offset, unavailable viewport dimensions, or scrolling during capture. Existing-project count mode is ambiguous because older cards may be revealed or recycled."
+          : modeGate.detailCode === "virtual_scroll_measurement_inconclusive"
+            ? "A visible virtual-scroll container could not be measured. Existing-project count mode stays blocked until the rendered scope can be measured completely."
+            : modeGate.detailCode === "tile_identity_recycling_observed"
+              ? "A rendered tile changed its owned candidate set during capture. Existing-project count mode is ambiguous because recycled DOM may represent older content."
+              : modeGate.detailCode ===
+                  "new_empty_mode_requires_empty_first_baseline"
+                ? "New empty project mode requires the first baseline to show the exact empty-workspace profile. Choose Existing project only if its starting count is user-confirmed."
+                : modeGate.detailCode ===
+                    "existing_count_conflicts_with_empty_scope"
+                  ? "The existing-project starting count is greater than zero, but the observed project scope is empty. Recheck the selected project and count declaration."
+                  : modeGate.detailCode === "baseline_incomplete" ||
+                      modeGate.detailCode === "rendered_scope_incomplete"
+                    ? "The selected mode has no complete stable rendered-scope baseline. Resolve the reported capture gaps or unsupported structure."
+                    : "The selected count mode is blocked by the reported workspace, session, or capture gate. Review the exact eligibility reason before continuing.";
       return {
-        ...(result ?? {
-          status: "blocked",
-          reason: "readiness_result_missing",
-          message: "No readiness result was returned.",
-        }),
+        diagnostic: "flow-readiness-no-generate-v1",
+        status: eligible ? "ready" : "blocked",
+        reason,
+        message,
+        gates: {
+          selectedTarget: "verified",
+          workspaceScope: String(result?.status ?? "unavailable"),
+          listenerAttachment: String(result?.listenersAttached ?? false),
+          stableBaseline: String(result?.stableBaseline ?? false),
+          countMode: modeGate.status,
+        },
+        selectedCountMode: {
+          mode: countMode.mode,
+          startingImageCount: countMode.startingImageCount,
+        },
+        countModeEligibility: modeReport,
+        profile: result?.profile ?? "unsupported",
+        listenerRoots: result?.listenerRoots ?? 0,
+        listenersAttached: result?.listenersAttached ?? false,
+        stableBaseline: result?.stableBaseline ?? false,
+        renderedTileCount: result?.renderedTileCount ?? 0,
+        distinctCandidateCount: result?.distinctCandidateCount ?? 0,
+        repeatedCandidateCount: result?.repeatedCandidateCount ?? 0,
+        unidentifiedImageCount: result?.unidentifiedImageCount ?? 0,
+        unrelatedImageCount: result?.unrelatedImageCount ?? 0,
+        virtualScrollContainerCount: result?.virtualScrollContainerCount ?? 0,
+        virtualizationEvidence,
+        virtualized:
+          result?.virtualized === true ||
+          result?.tileOwnershipRecycled === true,
+        tileOwnershipRecycled: result?.tileOwnershipRecycled ?? false,
+        loadingSignalCount: result?.loadingSignalCount ?? 0,
+        captureGaps,
+        inventoryComplete: false,
+        providerIdentityVerified: false,
+        terminalSemanticsSupported: false,
         documentBound: true,
         attemptsCreated: 0,
         confirmationConsumed: false,
@@ -1501,6 +1772,10 @@ export function createFlowImageGenerateOnce(
           capturedAt: armReceipt.capturedAt,
           baselineCandidateIds: armReceipt.baseline.candidateIds,
           baselineTileTokens: armReceipt.baseline.tileTokens,
+          virtualScrollContainerCount:
+            armReceipt.baseline.virtualScrollContainerCount ?? 0,
+          virtualizationEvidence:
+            armReceipt.baseline.virtualizationEvidence ?? [],
           virtualized: armReceipt.baseline.virtualized,
           renderedScopeComplete: armReceipt.baseline.completeForRenderedScope,
           captureGaps: armReceipt.baseline.captureGaps,

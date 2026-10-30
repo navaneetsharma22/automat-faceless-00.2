@@ -63,6 +63,8 @@ export type FlowImageAttemptBaseline =
       repeatedCandidateCount: number;
       unidentifiedImageCount: number;
       unrelatedImageCount: number;
+      virtualScrollContainerCount?: number;
+      virtualizationEvidence?: string[];
       virtualized: boolean;
       loadingSignalCount: number;
       captureGaps: string[];

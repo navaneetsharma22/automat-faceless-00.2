@@ -96,6 +96,8 @@ test("production isolated-world producer binds, records structural candidates, a
     arm as {
       baseline: {
         completeForRenderedScope: boolean;
+        virtualScrollContainerCount: number;
+        virtualizationEvidence: string[];
         virtualized: boolean;
         tileCount: number;
         candidateIds: string[];
@@ -116,6 +118,11 @@ test("production isolated-world producer binds, records structural candidates, a
       }),
     ]),
   );
+  expect(armBaseline).toMatchObject({
+    virtualScrollContainerCount: 1,
+    virtualizationEvidence: [],
+    virtualized: false,
+  });
   const countDecision = reduceFlowImageCountDecision({
     declaration: {
       mode: "existing_project",
@@ -198,10 +205,7 @@ test("production isolated-world producer binds, records structural candidates, a
     events: [],
     now: 20,
   });
-  expect(countDecision).toMatchObject({
-    status: "ambiguous",
-    reason: "existing_project_virtualized",
-  });
+  expect(countDecision).toMatchObject({ status: "observing" });
 
   const activated = await page.evaluate(
     async ({ source, binding }) => {
@@ -354,6 +358,8 @@ test("shared workspace resolver records populated rendered baseline without iden
           }>;
           repeatedCandidateCount: number;
           unrelatedImageCount: number;
+          virtualScrollContainerCount: number;
+          virtualizationEvidence: string[];
           virtualized: boolean;
           loadingSignalCount: number;
           captureGaps: string[];
@@ -380,7 +386,9 @@ test("shared workspace resolver records populated rendered baseline without iden
     profile: "populated_tiles",
     repeatedCandidateCount: 1,
     unrelatedImageCount: 1,
-    virtualized: true,
+    virtualScrollContainerCount: 1,
+    virtualizationEvidence: [],
+    virtualized: false,
     captureGaps: [],
   });
   expect(
@@ -421,6 +429,39 @@ test("shared workspace resolver records populated rendered baseline without iden
       .append(document.createElement("flow-project-page")),
   );
   expect(await analyze()).toMatchObject({ status: "project_ambiguous" });
+});
+
+test("shared workspace resolver reports measured virtual-scroll overflow separately from container presence", async ({
+  page,
+}) => {
+  const fixture = await readFile(fixturePath, "utf8");
+  await page.route("https://flow.google.com/**", (route) =>
+    route.fulfill({ status: 200, contentType: "text/html", body: fixture }),
+  );
+  await page.goto("https://flow.google.com/project/synthetic-project");
+  const result = await page.evaluate(async (source) => {
+    const analyzer = (0, eval)(`(${source})`) as (
+      target?: string,
+      projectId?: string,
+    ) => Promise<{
+      status: string;
+      virtualScrollContainerCount: number;
+      virtualizationEvidence: string[];
+      virtualized: boolean;
+    }>;
+    const viewport = document.querySelector("cdk-virtual-scroll-viewport")!;
+    viewport.style.height = "12px";
+    return analyzer(
+      "https://flow.google.com/project/synthetic-project",
+      "synthetic-project",
+    );
+  }, flowWorkspaceScopeAnalyzer.toString());
+  expect(result).toMatchObject({
+    status: "ready",
+    virtualScrollContainerCount: 1,
+    virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+    virtualized: true,
+  });
 });
 
 test("shared workspace resolver distinguishes the supported empty marker and refuses a changed project route", async ({

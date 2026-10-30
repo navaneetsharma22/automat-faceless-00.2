@@ -60,7 +60,17 @@ describe("extension message protocol", () => {
     });
     const response = await new Promise<AppResponse>((resolve) => {
       listener(
-        makeRequest("flow.image.checkReadiness", {}, "readiness-check"),
+        makeRequest(
+          "flow.image.checkReadiness",
+          {
+            countMode: {
+              mode: "new_empty_project",
+              countSessionId: "8ca777a9-09a4-4640-82e1-8ece47164153",
+              startingImageCount: 0,
+            },
+          },
+          "readiness-check",
+        ),
         dashboardSender,
         resolve,
       );

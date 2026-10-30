@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluateFlowImageCountBaselineEligibility,
   reduceFlowImageCountDecision,
   type FlowImageCountBaselineDeclaration,
   type FlowImageResultBaseline,
@@ -253,6 +254,31 @@ function reduce(
 }
 
 describe("P05 revised count observation decision", () => {
+  it("treats explicit virtualization risk evidence as ambiguous even if a boolean is inconsistent", () => {
+    expect(
+      evaluateFlowImageCountBaselineEligibility({
+        mode: "existing_project",
+        startingImageCount: 9,
+        profile: "flow_rendered_tile_candidates",
+        renderedTileCount: 2,
+        candidateIds: [candidateA, candidateB],
+        renderedScopeComplete: true,
+        captureGaps: [],
+        unidentifiedImageCount: 0,
+        virtualized: false,
+        virtualizationEvidence: ["tile_identity_recycled"],
+        virtualScrollContainerCount: 1,
+        priorMatchedAttemptIds: [],
+        priorMatchedCandidateIds: [],
+        priorDeclaredAdditions: 0,
+      }),
+    ).toEqual({
+      status: "ambiguous",
+      reason: "existing_project_virtualized",
+      detailCode: "tile_identity_recycling_observed",
+    });
+  });
+
   it("matches exactly one new visible, loaded media candidate after dispatch", () => {
     const decision = reduce(
       "new_empty_project",
