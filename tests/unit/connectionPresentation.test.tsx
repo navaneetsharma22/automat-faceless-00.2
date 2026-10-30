@@ -3,13 +3,74 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import App from "../../src/app/App";
 import {
+  connectionDisplayAnnouncement,
   connectionWorkerFailureDetail,
+  hasVerifiedBindingForSelectedTarget,
   withPendingCleanup,
 } from "../../src/app/connectionAttempt";
 import { ConnectionError } from "../../src/app/components/ConnectionError";
 import { FoundationClientError } from "../../src/shared/messageClient";
 
 describe("connection feedback presentation", () => {
+  it("announces a preserved connection as checking instead of Connecting", () => {
+    expect(
+      connectionDisplayAnnouncement("connected", "Connected — checking…"),
+    ).toBe("Connected — checking…");
+    expect(connectionDisplayAnnouncement("pending", "Connecting…")).toBe(
+      "Connecting…",
+    );
+    expect(
+      connectionDisplayAnnouncement("pending", "Checking connection…"),
+    ).toBe("Checking connection…");
+    expect(connectionDisplayAnnouncement("connected", "Connected")).toBe(null);
+  });
+
+  it("preserves Connected while checking the same verified document", () => {
+    const target = {
+      provider: "Flow" as const,
+      tabId: 41,
+      canonicalTarget: "https://flow.google.com/project/selected-project",
+    };
+    const current = {
+      ...target,
+      verification: "verified" as const,
+      connectionState: "checking",
+      verificationBinding: {
+        ...target,
+        documentId: "browser-document",
+        documentToken: "connector-token",
+      },
+    };
+    expect(hasVerifiedBindingForSelectedTarget(current, target)).toBe(true);
+    expect(
+      hasVerifiedBindingForSelectedTarget(
+        {
+          ...current,
+          canonicalTarget: "https://flow.google.com/project/other",
+        },
+        target,
+      ),
+    ).toBe(false);
+    expect(
+      hasVerifiedBindingForSelectedTarget(
+        { ...current, verification: "unverified" },
+        target,
+      ),
+    ).toBe(false);
+    expect(
+      hasVerifiedBindingForSelectedTarget(
+        {
+          ...current,
+          verificationBinding: {
+            ...current.verificationBinding,
+            documentToken: "",
+          },
+        },
+        target,
+      ),
+    ).toBe(false);
+  });
+
   it("keeps connection ownership in the persistent shell around workspace views", () => {
     const markup = renderToStaticMarkup(createElement(App));
     const sidebarStart = markup.indexOf("<aside class=");

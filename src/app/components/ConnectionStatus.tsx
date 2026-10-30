@@ -10,6 +10,10 @@ import {
   readWorkerStartEvent,
   workerStartAction,
 } from "../../platforms/shared/connectionLifecycle";
+import {
+  connectionDisplayAnnouncement,
+  hasVerifiedBindingForSelectedTarget,
+} from "../connectionAttempt";
 import { providerTabFromUrl } from "../../platforms/shared/connection";
 import {
   createChromeConnectionPort,
@@ -174,15 +178,32 @@ export function ConnectionStatus() {
       return active.task;
 
     const attemptRevision = ++connectionRevision.current[provider];
+    const currentState = statesRef.current[provider];
+    const sameLiveTarget = Boolean(
+      currentState.status === "connected" &&
+      currentState.live?.tab.id === target.tabId &&
+      currentState.live.tab.canonicalTarget === target.canonicalTarget,
+    );
     setBusy(provider);
     setStates((current) => ({
       ...current,
-      [provider]: {
-        status: "pending",
-        message: "Checking connection...",
-        detail:
-          "Verifying the previously selected project with the worker's read-only handshake.",
-      },
+      [provider]: sameLiveTarget
+        ? {
+            ...current[provider],
+            message: "Connected — checking…",
+            detail:
+              "The previously verified target remains selected while a bounded read-only handshake checks the same document.",
+          }
+        : {
+            ...current[provider],
+            status: "pending",
+            message:
+              trigger === "user-connect"
+                ? "Connecting…"
+                : "Checking connection…",
+            detail:
+              "Verifying the previously selected project with the worker's read-only handshake.",
+          },
     }));
 
     const task = (async () => {
@@ -404,12 +425,17 @@ export function ConnectionStatus() {
           .request("connections.getSelection", { provider })
           .then((value) => {
             const current = value as {
+              provider: ProviderName;
               tabId: number;
               canonicalTarget: string;
               reconnectEnabled?: boolean;
               verification: "unverified" | "verified";
               connectionState?: string;
               verificationBinding?: {
+                provider: ProviderName;
+                tabId: number;
+                canonicalTarget: string;
+                projectId: string;
                 documentId: string;
                 documentToken: string;
               };
@@ -424,12 +450,11 @@ export function ConnectionStatus() {
               return;
             const reconnectEnabled = current.reconnectEnabled !== false;
             reconnectEnabledRef.current[provider] = reconnectEnabled;
-            if (
-              current.connectionState === "verified" &&
-              current.verification === "verified" &&
-              current.verificationBinding?.documentId &&
-              current.verificationBinding.documentToken
-            ) {
+            const hasSameVerifiedBinding = hasVerifiedBindingForSelectedTarget(
+              current,
+              { provider, ...intended },
+            );
+            if (hasSameVerifiedBinding) {
               const tab =
                 tabs.find(
                   (candidate) =>
@@ -442,7 +467,16 @@ export function ConnectionStatus() {
                   ...statesNow,
                   [provider]: {
                     status: "connected",
-                    message: "Connected",
+                    message:
+                      current.connectionState === "checking"
+                        ? "Connected — checking…"
+                        : "Connected",
+                    ...(current.connectionState === "checking"
+                      ? {
+                          detail:
+                            "The saved verification still matches this selected document. A bounded read-only handshake is in progress.",
+                        }
+                      : {}),
                     live: {
                       tab,
                       documentId: current.verificationBinding!.documentId,
@@ -933,9 +967,8 @@ export function ConnectionStatus() {
             <div className={styles.providerConnectionTitle}>
               <span>{provider}</span>
               <strong aria-live="polite">
-                {state.status === "pending"
-                  ? state.message
-                  : connectionStatusLabel(state.status)}
+                {connectionDisplayAnnouncement(state.status, state.message) ??
+                  connectionStatusLabel(state.status)}
               </strong>
             </div>
             <label
@@ -970,7 +1003,7 @@ export function ConnectionStatus() {
                 onClick={() => void connect(provider)}
               >
                 {busy === provider
-                  ? state.status === "pending" &&
+                  ? state.message === "Connected — checking…" ||
                     state.message === "Checking connection…"
                     ? "Checking connection…"
                     : "Connecting…"

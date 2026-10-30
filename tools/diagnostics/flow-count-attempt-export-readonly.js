@@ -19,6 +19,23 @@
       request.onerror = () =>
         reject(request.error ?? new Error("idb_read_failed"));
     });
+  const mismatchClass = (code) => {
+    if (code === "observation_source_baseline_or_capture_fingerprint_mismatch")
+      return "source_or_capture_fingerprint";
+    if (code.startsWith("observation_event_binding_"))
+      return "observation_event_binding_field";
+    if (code === "observation_sender_document_binding_mismatch")
+      return "sender_frame_or_document";
+    if (code === "observation_session_id_mismatch")
+      return "observation_session_id";
+    if (code.startsWith("binding_check_exception_"))
+      return "caught_binding_check_exception";
+    if (code.startsWith("binding_"))
+      return "fresh_live_target_document_source_comparison";
+    if (code.includes("reconciliation")) return "worker_restart_reconciliation";
+    if (code.startsWith("observer_")) return "observer_lifecycle";
+    return "other_persisted_observer_diagnostic";
+  };
   const txDone = (transaction) =>
     new Promise((resolve, reject) => {
       transaction.oncomplete = resolve;
@@ -40,21 +57,6 @@
     typeof value === "string" && value
       ? `${label}-${(await sha256(value)).slice(0, 12)}`
       : null;
-  const countMatch = (attempt) => {
-    const baseline = attempt.countBaseline;
-    const decision = attempt.countDecision;
-    return Boolean(
-      ["dispatched", "uncertain"].includes(attempt.state) &&
-      baseline?.mode === "existing_project" &&
-      baseline.startingImageCount === 4 &&
-      attempt.settingsConfirmation?.declaredVariantCount === 2 &&
-      decision?.startingImageCount === 4 &&
-      decision?.expectedCumulativeAdditions === 2 &&
-      decision?.expectedTotal === 6,
-    );
-  };
-  const projectPrefixMatches = (projectId, prefix) =>
-    typeof projectId === "string" && projectId.startsWith(prefix);
   const projectIdFromCanonicalTarget = (canonicalTarget) => {
     try {
       const url = new URL(canonicalTarget);
@@ -330,15 +332,27 @@
           buildId: attempt.buildId,
           protocolVersion: attempt.protocolVersion,
           sourceHash: attempt.promptHash,
-          sourceSnapshotMask: await idMask(attempt.sourceSnapshotId, "snapshot"),
+          sourceSnapshotMask: await idMask(
+            attempt.sourceSnapshotId,
+            "snapshot",
+          ),
           sessionMask: await idMask(session?.sessionId, "session"),
           sessionDocumentMask: await idMask(session?.documentId, "document"),
           sessionSenderFrameId: session?.senderFrameId ?? null,
           bindingsAreHistoricalAndWereNotRewritten: true,
         },
         eventTrail: sanitizedAttemptEvents,
+        eventTrailCoverage: {
+          storedEventCount: attempt.events?.length ?? 0,
+          exportedEventCount: sanitizedAttemptEvents.length,
+          exporterTruncated: (attempt.events?.length ?? 0) > 100,
+          storageRetentionIsSchemaBounded: true,
+        },
         boundedMismatchDiagnostics: {
-          persistedDiagnosticEvents: mismatchEvents,
+          persistedDiagnosticEvents: mismatchEvents.map((event) => ({
+            ...event,
+            comparisonClass: mismatchClass(event.code),
+          })),
           exactRecordedReason: mismatchEvents.at(-1)?.code ?? null,
           rejectedObservationPayloadsPersisted: false,
           rejectedPayloadsStatus: "absent_from_this_storage_schema",
@@ -511,7 +525,14 @@
           }),
           deliveryFailureRecordsPersisted: false,
           deliveryFailureNote:
-            "This schema persists accepted receipts, not rejected send attempts; sequence gaps and observer outcome are evidence only and cannot reconstruct every transport failure.",
+            "This schema persists accepted receipts, not rejected send payloads. Fixed diagnostic codes persisted in the attempt event trail identify some refusals; rejected payloads and refusals without a durable diagnostic remain absent.",
+          rejectedOrReconciliationDiagnostics: mismatchEvents.map((event) => ({
+            ordinal: event.ordinal,
+            at: event.at,
+            stage: event.stage,
+            code: event.code,
+            comparisonClass: mismatchClass(event.code),
+          })),
           sessionStatus: session?.status ?? null,
           observerStopOrLoss: observations
             .filter((event) => event.kind !== "structural_snapshot")
@@ -569,7 +590,10 @@
             reconnectEnabled: selectedTarget.reconnectEnabled !== false,
             savedVerificationBinding: currentVerification
               ? {
-                  projectMask: await idMask(currentVerification.projectId, "project"),
+                  projectMask: await idMask(
+                    currentVerification.projectId,
+                    "project",
+                  ),
                   tabId: currentVerification.tabId,
                   canonicalTargetMatchesAttempt:
                     currentVerification.canonicalTarget ===
@@ -650,55 +674,21 @@
         requestResult(transaction.objectStore("selectedTargets").getAll()),
       ]);
       await done;
-      const candidates = attempts.filter(countMatch);
       const selectedTarget = selectedTargets.find(
         (target) => target.provider === "Flow",
       );
-      let attempt;
-      let selectionStatus;
-      if (requestedAttemptId !== "PASTE_DASHBOARD_ATTEMPT_ID_HERE") {
-        attempt = attempts.find(
-          (entry) => entry.attemptId === requestedAttemptId,
-        );
-        selectionStatus = attempt
-          ? "dashboard_attempt_id_match"
-          : "attempt_not_found";
-      } else if (candidates.length === 1) {
-        [attempt] = candidates;
-        selectionStatus = "unique_count_signature_match";
-      } else {
-        const report = {
-          diagnostic: "flow-count-attempt-readonly-export-v1",
-          status: candidates.length
-            ? "dashboard_attempt_id_required"
-            : "matching_attempt_not_found",
-          selectionStatus: candidates.length
-            ? "multiple_matching_attempts"
-            : "no_matching_attempts",
-          matchingAttemptSummaries: candidates.map((entry) => ({
-            attemptId: entry.attemptId,
-            state: entry.state,
-            sessionStatus: entry.observationSession?.status ?? null,
-            observationReceiptCount: entry.observationReceipts?.length ?? 0,
-            countDecisionStatus: entry.countDecision?.status ?? null,
-          })),
-          note: "No attempts were combined. Set requestedAttemptId to the exact dashboard attempt ID when more than one match is listed.",
-          privacy: {
-            transactionMode: "readonly",
-            storageWritesPerformed: false,
-          },
-        };
-        window[resultName] = report;
-        console.log(JSON.stringify(report, null, 2));
-        return;
-      }
+      const attempt = attempts.find(
+        (entry) => entry.attemptId === requestedAttemptId,
+      );
+      const selectionStatus = attempt
+        ? "dashboard_attempt_id_match"
+        : "attempt_not_found";
       if (!attempt) {
         const report = {
           diagnostic: "flow-count-attempt-readonly-export-v1",
           status: "attempt_not_found",
           selectionStatus,
           requestedAttemptId,
-          matchingCountSignatureCount: candidates.length,
           storageWritesPerformed: false,
         };
         window[resultName] = report;
@@ -712,6 +702,13 @@
         diagnostic: "flow-count-attempt-readonly-export-v1",
         status: "complete",
         selectionStatus,
+        dashboardAttemptIdCrossCheck: {
+          requestedId: requestedAttemptId,
+          storedIdMatchesRequested: attempt.attemptId === requestedAttemptId,
+          screenshotComparedByScript: false,
+          instruction:
+            "Before running, visually confirm the dashboard screenshot shows the requested ID. This script can verify the stored row ID only; it does not read screenshot pixels.",
+        },
         databaseVersion: database.version,
         attempt: await summarize(attempt, snapshot, selectedTarget),
         privacy: {

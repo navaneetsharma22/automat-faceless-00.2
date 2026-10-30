@@ -41,6 +41,51 @@ const safeExceptionName = (error: unknown): string => {
   return name.slice(0, 32);
 };
 
+const safeExceptionClass = (error: unknown): string => {
+  if (error instanceof Error && /ValidationError$/.test(error.name))
+    return "validation_error";
+  const name = safeExceptionName(error);
+  const classifications: Record<string, string> = {
+    error: "error",
+    typeerror: "type_error",
+    referenceerror: "reference_error",
+    securityerror: "security_error",
+    notallowederror: "not_allowed_error",
+    aborterror: "abort_error",
+    timeouterror: "timeout_error",
+    unknownerror: "unknown_error",
+    flowimagepromptsnapshotvalidationerror: "validation_error",
+    flowframetreereaderror: "cdp_transport_error",
+    flowdebuggerattacherror: "debugger_attach_error",
+    flowdebuggerdetacherror: "debugger_detach_error",
+    flowdocumentprobeerror: "document_probe_error",
+  };
+  return classifications[name] ?? "other_error";
+};
+
+const safeBindingOperation = (operation: string): string =>
+  /^[a-z0-9_]{1,24}$/.test(operation) ? operation : "unknown_operation";
+
+class FlowBindingCheckException extends Error {
+  constructor(
+    readonly operation: string,
+    readonly errorClass: string,
+  ) {
+    super("flow_binding_check_failed");
+    this.name = "FlowBindingCheckException";
+  }
+}
+
+const bindingCheckExceptionCode = (error: unknown): string => {
+  if (error instanceof FlowBindingCheckException) {
+    return `binding_check_exception_${safeBindingOperation(error.operation)}_${error.errorClass}`.slice(
+      0,
+      64,
+    );
+  }
+  return `binding_check_exception_binding_validation_${safeExceptionClass(error)}`;
+};
+
 export function createFlowImageObservationHandler(
   dependencies: FlowImageObservationHandlerDependencies,
 ) {
@@ -102,7 +147,22 @@ export function createFlowImageObservationHandler(
   ): Promise<string | null> => {
     if (!attempt.documentId) return "binding_document_id_missing";
     if (attempt.senderFrameId !== 0) return "binding_sender_frame_id_mismatch";
-    const selected = await dependencies.repositories.getSelectedTarget("Flow");
+    const run = async <T>(
+      operation: string,
+      task: () => Promise<T>,
+    ): Promise<T> => {
+      try {
+        return await task();
+      } catch (error) {
+        throw new FlowBindingCheckException(
+          safeBindingOperation(operation),
+          safeExceptionClass(error),
+        );
+      }
+    };
+    const selected = await run("selected_target_read", () =>
+      dependencies.repositories.getSelectedTarget("Flow"),
+    );
     if (!selected) return "binding_selected_target_missing";
     if (selected.tabId !== attempt.tabId)
       return "binding_selected_tab_id_mismatch";
@@ -110,11 +170,15 @@ export function createFlowImageObservationHandler(
       selected.canonicalTarget !== attempt.settingsConfirmation.canonicalTarget
     )
       return "binding_selected_canonical_target_mismatch";
-    const activeSelection = await dependencies.port.getSelection();
+    const activeSelection = await run("selection_read", () =>
+      dependencies.port.getSelection(),
+    );
     if (!activeSelection) return "binding_active_selection_missing";
     if (activeSelection.tabId !== attempt.tabId)
       return "binding_active_selection_tab_id_mismatch";
-    const tab = await dependencies.port.getTab(attempt.tabId);
+    const tab = await run("tab_read", () =>
+      dependencies.port.getTab(attempt.tabId),
+    );
     if (!tab) return "binding_tab_unavailable";
     const parsed = flowTabFromUrl(attempt.tabId, tab?.title ?? "", tab?.url);
     if (!parsed) return "binding_tab_route_unrecognized";
@@ -122,7 +186,9 @@ export function createFlowImageObservationHandler(
       return "binding_tab_project_id_mismatch";
     if (parsed.canonicalTarget !== selected.canonicalTarget)
       return "binding_tab_canonical_target_mismatch";
-    const frame = await dependencies.port.readFrame(attempt.tabId);
+    const frame = await run("frame_inspection", () =>
+      dependencies.port.readFrame(attempt.tabId),
+    );
     if (!frame) return "binding_frame_unavailable";
     if (frame.frameId !== attempt.frameId) return "binding_frame_id_mismatch";
     if (frame.loaderId !== attempt.loaderId)
@@ -138,8 +204,10 @@ export function createFlowImageObservationHandler(
       return "binding_frame_canonical_target_mismatch";
     if (!flowResultBaselineMatchesAttempt(attempt.resultBaseline, attempt))
       return "binding_result_baseline_mismatch";
-    const source = await dependencies.repositories.getFlowImagePromptSnapshot(
-      attempt.sourceSnapshotId,
+    const source = await run("source_snapshot_read", () =>
+      dependencies.repositories.getFlowImagePromptSnapshot(
+        attempt.sourceSnapshotId,
+      ),
     );
     if (!source) return "binding_source_snapshot_missing";
     if (
@@ -150,7 +218,10 @@ export function createFlowImageObservationHandler(
       source.snapshotId !== attempt.sourceSnapshotId
     )
       return "binding_source_snapshot_identity_mismatch";
-    if ((await sha256Hex(source.rawJsonBody)) !== attempt.promptHash)
+    if (
+      (await run("source_hash", () => sha256Hex(source.rawJsonBody))) !==
+      attempt.promptHash
+    )
       return "binding_source_snapshot_hash_mismatch";
     return null;
   };
@@ -199,10 +270,12 @@ export function createFlowImageObservationHandler(
         continue;
       }
       let bindingDiagnostic: string | null;
+      let bindingCheckFailed = false;
       try {
         bindingDiagnostic = await freshBindingMatches(attempt);
       } catch (error) {
-        bindingDiagnostic = `binding_check_exception_${safeExceptionName(error)}`;
+        bindingCheckFailed = true;
+        bindingDiagnostic = bindingCheckExceptionCode(error);
       }
       if (
         session.reconciliationCount >= MAX_RECONCILIATIONS ||
@@ -212,7 +285,9 @@ export function createFlowImageObservationHandler(
           attempt,
           session.reconciliationCount >= MAX_RECONCILIATIONS
             ? "event_limit_reached"
-            : "binding_changed",
+            : bindingCheckFailed
+              ? "observation_lost"
+              : "binding_changed",
           session.reconciliationCount >= MAX_RECONCILIATIONS
             ? "observer_reconciliation_limit_reached"
             : bindingDiagnostic!,
@@ -431,13 +506,19 @@ export function createFlowImageObservationHandler(
       };
     }
     let bindingDiagnostic: string | null;
+    let bindingCheckFailed = false;
     try {
       bindingDiagnostic = await freshBindingMatches(attempt);
     } catch (error) {
-      bindingDiagnostic = `binding_check_exception_${safeExceptionName(error)}`;
+      bindingCheckFailed = true;
+      bindingDiagnostic = bindingCheckExceptionCode(error);
     }
     if (bindingDiagnostic) {
-      await setUnknown(attempt, "binding_changed", bindingDiagnostic);
+      await setUnknown(
+        attempt,
+        bindingCheckFailed ? "observation_lost" : "binding_changed",
+        bindingDiagnostic,
+      );
       return {
         accepted: false,
         code: bindingDiagnostic,

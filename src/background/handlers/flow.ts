@@ -913,6 +913,23 @@ export type FlowObservationArmDiagnostic = {
     | "UnknownError";
 };
 
+const flowDebuggerOwnedTabs = new Set<number>();
+let flowDebuggerDetachEventSource: unknown;
+
+function trackFlowDebuggerOwnership(): void {
+  if (
+    typeof chrome === "undefined" ||
+    !chrome.debugger?.onDetach ||
+    flowDebuggerDetachEventSource === chrome.debugger
+  )
+    return;
+  flowDebuggerDetachEventSource = chrome.debugger;
+  chrome.debugger.onDetach.addListener((source) => {
+    if (typeof source.tabId === "number")
+      flowDebuggerOwnedTabs.delete(source.tabId);
+  });
+}
+
 const flowArmExceptionName = (
   error: unknown,
 ): NonNullable<FlowObservationArmDiagnostic["exceptionName"]> => {
@@ -935,6 +952,30 @@ export function createChromeFlowImageGenerateOncePort(
   repositories: ExtensionRepositories,
 ): FlowImageGenerateOncePort {
   const base = createChromeFlowPromptEntryPort(repositories);
+  // Chrome permits a debugger session only after the extension has attached.
+  // Track attachments created by this adapter so GenerateOnce can share its
+  // lease with in-handler checks, while later observation messages acquire a
+  // short, owned lease of their own. Acquisition is the ownership proof:
+  // getTargets() reports attachment, not which client owns it.
+  const attachDebugger = async (tabId: number) => {
+    try {
+      await base.attach(tabId);
+    } catch {
+      const error = new Error("flow_debugger_attach_refused");
+      error.name = "FlowDebuggerAttachError";
+      throw error;
+    }
+  };
+  const detachDebugger = async (tabId: number) => {
+    if (!flowDebuggerOwnedTabs.has(tabId)) return;
+    try {
+      await base.detach(tabId);
+    } catch {
+      const error = new Error("flow_debugger_detach_failed");
+      error.name = "FlowDebuggerDetachError";
+      throw error;
+    }
+  };
   const bindBrowserDocument = async (
     tabId: number,
     frame: FlowDocumentBinding | undefined,
@@ -970,8 +1011,31 @@ export function createChromeFlowImageGenerateOncePort(
     if (!bound) throw new Error("flow_document_identity_unavailable");
     return bound;
   };
-  const readBoundFrame = async (tabId: number) =>
-    bindBrowserDocument(tabId, await readFlowDocumentBinding(base, tabId));
+  const readBoundFrame = async (tabId: number) => {
+    let frame: FlowDocumentBinding | undefined;
+    const acquiredHere = !flowDebuggerOwnedTabs.has(tabId);
+    try {
+      if (acquiredHere) await attachDebugger(tabId);
+      frame = await readFlowDocumentBinding(base, tabId);
+    } catch (cause) {
+      const causeName = cause instanceof Error ? cause.name : "";
+      if (causeName === "FlowDebuggerAttachError") throw cause;
+      const error = new Error("flow_frame_tree_read_failed");
+      error.name = "FlowFrameTreeReadError";
+      throw error;
+    } finally {
+      if (acquiredHere && flowDebuggerOwnedTabs.has(tabId)) {
+        await detachDebugger(tabId);
+      }
+    }
+    try {
+      return await bindBrowserDocument(tabId, frame);
+    } catch {
+      const error = new Error("flow_browser_document_probe_failed");
+      error.name = "FlowDocumentProbeError";
+      throw error;
+    }
+  };
   const installScopeAnalyzer = async (
     tabId: number,
     binding: FlowImageObservationArmBinding,
@@ -1092,6 +1156,8 @@ export function createChromeFlowImageGenerateOncePort(
   };
   return {
     ...base,
+    attach: attachDebugger,
+    detach: detachDebugger,
     captureFrame: captureBoundFrame,
     readFrame: readBoundFrame,
     inspectGenerate: (tabId, prompt) =>

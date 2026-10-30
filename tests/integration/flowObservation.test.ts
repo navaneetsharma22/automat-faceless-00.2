@@ -14,6 +14,13 @@ import { sha256Hex } from "../../src/storage/repositories";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import type { FlowImageAttemptRecord } from "../../src/domain/jobs/attempt";
+import { createConnectionLifecycleService } from "../../src/background/connectionLifecycle";
+import { createChromeFlowImageGenerateOncePort } from "../../src/background/handlers/flow";
+import type { ConnectionPort } from "../../src/platforms/shared/contracts";
+import {
+  CONNECTION_CAPABILITY,
+  CONNECTOR_PROTOCOL_VERSION,
+} from "../../src/platforms/shared/contracts";
 
 const projectId = "fixture-project";
 const tabId = 41;
@@ -390,6 +397,197 @@ describe("P05.2 attempt-bound Flow observation", () => {
     });
   });
 
+  it("classifies delayed binding-check transport exceptions as observer loss, not a proven binding change", async () => {
+    const fixture = await makeFixture(2, "production_observation_only", true);
+    const first = await send(
+      fixture,
+      await structuralEvent(fixture.attempt, 1),
+    );
+    expect(first).toMatchObject({ accepted: true });
+
+    const originalGetTab = fixture.port.getTab;
+    fixture.port.getTab = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      throw new Error("transport rejected after delay");
+    };
+    const next = await send(fixture, await structuralEvent(fixture.attempt, 2));
+    fixture.port.getTab = originalGetTab;
+
+    expect(next).toMatchObject({
+      accepted: false,
+      code: "binding_check_exception_tab_read_error",
+    });
+    const saved = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect(saved?.observationSession?.status).toBe("lost");
+    expect(saved?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "observation_lost",
+    });
+    expect(saved?.events.at(-1)?.code).toBe(
+      "binding_check_exception_tab_read_error",
+    );
+    expect(saved?.observationReceipts).toHaveLength(1);
+    expect(saved?.structuralObservations).toHaveLength(1);
+  });
+
+  it.each([
+    ["selected_target_read", "selected-target repository", "selectedTarget"],
+    ["selection_read", "selection port", "getSelection"],
+    ["tab_read", "tab inspection", "getTab"],
+    ["frame_inspection", "frame/document inspection", "readFrame"],
+    [
+      "source_snapshot_read",
+      "source repository validation",
+      "getFlowImagePromptSnapshot",
+    ],
+  ])(
+    "records a bounded substage for %s exceptions (%s)",
+    async (stage, _label, dependency) => {
+      const fixture = await makeFixture(1, "production_observation_only", true);
+      const observation = await structuralEvent(fixture.attempt, 1);
+      const failing = new Error(
+        "fixture dependency failure with private details",
+      );
+      if (dependency === "selectedTarget") {
+        fixture.repositories.getSelectedTarget = async () => {
+          throw failing;
+        };
+      } else if (dependency === "getSelection") {
+        fixture.port.getSelection = async () => {
+          throw failing;
+        };
+      } else if (dependency === "getTab") {
+        fixture.port.getTab = async () => {
+          throw failing;
+        };
+      } else if (dependency === "readFrame") {
+        fixture.port.readFrame = async () => {
+          throw failing;
+        };
+      } else {
+        fixture.repositories.getFlowImagePromptSnapshot = async () => {
+          throw failing;
+        };
+      }
+      const response = await send(fixture, observation);
+      expect(response).toMatchObject({
+        accepted: false,
+        code: `binding_check_exception_${stage}_error`,
+      });
+      expect(
+        (
+          await fixture.repositories.getFlowImageAttempt(
+            fixture.attempt.attemptId,
+          )
+        )?.resultOutcome,
+      ).toMatchObject({ status: "unknown", reason: "observation_lost" });
+    },
+  );
+
+  it.each([
+    [
+      "debugger",
+      "binding_check_exception_frame_inspection_cdp_transport_error",
+    ],
+    [
+      "scripting",
+      "binding_check_exception_frame_inspection_document_probe_error",
+    ],
+  ])(
+    "classifies delayed Chrome %s transport failures through the production frame port",
+    async (failingApi, expectedCode) => {
+      const fixture = await makeFixture(1, "production_observation_only", true);
+      const originalChrome = (globalThis as { chrome?: unknown }).chrome;
+      const chromeStub = {
+        tabs: {
+          get: async () => ({ title: "fixture", url: canonicalTarget }),
+        },
+        debugger: {
+          sendCommand: async (_target: unknown, method: string) => {
+            if (failingApi === "debugger" && method === "Page.getFrameTree") {
+              await new Promise((resolve) => setTimeout(resolve, 15));
+              throw new Error("transport detail excluded from diagnostics");
+            }
+            return {
+              frameTree: {
+                frame: {
+                  id: "fixture-frame",
+                  loaderId: "fixture-loader",
+                  url: canonicalTarget,
+                },
+              },
+            };
+          },
+        },
+        scripting: {
+          executeScript: async () => {
+            if (failingApi === "scripting") {
+              await new Promise((resolve) => setTimeout(resolve, 15));
+              throw new Error("probe detail excluded from diagnostics");
+            }
+            return [
+              {
+                documentId,
+                frameId: 0,
+                result: canonicalTarget,
+              },
+            ];
+          },
+        },
+      };
+      Object.defineProperty(globalThis, "chrome", {
+        configurable: true,
+        value: chromeStub,
+      });
+      try {
+        const port = createChromeFlowImageGenerateOncePort(
+          fixture.repositories,
+        );
+        const handler = createFlowImageObservationHandler({
+          extensionId: "fixture-extension",
+          repositories: fixture.repositories,
+          port,
+          now: () => 1_100,
+        });
+        const response = await handler.handle(
+          {
+            type: "AUTOMAT_FLOW_IMAGE_OBSERVATION",
+            protocolVersion: PROTOCOL_VERSION,
+            buildId: BUILD_ID,
+            observation: await structuralEvent(fixture.attempt, 1),
+          },
+          {
+            id: "fixture-extension",
+            tab: { id: tabId },
+            frameId: 0,
+            documentId,
+          },
+        );
+        expect(response).toMatchObject({
+          accepted: false,
+          code: expectedCode,
+        });
+        expect(
+          (
+            await fixture.repositories.getFlowImageAttempt(
+              fixture.attempt.attemptId,
+            )
+          )?.resultOutcome,
+        ).toMatchObject({ status: "unknown", reason: "observation_lost" });
+      } finally {
+        if (originalChrome === undefined)
+          delete (globalThis as { chrome?: unknown }).chrome;
+        else
+          Object.defineProperty(globalThis, "chrome", {
+            configurable: true,
+            value: originalChrome,
+          });
+      }
+    },
+  );
+
   it("turns production observer detach and timeout into explicit unknown outcomes", async () => {
     const detached = await makeFixture(1, "production_observation_only");
     expect(
@@ -444,6 +642,36 @@ describe("P05.2 attempt-bound Flow observation", () => {
         )
       )?.resultOutcome,
     ).toMatchObject({ status: "unknown", reason: "binding_changed" });
+  });
+
+  it("classifies the real repository's invalid saved-source hash as source validation failure", async () => {
+    const fixture = await makeFixture(1, "production_observation_only", true);
+    const sourceTable = fixture.repositories.tables.flowImagePromptSnapshots;
+    const originalGet = sourceTable.get;
+    sourceTable.get = async (snapshotId) => {
+      const source = await originalGet(snapshotId);
+      return source
+        ? { ...source, rawJsonBody: `${source.rawJsonBody} ` }
+        : source;
+    };
+    const response = await send(
+      fixture,
+      await structuralEvent(fixture.attempt, 1),
+    );
+    sourceTable.get = originalGet;
+
+    expect(response).toMatchObject({
+      accepted: false,
+      code: "binding_check_exception_source_snapshot_read_validation_error",
+    });
+    const saved = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect(saved?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "observation_lost",
+    });
+    expect(saved?.observationReceipts ?? []).toHaveLength(0);
   });
 
   it.each([
@@ -565,6 +793,154 @@ describe("P05.2 attempt-bound Flow observation", () => {
     );
   });
 
+  it("keeps an active observer's immutable binding intact during same-target verification", async () => {
+    const fixture = await makeFixture(1, "production_observation_only");
+    await fixture.repositories.setReconnectIntent("Flow", true);
+    const selected = await fixture.repositories.getSelectedTarget("Flow");
+    if (!selected) throw new Error("Flow target fixture missing");
+    await fixture.repositories.recordTargetVerification(
+      {
+        provider: "Flow",
+        tabId,
+        canonicalTarget,
+        projectId,
+        frameId: 0,
+        documentId,
+        documentToken: "fixture-connector-token",
+        extensionBuildId: BUILD_ID,
+        extensionProtocolVersion: PROTOCOL_VERSION,
+        connectorBuildId: BUILD_ID,
+        connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        capability: CONNECTION_CAPABILITY,
+        verifiedAt: 1_040,
+      },
+      selected.revision,
+    );
+    const selectedTab = {
+      id: tabId,
+      title: "fixture",
+      url: canonicalTarget,
+      provider: "Flow" as const,
+      projectId,
+      canonicalTarget,
+    };
+    let injectionCount = 0;
+    const connectionPort: ConnectionPort = {
+      getMissingAccess: async () => ({}),
+      getTab: async () => selectedTab,
+      pingTopFrame: async (_id, request) => ({
+        ok: true,
+        provider: "Flow",
+        canonicalTarget,
+        projectId,
+        protocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        buildId: BUILD_ID,
+        attemptId: request.attemptId,
+        documentToken: "fixture-connector-token",
+        capabilities: [CONNECTION_CAPABILITY],
+      }),
+      identifyDocument: async () => ({
+        documentId,
+        frameId: 0,
+        url: canonicalTarget,
+      }),
+      injectConnector: async () => {
+        injectionCount += 1;
+        throw new Error("current_connector_must_not_be_replaced");
+      },
+      probeTopFrame: async (_id, _documentId, request) => ({
+        ok: true,
+        provider: "Flow",
+        canonicalTarget,
+        projectId,
+        protocolVersion: CONNECTOR_PROTOCOL_VERSION,
+        buildId: BUILD_ID,
+        attemptId: request.attemptId,
+        documentToken: "fixture-connector-token",
+        capabilities: [CONNECTION_CAPABILITY],
+      }),
+      releaseConnector: async () => undefined,
+      makeAttemptId: () => "fixture-readonly-check",
+    };
+    const service = createConnectionLifecycleService(
+      fixture.repositories,
+      () => connectionPort,
+    );
+    const before = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    const immutableSessionBinding = (
+      session: typeof before extends undefined
+        ? never
+        : NonNullable<typeof before>["observationSession"],
+    ) => {
+      if (!session) return null;
+      const { lastSequence: _lastSequence, ...binding } = session;
+      void _lastSequence;
+      return binding;
+    };
+    const beforeImmutable = {
+      attemptId: before?.attemptId,
+      projectId: before?.projectId,
+      tabId: before?.tabId,
+      frameId: before?.frameId,
+      loaderId: before?.loaderId,
+      documentId: before?.documentId,
+      senderFrameId: before?.senderFrameId,
+      buildId: before?.buildId,
+      protocolVersion: before?.protocolVersion,
+      session: immutableSessionBinding(before?.observationSession),
+      baselineBinding: before?.resultBaseline?.binding,
+    };
+
+    const observation = await structuralEvent(
+      fixture.attempt,
+      1,
+      "structural_snapshot",
+    );
+    const [revalidation, accepted] = await Promise.all([
+      service.revalidate("Flow"),
+      send(fixture, observation),
+    ]);
+    expect(revalidation).toMatchObject({
+      ok: true,
+      state: "verified",
+      savedBindingComparison: {
+        browserDocumentId: "match",
+        liveConnectorBuild: "current",
+        liveConnectorProtocol: "current",
+      },
+    });
+    const after = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect({
+      attemptId: after?.attemptId,
+      projectId: after?.projectId,
+      tabId: after?.tabId,
+      frameId: after?.frameId,
+      loaderId: after?.loaderId,
+      documentId: after?.documentId,
+      senderFrameId: after?.senderFrameId,
+      buildId: after?.buildId,
+      protocolVersion: after?.protocolVersion,
+      session: immutableSessionBinding(after?.observationSession),
+      baselineBinding: after?.resultBaseline?.binding,
+    }).toEqual(beforeImmutable);
+    expect(injectionCount).toBe(0);
+    expect(after?.observationSession?.status).toBe("active");
+    expect(after?.observationSession?.lastSequence).toBe(1);
+
+    expect(accepted).toMatchObject({ accepted: true, duplicate: false });
+    const afterReceipt = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect(
+      afterReceipt?.observationReceipts?.map((receipt) => receipt.sequence),
+    ).toEqual([1]);
+    expect(afterReceipt?.resultOutcome?.reason).not.toBe("binding_changed");
+  });
+
   it("resumes an existing production observation after restart without activation", async () => {
     const fixture = await makeFixture(1, "production_observation_only");
     const result = await fixture.handler.resumeReadOnlyAfterWorkerRestart();
@@ -577,6 +953,37 @@ describe("P05.2 attempt-bound Flow observation", () => {
       )?.observationSession,
     ).toMatchObject({ status: "active", reconciliationCount: 1 });
   });
+
+  it("keeps restart binding-check exceptions distinct from confirmed binding changes", async () => {
+    const fixture = await makeFixture(1, "production_observation_only");
+    const handler = createFlowImageObservationHandler({
+      extensionId: "fixture-extension",
+      repositories: fixture.repositories,
+      port: {
+        ...fixture.port,
+        getTab: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          throw new Error("temporary tab transport failure");
+        },
+      },
+      now: () => 1_100,
+    });
+    expect(await handler.resumeReadOnlyAfterWorkerRestart()).toEqual({
+      resumed: 0,
+      unknown: 1,
+    });
+    const saved = await fixture.repositories.getFlowImageAttempt(
+      fixture.attempt.attemptId,
+    );
+    expect(saved?.resultOutcome).toMatchObject({
+      status: "unknown",
+      reason: "observation_lost",
+    });
+    expect(saved?.events.at(-1)?.code).toBe(
+      "binding_check_exception_tab_read_error",
+    );
+  });
+
   it("keeps a declared x1 pending through processing and completes on one terminal identity", async () => {
     const fixture = await makeFixture(1);
     expect(
