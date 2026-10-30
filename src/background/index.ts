@@ -26,6 +26,7 @@ import {
 import { providerTabFromUrl } from "../platforms/shared/connection";
 import { createTimedImageQueueScheduler } from "./scheduler";
 import { createFlowTimedQueueDispatcher } from "./generationQueue";
+import { flowTabFromUrl } from "../platforms/flow/connection";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -73,22 +74,82 @@ const timedQueueScheduler = createTimedImageQueueScheduler({
   repositories,
   dispatch: createFlowTimedQueueDispatcher(repositories),
   alarms: chrome.alarms,
+  verifyTargetForContinuation: async (queue) => {
+    const selected = await repositories.getSelectedTarget("Flow");
+    const binding = selected?.verificationBinding;
+    if (
+      !selected ||
+      selected.tabId !== queue.selectedProject.tabId ||
+      selected.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+      !binding ||
+      binding.tabId !== selected.tabId ||
+      binding.projectId !== queue.selectedProject.projectId ||
+      binding.canonicalTarget !== selected.canonicalTarget ||
+      binding.extensionBuildId !== BUILD_ID ||
+      binding.connectorBuildId !== BUILD_ID ||
+      binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+      binding.connectorProtocolVersion !== 1
+    )
+      return "selected_project_or_connection_changed";
+    try {
+      const tab = await chrome.tabs.get(selected.tabId);
+      const tabBinding = flowTabFromUrl(
+        selected.tabId,
+        tab.title ?? "",
+        tab.url,
+      );
+      if (
+        !tabBinding ||
+        tabBinding.canonicalTarget !== selected.canonicalTarget
+      )
+        return "selected_tab_project_mismatch";
+      const [document] = await chrome.scripting.executeScript({
+        target: { tabId: selected.tabId, frameIds: [0] },
+        func: () => location.href,
+      });
+      if (
+        !document?.documentId ||
+        document.documentId !== binding.documentId ||
+        document.frameId !== 0
+      )
+        return "selected_document_changed";
+      const documentBinding = flowTabFromUrl(
+        selected.tabId,
+        "",
+        document.result,
+      );
+      if (
+        !documentBinding ||
+        documentBinding.canonicalTarget !== selected.canonicalTarget
+      )
+        return "selected_document_project_mismatch";
+      await repositories.recordTargetVerification({
+        ...binding,
+        verifiedAt: Date.now(),
+      });
+      return undefined;
+    } catch {
+      return "selected_target_unavailable_for_revalidation";
+    }
+  },
 });
+const targetStartupReady = repositories.markTargetsUnverified();
 const workerReady = Promise.all([
-  repositories.markTargetsUnverified(),
+  targetStartupReady,
   repositories.reconcileInterruptedFlowImageAttempts(),
 ])
   .then(() => flowImageObservation.resumeReadOnlyAfterWorkerRestart())
   .then(() => undefined);
+const timedQueueReady = targetStartupReady.then(() =>
+  timedQueueScheduler.reconcileStartup(),
+);
 void workerReady.catch(() => undefined);
 chrome.alarms.onAlarm.addListener((alarm) => {
-  void workerReady
+  void timedQueueReady
     .then(() => timedQueueScheduler.onAlarm(alarm.name))
     .catch(() => undefined);
 });
-void workerReady
-  .then(() => timedQueueScheduler.reconcileStartup())
-  .catch(() => undefined);
+void timedQueueReady.catch(() => undefined);
 
 // Persist only bounded lifecycle categories. URLs, titles and account data are
 // intentionally excluded; these are browser-observed events, not refresh causes.
@@ -266,6 +327,7 @@ chrome.runtime.onMessage.addListener(
     repositories,
     preferences,
     ready: workerReady,
+    timedQueueReady,
     flowPromptEntry,
     flowImageGenerateOnce,
     flowImageReadiness,
@@ -274,6 +336,8 @@ chrome.runtime.onMessage.addListener(
     flowCountRebaseline,
     flowImageObservation: flowImageObservation.handle,
     startTimedImageQueue: timedQueueScheduler.start,
+    commandTimedImageQueue: (command, queueId, expectedRevision) =>
+      timedQueueScheduler[command](queueId, expectedRevision),
     revalidateConnection: (provider, enableReconnect) =>
       connectionLifecycle.revalidate(provider, enableReconnect),
   }),

@@ -135,8 +135,8 @@ describe("production timed queue scheduler boundary", () => {
       repositories,
       now: () => clock,
       alarms: { create: () => undefined, clear: async () => true } as never,
-      dispatch: async ({ markActivationStarted }) => {
-        await markActivationStarted();
+      dispatch: async ({ authorizeActivation }) => {
+        await authorizeActivation();
         return {
           status: "blocked",
           reason: "activation_evidence_uncertain",
@@ -199,8 +199,8 @@ describe("production timed queue scheduler boundary", () => {
       repositories,
       now: () => 1_000,
       alarms: { create: () => undefined, clear: async () => true } as never,
-      dispatch: async ({ markActivationStarted }) => {
-        await markActivationStarted();
+      dispatch: async ({ authorizeActivation }) => {
+        await authorizeActivation();
         return { status: "activated", at: 1_000 };
       },
     });

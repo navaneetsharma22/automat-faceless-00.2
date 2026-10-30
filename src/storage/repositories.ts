@@ -345,6 +345,13 @@ export function createDexieRepositoryDatabase(
             database.imageSubmissionQueues,
             operation,
           );
+        case "imageSubmissionQueues+selectedTargets":
+          return database.transaction(
+            "rw",
+            database.imageSubmissionQueues,
+            database.selectedTargets,
+            operation,
+          );
         case "imageSubmissionQueues+flowImageAttempts+batches+promptItems+selectedTargets":
           return database.transaction(
             "rw",
@@ -907,9 +914,13 @@ export class ExtensionRepositories {
       const item = queue?.items[input.order];
       if (
         !queue ||
-        queue.revision !== input.expectedRevision ||
         item?.itemState !== "sending" ||
-        item.dispatchIntent?.attemptId !== input.attemptId
+        item.dispatchIntent?.attemptId !== input.attemptId ||
+        (queue.revision !== input.expectedRevision &&
+          !(
+            (queue.state === "paused" || queue.state === "stopped") &&
+            item.dispatchIntent.activationStartedAt !== undefined
+          ))
       )
         throw new ImageQueueEligibilityError(
           "dispatch_receipt_revision_changed",
@@ -933,7 +944,11 @@ export class ExtensionRepositories {
       const next: QueueRecord = {
         ...queue,
         items: sentItems,
-        state: final ? "sent" : "waiting",
+        state: final
+          ? "sent"
+          : queue.state === "paused" || queue.state === "stopped"
+            ? queue.state
+            : "waiting",
         lastDispatchReceiptStoredAt: input.recordedAt,
         nextEligibleDispatchAt: final
           ? null
@@ -974,6 +989,7 @@ export class ExtensionRepositories {
       if (
         !queue ||
         queue.revision !== input.expectedRevision ||
+        (queue.state !== "ready" && queue.state !== "waiting") ||
         item?.itemState !== "sending" ||
         item.dispatchIntent?.attemptId !== input.attemptId ||
         item.dispatchIntent.activationStartedAt !== undefined
@@ -1032,7 +1048,7 @@ export class ExtensionRepositories {
       if (!queue || queue.revision !== input.expectedRevision) return;
       result = {
         ...queue,
-        state: "blocked",
+        state: queue.state === "stopped" ? "stopped" : "blocked",
         revision: queue.revision + 1,
         updatedAt: input.at,
         items: queue.items.map((entry, index) =>
@@ -1060,6 +1076,197 @@ export class ExtensionRepositories {
         throw new ImageQueueEligibilityError("queue_block_readback_failed");
       result = readback;
     });
+    return result;
+  }
+
+  async pauseTimedImageQueue(input: {
+    queueId: string;
+    expectedRevision: number;
+    at: number;
+    reason?: string;
+  }): Promise<QueueRecord> {
+    return this.updateTimedImageQueueCommand(input, "pause");
+  }
+
+  async stopTimedImageQueue(input: {
+    queueId: string;
+    expectedRevision: number;
+    at: number;
+  }): Promise<QueueRecord> {
+    return this.updateTimedImageQueueCommand(input, "stop");
+  }
+
+  private async updateTimedImageQueueCommand(
+    input: {
+      queueId: string;
+      expectedRevision: number;
+      at: number;
+      reason?: string;
+    },
+    command: "pause" | "stop",
+  ): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(["imageSubmissionQueues"], async () => {
+      const queue = await this.tables.imageSubmissionQueues.get(input.queueId);
+      if (!queue || !(await isValidTimedQueueSnapshot(queue)))
+        throw new ImageQueueEligibilityError("queue_record_invalid");
+      if (queue.revision !== input.expectedRevision) {
+        if (
+          (command === "pause" && queue.state === "paused") ||
+          (command === "stop" && queue.state === "stopped")
+        ) {
+          result = queue;
+          return;
+        }
+        throw new ImageQueueEligibilityError("queue_revision_changed");
+      }
+      if (
+        command === "pause" &&
+        ["stopped", "sent", "blocked"].includes(queue.state)
+      ) {
+        result = queue;
+        return;
+      }
+      if (command === "stop" && ["stopped", "sent"].includes(queue.state)) {
+        result = queue;
+        return;
+      }
+      const nextState = command === "pause" ? "paused" : "stopped";
+      const items = queue.items.map((item) => {
+        if (item.itemState === "pending")
+          return command === "stop"
+            ? { ...item, itemState: "stopped" as const }
+            : item;
+        // A claim without the authorization marker is safe to return to Pending:
+        // activation is impossible until the revision-checked marker commits.
+        if (
+          item.itemState === "sending" &&
+          item.dispatchIntent?.activationStartedAt === undefined
+        ) {
+          if (command === "stop")
+            return { ...item, itemState: "stopped" as const };
+          const { dispatchIntent, ...withoutIntent } = item;
+          void dispatchIntent;
+          return {
+            ...withoutIntent,
+            itemState: "pending" as const,
+            providerOutcome: "not_started" as const,
+          };
+        }
+        return item;
+      });
+      const { pauseReason: previousPauseReason, ...withoutPauseReason } = queue;
+      void previousPauseReason;
+      const next: QueueRecord = {
+        ...withoutPauseReason,
+        state: nextState,
+        ...(command === "pause"
+          ? { pauseReason: (input.reason ?? "user_requested").slice(0, 64) }
+          : {}),
+        items,
+        revision: queue.revision + 1,
+        updatedAt: input.at,
+      };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(next).success)
+        throw new ImageQueueEligibilityError("queue_command_invalid");
+      await this.tables.imageSubmissionQueues.put(next);
+      const readback = await this.tables.imageSubmissionQueues.get(
+        input.queueId,
+      );
+      if (
+        !readback ||
+        readback.revision !== next.revision ||
+        readback.state !== nextState
+      )
+        throw new ImageQueueEligibilityError("queue_command_readback_failed");
+      result = readback;
+    });
+    return result;
+  }
+
+  async resumeTimedImageQueue(input: {
+    queueId: string;
+    expectedRevision: number;
+    at: number;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(
+      ["imageSubmissionQueues+selectedTargets"],
+      async () => {
+        const queue = await this.tables.imageSubmissionQueues.get(
+          input.queueId,
+        );
+        if (!queue || !(await isValidTimedQueueSnapshot(queue)))
+          throw new ImageQueueEligibilityError("queue_record_invalid");
+        if (queue.revision !== input.expectedRevision) {
+          if (
+            queue.revision === input.expectedRevision + 1 &&
+            (queue.state === "ready" || queue.state === "waiting")
+          ) {
+            result = queue;
+            return;
+          }
+          throw new ImageQueueEligibilityError("queue_revision_changed");
+        }
+        if (queue.state !== "paused") {
+          result = queue;
+          return;
+        }
+        if (
+          queue.items.some(
+            (item) =>
+              item.itemState === "sending" ||
+              (item.dispatchIntent &&
+                item.itemState !== "sent" &&
+                item.itemState !== "blocked"),
+          )
+        )
+          throw new ImageQueueEligibilityError(
+            "queue_unresolved_dispatch_requires_review",
+          );
+        const selected = await this.getSelectedTarget("Flow");
+        const binding = selected?.verificationBinding;
+        if (
+          !selected ||
+          selected.tabId !== queue.selectedProject.tabId ||
+          selected.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          selected.verification !== "verified" ||
+          selected.connectionState !== "verified" ||
+          !binding ||
+          binding.projectId !== queue.selectedProject.projectId ||
+          binding.tabId !== queue.selectedProject.tabId ||
+          binding.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          !binding.documentId
+        )
+          throw new ImageQueueEligibilityError(
+            "selected_project_or_document_changed",
+          );
+        const state = queue.items.some((item) => item.itemState === "sent")
+          ? "waiting"
+          : "ready";
+        const { pauseReason, ...withoutPauseReason } = queue;
+        void pauseReason;
+        const next: QueueRecord = {
+          ...withoutPauseReason,
+          state,
+          revision: queue.revision + 1,
+          updatedAt: input.at,
+        };
+        if (!ImageSubmissionQueueRecordSchema.safeParse(next).success)
+          throw new ImageQueueEligibilityError("queue_resume_invalid");
+        await this.tables.imageSubmissionQueues.put(next);
+        const readback = await this.tables.imageSubmissionQueues.get(
+          input.queueId,
+        );
+        if (
+          !readback ||
+          readback.revision !== next.revision ||
+          readback.state !== state
+        )
+          throw new ImageQueueEligibilityError("queue_resume_readback_failed");
+        result = readback;
+      },
+    );
     return result;
   }
 

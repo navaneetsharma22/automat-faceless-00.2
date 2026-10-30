@@ -61,6 +61,7 @@ export type ImageSubmissionQueueRecord = {
   readonly mode: "timed_submission";
   readonly intervalMs: typeof TIMED_IMAGE_SUBMISSION_INTERVAL_MS;
   state: ImageQueueState;
+  pauseReason?: string;
   readonly sourceText: string;
   readonly sourceHash: string;
   readonly sourceMode:
@@ -141,6 +142,7 @@ export const ImageSubmissionQueueRecordSchema = z
     mode: z.literal("timed_submission"),
     intervalMs: z.literal(TIMED_IMAGE_SUBMISSION_INTERVAL_MS),
     state: z.enum(IMAGE_QUEUE_STATES),
+    pauseReason: z.string().min(1).max(64).optional(),
     sourceText: z.string().min(1),
     sourceHash: hashSchema,
     sourceMode: z.enum([
@@ -208,7 +210,7 @@ export function canTransitionImageQueue(
   const allowed: Record<ImageQueueState, readonly ImageQueueState[]> = {
     ready: ["waiting", "paused", "blocked", "stopped"],
     waiting: ["sent", "paused", "blocked", "stopped"],
-    paused: ["ready", "stopped"],
+    paused: ["ready", "waiting", "stopped"],
     blocked: ["stopped"],
     sent: [],
     stopped: [],

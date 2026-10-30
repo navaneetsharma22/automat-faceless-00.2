@@ -28,6 +28,7 @@ export type FoundationDependencies = {
   repositories: ExtensionRepositories;
   preferences: ChromePreferenceRepository;
   ready?: Promise<void>;
+  timedQueueReady?: Promise<void>;
   flowPromptEntry?: (input: {
     workspaceId: string;
     promptHash: string;
@@ -58,6 +59,11 @@ export type FoundationDependencies = {
     enableReconnect?: boolean,
   ) => Promise<unknown>;
   startTimedImageQueue?: (queueId: string) => Promise<unknown>;
+  commandTimedImageQueue?: (
+    command: "pause" | "resume" | "stop",
+    queueId: string,
+    expectedRevision: number,
+  ) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -221,6 +227,32 @@ async function dispatch(
             "invalid_request",
             error.code,
             "The saved queue is no longer eligible to start. Reload and review its project, source, and state.",
+          );
+        throw error;
+      }
+    }
+    case "imageQueue.pause":
+    case "imageQueue.resume":
+    case "imageQueue.stop": {
+      if (!dependencies.commandTimedImageQueue)
+        throw new FoundationOperationError(
+          "worker_error",
+          "image_queue_lifecycle_unavailable",
+          "Queue lifecycle controls are unavailable in this worker.",
+        );
+      try {
+        return await dependencies.commandTimedImageQueue(
+          request.type.slice("imageQueue.".length) as
+            "pause" | "resume" | "stop",
+          request.payload.queueId,
+          request.payload.expectedRevision,
+        );
+      } catch (error) {
+        if (error instanceof ImageQueueEligibilityError)
+          throw new FoundationOperationError(
+            "invalid_request",
+            error.code,
+            "The saved queue changed or cannot continue. Reload and review its current state.",
           );
         throw error;
       }
@@ -450,7 +482,10 @@ export function createConnectionMessageListener(
     if (recentRequestIds.length > 256) {
       seenRequestIds.delete(recentRequestIds.shift()!);
     }
-    void Promise.resolve(dependencies.ready)
+    const readiness = request.type.startsWith("imageQueue.")
+      ? (dependencies.timedQueueReady ?? dependencies.ready)
+      : dependencies.ready;
+    void Promise.resolve(readiness)
       .then(() => dispatch(request, dependencies))
       .then((data) => {
         sendResponse({
@@ -469,6 +504,17 @@ export function createConnectionMessageListener(
               error.category,
               error.code,
               error.message,
+            ),
+          );
+          return;
+        }
+        if (request.type.startsWith("imageQueue.")) {
+          sendResponse(
+            failure(
+              request.requestId,
+              "storage_failure",
+              "image_queue_operation_failed",
+              "The timed queue operation could not be safely completed.",
             ),
           );
           return;

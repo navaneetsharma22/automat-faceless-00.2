@@ -570,6 +570,17 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("imageQueue.start"),
     payload: z.object({ queueId: z.string().uuid() }).strict(),
   }),
+  ...(["pause", "resume", "stop"] as const).map((command) =>
+    requestBase.extend({
+      type: z.literal(`imageQueue.${command}`),
+      payload: z
+        .object({
+          queueId: z.string().uuid(),
+          expectedRevision: z.number().int().nonnegative(),
+        })
+        .strict(),
+    }),
+  ),
   requestBase.extend({
     type: z.literal("imageQueue.list"),
     payload: z.object({ workspaceId: workspaceIdSchema }).strict(),

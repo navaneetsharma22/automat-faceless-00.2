@@ -39,7 +39,7 @@ export function createFlowTimedQueueDispatcher(
   const pagePort =
     environment?.pagePort ??
     createChromeFlowImageGenerateOncePort(repositories);
-  return async ({ queue, order, attemptId, markActivationStarted }) => {
+  return async ({ queue, order, attemptId, authorizeActivation }) => {
     let activationAttempted = false;
     let lease:
       | Awaited<ReturnType<NonNullable<typeof pagePort.acquireDebuggerLease>>>
@@ -240,7 +240,7 @@ export function createFlowTimedQueueDispatcher(
           reason: "binding_changed_at_activation",
           uncertain: false,
         };
-      await markActivationStarted();
+      await authorizeActivation();
       activationAttempted = true;
       const activation = await activateFlowImageGenerate(
         pagePort,

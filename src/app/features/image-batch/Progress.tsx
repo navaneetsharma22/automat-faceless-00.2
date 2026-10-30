@@ -24,6 +24,10 @@ export function ImageQueueProgress({
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [startingQueueId, setStartingQueueId] = useState<string>();
+  const [commanding, setCommanding] = useState<{
+    queueId: string;
+    command: "pause" | "resume" | "stop";
+  }>();
   const [, setClockTick] = useState(0);
   const [error, setError] = useState<string | undefined>();
 
@@ -89,6 +93,35 @@ export function ImageQueueProgress({
       );
     } finally {
       setStartingQueueId(undefined);
+    }
+  };
+
+  const commandQueue = async (
+    queue: ImageSubmissionQueueRecord,
+    command: "pause" | "resume" | "stop",
+  ) => {
+    if (commanding || startingQueueId) return;
+    setCommanding({ queueId: queue.queueId, command });
+    setError(undefined);
+    try {
+      const record = await persistenceClient.request(`imageQueue.${command}`, {
+        queueId: queue.queueId,
+        expectedRevision: queue.revision,
+      });
+      const parsed = ImageSubmissionQueueRecordSchema.safeParse(record);
+      if (!parsed.success)
+        throw new Error("Queue lifecycle readback was invalid.");
+      setQueues((current) =>
+        current.map((entry) =>
+          entry.queueId === queue.queueId ? parsed.data : entry,
+        ),
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : `Queue ${command} failed.`,
+      );
+    } finally {
+      setCommanding(undefined);
     }
   };
 
@@ -199,6 +232,15 @@ export function ImageQueueProgress({
           <p className={styles.helper}>
             Project and exact source are frozen in this queue snapshot.
           </p>
+          <p className={styles.helper} role="status">
+            {queue.items.filter((item) => item.itemState === "sent").length}{" "}
+            Sent ·{" "}
+            {queue.items.filter((item) => item.itemState === "pending").length}{" "}
+            Pending
+            {queue.items.some((item) => item.itemState === "sending")
+              ? ` · Current: Prompt ${(queue.items.find((item) => item.itemState === "sending")?.order ?? 0) + 1}`
+              : ""}
+          </p>
           {queue.state === "ready" &&
           queue.items.every((item) => item.itemState === "pending") ? (
             <Button
@@ -210,6 +252,62 @@ export function ImageQueueProgress({
             >
               Start timed queue
             </Button>
+          ) : null}
+          {queue.state === "ready" || queue.state === "waiting" ? (
+            <div className={styles.actionRow}>
+              <Button
+                type="button"
+                disabled={Boolean(commanding || startingQueueId)}
+                loading={
+                  commanding?.queueId === queue.queueId &&
+                  commanding.command === "pause"
+                }
+                loadingLabel="Pausing…"
+                onClick={() => void commandQueue(queue, "pause")}
+              >
+                Pause
+              </Button>
+              <Button
+                type="button"
+                disabled={Boolean(commanding || startingQueueId)}
+                loading={
+                  commanding?.queueId === queue.queueId &&
+                  commanding.command === "stop"
+                }
+                loadingLabel="Stopping…"
+                onClick={() => void commandQueue(queue, "stop")}
+              >
+                Stop
+              </Button>
+            </div>
+          ) : null}
+          {queue.state === "paused" ? (
+            <div className={styles.actionRow}>
+              <Button
+                type="button"
+                disabled={Boolean(commanding || startingQueueId)}
+                loading={
+                  commanding?.queueId === queue.queueId &&
+                  commanding.command === "resume"
+                }
+                loadingLabel="Revalidating and resuming…"
+                onClick={() => void commandQueue(queue, "resume")}
+              >
+                Resume
+              </Button>
+              <Button
+                type="button"
+                disabled={Boolean(commanding || startingQueueId)}
+                loading={
+                  commanding?.queueId === queue.queueId &&
+                  commanding.command === "stop"
+                }
+                loadingLabel="Stopping…"
+                onClick={() => void commandQueue(queue, "stop")}
+              >
+                Stop
+              </Button>
+            </div>
           ) : null}
           {queue.state === "waiting" &&
           queue.nextEligibleDispatchAt !== null ? (
@@ -227,7 +325,23 @@ export function ImageQueueProgress({
           ) : null}
           {queue.state === "blocked" ? (
             <p className={styles.error} role="alert">
-              Queue blocked. Review before any further action.
+              Queue blocked:{" "}
+              {queue.items.find((item) => item.blockReason)?.blockReason ??
+                "review_required"}
+              . No automatic replay is available.
+            </p>
+          ) : null}
+          {queue.state === "paused" ? (
+            <p className={styles.helper} role="status">
+              Paused: {queue.pauseReason ?? "user_requested"}. No future prompt
+              will be dispatched until the saved target and settings binding are
+              revalidated.
+            </p>
+          ) : null}
+          {queue.state === "stopped" ? (
+            <p className={styles.helper} role="status">
+              Stopped. Remaining prompts will not be sent. An activation already
+              authorized may have finished; provider results are not verified.
             </p>
           ) : null}
           <ol className={styles.items}>

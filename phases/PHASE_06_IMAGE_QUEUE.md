@@ -1,6 +1,6 @@
 # P06 — Timed sequential image submission
 
-Status: P06.1 and P06.2 are OFFLINE_VERIFIED within the bounds recorded below. P06.3–P06.4 are NOT_STARTED. This revised mode is independent of P05 count-mode observation and rebaseline. P05 remains INCOMPLETE; automatic provider attribution and terminal acceptance are deferred and NOT_PASSED.
+Status: P06.1, P06.2, and P06.3 are OFFLINE_VERIFIED within the bounds recorded below. P06.4 is NOT_STARTED; live provider acceptance is NOT_RUN. This revised mode is independent of P05 count-mode observation and rebaseline. P05 remains INCOMPLETE; automatic provider attribution and terminal acceptance are deferred and NOT_PASSED.
 
 **Outcome:** Persist an ordered batch and manually confirmed Flow project/settings declaration, then (in later subphases) dispatch one prompt at a time using a fixed 40,000 ms minimum interval measured from the preceding durable dispatch receipt. Generation completion is not observed by this mode. A sent dispatch is evidence of input delivery only; provider outcome remains unknown.
 
@@ -45,13 +45,14 @@ The timed Flow handler rechecks the selected verified Flow project/tab/document 
 Offline validation: focused queue/scheduler Vitest **2 files / 9 tests PASS**; full Vitest and full configured Chromium results are recorded in `PROJECT_STATUS.md`; the real-Dexie Chromium sequence used the production timed dispatcher and synthetic local CDP editor/Generate input. It verified exact ordered bodies, one activation each, first receipt durable before item two, no second dispatch at 39,999 ms, eligibility at 40,000 ms, duplicate/late alarm suppression, and outcomes remaining unknown. Chrome alarm and extension APIs were adapted in this local fixture; installed-MV3 behavior was **NOT_RUN**.
 
 ### P06.3 — Pause, restart, and uncertainty
-Evidence mode: **offline**.
+Evidence mode: **offline**. Status: **OFFLINE_VERIFIED** for pause/resume/stop, durable restart handling, uncertainty refusal, and isolated installed-MV3 synthetic acceptance only. Live Flow acceptance is **NOT_RUN**.
 
 - Pause/Stop block future dispatches without claiming cancellation of a provider job already sent.
 - Restart reads the durable item, receipt, deadline, queue state, and attempt lock. It cannot resend an uncertain or already-dispatched source.
 - Persist item dispatch state separately from batch waiting/paused/blocked/stopped state.
 - A dispatch receipt means action evidence; provider result remains `unknown`. No count-mode observer, recovery, or rebaseline is started.
 - State transitions are explicit and monotonic except for a validated resume of a paused queue; stopped queues remain terminal.
+`P06.3` evidence, checks, the installed-MV3 procedure, and its limits are recorded in [timed image queue evidence](../docs/evidence/timed-image-queue.md#p063-pause-restart-and-uncertainty-evidence--30-october-2026).
 
 ### P06.4 — Controlled live acceptance and scale
 Evidence mode: **authorized live-generation only**.
@@ -79,4 +80,4 @@ The former P06 gate required G-IMAGE-TWO followed by G-IMAGE-SCALE (5/10/15) wit
 
 ## Phase gate
 
-P06.1 and P06.2 offline acceptance establish the persisted foundation and synthetic guarded dispatch/scheduler behavior only. P06.3 and the authorized P06.4 gate remain open. No G-IMAGE live gate is claimed passed by this card's status update.
+P06.1-P06.3 offline acceptance establishes the persisted foundation, guarded timed dispatch, lifecycle commands, restart handling, and synthetic installed-MV3 behavior only. P06.4 live acceptance remains open. No G-IMAGE live gate is claimed passed by this card status.
