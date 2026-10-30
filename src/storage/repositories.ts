@@ -9,6 +9,12 @@ import {
   type FlowCountRecoveryRecord,
 } from "./db";
 import {
+  ImageSubmissionQueueRecordSchema,
+  TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+  type ImageQueueManualSettingsDeclaration,
+  type ImageSubmissionQueueRecord as QueueRecord,
+} from "../domain/jobs/queue";
+import {
   PromptBatchInputSchema,
   PromptBatchRecordSchema,
   PromptBatchSnapshotSchema,
@@ -78,6 +84,20 @@ export class ActiveFlowImageAttemptError extends Error {
   }
 }
 
+export class DuplicateTimedImageQueueSourceError extends Error {
+  constructor() {
+    super("An existing timed image queue already contains this exact source.");
+    this.name = "DuplicateTimedImageQueueSourceError";
+  }
+}
+
+export class ImageQueueEligibilityError extends Error {
+  constructor(readonly code: string) {
+    super("The timed image queue could not be safely created.");
+    this.name = "ImageQueueEligibilityError";
+  }
+}
+
 export class FlowCountSessionActiveError extends Error {
   constructor() {
     super("A prior attempt in this count session is unresolved.");
@@ -125,6 +145,25 @@ function assertValidFlowImageAttempt(record: FlowImageAttemptRecord): void {
   const parsed = FlowImageAttemptRecordSchema.safeParse(record);
   if (!parsed.success)
     throw new FlowImageAttemptValidationError(parsed.error.issues);
+}
+
+function flowProjectIdFromCanonicalTarget(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return;
+    if (url.hostname === "flow.google.com") {
+      return /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/?$/.exec(
+        url.pathname,
+      )?.[1];
+    }
+    if (url.hostname === "labs.google") {
+      return /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(
+        url.pathname,
+      )?.[1];
+    }
+  } catch {
+    return;
+  }
 }
 
 export class FlowImageObservationRejectedError extends Error {
@@ -203,6 +242,10 @@ export type RepositoryDatabase = {
     Table<FlowCountRecoveryRecord, string>,
     "add" | "get" | "toArray"
   >;
+  imageSubmissionQueues: Pick<
+    Table<QueueRecord, string>,
+    "add" | "get" | "toArray"
+  >;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -221,6 +264,7 @@ export function createDexieRepositoryDatabase(
     flowImageAttempts: database.flowImageAttempts,
     flowImagePromptSnapshots: database.flowImagePromptSnapshots,
     flowCountRecoveries: database.flowCountRecoveries,
+    imageSubmissionQueues: database.imageSubmissionQueues,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -265,6 +309,22 @@ export function createDexieRepositoryDatabase(
           return database.transaction(
             "rw",
             database.flowCountRecoveries,
+            operation,
+          );
+        case "imageSubmissionQueues":
+          return database.transaction(
+            "rw",
+            database.imageSubmissionQueues,
+            operation,
+          );
+        case "imageSubmissionQueues+flowImageAttempts+batches+promptItems+selectedTargets":
+          return database.transaction(
+            "rw",
+            database.imageSubmissionQueues,
+            database.flowImageAttempts,
+            database.batches,
+            database.promptItems,
+            database.selectedTargets,
             operation,
           );
         case "flowImageAttempts+flowCountRecoveries":
@@ -552,6 +612,180 @@ export class ExtensionRepositories {
       }
     });
     return { batch, items };
+  }
+
+  async createTimedImageSubmissionQueue(input: {
+    workspaceId: string;
+    queueId: string;
+    settingsConfirmation: Omit<
+      ImageQueueManualSettingsDeclaration,
+      "userAttested"
+    >;
+  }): Promise<QueueRecord> {
+    const saved = await this.getPromptBatch(input.workspaceId, "image");
+    if (!saved) throw new PromptBatchValidationError();
+    const sourceHash = await sha256Hex(saved.batch.sourceText);
+    const itemHashes = await Promise.all(
+      saved.items.map((item) => sha256Hex(item.rawJsonBody)),
+    );
+    const now = this.now();
+    let record!: QueueRecord;
+    await this.tables.transaction(
+      [
+        "imageSubmissionQueues+flowImageAttempts+batches+promptItems+selectedTargets",
+      ],
+      async () => {
+        const currentBatch = await this.tables.batches.get(saved.batch.id);
+        const currentItems = (await this.tables.promptItems.toArray())
+          .filter((item) => item.batchId === saved.batch.id)
+          .sort((a, b) => a.order - b.order);
+        const selected = await this.tables.selectedTargets.get("Flow");
+        if (
+          !currentBatch ||
+          currentBatch.updatedAt !== saved.batch.updatedAt ||
+          currentBatch.sourceText !== saved.batch.sourceText ||
+          currentBatch.sourceMode !== saved.batch.sourceMode ||
+          currentBatch.orderedItemIds.length !== saved.batch.orderedItemIds.length ||
+          currentBatch.orderedItemIds.some(
+            (id, index) => id !== saved.batch.orderedItemIds[index],
+          ) ||
+          currentItems.length !== saved.items.length ||
+          currentItems.some(
+            (item, index) =>
+              item.id !== saved.items[index]?.id ||
+              item.rawJsonBody !== saved.items[index]?.rawJsonBody ||
+              item.contentHash !== saved.items[index]?.contentHash ||
+              item.shotId !== saved.items[index]?.shotId ||
+              item.identitySource !== saved.items[index]?.identitySource ||
+              item.sourceSpan.start !== saved.items[index]?.sourceSpan.start ||
+              item.sourceSpan.end !== saved.items[index]?.sourceSpan.end ||
+              item.measurement.stringCodeUnits !==
+                saved.items[index]?.measurement.stringCodeUnits ||
+              item.measurement.utf8Bytes !==
+                saved.items[index]?.measurement.utf8Bytes,
+          )
+        ) {
+          throw new PromptBatchValidationError();
+        }
+        if (
+          !selected ||
+          selected.provider !== "Flow" ||
+          selected.tabId !== input.settingsConfirmation.tabId ||
+          selected.canonicalTarget !==
+            input.settingsConfirmation.canonicalTarget ||
+          flowProjectIdFromCanonicalTarget(selected.canonicalTarget) !==
+            input.settingsConfirmation.projectId
+        ) {
+          throw new ImageQueueEligibilityError("selected_project_changed");
+        }
+        const attempts = await this.tables.flowImageAttempts.toArray();
+        if (
+          attempts.some(
+            (attempt) =>
+              isBlockingFlowImageAttempt(attempt) &&
+              itemHashes.includes(attempt.promptHash),
+          )
+        ) {
+          throw new ActiveFlowImageAttemptError();
+        }
+        const queues = await this.tables.imageSubmissionQueues.toArray();
+        if (
+          queues.some(
+            (queue) =>
+              queue.items.some((item) => itemHashes.includes(item.promptHash)),
+          )
+        ) {
+          throw new DuplicateTimedImageQueueSourceError();
+        }
+        const imported = importPromptBatch(saved.batch.sourceText, "image");
+        if (!imported.ok) throw new PromptBatchValidationError();
+        const declaration: ImageQueueManualSettingsDeclaration = {
+          ...input.settingsConfirmation,
+          userAttested: true,
+        };
+        record = {
+          queueId: input.queueId,
+          workspaceId: input.workspaceId,
+          kind: "image",
+          mode: "timed_submission",
+          intervalMs: TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+          state: "ready",
+          sourceText: saved.batch.sourceText,
+          sourceHash,
+          sourceMode: saved.batch.sourceMode,
+          selectedProject: {
+            provider: "Flow",
+            tabId: selected.tabId,
+            projectId: declaration.projectId,
+            canonicalTarget: selected.canonicalTarget,
+            selectionRevision: selected.revision ?? null,
+          },
+          manualSettingsDeclaration: declaration,
+          items: saved.items.map((item, order) => ({
+            queueItemId: `${input.queueId}:item:${order}`,
+            sourceItemId: item.id,
+            order,
+            ...(item.shotId === undefined ? {} : { shotId: item.shotId }),
+            rawJsonBody: item.rawJsonBody,
+            promptHash: itemHashes[order]!,
+            sourceSpan: { ...item.sourceSpan },
+            itemState: "pending",
+            providerOutcome: "not_started",
+          })),
+          lastDispatchReceiptStoredAt: null,
+          nextEligibleDispatchAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        if (!ImageSubmissionQueueRecordSchema.safeParse(record).success) {
+          throw new ImageQueueEligibilityError("queue_record_validation_failed");
+        }
+        await this.tables.imageSubmissionQueues.add(record);
+        const readback = await this.tables.imageSubmissionQueues.get(
+          input.queueId,
+        );
+        if (
+          !readback ||
+          !ImageSubmissionQueueRecordSchema.safeParse(readback).success ||
+          readback.sourceText !== saved.batch.sourceText ||
+          readback.items.some(
+            (item, index) =>
+              item.rawJsonBody !== saved.items[index]?.rawJsonBody ||
+              item.promptHash !== itemHashes[index],
+          )
+        ) {
+          throw new ImageQueueEligibilityError("queue_readback_failed");
+        }
+        record = readback;
+      },
+    );
+    return record;
+  }
+
+  async getTimedImageSubmissionQueue(
+    queueId: string,
+  ): Promise<QueueRecord | undefined> {
+    const record = await this.tables.imageSubmissionQueues.get(queueId);
+    if (record && !ImageSubmissionQueueRecordSchema.safeParse(record).success) {
+      throw new ImageQueueEligibilityError("queue_record_invalid");
+    }
+    return record;
+  }
+
+  async listTimedImageSubmissionQueues(
+    workspaceId: string,
+  ): Promise<QueueRecord[]> {
+    const records = (await this.tables.imageSubmissionQueues.toArray()).filter(
+      (record) => record.workspaceId === workspaceId,
+    );
+    if (
+      records.some(
+        (record) => !ImageSubmissionQueueRecordSchema.safeParse(record).success,
+      )
+    ) {
+      throw new ImageQueueEligibilityError("queue_record_invalid");
+    }
+    return records.sort((a, b) => a.createdAt - b.createdAt);
   }
 
   async getPromptBatch(

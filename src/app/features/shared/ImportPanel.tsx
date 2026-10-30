@@ -25,6 +25,7 @@ import {
   type SavedSourceExportDetails,
 } from "./savedSourceExport";
 import styles from "./ImportPanel.module.css";
+import { ImageQueueProgress } from "../image-batch/Progress";
 import {
   flowReadinessModeFromInput,
   flowReadinessReasonLabel,
@@ -1266,6 +1267,16 @@ export function ImportPanel({
                         : "Not saved. Validate before saving."}
         </p>
       </div>
+      {kind === "image" ? (
+        <ImageQueueProgress
+          workspaceId={workspaceId}
+          persistenceClient={persistenceClient}
+          sourceReady={Boolean(
+            currentValidation && savedSource === snapshot.source,
+          )}
+          settingsConfirmation={flowSettingsConfirmation}
+        />
+      ) : null}
       {kind === "image" ? (
         <details className={styles.legacyTools}>
           <summary>

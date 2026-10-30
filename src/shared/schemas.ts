@@ -553,6 +553,22 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: PromptBatchKeySchema,
   }),
   requestBase.extend({
+    type: z.literal("imageQueue.createTimed"),
+    payload: z.object({
+      workspaceId: workspaceIdSchema,
+      queueId: z.string().uuid(),
+      settingsConfirmation: FlowSettingsConfirmationSchema,
+    }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("imageQueue.get"),
+    payload: z.object({ queueId: z.string().uuid() }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("imageQueue.list"),
+    payload: z.object({ workspaceId: workspaceIdSchema }).strict(),
+  }),
+  requestBase.extend({
     type: z.literal("connections.recordSelection"),
     payload: z
       .object({

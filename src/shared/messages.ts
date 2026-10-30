@@ -23,6 +23,20 @@ export type RequestPayloads = {
     sourceText: string;
   };
   "promptBatch.get": { workspaceId: string; kind: "image" | "video" };
+  "imageQueue.createTimed": {
+    workspaceId: string;
+    queueId: string;
+    settingsConfirmation: {
+      confirmationId: string;
+      confirmedAt: number;
+      tabId: number;
+      projectId: string;
+      canonicalTarget: string;
+      declaredVariantCount: number;
+    };
+  };
+  "imageQueue.get": { queueId: string };
+  "imageQueue.list": { workspaceId: string };
   "connections.recordSelection": {
     provider: "Flow" | "Vids";
     tabId: number;
@@ -109,6 +123,9 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "promptDraft.get": 5000,
   "promptBatch.put": 30_000,
   "promptBatch.get": 30_000,
+  "imageQueue.createTimed": 30_000,
+  "imageQueue.get": 10_000,
+  "imageQueue.list": 10_000,
   "connections.recordSelection": 5000,
   "connections.getSelection": 5000,
   "connections.revalidate": 10_000,

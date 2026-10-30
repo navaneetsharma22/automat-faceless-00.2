@@ -9,7 +9,12 @@ import type {
   ExtensionRepositories,
   ChromePreferenceRepository,
 } from "../../storage/repositories";
-import { PromptBatchValidationError } from "../../storage/repositories";
+import {
+  ActiveFlowImageAttemptError,
+  DuplicateTimedImageQueueSourceError,
+  ImageQueueEligibilityError,
+  PromptBatchValidationError,
+} from "../../storage/repositories";
 
 export type ExtensionMessageSender = {
   id?: string;
@@ -149,6 +154,60 @@ async function dispatch(
         throw error;
       }
     }
+    case "imageQueue.createTimed": {
+      try {
+        return await dependencies.repositories.createTimedImageSubmissionQueue({
+          ...request.payload,
+        });
+      } catch (error) {
+        if (error instanceof ActiveFlowImageAttemptError) {
+          throw new FoundationOperationError(
+            "worker_error",
+            "image_queue_source_blocked",
+            "An unresolved historical attempt blocks this exact prompt source.",
+          );
+        }
+        if (error instanceof DuplicateTimedImageQueueSourceError) {
+          throw new FoundationOperationError(
+            "worker_error",
+            "image_queue_source_already_queued",
+            "This exact prompt source already belongs to a timed queue.",
+          );
+        }
+        if (error instanceof ImageQueueEligibilityError) {
+          throw new FoundationOperationError(
+            "invalid_request",
+            error.code,
+            "The saved source or selected project changed; reload and review before creating a queue.",
+          );
+        }
+        if (error instanceof PromptBatchValidationError) {
+          throw new FoundationOperationError(
+            "storage_failure",
+            "saved_batch_invalid",
+            "The saved image source failed integrity validation.",
+          );
+        }
+        throw error;
+      }
+    }
+    case "imageQueue.get": {
+      const record = await dependencies.repositories.getTimedImageSubmissionQueue(
+        request.payload.queueId,
+      );
+      if (!record) {
+        throw new FoundationOperationError(
+          "not_found",
+          "image_queue_not_found",
+          "The requested timed image queue was not found.",
+        );
+      }
+      return record;
+    }
+    case "imageQueue.list":
+      return dependencies.repositories.listTimedImageSubmissionQueues(
+        request.payload.workspaceId,
+      );
     case "connections.recordSelection": {
       const record = await dependencies.repositories.recordSelectedTarget(
         request.payload,

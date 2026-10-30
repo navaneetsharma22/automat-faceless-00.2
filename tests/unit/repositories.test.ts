@@ -16,6 +16,7 @@ describe("extension repository boundaries", () => {
       "flowCountRecoveries",
       "flowImageAttempts",
       "flowImagePromptSnapshots",
+      "imageSubmissionQueues",
       "promptDrafts",
       "promptItems",
       "selectedTargets",

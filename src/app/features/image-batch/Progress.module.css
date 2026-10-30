@@ -1,0 +1,63 @@
+.progress {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  padding-block: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+.header,
+.queueHeader,
+.actionRow {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.header h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-lg);
+}
+.kicker {
+  margin: 0 0 var(--space-1);
+  color: var(--color-accent);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.interval {
+  color: var(--color-accent);
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+.helper,
+.empty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+.error { margin: 0; color: var(--color-danger); font-size: var(--font-size-sm); }
+.queue {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card-compact);
+  background: var(--color-surface-raised);
+}
+.items { display: grid; gap: var(--space-2); margin: 0; padding-inline-start: 1.5rem; }
+.items li { display: grid; min-width: 0; gap: var(--space-1); padding: var(--space-2); border-bottom: 1px solid var(--color-border); }
+.items li > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); }
+.items li span,
+.items li small,
+.queue > small { color: var(--color-text-muted); font-size: var(--font-size-xs); }
+.items details summary { width: fit-content; color: var(--color-accent); cursor: pointer; font-size: var(--font-size-sm); }
+.items pre { max-height: 18rem; overflow: auto; padding: var(--space-2); border-radius: var(--radius-control); background: var(--color-surface); color: var(--color-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 36rem) {
+  .actionRow { align-items: stretch; }
+  .actionRow > * { width: 100%; }
+}
