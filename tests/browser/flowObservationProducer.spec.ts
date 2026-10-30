@@ -101,6 +101,7 @@ test("production isolated-world producer binds, records structural candidates, a
         virtualized: boolean;
         tileCount: number;
         candidateIds: string[];
+        qualifyingCandidateIds: string[];
         tileTokens: string[];
         candidateTileRelationships: Array<{
           candidateId: string;
@@ -120,7 +121,7 @@ test("production isolated-world producer binds, records structural candidates, a
   );
   expect(armBaseline).toMatchObject({
     virtualScrollContainerCount: 1,
-    virtualizationEvidence: [],
+    virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
     virtualized: false,
   });
   const countDecision = reduceFlowImageCountDecision({
@@ -138,6 +139,7 @@ test("production isolated-world producer binds, records structural candidates, a
       protocolVersion: binding.protocolVersion,
       capturedAt: 10,
       baselineCandidateIds: armBaseline.candidateIds,
+      qualifyingBaselineCandidateIds: armBaseline.qualifyingCandidateIds,
       baselineTileTokens: armBaseline.tileTokens,
       virtualized: armBaseline.virtualized,
       renderedScopeComplete: armBaseline.completeForRenderedScope,
@@ -175,6 +177,7 @@ test("production isolated-world producer binds, records structural candidates, a
         profileVersion: 1,
         renderedTileCount: armBaseline.tileCount,
         candidateIds: armBaseline.candidateIds,
+        qualifyingCandidateIds: armBaseline.qualifyingCandidateIds,
         candidateMultiplicity: armBaseline.candidateIds.map((candidateId) => ({
           candidateId,
           renderedCopies: 1,
@@ -220,6 +223,8 @@ test("production isolated-world producer binds, records structural candidates, a
   expect(activated).toMatchObject({ status: "active", sequence: 1 });
 
   await page.evaluate(() => {
+    const existingImage = document.querySelector("flow-image-tile img");
+    existingImage?.setAttribute("data-media-id", "synthetic-recycled-identity");
     const tile = document.createElement("flow-image-tile");
     tile.setAttribute("data-generation-group-id", "fixture-private-group-id");
     const marker = document.createElement("div");
@@ -248,6 +253,8 @@ test("production isolated-world producer binds, records structural candidates, a
             observation: {
               kind: string;
               snapshot: {
+                virtualized: boolean;
+                virtualizationEvidence: string[];
                 mediaCandidates: Array<{
                   candidateId: string;
                   tileToken: string;
@@ -278,8 +285,10 @@ test("production isolated-world producer binds, records structural candidates, a
   );
   const snapshots = observed.map((message) => message.observation);
   expect(snapshots[0]?.kind).toBe("structural_snapshot");
-  const changed = snapshots.find(
-    (event) => event.snapshot.mediaCandidates.length >= 3,
+  const changed = snapshots.find((event) =>
+    event.snapshot.lifecycleSignals.some(
+      (signal) => signal.markerKind === "loading",
+    ),
   );
   expect(changed).toBeDefined();
   expect(changed?.snapshot.lifecycleSignals).toContainEqual(
@@ -300,6 +309,10 @@ test("production isolated-world producer binds, records structural candidates, a
   );
   expect(changed?.snapshot.resourceEvents).toContainEqual(
     expect.objectContaining({ type: "load", tileToken: expect.any(String) }),
+  );
+  expect(changed?.snapshot.virtualized).toBe(true);
+  expect(changed?.snapshot.virtualizationEvidence).toContain(
+    "tile_identity_recycled",
   );
   expect(JSON.stringify(changed)).not.toContain("fixture-private-media-id");
   expect(JSON.stringify(changed)).not.toContain("fixture-private-group-id");
@@ -387,14 +400,14 @@ test("shared workspace resolver records populated rendered baseline without iden
     repeatedCandidateCount: 1,
     unrelatedImageCount: 1,
     virtualScrollContainerCount: 1,
-    virtualizationEvidence: [],
+    virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
     virtualized: false,
     captureGaps: [],
   });
   expect(
     populated.candidateMultiplicity.map((entry) => entry.renderedCopies).sort(),
-  ).toEqual([1, 2]);
-  expect(populated.candidateIds).toHaveLength(2);
+  ).toEqual([1, 1, 1, 2]);
+  expect(populated.candidateIds).toHaveLength(4);
   const discovery = await page.evaluate(async (expression) => {
     return (0, eval)(expression) as Promise<{
       observation: string;
@@ -412,7 +425,7 @@ test("shared workspace resolver records populated rendered baseline without iden
     discovery.baseline?.candidateMultiplicity
       ?.map((entry) => entry.renderedCopies)
       .sort(),
-  ).toEqual([1, 2]);
+  ).toEqual([1, 1, 1, 2]);
   await page.evaluate(() => {
     const loading = document.createElement("div");
     loading.setAttribute("data-state", "loading");
@@ -460,7 +473,7 @@ test("shared workspace resolver reports measured virtual-scroll overflow separat
     status: "ready",
     virtualScrollContainerCount: 1,
     virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
-    virtualized: true,
+    virtualized: false,
   });
 });
 
@@ -654,7 +667,7 @@ test("production observer refuses a baseline that mutates while listeners are ar
         value: async (...args: Parameters<SubtleCrypto["digest"]>) => {
           const result = await digest(...args);
           digestCalls += 1;
-          if (digestCalls === 3) {
+          if (digestCalls === 5) {
             document
               .querySelector("flow-image-tile")
               ?.querySelector("img")

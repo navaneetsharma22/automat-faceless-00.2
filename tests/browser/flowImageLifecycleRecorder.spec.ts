@@ -61,7 +61,7 @@ test("records a pre-dispatch tile baseline and bounded masked lifecycle events",
   const armed = await armRecorder(page, recorder);
   expect(armed).toEqual({
     state: "recording",
-    baselineCandidateCount: 2,
+    baselineCandidateCount: 4,
     maxDurationMs: 300000,
   });
   await page.evaluate(() => {
@@ -165,11 +165,11 @@ test("records a pre-dispatch tile baseline and bounded masked lifecycle events",
   expect(report.baseline.captured).toBe(true);
   expect(report.baseline.completeForScopedCandidates).toBe(true);
   expect(report.preArmLifecycleHistoryCaptured).toBe(false);
-  expect(report.baseline.mediaCandidates).toHaveLength(2);
+  expect(report.baseline.mediaCandidates).toHaveLength(4);
   expect(report.baseline.mediaCandidates[0]?.identityMask).not.toBe(
     report.baseline.mediaCandidates[1]?.identityMask,
   );
-  expect(report.baseline.tileRelationships).toHaveLength(2);
+  expect(report.baseline.tileRelationships).toHaveLength(4);
   expect(
     report.baseline.tileRelationships.every(
       (tile) => tile.mediaCandidates.length === 1,
@@ -197,7 +197,7 @@ test("records a pre-dispatch tile baseline and bounded masked lifecycle events",
   );
   expect(
     scopedMarkers.filter((event) => event.type === "lifecycle_marker_added"),
-  ).toHaveLength(4);
+  ).toHaveLength(6);
   expect(
     report.events.filter(
       (event) =>
@@ -205,7 +205,7 @@ test("records a pre-dispatch tile baseline and bounded masked lifecycle events",
         event.markerKind === "loading" &&
         event.scope === "tile",
     ),
-  ).toHaveLength(2);
+  ).toHaveLength(4);
   expect(scopedMarkers.every((event) => event.tileNode !== null)).toBe(true);
   const relationshipEvents = report.events.filter(
     (event) => event.type === "tile_scoped_relationships_observed",

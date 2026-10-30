@@ -129,6 +129,15 @@ const flowImageObservationSchema = z.discriminatedUnion("profile", [
           message: "rendered_candidate_baseline_must_be_deduplicated",
         });
       }
+      if (
+        observation.qualifyingCandidateIds?.some(
+          (candidateId) => !uniqueIds.has(candidateId),
+        )
+      )
+        context.addIssue({
+          code: "custom",
+          message: "qualifying_candidates_must_be_owned_candidates",
+        });
     }),
   z
     .object({
@@ -187,6 +196,10 @@ export const FlowImageObservationArmReceiptSchema = z
         virtualized: z.boolean(),
         tileCount: z.number().int().nonnegative().max(100),
         mediaCandidateCount: z.number().int().nonnegative().max(500),
+        qualifyingCandidateIds: z
+          .array(z.string().regex(/^[0-9a-f]{64}$/))
+          .max(500)
+          .optional(),
         identityCandidateCount: z.number().int().nonnegative().max(500),
         identityCandidatesTruncated: z.boolean().default(false),
         unidentifiedImageCount: z.number().int().nonnegative().max(1000),
@@ -209,7 +222,18 @@ export const FlowImageObservationArmReceiptSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((receipt, context) => {
+    if (
+      receipt.baseline.qualifyingCandidateIds?.some(
+        (candidateId) => !receipt.baseline.candidateIds.includes(candidateId),
+      )
+    )
+      context.addIssue({
+        code: "custom",
+        message: "qualifying_arm_candidates_must_be_owned_candidates",
+      });
+  });
 export type FlowImageObservationArmReceipt = z.infer<
   typeof FlowImageObservationArmReceiptSchema
 >;
@@ -564,6 +588,10 @@ export const FlowImageCountBaselineDeclarationSchema = z
         baselineCandidateIds: z
           .array(z.string().regex(/^[0-9a-f]{64}$/))
           .max(500),
+        qualifyingBaselineCandidateIds: z
+          .array(z.string().regex(/^[0-9a-f]{64}$/))
+          .max(500)
+          .optional(),
         baselineTileTokens: z
           .array(z.string().regex(/^tile-[0-9]{1,6}$/))
           .max(100),
@@ -600,6 +628,14 @@ export const FlowImageCountBaselineDeclarationSchema = z
   .superRefine((baseline, context) => {
     for (const [name, values] of [
       ["baselineCandidateIds", baseline.baselineCandidateIds],
+      ...(baseline.qualifyingBaselineCandidateIds
+        ? ([
+            [
+              "qualifyingBaselineCandidateIds",
+              baseline.qualifyingBaselineCandidateIds,
+            ],
+          ] as const)
+        : []),
       ["baselineTileTokens", baseline.baselineTileTokens],
       ["priorMatchedAttemptIds", baseline.priorMatchedAttemptIds],
       ["priorMatchedCandidateIds", baseline.priorMatchedCandidateIds],
@@ -610,6 +646,15 @@ export const FlowImageCountBaselineDeclarationSchema = z
           message: `duplicate_count_baseline_${name}`,
         });
     }
+    if (
+      baseline.qualifyingBaselineCandidateIds?.some(
+        (candidateId) => !baseline.baselineCandidateIds.includes(candidateId),
+      )
+    )
+      context.addIssue({
+        code: "custom",
+        message: "qualifying_baseline_candidates_must_be_baseline_candidates",
+      });
   });
 export type FlowImageCountBaselineDeclaration = z.infer<
   typeof FlowImageCountBaselineDeclarationSchema
@@ -673,6 +718,7 @@ export const FlowImageCountDecisionSchema = z
         "baseline_binding_mismatch",
         "baseline_incomplete",
         "existing_count_candidate_count_mismatch",
+        "baseline_qualifying_count_unavailable",
         "existing_project_virtualized",
         "loading_or_processing_observed",
         "error_signal_observed",
@@ -751,8 +797,10 @@ export type FlowImageCountBaselineEligibilityInput = {
   priorMatchedCandidateIds: string[];
   priorDeclaredAdditions: number;
   declaredBaselineCandidateIds?: string[];
+  declaredQualifyingCandidateIds?: string[];
   declaredBaselineTileCount?: number;
   qualifyingCandidateCount?: number;
+  qualifyingCandidateIds?: string[];
   candidateOwnershipAmbiguous?: boolean;
 };
 
@@ -761,7 +809,9 @@ export type FlowImageCountBaselineEligibility = {
   reason?:
     | "baseline_incomplete"
     | "existing_project_virtualized"
-    | "candidate_ownership_ambiguous";
+    | "candidate_ownership_ambiguous"
+    | "existing_count_candidate_count_mismatch"
+    | "baseline_qualifying_count_unavailable";
   detailCode?: string;
 };
 
@@ -776,7 +826,12 @@ export function evaluateFlowImageCountBaselineEligibility(
 ): FlowImageCountBaselineEligibility {
   const blocked = (detailCode: string) => ({
     status: "blocked" as const,
-    reason: "baseline_incomplete" as const,
+    reason:
+      detailCode === "existing_count_candidate_count_mismatch"
+        ? ("existing_count_candidate_count_mismatch" as const)
+        : detailCode === "baseline_qualifying_count_unavailable"
+          ? ("baseline_qualifying_count_unavailable" as const)
+          : ("baseline_incomplete" as const),
     detailCode,
   });
   const ambiguous = (
@@ -791,9 +846,9 @@ export function evaluateFlowImageCountBaselineEligibility(
     "viewport_dimensions_unavailable",
   );
   const continuityAmbiguous =
-    input.virtualized ||
     evidence.includes("tile_identity_recycled") ||
-    input.candidateOwnershipAmbiguous === true;
+    input.candidateOwnershipAmbiguous === true ||
+    (input.virtualized && !actualScroll);
   if (
     input.startingImageCount < 0 ||
     (input.mode === "new_empty_project" && input.startingImageCount !== 0)
@@ -824,19 +879,34 @@ export function evaluateFlowImageCountBaselineEligibility(
   } else if (input.renderedTileCount === 0) {
     return blocked("populated_profile_has_no_rendered_tiles");
   }
-  const qualifyingCandidateCount =
-    input.qualifyingCandidateCount ?? input.candidateIds.length;
   if (
     input.mode === "existing_project" &&
-    input.startingImageCount !== qualifyingCandidateCount
+    input.qualifyingCandidateCount === undefined
+  )
+    return blocked("baseline_qualifying_count_unavailable");
+  if (
+    input.mode === "existing_project" &&
+    input.startingImageCount !== input.qualifyingCandidateCount
   )
     return blocked("existing_count_candidate_count_mismatch");
+  if (
+    input.mode === "existing_project" &&
+    input.qualifyingCandidateCount === undefined &&
+    evidence.includes("scroll_extent_exceeds_viewport")
+  )
+    return blocked("baseline_qualifying_count_unavailable");
   if (
     input.declaredBaselineCandidateIds &&
     JSON.stringify([...new Set(input.declaredBaselineCandidateIds)].sort()) !==
       JSON.stringify([...new Set(input.candidateIds)].sort())
   )
     return blocked("candidate_baseline_changed");
+  if (
+    input.declaredQualifyingCandidateIds &&
+    JSON.stringify([...input.declaredQualifyingCandidateIds].sort()) !==
+      JSON.stringify([...(input.qualifyingCandidateIds ?? [])].sort())
+  )
+    return blocked("qualifying_candidate_baseline_changed");
   if (
     input.declaredBaselineTileCount !== undefined &&
     input.declaredBaselineTileCount !== input.renderedTileCount
@@ -954,6 +1024,11 @@ export function reduceFlowImageCountDecision(
   )
     return make("blocked", "baseline_binding_mismatch");
   const observation = resultBaseline.observation;
+  if (
+    declaration.mode === "existing_project" &&
+    declaration.qualifyingBaselineCandidateIds === undefined
+  )
+    return make("blocked", "baseline_qualifying_count_unavailable");
   const eligibility = evaluateFlowImageCountBaselineEligibility({
     mode: declaration.mode,
     startingImageCount: declaration.startingImageCount,
@@ -1008,7 +1083,16 @@ export function reduceFlowImageCountDecision(
     priorMatchedCandidateIds: declaration.priorMatchedCandidateIds,
     priorDeclaredAdditions: declaration.priorDeclaredAdditions,
     declaredBaselineCandidateIds: declaration.baselineCandidateIds,
+    declaredQualifyingCandidateIds: declaration.qualifyingBaselineCandidateIds,
     declaredBaselineTileCount: declaration.baselineTileTokens.length,
+    qualifyingCandidateCount:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? observation.qualifyingCandidateIds?.length
+        : 0,
+    qualifyingCandidateIds:
+      observation.profile === "flow_rendered_tile_candidates"
+        ? observation.qualifyingCandidateIds
+        : [],
   });
   if (eligibility.status !== "eligible")
     return make(
@@ -1042,7 +1126,19 @@ export function reduceFlowImageCountDecision(
       event.snapshot.unidentifiedImageCount > 0
     )
       return make("ambiguous", "observation_gap", [...seen], lastSequence);
-    if (event.snapshot.virtualized)
+    const eventVirtualizationEvidence =
+      event.snapshot.virtualizationEvidence ?? [];
+    const actualCoverageChange = eventVirtualizationEvidence.some((evidence) =>
+      ["nonzero_scroll_offset", "scroll_observed_during_capture"].includes(
+        evidence,
+      ),
+    );
+    if (
+      event.snapshot.virtualized ||
+      event.snapshot.tileOwnershipRecycled ||
+      actualCoverageChange ||
+      eventVirtualizationEvidence.includes("viewport_dimensions_unavailable")
+    )
       return make(
         "ambiguous",
         declaration.mode === "existing_project"
@@ -1100,15 +1196,21 @@ export function reduceFlowImageCountDecision(
       event.snapshot.tiles.map((tile) => [tile.tileToken, tile]),
     );
     for (const media of event.snapshot.mediaCandidates) {
+      if (!media.visible) continue;
       if (
-        !media.visible ||
         !media.complete ||
         media.naturalWidth <= 0 ||
         media.naturalHeight <= 0
       )
         continue;
       const tile = tiles.get(media.tileToken);
-      if (!tile?.visible) continue;
+      if (!tile?.visible)
+        return make(
+          "ambiguous",
+          "candidate_ownership_ambiguous",
+          [...seen],
+          lastSequence,
+        );
       if (priorIds.has(media.candidateId)) continue;
       if (baselineTiles.has(media.tileToken))
         return make(

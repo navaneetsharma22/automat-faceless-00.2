@@ -11,6 +11,7 @@
       flow-tile-container,
       flow-image-tile {
         display: block;
+        min-height: 100px;
       }
       cdk-virtual-scroll-viewport {
         box-sizing: border-box;
@@ -41,10 +42,32 @@
         <flow-grid-tile-container role="group">
           <flow-tile-container>
             <flow-image-tile>
-              <img data-media-id="synthetic-media-one" alt="private one" />
+              <img
+                data-media-id="synthetic-media-one"
+                src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='blue'/%3E%3C/svg%3E"
+                alt="private one"
+              />
             </flow-image-tile>
             <flow-image-tile>
-              <img data-media-id="synthetic-media-two" alt="private two" />
+              <img
+                data-media-id="synthetic-media-two"
+                src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='blue'/%3E%3C/svg%3E"
+                alt="private two"
+              />
+            </flow-image-tile>
+            <flow-image-tile>
+              <img
+                data-media-id="synthetic-media-three"
+                src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='blue'/%3E%3C/svg%3E"
+                alt="private three"
+              />
+            </flow-image-tile>
+            <flow-image-tile>
+              <img
+                data-media-id="synthetic-media-four"
+                src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='blue'/%3E%3C/svg%3E"
+                alt="private four"
+              />
             </flow-image-tile>
           </flow-tile-container>
         </flow-grid-tile-container>

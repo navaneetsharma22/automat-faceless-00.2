@@ -16,7 +16,7 @@ const existingMode = {
   countMode: {
     mode: "existing_project" as const,
     countSessionId: "3b7a1cd4-eeb5-441d-b9eb-142b3e8a0084",
-    startingImageCount: 9,
+    startingImageCount: 2,
     userConfirmed: true,
   },
 };
@@ -143,31 +143,52 @@ describe("Flow no-Generate readiness", () => {
     expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
   });
 
-  it("does not treat a harmless virtual-scroll container as an existing-project blocker", async () => {
+  it("accepts extent overflow when four attested images match four qualifying candidates", async () => {
     const harness = readinessHarness({
       status: "ready",
       profile: "populated_tiles",
       completeForRenderedScope: true,
       listenersAttached: true,
       stableBaseline: true,
-      renderedTileCount: 2,
-      distinctCandidateCount: 2,
-      candidateIds: ["a".repeat(64), "b".repeat(64)],
+      renderedTileCount: 4,
+      distinctCandidateCount: 4,
+      qualifyingCandidateCount: 4,
+      candidateIds: [
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+        "d".repeat(64),
+      ],
       repeatedCandidateCount: 0,
       unidentifiedImageCount: 0,
       unrelatedImageCount: 0,
       virtualized: false,
       virtualScrollContainerCount: 1,
-      virtualizationEvidence: [],
+      virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
       loadingSignalCount: 0,
       captureGaps: [],
     });
+    const countFourMode = {
+      countMode: {
+        ...existingMode.countMode,
+        startingImageCount: 4,
+      },
+    };
     const result = await createFlowImageReadinessCheck(harness.repositories)(
-      existingMode,
+      countFourMode,
     );
     expect(result).toMatchObject({
       status: "ready",
       virtualScrollContainerCount: 1,
+      qualifyingCandidateCount: 4,
+      viewportOverflowObserved: true,
+      actualScrollingObserved: false,
+      candidateOwnershipAmbiguous: false,
+      baselineCoverageAssessment: {
+        declaredExistingCountMatchesQualifyingCandidates: true,
+        inventoryComplete: false,
+        providerIdentityVerified: false,
+      },
       virtualized: false,
       countModeEligibility: { status: "eligible", mode: "existing_project" },
       attemptsCreated: 0,
@@ -178,7 +199,7 @@ describe("Flow no-Generate readiness", () => {
     expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
   });
 
-  it("blocks existing-project count mode on measured scroll coverage or recycling evidence", async () => {
+  it("blocks existing-project count mode when scrolling was actually observed", async () => {
     const harness = readinessHarness({
       status: "ready",
       profile: "populated_tiles",
@@ -187,13 +208,14 @@ describe("Flow no-Generate readiness", () => {
       stableBaseline: true,
       renderedTileCount: 2,
       distinctCandidateCount: 2,
+      qualifyingCandidateCount: 2,
       candidateIds: ["a".repeat(64), "b".repeat(64)],
       repeatedCandidateCount: 0,
       unidentifiedImageCount: 0,
       unrelatedImageCount: 0,
       virtualized: true,
       virtualScrollContainerCount: 1,
-      virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+      virtualizationEvidence: ["scroll_observed_during_capture"],
       loadingSignalCount: 0,
       captureGaps: [],
     });
@@ -208,7 +230,7 @@ describe("Flow no-Generate readiness", () => {
         detailCode: "virtual_scroll_coverage_or_scrolling_observed",
       },
       reason: "virtual_scroll_coverage_or_scrolling_observed",
-      message: expect.stringContaining("measured virtual-scroll overflow"),
+      message: expect.stringContaining("Scrolling or viewport movement"),
       attemptsCreated: 0,
       confirmationConsumed: false,
       productionReceiptCreated: false,
@@ -226,6 +248,7 @@ describe("Flow no-Generate readiness", () => {
       stableBaseline: true,
       renderedTileCount: 2,
       distinctCandidateCount: 2,
+      qualifyingCandidateCount: 2,
       candidateIds: ["a".repeat(64), "b".repeat(64)],
       repeatedCandidateCount: 0,
       unidentifiedImageCount: 0,
@@ -251,6 +274,46 @@ describe("Flow no-Generate readiness", () => {
       attemptsCreated: 0,
       confirmationConsumed: false,
       productionReceiptCreated: false,
+    });
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);
+  });
+
+  it("reports a precise blocker when attested count exceeds qualifying owned candidates", async () => {
+    const harness = readinessHarness({
+      status: "ready",
+      profile: "populated_tiles",
+      completeForRenderedScope: true,
+      listenersAttached: true,
+      stableBaseline: true,
+      renderedTileCount: 4,
+      distinctCandidateCount: 4,
+      qualifyingCandidateCount: 3,
+      repeatedCandidateCount: 0,
+      unidentifiedImageCount: 0,
+      unrelatedImageCount: 0,
+      virtualized: false,
+      virtualScrollContainerCount: 1,
+      virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+      loadingSignalCount: 0,
+      captureGaps: [],
+    });
+    const result = await createFlowImageReadinessCheck(harness.repositories)(
+      existingMode,
+    );
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "existing_count_candidate_count_mismatch",
+      countModeEligibility: {
+        status: "blocked",
+        detailCode: "existing_count_candidate_count_mismatch",
+      },
+      baselineCoverageAssessment: {
+        viewportOverflowObserved: true,
+        actualScrollingObserved: false,
+        declaredExistingCountMatchesQualifyingCandidates: false,
+      },
+      attemptsCreated: 0,
     });
     expect(harness.sendCommand).not.toHaveBeenCalled();
     expect(await harness.repositories.getAllFlowImageAttempts()).toEqual([]);

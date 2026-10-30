@@ -541,6 +541,10 @@ export function createFlowImageReadinessCheck(
             ? result.renderedTileCount
             : 0,
         candidateIds,
+        qualifyingCandidateCount:
+          typeof result?.qualifyingCandidateCount === "number"
+            ? result.qualifyingCandidateCount
+            : undefined,
         renderedScopeComplete:
           result?.completeForRenderedScope === true &&
           result.stableBaseline === true &&
@@ -548,6 +552,8 @@ export function createFlowImageReadinessCheck(
           Number(result.unidentifiedImageCount ?? 0) === 0,
         captureGaps,
         unidentifiedImageCount: Number(result?.unidentifiedImageCount ?? 0),
+        candidateOwnershipAmbiguous:
+          result?.candidateOwnershipAmbiguous === true,
         loadingSignalCount: Number(result?.loadingSignalCount ?? 0),
         virtualized:
           result?.virtualized === true ||
@@ -577,7 +583,7 @@ export function createFlowImageReadinessCheck(
         ? "The selected count mode passed its read-only baseline and listener checks. This does not authorize Generate or establish provider result identity or completion."
         : modeGate.detailCode ===
             "virtual_scroll_coverage_or_scrolling_observed"
-          ? "The selected project has measured virtual-scroll overflow, a nonzero scroll offset, unavailable viewport dimensions, or scrolling during capture. Existing-project count mode is ambiguous because older cards may be revealed or recycled."
+          ? "Scrolling or viewport movement was observed during the baseline capture. Older cards may have entered the rendered scope, so existing-project count mode is ambiguous."
           : modeGate.detailCode === "virtual_scroll_measurement_inconclusive"
             ? "A visible virtual-scroll container could not be measured. Existing-project count mode stays blocked until the rendered scope can be measured completely."
             : modeGate.detailCode === "tile_identity_recycling_observed"
@@ -588,10 +594,13 @@ export function createFlowImageReadinessCheck(
                 : modeGate.detailCode ===
                     "existing_count_conflicts_with_empty_scope"
                   ? "The existing-project starting count is greater than zero, but the observed project scope is empty. Recheck the selected project and count declaration."
-                  : modeGate.detailCode === "baseline_incomplete" ||
-                      modeGate.detailCode === "rendered_scope_incomplete"
-                    ? "The selected mode has no complete stable rendered-scope baseline. Resolve the reported capture gaps or unsupported structure."
-                    : "The selected count mode is blocked by the reported workspace, session, or capture gate. Review the exact eligibility reason before continuing.";
+                  : modeGate.detailCode ===
+                      "existing_count_candidate_count_mismatch"
+                    ? "The user-attested starting count does not match the number of distinct visible, ready, tile-owned candidates in the stable baseline. Recheck the selected count or project."
+                    : modeGate.detailCode === "baseline_incomplete" ||
+                        modeGate.detailCode === "rendered_scope_incomplete"
+                      ? "The selected mode has no complete stable rendered-scope baseline. Resolve the reported capture gaps or unsupported structure."
+                      : "The selected count mode is blocked by the reported workspace, session, or capture gate. Review the exact eligibility reason before continuing.";
       return {
         diagnostic: "flow-readiness-no-generate-v1",
         status: eligible ? "ready" : "blocked",
@@ -609,12 +618,39 @@ export function createFlowImageReadinessCheck(
           startingImageCount: countMode.startingImageCount,
         },
         countModeEligibility: modeReport,
+        baselineCoverageAssessment: {
+          viewportOverflowObserved: virtualizationEvidence.includes(
+            "scroll_extent_exceeds_viewport",
+          ),
+          actualScrollingObserved: virtualizationEvidence.some((evidence) =>
+            [
+              "nonzero_scroll_offset",
+              "scroll_observed_during_capture",
+            ].includes(evidence),
+          ),
+          candidateOwnershipAmbiguous:
+            result?.candidateOwnershipAmbiguous === true ||
+            virtualizationEvidence.includes("tile_identity_recycled"),
+          candidateIdentityContinuity:
+            result?.stableBaseline === true &&
+            result?.tileOwnershipRecycled !== true
+              ? "stable_during_capture"
+              : "unresolved_during_capture",
+          declaredExistingCountMatchesQualifyingCandidates:
+            countMode.mode === "existing_project" &&
+            typeof result?.qualifyingCandidateCount === "number"
+              ? result.qualifyingCandidateCount === countMode.startingImageCount
+              : null,
+          inventoryComplete: false,
+          providerIdentityVerified: false,
+        },
         profile: result?.profile ?? "unsupported",
         listenerRoots: result?.listenerRoots ?? 0,
         listenersAttached: result?.listenersAttached ?? false,
         stableBaseline: result?.stableBaseline ?? false,
         renderedTileCount: result?.renderedTileCount ?? 0,
         distinctCandidateCount: result?.distinctCandidateCount ?? 0,
+        qualifyingCandidateCount: result?.qualifyingCandidateCount ?? 0,
         repeatedCandidateCount: result?.repeatedCandidateCount ?? 0,
         unidentifiedImageCount: result?.unidentifiedImageCount ?? 0,
         unrelatedImageCount: result?.unrelatedImageCount ?? 0,
@@ -623,6 +659,22 @@ export function createFlowImageReadinessCheck(
         virtualized:
           result?.virtualized === true ||
           result?.tileOwnershipRecycled === true,
+        viewportOverflowObserved: virtualizationEvidence.includes(
+          "scroll_extent_exceeds_viewport",
+        ),
+        actualScrollingObserved: virtualizationEvidence.some((evidence) =>
+          ["nonzero_scroll_offset", "scroll_observed_during_capture"].includes(
+            evidence,
+          ),
+        ),
+        candidateOwnershipAmbiguous:
+          result?.candidateOwnershipAmbiguous === true ||
+          virtualizationEvidence.includes("tile_identity_recycled"),
+        candidateIdentityContinuity:
+          result?.stableBaseline === true &&
+          result?.tileOwnershipRecycled !== true
+            ? "stable_during_capture"
+            : "unresolved_during_capture",
         tileOwnershipRecycled: result?.tileOwnershipRecycled ?? false,
         loadingSignalCount: result?.loadingSignalCount ?? 0,
         captureGaps,
@@ -1904,7 +1956,9 @@ export function createFlowImageGenerateOnce(
           armReceipt.baseline.completeForRenderedScope &&
           armReceipt.baseline.captureGaps.length === 0 &&
           armReceipt.baseline.unidentifiedImageCount === 0 &&
-          !armReceipt.baseline.identityCandidatesTruncated,
+          !armReceipt.baseline.identityCandidatesTruncated &&
+          (input.countMode.mode !== "existing_project" ||
+            Array.isArray(armReceipt.baseline.qualifyingCandidateIds)),
         );
         observationArmed =
           armed === "started" ||
@@ -1966,6 +2020,8 @@ export function createFlowImageGenerateOnce(
           protocolVersion: PROTOCOL_VERSION,
           capturedAt: armReceipt.capturedAt,
           baselineCandidateIds: armReceipt.baseline.candidateIds,
+          qualifyingBaselineCandidateIds:
+            armReceipt.baseline.qualifyingCandidateIds,
           baselineTileTokens: armReceipt.baseline.tileTokens,
           virtualScrollContainerCount:
             armReceipt.baseline.virtualScrollContainerCount ?? 0,
@@ -2005,8 +2061,11 @@ export function createFlowImageGenerateOnce(
           return failBefore(
             initialCountDecision.reason ?? "count_baseline_ambiguous",
             initialCountDecision.reason === "existing_project_virtualized"
-              ? "This project uses a virtualized tile inventory, so newly revealed old assets cannot be distinguished. Count mode is paused; Generate was not activated."
-              : "The selected project does not have a complete supported count baseline. Generate was not activated.",
+              ? "The baseline shows actual scrolling or candidate ownership continuity is unresolved. Count mode is paused; Generate was not activated."
+              : initialCountDecision.reason ===
+                  "existing_count_candidate_count_mismatch"
+                ? "The user-attested starting count does not match the number of distinct visible, ready, tile-owned baseline candidates. Recheck the count or project before continuing."
+                : "The selected project does not have a complete supported count baseline. Generate was not activated.",
           );
         }
         storageOperation = "persist_observation_session_and_count_baseline";

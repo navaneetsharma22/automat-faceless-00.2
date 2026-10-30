@@ -32,6 +32,21 @@ let activeFixture: {
 } | null = null;
 
 export async function setupProductionObservationFixture() {
+  try {
+    return await setupProductionObservationFixtureImpl();
+  } catch (error) {
+    const details = error as {
+      schemaIssuePaths?: string[];
+      schemaIssueCodes?: string[];
+    };
+    throw new Error(
+      `fixture_setup_failed_${JSON.stringify({ schemaIssuePaths: details.schemaIssuePaths, schemaIssueCodes: details.schemaIssueCodes, message: String(error) })}`,
+      { cause: error },
+    );
+  }
+}
+
+async function setupProductionObservationFixtureImpl() {
   const database = new AutomatDatabase(
     `flow-observation-e2e-${crypto.randomUUID()}`,
   );
@@ -104,26 +119,36 @@ export async function setupProductionObservationFixture() {
     createdAt: now(),
     updatedAt: now(),
   });
-  const verified = await repositories.transitionFlowImageAttempt({
-    attemptId: attempt.attemptId,
-    expected: "preparing",
-    next: "verified",
-    event: {
-      stage: "verification",
-      at: now(),
-      method: "CDP Input.insertText",
-      code: "exact_settled_readback",
-    },
-  });
-  const oldIds = [
-    await sha256Hex("synthetic-media-one"),
-    await sha256Hex("synthetic-media-two"),
-  ];
+  let verified;
+  try {
+    verified = await repositories.transitionFlowImageAttempt({
+      attemptId: attempt.attemptId,
+      expected: "preparing",
+      next: "verified",
+      event: {
+        stage: "verification",
+        at: now(),
+        method: "CDP Input.insertText",
+        code: "exact_settled_readback",
+      },
+    });
+  } catch (error) {
+    throw new Error(
+      `fixture_verified_transition_failed_${JSON.stringify({ paths: (error as { schemaIssuePaths?: string[] }).schemaIssuePaths, codes: (error as { schemaIssueCodes?: string[] }).schemaIssueCodes })}`,
+      { cause: error },
+    );
+  }
+  const oldIds = await Promise.all(
+    ["one", "two", "three", "four"].map((label) =>
+      sha256Hex(`synthetic-media-${label}`),
+    ),
+  );
   const baseline = {
     kind: "flow_rendered_tile_candidates" as const,
     workspaceTag: "flow-project-page" as const,
-    renderedTileCount: 2,
+    renderedTileCount: 4,
     candidateIds: oldIds,
+    qualifyingCandidateIds: oldIds,
     candidateMultiplicity: oldIds.map((candidateId) => ({
       candidateId,
       renderedCopies: 1,
@@ -132,7 +157,7 @@ export async function setupProductionObservationFixture() {
     unidentifiedImageCount: 0,
     unrelatedImageCount: 0,
     virtualScrollContainerCount: 1,
-    virtualizationEvidence: [],
+    virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
     virtualized: false,
     loadingSignalCount: 0,
     captureGaps: [],
@@ -283,7 +308,7 @@ export async function setupProductionObservationFixture() {
   const countBaseline = {
     mode: "existing_project" as const,
     countSessionId,
-    startingImageCount: 2,
+    startingImageCount: 4,
     provenance: "user_attested_existing_image_count" as const,
     inventoryComplete: false as const,
     projectId,
@@ -294,6 +319,8 @@ export async function setupProductionObservationFixture() {
     protocolVersion: PROTOCOL_VERSION,
     capturedAt: now(),
     baselineCandidateIds: armed.receipt.baseline.candidateIds,
+    qualifyingBaselineCandidateIds:
+      armed.receipt.baseline.qualifyingCandidateIds,
     baselineTileTokens: armed.receipt.baseline.tileTokens,
     virtualScrollContainerCount:
       armed.receipt.baseline.virtualScrollContainerCount,
@@ -364,6 +391,17 @@ export async function setupProductionObservationFixture() {
             (candidate) => candidate.candidateId,
           ),
           blockers: event.snapshot.captureGaps,
+          loadingSignalCount: event.snapshot.lifecycleSignals.filter(
+            (signal) =>
+              signal.visible &&
+              ["loading", "processing", "busy", "progressbar"].includes(
+                signal.markerKind,
+              ),
+          ).length,
+          tileCount: event.snapshot.tiles.length,
+          virtualized: event.snapshot.virtualized,
+          virtualizationEvidence: event.snapshot.virtualizationEvidence ?? [],
+          resourceEventCount: event.snapshot.resourceEvents.length,
         })),
         receiptSequences: saved.observationReceipts?.map(
           (receipt) => receipt.sequence,

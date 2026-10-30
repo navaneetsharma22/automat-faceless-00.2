@@ -56,6 +56,7 @@ function resultBaseline(
           profileVersion: 1,
           renderedTileCount: candidateIds.length || 1,
           candidateIds,
+          qualifyingCandidateIds: candidateIds,
           candidateMultiplicity: candidateIds.map((candidateId) => ({
             candidateId,
             renderedCopies: 1,
@@ -92,8 +93,10 @@ function declaration(
     mode?: "new_empty_project" | "existing_project";
     startingImageCount?: number;
     baselineCandidateIds?: string[];
+    qualifyingBaselineCandidateIds?: string[];
     baselineTileTokens?: string[];
     virtualized?: boolean;
+    virtualizationEvidence?: string[];
     priorMatchedAttemptIds?: string[];
     priorMatchedCandidateIds?: string[];
     priorDeclaredAdditions?: number;
@@ -110,8 +113,13 @@ function declaration(
     protocolVersion: 4,
     capturedAt: 20,
     baselineCandidateIds: options.baselineCandidateIds ?? [],
+    qualifyingBaselineCandidateIds:
+      options.qualifyingBaselineCandidateIds ??
+      options.baselineCandidateIds ??
+      [],
     baselineTileTokens: options.baselineTileTokens ?? [],
     virtualized: options.virtualized ?? false,
+    virtualizationEvidence: options.virtualizationEvidence ?? [],
     renderedScopeComplete: true,
     captureGaps: [],
     priorMatchedAttemptIds: options.priorMatchedAttemptIds ?? [],
@@ -146,6 +154,8 @@ function structuralEvent(
       naturalHeight?: number;
     }>;
     virtualized?: boolean;
+    virtualizationEvidence?: string[];
+    tileOwnershipRecycled?: boolean;
     loading?: boolean;
     error?: boolean;
     captureGaps?: string[];
@@ -192,6 +202,8 @@ function structuralEvent(
     snapshot: {
       completeForRenderedScope: options.completeForRenderedScope ?? true,
       virtualized: options.virtualized ?? false,
+      virtualizationEvidence: options.virtualizationEvidence ?? [],
+      tileOwnershipRecycled: options.tileOwnershipRecycled ?? false,
       unidentifiedImageCount: options.unidentifiedImageCount ?? 0,
       tiles: tileTokens.map((tileToken) => ({
         tileToken,
@@ -254,14 +266,15 @@ function reduce(
 }
 
 describe("P05 revised count observation decision", () => {
-  it("treats explicit virtualization risk evidence as ambiguous even if a boolean is inconsistent", () => {
+  it("treats actual tile continuity loss as ambiguous even if the boolean is inconsistent", () => {
     expect(
       evaluateFlowImageCountBaselineEligibility({
         mode: "existing_project",
-        startingImageCount: 9,
+        startingImageCount: 2,
         profile: "flow_rendered_tile_candidates",
         renderedTileCount: 2,
         candidateIds: [candidateA, candidateB],
+        qualifyingCandidateCount: 2,
         renderedScopeComplete: true,
         captureGaps: [],
         unidentifiedImageCount: 0,
@@ -336,8 +349,9 @@ describe("P05 revised count observation decision", () => {
     const baseline = resultBaseline("tiles", [candidateA]);
     const declarationValue = declaration({
       mode: "existing_project",
-      startingImageCount: 8,
+      startingImageCount: 1,
       baselineCandidateIds: [candidateA],
+      qualifyingBaselineCandidateIds: [candidateA],
       baselineTileTokens: ["tile-1"],
     });
     const decision = reduce(
@@ -398,8 +412,9 @@ describe("P05 revised count observation decision", () => {
           baseline: existingBaseline,
           declaration: declaration({
             mode: "existing_project",
-            startingImageCount: 5,
+            startingImageCount: 1,
             baselineCandidateIds: [candidateA],
+            qualifyingBaselineCandidateIds: [candidateA],
             baselineTileTokens: ["tile-1"],
           }),
           dispatchBoundaryAt: 100,
@@ -423,8 +438,9 @@ describe("P05 revised count observation decision", () => {
       baseline: resultBaseline("tiles", [candidateA], true),
       declaration: declaration({
         mode: "existing_project",
-        startingImageCount: 10,
+        startingImageCount: 1,
         baselineCandidateIds: [candidateA],
+        qualifyingBaselineCandidateIds: [candidateA],
         baselineTileTokens: ["tile-1"],
         virtualized: true,
       }),
@@ -448,6 +464,183 @@ describe("P05 revised count observation decision", () => {
     expect(nextPrompt).toMatchObject({
       status: "ambiguous",
       reason: "candidate_ownership_ambiguous",
+    });
+  });
+
+  it("allows overflow alone when attested coverage is reconciled and keeps post-dispatch overflow nonblocking", () => {
+    const baseline = resultBaseline("tiles", [candidateA]);
+    if (baseline.observation.profile !== "flow_rendered_tile_candidates")
+      throw new Error("fixture_baseline_profile_invalid");
+    baseline.observation.virtualizationEvidence = [
+      "scroll_extent_exceeds_viewport",
+    ];
+    const decision = reduce(
+      "existing_project",
+      [
+        structuralEvent(1, {
+          media: [{ candidateId: candidateB, tileToken: "tile-2" }],
+          virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+        }),
+      ],
+      {
+        baseline,
+        declaration: declaration({
+          mode: "existing_project",
+          startingImageCount: 1,
+          baselineCandidateIds: [candidateA],
+          qualifyingBaselineCandidateIds: [candidateA],
+          baselineTileTokens: ["tile-1"],
+          virtualizationEvidence: ["scroll_extent_exceeds_viewport"],
+        }),
+        dispatchBoundaryAt: 100,
+      },
+    );
+    expect(decision).toMatchObject({
+      status: "count_matched",
+      observedEligibleCandidateIds: [candidateB],
+    });
+  });
+
+  it("interrupts additions when actual scrolling reveals potentially old candidates", () => {
+    const decision = reduce(
+      "existing_project",
+      [
+        structuralEvent(1, {
+          media: [{ candidateId: candidateB, tileToken: "tile-2" }],
+          virtualized: true,
+          virtualizationEvidence: ["scroll_observed_during_capture"],
+        }),
+      ],
+      {
+        baseline: resultBaseline("tiles", [candidateA]),
+        declaration: declaration({
+          mode: "existing_project",
+          startingImageCount: 1,
+          baselineCandidateIds: [candidateA],
+          qualifyingBaselineCandidateIds: [candidateA],
+          baselineTileTokens: ["tile-1"],
+        }),
+        dispatchBoundaryAt: 100,
+      },
+    );
+    expect(decision).toMatchObject({
+      status: "ambiguous",
+      reason: "existing_project_virtualized",
+      observedEligibleCandidateIds: [],
+    });
+  });
+
+  it("keeps duplicate thumbnail hashes distinct from output count and blocks recycled tile ownership", () => {
+    const declarationValue = declaration({
+      mode: "existing_project",
+      startingImageCount: 1,
+      baselineCandidateIds: [candidateA],
+      qualifyingBaselineCandidateIds: [candidateA],
+      baselineTileTokens: ["tile-1"],
+    });
+    const duplicate = reduce(
+      "existing_project",
+      [
+        structuralEvent(1, {
+          media: [
+            { candidateId: candidateB, tileToken: "tile-2" },
+            { candidateId: candidateB, tileToken: "tile-3" },
+          ],
+        }),
+      ],
+      {
+        baseline: resultBaseline("tiles", [candidateA]),
+        declaration: declarationValue,
+        dispatchBoundaryAt: 100,
+      },
+    );
+    expect(duplicate).toMatchObject({
+      status: "count_matched",
+      observedEligibleCandidateIds: [candidateB],
+    });
+    const recycled = reduce(
+      "existing_project",
+      [
+        structuralEvent(1, {
+          media: [{ candidateId: candidateB, tileToken: "tile-2" }],
+          virtualized: true,
+          tileOwnershipRecycled: true,
+          virtualizationEvidence: ["tile_identity_recycled"],
+        }),
+      ],
+      {
+        baseline: resultBaseline("tiles", [candidateA]),
+        declaration: declarationValue,
+        dispatchBoundaryAt: 100,
+      },
+    );
+    expect(recycled.status).toBe("ambiguous");
+    expect(recycled.observedEligibleCandidateIds).toEqual([]);
+  });
+
+  it("retains its accepted-candidate ledger across reducer restart and observer loss", () => {
+    const baseline = resultBaseline("tiles", [candidateA]);
+    const declarationValue = declaration({
+      mode: "existing_project",
+      startingImageCount: 1,
+      baselineCandidateIds: [candidateA],
+      qualifyingBaselineCandidateIds: [candidateA],
+      baselineTileTokens: ["tile-1"],
+    });
+    const accepted = reduce(
+      "existing_project",
+      [
+        structuralEvent(1, {
+          media: [{ candidateId: candidateB, tileToken: "tile-2" }],
+        }),
+      ],
+      {
+        baseline,
+        declaration: declarationValue,
+        dispatchBoundaryAt: 100,
+        declaredVariantCount: 2,
+      },
+    );
+    expect(accepted).toMatchObject({
+      status: "observing",
+      observedEligibleCandidateIds: [candidateB],
+      observationSequence: 1,
+    });
+    const restarted = reduce(
+      "existing_project",
+      [
+        structuralEvent(2, {
+          media: [{ candidateId: candidateB, tileToken: "tile-2" }],
+        }),
+      ],
+      {
+        baseline,
+        declaration: declarationValue,
+        dispatchBoundaryAt: 100,
+        declaredVariantCount: 2,
+        previous: accepted,
+      },
+    );
+    expect(restarted).toMatchObject({
+      status: "observing",
+      observedEligibleCandidateIds: [candidateB],
+      observationSequence: 2,
+    });
+    const lost = reduce(
+      "existing_project",
+      [structuralEvent(3, { kind: "observer_lost" })],
+      {
+        baseline,
+        declaration: declarationValue,
+        dispatchBoundaryAt: 100,
+        declaredVariantCount: 2,
+        previous: restarted,
+      },
+    );
+    expect(lost).toMatchObject({
+      status: "interrupted",
+      reason: "observer_lost",
+      observedEligibleCandidateIds: [candidateB],
     });
   });
 

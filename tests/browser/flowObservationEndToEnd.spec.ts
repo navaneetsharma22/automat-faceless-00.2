@@ -9,7 +9,7 @@ const fixturePath = resolve(
 );
 const fixtureUrl = "https://flow.google.com/project/observation-e2e-project";
 
-test("production observer survives composer clearing and counts two rendered candidates", async ({
+test("production count path persists 4 existing images, two pending tiles, and two new candidates", async ({
   page,
 }) => {
   const fixture = await readFile(fixturePath, "utf8");
@@ -75,6 +75,9 @@ test("production observer survives composer clearing and counts two rendered can
                 countDecision: {
                   status: string;
                   reason?: string;
+                  startingImageCount: number;
+                  declaredVariantCount: number;
+                  expectedTotal: number;
                   observedEligibleCandidateIds: string[];
                 };
                 sequences: Array<{
@@ -83,7 +86,20 @@ test("production observer survives composer clearing and counts two rendered can
                   observedAt: number;
                   candidateIds: string[];
                   blockers: string[];
+                  loadingSignalCount: number;
+                  tileCount: number;
+                  virtualized: boolean;
+                  virtualizationEvidence: string[];
+                  resourceEventCount: number;
                 }>;
+                countDecision: {
+                  status: string;
+                  reason?: string;
+                  startingImageCount: number;
+                  declaredVariantCount: number;
+                  expectedTotal: number;
+                  observedEligibleCandidateIds: string[];
+                };
                 receiptSequences: number[];
                 diagnostics: string[];
                 durableBoundary?: number;
@@ -96,8 +112,12 @@ test("production observer survives composer clearing and counts two rendered can
         return await harness.setupProductionObservationFixture();
       })
       .catch((error: unknown) => {
+        const details = error as {
+          schemaIssuePaths?: string[];
+          schemaIssueCodes?: string[];
+        };
         throw new Error(
-          `harness_bundle_not_exposed_${JSON.stringify(bundleGlobals)}_${String(error)}`,
+          `harness_bundle_not_exposed_${JSON.stringify(bundleGlobals)}_${JSON.stringify({ message: String(error), schemaIssuePaths: details.schemaIssuePaths, schemaIssueCodes: details.schemaIssueCodes })}`,
         );
       });
     const readReport = () =>
@@ -120,7 +140,17 @@ test("production observer survives composer clearing and counts two rendered can
                   observedAt: number;
                   candidateIds: string[];
                   blockers: string[];
+                  loadingSignalCount: number;
+                  tileCount: number;
+                  virtualized: boolean;
+                  virtualizationEvidence: string[];
+                  resourceEventCount: number;
                 }>;
+                countDecision: {
+                  status: string;
+                  reason?: string;
+                  observedEligibleCandidateIds: string[];
+                };
                 receiptSequences: number[];
                 diagnostics: string[];
                 durableBoundary?: number;
@@ -132,6 +162,13 @@ test("production observer survives composer clearing and counts two rendered can
 
     expect(setup.baselineSequence).toBe(1);
     expect(setup.dispatchBoundaryAt).toBeGreaterThan(0);
+    const initialReport = await readReport();
+    expect(initialReport.sequences[0]?.candidateIds).toHaveLength(4);
+    expect(initialReport.sequences[0]?.tileCount).toBe(4);
+    expect(initialReport.sequences[0]?.virtualizationEvidence).toContain(
+      "scroll_extent_exceeds_viewport",
+    );
+    expect(initialReport.sequences[0]?.virtualized).toBe(false);
     await page.locator("flow-base-prompt-box button").evaluate((button) => {
       button.addEventListener("click", () => {
         const composer = document.querySelector("flow-base-prompt-box");
@@ -179,6 +216,17 @@ test("production observer survives composer clearing and counts two rendered can
       ).FlowObservationEndToEnd.markSyntheticActivationDispatched(),
     );
     await expect
+      .poll(async () => {
+        const report = await readReport();
+        return report.sequences.some(
+          (event) => event.loadingSignalCount >= 2 && event.tileCount === 6,
+        );
+      })
+      .toBe(true);
+    await expect
+      .poll(async () => (await readReport()).countDecision.reason)
+      .toBe("loading_or_processing_observed");
+    await expect
       .poll(async () => (await readReport()).countDecision.status, {
         timeout: 8_000,
         intervals: [100, 250, 500],
@@ -213,6 +261,26 @@ test("production observer survives composer clearing and counts two rendered can
       ),
     ).toBe(true);
     expect(report.countDecision.observedEligibleCandidateIds).toHaveLength(2);
+    expect(report.countDecision).toMatchObject({
+      startingImageCount: 4,
+      declaredVariantCount: 2,
+      expectedTotal: 6,
+    });
+    expect(report.sequences.some((event) => event.tileCount === 6)).toBe(true);
+    expect(report.sequences.some((event) => event.resourceEventCount > 0)).toBe(
+      true,
+    );
+    expect(
+      report.sequences
+        .filter((event) => event.observedAt > setup.dispatchBoundaryAt)
+        .every(
+          (event) =>
+            !event.virtualized &&
+            event.virtualizationEvidence.includes(
+              "scroll_extent_exceeds_viewport",
+            ),
+        ),
+    ).toBe(true);
     expect(report.diagnostics).toEqual([]);
     await page.evaluate(() =>
       (

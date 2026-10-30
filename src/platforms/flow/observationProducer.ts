@@ -137,6 +137,24 @@ export async function flowImageObservationProducer(
           tileOwnershipRecycled: after.tileOwnershipRecycled,
           tileCount: after.tiles.length,
           mediaCandidateCount: after.mediaCandidates.length,
+          qualifyingCandidateIds: [
+            ...new Set(
+              after.mediaCandidates
+                .filter((item) => {
+                  const owner = after.tiles.find(
+                    (tile) => tile.tileToken === item.tileToken,
+                  );
+                  return (
+                    item.visible &&
+                    item.complete &&
+                    item.naturalWidth > 0 &&
+                    item.naturalHeight > 0 &&
+                    owner?.visible === true
+                  );
+                })
+                .map((item) => item.candidateId),
+            ),
+          ],
           identityCandidateCount: after.identityCandidates.length,
           identityCandidatesTruncated: after.identityCandidatesTruncated,
           unidentifiedImageCount: after.unidentifiedImageCount,
@@ -569,7 +587,11 @@ export async function flowImageObservationProducer(
         JSON.stringify(previousIds) !== JSON.stringify(currentIds)
       )
         state.tileOwnershipRecycled = true;
-      state.tileCandidatesByToken.set(tileToken, currentIds);
+      // Empty pending tiles may later receive their first ready candidate.
+      // Keep the last non-empty ownership set across removals so DOM removal
+      // alone cannot erase continuity evidence or make a later swap look new.
+      if (currentIds.length > 0)
+        state.tileCandidatesByToken.set(tileToken, currentIds);
     }
     const virtualizationEvidence = new Set<
       | (typeof context.virtualizationEvidence)[number]
@@ -584,7 +606,10 @@ export async function flowImageObservationProducer(
       completeForRenderedScope: gaps.size === 0,
       virtualScrollContainerCount: context.virtualScrollContainerCount,
       virtualizationEvidence: [...virtualizationEvidence],
-      virtualized: virtualizationEvidence.size > 0,
+      virtualized:
+        virtualizationEvidence.has("nonzero_scroll_offset") ||
+        virtualizationEvidence.has("scroll_observed_during_capture") ||
+        virtualizationEvidence.has("tile_identity_recycled"),
       tileOwnershipRecycled: state.tileOwnershipRecycled,
       unidentifiedImageCount,
       tiles,

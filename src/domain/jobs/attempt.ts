@@ -56,6 +56,7 @@ export type FlowImageAttemptBaseline =
       workspaceTag: "flow-project-page";
       renderedTileCount: number;
       candidateIds: string[];
+      qualifyingCandidateIds?: string[];
       candidateMultiplicity: Array<{
         candidateId: string;
         renderedCopies: number;

@@ -261,6 +261,10 @@ export const FlowImageAttemptRecordSchema = z
             workspaceTag: z.literal("flow-project-page"),
             renderedTileCount: z.number().int().positive().max(100),
             candidateIds: z.array(z.string().regex(/^[0-9a-f]{64}$/)).max(500),
+            qualifyingCandidateIds: z
+              .array(z.string().regex(/^[0-9a-f]{64}$/))
+              .max(500)
+              .optional(),
             candidateMultiplicity: z
               .array(
                 z
@@ -312,6 +316,15 @@ export const FlowImageAttemptRecordSchema = z
                 message: "rendered_candidate_baseline_must_be_deduplicated",
               });
             }
+            if (
+              baseline.qualifyingCandidateIds?.some(
+                (candidateId) => !ids.has(candidateId),
+              )
+            )
+              context.addIssue({
+                code: "custom",
+                message: "qualifying_candidates_must_be_owned_candidates",
+              });
           }),
       ])
       .optional(),

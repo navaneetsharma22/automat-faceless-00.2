@@ -140,6 +140,7 @@ export async function flowWorkspaceScopeAnalyzer(
     tiles: [],
     tileElements: new Map(),
     candidateIds: [],
+    qualifyingCandidateIds: [],
     candidateMultiplicity: [],
     candidateTileRelationships: [],
     labelledRegionMediaCount: 0,

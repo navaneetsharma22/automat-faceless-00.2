@@ -160,7 +160,7 @@ test("production arm port installs scope and arms against populated project DOM"
     expect(armed.receipt.baseline).toMatchObject({
       completeForRenderedScope: true,
       virtualScrollContainerCount: 1,
-      tileCount: 2,
+      tileCount: 4,
       unidentifiedImageCount: 0,
     });
     await port.stopObservation(binding.tabId, binding);

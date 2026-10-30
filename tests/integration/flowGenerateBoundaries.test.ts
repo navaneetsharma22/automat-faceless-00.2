@@ -79,6 +79,7 @@ function discovery(
       workspaceTag: "flow-project-page" as const,
       renderedTileCount: 2,
       candidateIds: ["a".repeat(64), "b".repeat(64)],
+      qualifyingCandidateIds: ["a".repeat(64), "b".repeat(64)],
       candidateMultiplicity: [
         { candidateId: "a".repeat(64), renderedCopies: 1 },
         { candidateId: "b".repeat(64), renderedCopies: 1 },
@@ -211,6 +212,7 @@ function makePort(
               resourceEventCount: 0,
               captureGaps: [],
               candidateIds: ["a".repeat(64), "b".repeat(64)],
+              qualifyingCandidateIds: ["a".repeat(64), "b".repeat(64)],
               tileTokens: ["tile-1", "tile-2"],
               candidateTileRelationships: [
                 { candidateId: "a".repeat(64), tileToken: "tile-1" },
@@ -242,6 +244,7 @@ function makePort(
             resourceEventCount: 0,
             captureGaps: [],
             candidateIds: ["a".repeat(64), "b".repeat(64)],
+            qualifyingCandidateIds: ["a".repeat(64), "b".repeat(64)],
             tileTokens: ["tile-1", "tile-2"],
             candidateTileRelationships: [
               { candidateId: "a".repeat(64), tileToken: "tile-1" },
