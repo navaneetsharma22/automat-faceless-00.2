@@ -26,7 +26,8 @@ describe("timed image submission queue foundation", () => {
   it("persists exact source, ordered prompts, settings, project binding, and reads back", async () => {
     const database = createMemoryRepositoryDatabase();
     const repositories = new ExtensionRepositories(database, () => 500);
-    const source = '1: {"shot_id":"01","text":"first  \\n prompt"}\r\n2: {"shot_id":"02","text":"second\tvalue"}';
+    const source =
+      '1: {"shot_id":"01","text":"first  \\n prompt"}\r\n2. {"shot_id":"02","text":"second value"}';
     await repositories.savePromptBatch({
       workspaceId: "image-workspace",
       kind: "image",
@@ -56,7 +57,10 @@ describe("timed image submission queue foundation", () => {
       state: "ready",
       lastDispatchReceiptStoredAt: null,
       nextEligibleDispatchAt: null,
-      manualSettingsDeclaration: { ...settingsConfirmation, userAttested: true },
+      manualSettingsDeclaration: {
+        ...settingsConfirmation,
+        userAttested: true,
+      },
       selectedProject: {
         provider: "Flow",
         tabId: 17,
@@ -68,10 +72,14 @@ describe("timed image submission queue foundation", () => {
     expect(queue.items.map((item) => item.shotId)).toEqual(["1", "2"]);
     expect(queue.items.map((item) => item.rawJsonBody)).toEqual([
       '{"shot_id":"01","text":"first  \\n prompt"}',
-      '{"shot_id":"02","text":"second\tvalue"}',
+      '{"shot_id":"02","text":"second value"}',
     ]);
-    expect(queue.items.every((item) => item.itemState === "pending")).toBe(true);
-    expect(queue.items.every((item) => item.providerOutcome === "not_started")).toBe(true);
+    expect(queue.items.every((item) => item.itemState === "pending")).toBe(
+      true,
+    );
+    expect(
+      queue.items.every((item) => item.providerOutcome === "not_started"),
+    ).toBe(true);
   });
 
   it("refuses an exact source held by an unresolved historical attempt", async () => {
@@ -125,21 +133,73 @@ describe("timed image submission queue foundation", () => {
         settingsConfirmation,
       }),
     ).rejects.toBeInstanceOf(ActiveFlowImageAttemptError);
-    expect(await repositories.listTimedImageSubmissionQueues("new-workspace")).toEqual([]);
+    expect(
+      await repositories.listTimedImageSubmissionQueues("new-workspace"),
+    ).toEqual([]);
   });
 
   it("does not allow a new queue to bypass an existing same-source queue", async () => {
     const database = createMemoryRepositoryDatabase();
     const repositories = new ExtensionRepositories(database, () => 500);
     const source = '{"shot_id":"01","text":"one-time source"}';
-    await repositories.savePromptBatch({ workspaceId: "ws", kind: "image", sourceText: source });
-    await repositories.recordSelectedTarget({ provider: "Flow", tabId: 17, canonicalTarget: settingsConfirmation.canonicalTarget });
-    await repositories.createTimedImageSubmissionQueue({ workspaceId: "ws", queueId: "995f84c2-9f6f-4cd2-9098-c1aa8a662508", settingsConfirmation });
-    await expect(repositories.createTimedImageSubmissionQueue({
+    await repositories.savePromptBatch({
       workspaceId: "ws",
-      queueId: "9712f340-53fe-4d0a-8a18-91fd2d48248b",
+      kind: "image",
+      sourceText: source,
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: 17,
+      canonicalTarget: settingsConfirmation.canonicalTarget,
+    });
+    await repositories.createTimedImageSubmissionQueue({
+      workspaceId: "ws",
+      queueId: "995f84c2-9f6f-4cd2-9098-c1aa8a662508",
       settingsConfirmation,
-    })).rejects.toBeInstanceOf(DuplicateTimedImageQueueSourceError);
+    });
+    await expect(
+      repositories.createTimedImageSubmissionQueue({
+        workspaceId: "ws",
+        queueId: "9712f340-53fe-4d0a-8a18-91fd2d48248b",
+        settingsConfirmation,
+      }),
+    ).rejects.toBeInstanceOf(DuplicateTimedImageQueueSourceError);
+  });
+
+  it("serializes concurrent queue creation so only one exact source is accepted", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database, () => 500);
+    await repositories.savePromptBatch({
+      workspaceId: "ws-concurrent",
+      kind: "image",
+      sourceText: '{"shot_id":"01","text":"concurrent source"}',
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: 17,
+      canonicalTarget: settingsConfirmation.canonicalTarget,
+    });
+    const outcomes = await Promise.allSettled([
+      repositories.createTimedImageSubmissionQueue({
+        workspaceId: "ws-concurrent",
+        queueId: "e84251dc-15cf-4eb5-8c9b-56550e2a6de4",
+        settingsConfirmation,
+      }),
+      repositories.createTimedImageSubmissionQueue({
+        workspaceId: "ws-concurrent",
+        queueId: "db077e57-1b42-40a8-9432-3a846227d86d",
+        settingsConfirmation,
+      }),
+    ]);
+    expect(
+      outcomes.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      outcomes.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    expect(
+      await repositories.listTimedImageSubmissionQueues("ws-concurrent"),
+    ).toHaveLength(1);
   });
 
   it("defines safe transitions and deadlines at least forty seconds after durable receipt", () => {

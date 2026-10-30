@@ -23,4 +23,5 @@ node_modules/
 !docs/evidence/prompt-sample-profile.md
 !docs/evidence/flow-one-image.md
 !docs/evidence/flow-completion.md
+!docs/evidence/timed-image-queue.md
 config.bat

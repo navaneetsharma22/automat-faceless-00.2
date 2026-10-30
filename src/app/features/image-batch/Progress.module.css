@@ -39,7 +39,11 @@
   font-size: var(--font-size-sm);
   line-height: var(--line-height-relaxed);
 }
-.error { margin: 0; color: var(--color-danger); font-size: var(--font-size-sm); }
+.error {
+  margin: 0;
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+}
 .queue {
   display: grid;
   min-width: 0;
@@ -49,15 +53,52 @@
   border-radius: var(--radius-card-compact);
   background: var(--color-surface-raised);
 }
-.items { display: grid; gap: var(--space-2); margin: 0; padding-inline-start: 1.5rem; }
-.items li { display: grid; min-width: 0; gap: var(--space-1); padding: var(--space-2); border-bottom: 1px solid var(--color-border); }
-.items li > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); }
+.items {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-inline-start: 1.5rem;
+}
+.items li {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.items li > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
 .items li span,
 .items li small,
-.queue > small { color: var(--color-text-muted); font-size: var(--font-size-xs); }
-.items details summary { width: fit-content; color: var(--color-accent); cursor: pointer; font-size: var(--font-size-sm); }
-.items pre { max-height: 18rem; overflow: auto; padding: var(--space-2); border-radius: var(--radius-control); background: var(--color-surface); color: var(--color-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.queue > small {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+.items details summary {
+  width: fit-content;
+  color: var(--color-accent);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+.items pre {
+  max-height: 18rem;
+  overflow: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 36rem) {
-  .actionRow { align-items: stretch; }
-  .actionRow > * { width: 100%; }
+  .actionRow {
+    align-items: stretch;
+  }
+  .actionRow > * {
+    width: 100%;
+  }
 }

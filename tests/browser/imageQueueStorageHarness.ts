@@ -1,4 +1,7 @@
-import { ExtensionRepositories, createDexieRepositoryDatabase } from "../../src/storage/repositories";
+import {
+  ExtensionRepositories,
+  createDexieRepositoryDatabase,
+} from "../../src/storage/repositories";
 import { AutomatDatabase } from "../../src/storage/db";
 
 export async function persistTimedQueueReadback() {
@@ -9,8 +12,13 @@ export async function persistTimedQueueReadback() {
       createDexieRepositoryDatabase(database),
       () => 700,
     );
-    const source = '1: {"shot_id":"04","text":"first  \\n prompt"}\n2: {"shot_id":"09","text":"second"}';
-    await repositories.savePromptBatch({ workspaceId: "dexie-workspace", kind: "image", sourceText: source });
+    const source =
+      '4: {"shot_id":"04","text":"first  \\n prompt"}\n9. {"shot_id":"09","text":"second"}';
+    await repositories.savePromptBatch({
+      workspaceId: "dexie-workspace",
+      kind: "image",
+      sourceText: source,
+    });
     await repositories.recordSelectedTarget({
       provider: "Flow",
       tabId: 29,
@@ -28,7 +36,9 @@ export async function persistTimedQueueReadback() {
         declaredVariantCount: 4,
       },
     });
-    const readback = await repositories.getTimedImageSubmissionQueue(record.queueId);
+    const readback = await repositories.getTimedImageSubmissionQueue(
+      record.queueId,
+    );
     return {
       recordEqualsReadback: JSON.stringify(record) === JSON.stringify(readback),
       exactSource: readback?.sourceText === source,
@@ -48,7 +58,9 @@ export async function persistTimedQueueReadback() {
 
 declare global {
   interface Window {
-    __ImageQueueStorageFixture: { persistTimedQueueReadback: typeof persistTimedQueueReadback };
+    __ImageQueueStorageFixture: {
+      persistTimedQueueReadback: typeof persistTimedQueueReadback;
+    };
   }
 }
 

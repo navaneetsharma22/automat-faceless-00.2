@@ -157,13 +157,40 @@ function flowProjectIdFromCanonicalTarget(value: string): string | undefined {
       )?.[1];
     }
     if (url.hostname === "labs.google") {
-      return /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(
-        url.pathname,
-      )?.[1];
+      return /^\/fx\/tools\/flow\/([A-Za-z0-9_-]+)\/?$/.exec(url.pathname)?.[1];
     }
   } catch {
     return;
   }
+}
+
+async function isValidTimedQueueSnapshot(
+  record: QueueRecord,
+): Promise<boolean> {
+  if (!ImageSubmissionQueueRecordSchema.safeParse(record).success) return false;
+  if ((await sha256Hex(record.sourceText)) !== record.sourceHash) return false;
+  const imported = importPromptBatch(record.sourceText, "image");
+  if (
+    !imported.ok ||
+    imported.mode !== record.sourceMode ||
+    imported.items.length !== record.items.length
+  ) {
+    return false;
+  }
+  for (let index = 0; index < record.items.length; index += 1) {
+    const expected = imported.items[index]!;
+    const stored = record.items[index]!;
+    if (
+      (await sha256Hex(stored.rawJsonBody)) !== stored.promptHash ||
+      expected.rawBody !== stored.rawJsonBody ||
+      expected.shotId !== stored.shotId ||
+      expected.sourceSpan.start !== stored.sourceSpan.start ||
+      expected.sourceSpan.end !== stored.sourceSpan.end
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export class FlowImageObservationRejectedError extends Error {
@@ -645,7 +672,8 @@ export class ExtensionRepositories {
           currentBatch.updatedAt !== saved.batch.updatedAt ||
           currentBatch.sourceText !== saved.batch.sourceText ||
           currentBatch.sourceMode !== saved.batch.sourceMode ||
-          currentBatch.orderedItemIds.length !== saved.batch.orderedItemIds.length ||
+          currentBatch.orderedItemIds.length !==
+            saved.batch.orderedItemIds.length ||
           currentBatch.orderedItemIds.some(
             (id, index) => id !== saved.batch.orderedItemIds[index],
           ) ||
@@ -690,9 +718,15 @@ export class ExtensionRepositories {
         }
         const queues = await this.tables.imageSubmissionQueues.toArray();
         if (
-          queues.some(
-            (queue) =>
-              queue.items.some((item) => itemHashes.includes(item.promptHash)),
+          !(await Promise.all(queues.map(isValidTimedQueueSnapshot))).every(
+            Boolean,
+          )
+        ) {
+          throw new ImageQueueEligibilityError("existing_queue_record_invalid");
+        }
+        if (
+          queues.some((queue) =>
+            queue.items.some((item) => itemHashes.includes(item.promptHash)),
           )
         ) {
           throw new DuplicateTimedImageQueueSourceError();
@@ -738,7 +772,9 @@ export class ExtensionRepositories {
           updatedAt: now,
         };
         if (!ImageSubmissionQueueRecordSchema.safeParse(record).success) {
-          throw new ImageQueueEligibilityError("queue_record_validation_failed");
+          throw new ImageQueueEligibilityError(
+            "queue_record_validation_failed",
+          );
         }
         await this.tables.imageSubmissionQueues.add(record);
         const readback = await this.tables.imageSubmissionQueues.get(
@@ -746,7 +782,7 @@ export class ExtensionRepositories {
         );
         if (
           !readback ||
-          !ImageSubmissionQueueRecordSchema.safeParse(readback).success ||
+          !(await isValidTimedQueueSnapshot(readback)) ||
           readback.sourceText !== saved.batch.sourceText ||
           readback.items.some(
             (item, index) =>
@@ -766,7 +802,7 @@ export class ExtensionRepositories {
     queueId: string,
   ): Promise<QueueRecord | undefined> {
     const record = await this.tables.imageSubmissionQueues.get(queueId);
-    if (record && !ImageSubmissionQueueRecordSchema.safeParse(record).success) {
+    if (record && !(await isValidTimedQueueSnapshot(record))) {
       throw new ImageQueueEligibilityError("queue_record_invalid");
     }
     return record;
@@ -779,8 +815,8 @@ export class ExtensionRepositories {
       (record) => record.workspaceId === workspaceId,
     );
     if (
-      records.some(
-        (record) => !ImageSubmissionQueueRecordSchema.safeParse(record).success,
+      !(await Promise.all(records.map(isValidTimedQueueSnapshot))).every(
+        Boolean,
       )
     ) {
       throw new ImageQueueEligibilityError("queue_record_invalid");

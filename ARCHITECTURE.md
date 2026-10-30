@@ -120,6 +120,14 @@ Avoid queue self-deadlocks: a content adapter's direct text-input request must n
 
 The exact adapter order must respect the real provider UI; this sequence describes evidence boundaries, not an invented stable DOM contract.
 
+## Timed image submission mode (revised R07)
+
+Timed image submission is a separate workflow from P05 result observation and count-mode rebaseline. Its queue owns an immutable ordered snapshot of the saved image source, selected Flow project binding, and user-attested settings declaration. P06.1 persists and reads this record only; it does not dispatch, start an observer, or display a running countdown.
+
+In P06.2, execution will revalidate project/tab/document and source hash, enter the exact item, verify settled editor readback, persist dispatch intent, and perform at most one activation. A durable dispatch receipt is followed by a persisted per-queue deadline no earlier than `max(receiptStoredAt, schedulerObservedAt) + 40,000 ms`; scheduler recovery must honor that deadline and never catch up from a global interval. Conflicting text, wrong target, storage uncertainty, or uncertain dispatch blocks future sends. No receipt, no timer. Time passage never means generation completion: `Sent` records dispatch evidence and provider outcome remains `unknown`.
+
+Pause and Stop in P06.3 block future queue dispatch without claiming to cancel provider work already sent. Restart cannot resend an item with dispatch intent, a receipt, or uncertain delivery. Existing historical attempt/source locks remain authoritative across new queue IDs. Manual variant count is frozen as declaration metadata and never multiplies Generate activations. Timed mode does not resume/rebaseline count-mode observation.
+
 ## Settings and provider routing
 
 Settings confirmation is a user attestation bound to the selected target/context. Record declared variant count and optionally duration/model/ratio for tracking. Do not silently change settings or infer that attestation equals machine observation.

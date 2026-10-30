@@ -30,17 +30,23 @@ export function ImageQueueProgress({
     void persistenceClient
       .request("imageQueue.list", { workspaceId })
       .then((value) => {
-        if (!Array.isArray(value)) throw new Error("The queue list was invalid.");
+        if (!Array.isArray(value))
+          throw new Error("The queue list was invalid.");
         const records = value.map((entry) => {
           const parsed = ImageSubmissionQueueRecordSchema.safeParse(entry);
-          if (!parsed.success) throw new Error("A saved queue failed validation.");
+          if (!parsed.success)
+            throw new Error("A saved queue failed validation.");
           return parsed.data;
         });
         if (active) setQueues(records);
       })
       .catch((cause: unknown) => {
         if (active)
-          setError(cause instanceof Error ? cause.message : "Saved queues could not be read.");
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Saved queues could not be read.",
+          );
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -69,10 +75,15 @@ export function ImageQueueProgress({
         settingsConfirmation,
       });
       const parsed = ImageSubmissionQueueRecordSchema.safeParse(record);
-      if (!parsed.success) throw new Error("The saved queue failed readback validation.");
+      if (!parsed.success)
+        throw new Error("The saved queue failed readback validation.");
       setQueues((current) => [...current, parsed.data]);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The timed queue could not be saved.");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The timed queue could not be saved.",
+      );
     } finally {
       setCreating(false);
     }
@@ -88,40 +99,98 @@ export function ImageQueueProgress({
         <span className={styles.interval}>40 seconds between dispatches</span>
       </div>
       <p className={styles.helper}>
-        Each saved prompt is one submission. The manually declared variant count is recorded as settings context; it does not multiply Generate actions.
+        Each saved prompt is one submission. The manually declared variant count
+        is recorded as settings context; it does not multiply Generate actions.
       </p>
       <p className={styles.helper}>
-        P06.1 saves the ordered queue only. Provider submission and countdown scheduling are unavailable; nothing is sent to Flow.
+        P06.1 saves the ordered queue only. Provider submission and countdown
+        scheduling are unavailable; nothing is sent to Flow.
       </p>
       <div className={styles.actionRow}>
-        <Button type="button" disabled={Boolean(disabledReason)} loading={creating} loadingLabel="Saving queue…" onClick={() => void createQueue()}>
+        <Button
+          type="button"
+          disabled={Boolean(disabledReason)}
+          loading={creating}
+          loadingLabel="Saving queue…"
+          onClick={() => void createQueue()}
+        >
           Create timed queue
         </Button>
-        <span className={styles.helper} role="status">{disabledReason ?? "Ready to persist after source and settings checks."}</span>
+        <span className={styles.helper} role="status">
+          {disabledReason ??
+            "Ready to persist after source and settings checks."}
+        </span>
       </div>
-      {error ? <p className={styles.error} role="alert">{error}</p> : null}
-      {loading ? <p className={styles.helper} role="status">Reading saved queues…</p> : null}
-      {!loading && queues.length === 0 ? (
-        <p className={styles.empty}>No timed queue saved. No provider submission has started.</p>
+      {error ? (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      ) : null}
+      {error && !loading ? (
+        <p className={styles.helper} role="status">
+          Saved queue status unavailable. No empty-state conclusion can be made.
+        </p>
+      ) : null}
+      {loading ? (
+        <p className={styles.helper} role="status">
+          Reading saved queues…
+        </p>
+      ) : null}
+      {!loading && !error && queues.length === 0 ? (
+        <p className={styles.empty}>
+          No timed queue saved. No provider submission has started.
+        </p>
       ) : null}
       {queues.map((queue) => (
-        <section className={styles.queue} key={queue.queueId} aria-label={`Timed image queue ${queue.queueId}`}>
+        <section
+          className={styles.queue}
+          key={queue.queueId}
+          aria-label={`Timed image queue ${queue.queueId}`}
+        >
           <div className={styles.queueHeader}>
-            <strong>{queue.items.length} saved prompt{queue.items.length === 1 ? "" : "s"}</strong>
-            <span>{queue.state === "ready" ? "Saved · not started" : queue.state}</span>
+            <strong>
+              {queue.items.length} saved prompt
+              {queue.items.length === 1 ? "" : "s"}
+            </strong>
+            <span>
+              {queue.state === "ready" ? "Saved · not started" : queue.state}
+            </span>
           </div>
-          <p className={styles.helper}>Project binding captured for review. Execution is unavailable in P06.1.</p>
+          <p className={styles.helper}>
+            Project binding captured for review. Execution is unavailable in
+            P06.1.
+          </p>
           <ol className={styles.items}>
             {queue.items.map((item) => (
               <li key={item.queueItemId}>
-                <div><strong>Prompt {item.order + 1}</strong><span>{item.shotId ? `Shot ${item.shotId}` : "No shot ID"}</span></div>
-                <span>{item.itemState === "pending" ? "Pending" : item.itemState}</span>
-                <details><summary>View exact prompt source</summary><pre>{item.rawJsonBody}</pre></details>
-                {item.providerOutcome === "unknown" ? <small>Dispatch evidence stored; provider outcome unknown.</small> : <small>Not dispatched. Provider outcome not started.</small>}
+                <div>
+                  <strong>Prompt {item.order + 1}</strong>
+                  <span>
+                    {item.shotId ? `Shot ${item.shotId}` : "No shot ID"}
+                  </span>
+                </div>
+                <span>
+                  {item.itemState === "pending" ? "Pending" : item.itemState}
+                </span>
+                <details>
+                  <summary>View exact prompt source</summary>
+                  <pre>{item.rawJsonBody}</pre>
+                </details>
+                {item.providerOutcome === "unknown" ? (
+                  <small>
+                    Dispatch evidence stored; provider outcome unknown.
+                  </small>
+                ) : (
+                  <small>Not dispatched. Provider outcome not started.</small>
+                )}
               </li>
             ))}
           </ol>
-          <small>Stored interval: {TIMED_IMAGE_SUBMISSION_INTERVAL_MS.toLocaleString()} ms. No countdown is running.</small>
+          <small>
+            Stored interval:{" "}
+            {TIMED_IMAGE_SUBMISSION_INTERVAL_MS.toLocaleString()} ms. No
+            countdown is running.
+          </small>
         </section>
       ))}
     </section>

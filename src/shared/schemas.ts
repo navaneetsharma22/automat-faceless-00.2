@@ -554,11 +554,13 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   }),
   requestBase.extend({
     type: z.literal("imageQueue.createTimed"),
-    payload: z.object({
-      workspaceId: workspaceIdSchema,
-      queueId: z.string().uuid(),
-      settingsConfirmation: FlowSettingsConfirmationSchema,
-    }).strict(),
+    payload: z
+      .object({
+        workspaceId: workspaceIdSchema,
+        queueId: z.string().uuid(),
+        settingsConfirmation: FlowSettingsConfirmationSchema,
+      })
+      .strict(),
   }),
   requestBase.extend({
     type: z.literal("imageQueue.get"),

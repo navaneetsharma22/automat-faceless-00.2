@@ -192,9 +192,10 @@ async function dispatch(
       }
     }
     case "imageQueue.get": {
-      const record = await dependencies.repositories.getTimedImageSubmissionQueue(
-        request.payload.queueId,
-      );
+      const record =
+        await dependencies.repositories.getTimedImageSubmissionQueue(
+          request.payload.queueId,
+        );
       if (!record) {
         throw new FoundationOperationError(
           "not_found",

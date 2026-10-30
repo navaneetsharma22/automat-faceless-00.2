@@ -23,6 +23,20 @@ test("image import is source-faithful and the cleaned dashboard fits review view
   await expect(
     page.getByText("Start image batch", { exact: true }),
   ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Image queue" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      /No timed queue saved\. No provider submission has started\.|Saved queue status unavailable\. No empty-state conclusion can be made\./,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText("P06.1 saves the ordered queue only."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Create timed queue" }),
+  ).toBeDisabled();
 
   const screenshotDir = "artifacts/dashboard-cleanup";
   await mkdir(screenshotDir, { recursive: true });
@@ -94,7 +108,7 @@ test("image import is source-faithful and the cleaned dashboard fits review view
   await expect(
     page.getByRole("heading", { name: "1 validated prompt" }),
   ).toBeVisible();
-  await expect(page.getByText("7").last()).toBeVisible();
+  await expect(page.getByText("Shot ID 7")).toBeVisible();
   await expect(page.getByText("Not sent to Flow")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Save validated batch" }),
