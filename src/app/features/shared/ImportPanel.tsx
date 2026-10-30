@@ -728,6 +728,18 @@ export function ImportPanel({
           ? (report as Record<string, unknown>)
           : { status: "blocked", reason: "invalid_worker_response" },
       );
+      try {
+        const refreshedInspection = await persistenceClient.request(
+          "flow.image.inspectCountBlockers",
+          {},
+        );
+        if (refreshedInspection && typeof refreshedInspection === "object")
+          setFlowCountBlockerReport(
+            refreshedInspection as Record<string, unknown>,
+          );
+      } catch {
+        // Keep the recovery result visible if a follow-up read is unavailable.
+      }
     } catch {
       setFlowCountRecoveryReport({
         status: "blocked",
@@ -1085,14 +1097,31 @@ export function ImportPanel({
                     return (
                       <div key={oldAttemptId}>
                         <p>
-                          Attempt {oldAttemptId}; monitoring{" "}
+                          Attempt {oldAttemptId}; action state{" "}
+                          {String(blocker.state)}; monitoring{" "}
                           {String(
                             blocker.monitoringClassification ??
                               blocker.observationStatus,
                           )}
-                          ; provider outcome {String(blocker.providerOutcome)};
-                          count decision {String(blocker.countDecision)}; reason{" "}
-                          {String(blocker.reason)}.
+                          ; count session{" "}
+                          {String(blocker.countSessionPresent ?? "unreported")};
+                          observation session{" "}
+                          {String(blocker.observationStatus ?? "unreported")};
+                          producer{" "}
+                          {String(blocker.producerStatus ?? "unreported")};
+                          observation record{" "}
+                          {String(
+                            blocker.observationSessionPresent ?? "unreported",
+                          )}
+                          ; persisted provider outcome{" "}
+                          {String(
+                            blocker.providerOutcomePersistedStatus ??
+                              "unreported",
+                          )}
+                          ; count decision {String(blocker.countDecision)};
+                          count reason{" "}
+                          {String(blocker.countDecisionReason ?? "unreported")}
+                          reason {String(blocker.reason)}.
                         </p>
                         <Button
                           type="button"
@@ -1124,7 +1153,7 @@ export function ImportPanel({
                   ? "info"
                   : "warning"
               }
-            >{`Recovery: ${String(flowCountRecoveryReport.status)}; reason: ${String(flowCountRecoveryReport.reason)}. The historical provider outcome remains unknown. This action did not create an attempt or activate Generate.`}</Notice>
+            >{`Recovery: ${String(flowCountRecoveryReport.status)}; reason: ${String(flowCountRecoveryReport.reason)}${flowCountRecoveryReport.detailReason ? `; detail: ${String(flowCountRecoveryReport.detailReason)}` : ""}${flowCountRecoveryReport.currentCountDecisionStatus ? `; current count decision: ${String(flowCountRecoveryReport.currentCountDecisionStatus)}` : ""}. The historical provider outcome remains unchanged. This action did not create an attempt or activate Generate.`}</Notice>
           ) : null}
           <Button
             type="button"

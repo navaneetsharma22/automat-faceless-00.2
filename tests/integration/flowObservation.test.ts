@@ -17,6 +17,7 @@ import type { FlowImageAttemptRecord } from "../../src/domain/jobs/attempt";
 import { createConnectionLifecycleService } from "../../src/background/connectionLifecycle";
 import {
   createChromeFlowImageGenerateOncePort,
+  createFlowCountBlockerInspection,
   createFlowCountRebaseline,
 } from "../../src/background/handlers/flow";
 import type { ConnectionPort } from "../../src/platforms/shared/contracts";
@@ -489,6 +490,10 @@ describe("P05.2 attempt-bound Flow observation", () => {
       fixture.repositories,
       scriptingPort as never,
     );
+    const inspect = createFlowCountBlockerInspection(
+      fixture.repositories,
+      scriptingPort as never,
+    );
     const request = {
       oldAttemptId: old.attemptId,
       workspaceId: "default",
@@ -497,12 +502,127 @@ describe("P05.2 attempt-bound Flow observation", () => {
       startingImageCount: 1,
       userConfirmed: true as const,
     };
+    const persistedHistorical = await fixture.repositories.getFlowImageAttempt(
+      old.attemptId,
+    );
+    expect(persistedHistorical).toMatchObject({
+      state: "dispatched",
+      observationSession: { status: "lost" },
+      resultOutcome: { status: "unknown" },
+      countDecision: { status: "interrupted" },
+    });
+    producerStatus = "absent";
+    const inspected = await inspect();
+    expect(inspected).toMatchObject({
+      status: "complete",
+      blockers: [
+        {
+          attemptId: old.attemptId,
+          state: "dispatched",
+          observationStatus: "lost",
+          providerOutcomePersistedStatus: "unknown",
+          countDecision: "interrupted",
+        },
+      ],
+    });
+    expect(
+      await recover({
+        ...request,
+        oldAttemptId: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toMatchObject({
+      reason: "historical_attempt_not_recoverable",
+      detailReason: "attempt_row_missing",
+    });
+    for (const [record, detailReason] of [
+      [
+        { ...persistedHistorical!, countSessionId: undefined },
+        "count_session_id_missing",
+      ],
+      [
+        { ...persistedHistorical!, resultOutcome: undefined },
+        "provider_outcome_missing",
+      ],
+      [
+        {
+          ...persistedHistorical!,
+          resultOutcome: {
+            ...persistedHistorical!.resultOutcome!,
+            status: "complete",
+          },
+        },
+        "provider_outcome_not_unknown",
+      ],
+      [
+        { ...persistedHistorical!, countDecision: undefined },
+        "count_decision_missing",
+      ],
+      [
+        {
+          ...persistedHistorical!,
+          countDecision: {
+            ...persistedHistorical!.countDecision!,
+            status: "count_matched",
+          },
+        },
+        "count_decision_not_interrupted",
+      ],
+      [
+        { ...persistedHistorical!, observationSession: undefined },
+        "observation_session_missing",
+      ],
+    ] as const) {
+      await fixture.database.flowImageAttempts.put(record);
+      expect(await recover(request)).toMatchObject({
+        reason: "historical_attempt_not_recoverable",
+        detailReason,
+      });
+    }
+    await fixture.database.flowImageAttempts.put({
+      ...persistedHistorical!,
+      countDecision: {
+        ...persistedHistorical!.countDecision!,
+        status: "ambiguous",
+      },
+    });
+    expect(await recover(request)).toMatchObject({
+      reason: "historical_attempt_not_recoverable",
+      detailReason: "count_decision_not_interrupted",
+      currentCountDecisionStatus: "ambiguous",
+    });
+    await fixture.database.flowImageAttempts.put(persistedHistorical!);
+    producerStatus = "active";
     expect(await recover(request)).toMatchObject({
       status: "blocked",
       reason: "active_observation_cannot_be_superseded",
       generateActivations: 0,
     });
     producerStatus = "absent";
+    const persistRecovery = vi.spyOn(
+      fixture.repositories,
+      "persistFlowCountRecovery",
+    );
+    const actualPersistRecovery = persistRecovery.getMockImplementation()!;
+    persistRecovery.mockImplementationOnce(
+      async (record, expectedUpdatedAt) => {
+        const current = await fixture.repositories.getFlowImageAttempt(
+          old.attemptId,
+        );
+        await fixture.database.flowImageAttempts.put({
+          ...current!,
+          updatedAt: current!.updatedAt + 1,
+        });
+        return actualPersistRecovery(record, expectedUpdatedAt);
+      },
+    );
+    expect(await recover(request)).toMatchObject({
+      status: "blocked",
+      reason: "recovery_atomic_persistence_or_readback_failed",
+      detailReason: "attempt_changed_during_rebaseline",
+      currentCountDecisionStatus: "interrupted",
+    });
+    persistRecovery.mockRestore();
+    await fixture.database.flowImageAttempts.put(persistedHistorical!);
     const failedWrite = vi
       .spyOn(fixture.database.flowCountRecoveries, "add")
       .mockRejectedValueOnce(new Error("storage unavailable"));

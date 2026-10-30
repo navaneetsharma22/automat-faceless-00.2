@@ -187,12 +187,24 @@ export function createFlowCountBlockerInspection(
         return {
           attemptId: attempt.attemptId,
           sessionId: attempt.observationSession?.sessionId ?? null,
-          sourceHash: attempt.promptHash,
           state: attempt.state,
+          countSessionPresent: Boolean(attempt.countSessionId),
+          observationSessionPresent: Boolean(attempt.observationSession),
+          observationSessionIdPresent: Boolean(
+            attempt.observationSession?.sessionId,
+          ),
           observationStatus: attempt.observationSession?.status ?? "missing",
           monitoringClassification,
+          producerStatus: sameDocument
+            ? liveProducer?.available
+              ? (liveProducer.status ?? "unknown")
+              : "unavailable"
+            : "not_inspected",
           providerOutcome: attempt.resultOutcome?.status ?? "unknown",
+          providerOutcomePersistedStatus:
+            attempt.resultOutcome?.status ?? "missing",
           countDecision: attempt.countDecision?.status ?? "missing",
+          countDecisionReason: attempt.countDecision?.reason ?? "missing",
           reason:
             attempt.countDecision?.reason ??
             attempt.resultOutcome?.reason ??
@@ -224,9 +236,15 @@ export function createFlowCountRebaseline(
     startingImageCount: number;
     userConfirmed: true;
   }) => {
-    const blocked = (reason: string) => ({
+    const blocked = (
+      reason: string,
+      detailReason?: string,
+      currentCountDecisionStatus?: string,
+    ) => ({
       status: "blocked",
       reason,
+      ...(detailReason ? { detailReason } : {}),
+      ...(currentCountDecisionStatus ? { currentCountDecisionStatus } : {}),
       providerOutcome: "unknown",
       attemptsCreated: 0,
       generateActivations: 0,
@@ -259,14 +277,42 @@ export function createFlowCountRebaseline(
     const old = attempts.find(
       (attempt) => attempt.attemptId === input.oldAttemptId,
     );
-    if (
-      !old ||
-      !old.countSessionId ||
-      old.resultOutcome?.status !== "unknown" ||
-      old.countDecision?.status !== "interrupted" ||
-      !old.observationSession
-    )
-      return blocked("historical_attempt_not_recoverable");
+    if (!old)
+      return blocked(
+        "historical_attempt_not_recoverable",
+        "attempt_row_missing",
+      );
+    if (!old.countSessionId)
+      return blocked(
+        "historical_attempt_not_recoverable",
+        "count_session_id_missing",
+      );
+    if (!old.resultOutcome)
+      return blocked(
+        "historical_attempt_not_recoverable",
+        "provider_outcome_missing",
+      );
+    if (old.resultOutcome.status !== "unknown")
+      return blocked(
+        "historical_attempt_not_recoverable",
+        "provider_outcome_not_unknown",
+      );
+    if (!old.countDecision)
+      return blocked(
+        "historical_attempt_not_recoverable",
+        "count_decision_missing",
+      );
+    if (old.countDecision.status !== "interrupted")
+      return blocked(
+        "historical_attempt_not_recoverable",
+        "count_decision_not_interrupted",
+        old.countDecision.status,
+      );
+    if (!old.observationSession)
+      return blocked(
+        "historical_attempt_not_recoverable",
+        "observation_session_missing",
+      );
     const projectBlockers = attempts.filter(
       (attempt) =>
         attempt.countSessionId &&
@@ -477,8 +523,20 @@ export function createFlowCountRebaseline(
       capturedAt: Date.now(),
     };
     try {
-      await repositories.persistFlowCountRecovery(recovery);
+      await repositories.persistFlowCountRecovery(recovery, old.updatedAt);
     } catch {
+      const current = await repositories
+        .getFlowImageAttempt(old.attemptId)
+        .catch(() => undefined);
+      if (
+        current?.updatedAt !== old.updatedAt ||
+        current?.countDecision?.status !== "interrupted"
+      )
+        return blocked(
+          "recovery_atomic_persistence_or_readback_failed",
+          "attempt_changed_during_rebaseline",
+          current?.countDecision?.status ?? "missing",
+        );
       return blocked("recovery_atomic_persistence_or_readback_failed");
     }
     return {

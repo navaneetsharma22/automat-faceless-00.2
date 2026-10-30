@@ -916,6 +916,7 @@ export class ExtensionRepositories {
 
   async persistFlowCountRecovery(
     record: FlowCountRecoveryRecord,
+    expectedOldAttemptUpdatedAt: number,
   ): Promise<FlowCountRecoveryRecord> {
     if (!FlowCountRecoveryRecordSchema.safeParse(record).success)
       throw new FlowCountRecoveryValidationError();
@@ -932,6 +933,7 @@ export class ExtensionRepositories {
         old.tabId !== record.tabId ||
         old.documentId !== record.documentId ||
         old.countDecision?.status !== "interrupted" ||
+        old.updatedAt !== expectedOldAttemptUpdatedAt ||
         old.observationSession?.sessionId !== record.oldSessionId ||
         old.observationSession.status !== record.oldMonitoringStatus
       )
