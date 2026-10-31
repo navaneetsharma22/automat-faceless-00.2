@@ -1,9 +1,9 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
-  type ReactNode,
 } from "react";
 import { importPromptBatch } from "../../../domain/batches/importBatch";
 import { sha256Hex } from "../../../domain/batches/hashPrompt";
@@ -25,7 +25,6 @@ import {
   type SavedSourceExportDetails,
 } from "./savedSourceExport";
 import styles from "./ImportPanel.module.css";
-import { ImageQueueProgress } from "../image-batch/Progress";
 import {
   flowReadinessModeFromInput,
   flowReadinessReasonLabel,
@@ -93,7 +92,6 @@ function formatFlowRecoveryStatus(
 export type ImportPanelProps = {
   kind: PromptKind;
   session: ImportPreviewSession;
-  legacyFlowSetup?: ReactNode;
   wrapLines: boolean;
   setWrapLines: (value: boolean) => void;
   editorExpanded: boolean;
@@ -102,12 +100,16 @@ export type ImportPanelProps = {
   persistenceClient: FoundationClient;
   flowSettingsConfirmed?: boolean;
   flowSettingsConfirmation?: FlowSettingsConfirmation;
+  onImageSourceReadinessChange?: (
+    ready: boolean,
+    savedSource?: string,
+    shotIds?: string[],
+  ) => void;
 };
 
 export function ImportPanel({
   kind,
   session,
-  legacyFlowSetup,
   wrapLines,
   setWrapLines,
   editorExpanded,
@@ -116,6 +118,7 @@ export function ImportPanel({
   persistenceClient,
   flowSettingsConfirmed = false,
   flowSettingsConfirmation,
+  onImageSourceReadinessChange,
 }: ImportPanelProps) {
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -307,6 +310,34 @@ export function ImportPanel({
     snapshot.status === "success" &&
     snapshot.result !== undefined &&
     snapshot.resultRevision === snapshot.revision;
+  const imageSourceReady = Boolean(
+    currentValidation && savedSource === snapshot.source,
+  );
+  const imageSourceShotIds = useMemo(
+    () =>
+      imageSourceReady
+        ? (snapshot.result?.items.map(
+            (item, index) => item.shotId ?? `Prompt ${index + 1}`,
+          ) ?? [])
+        : [],
+    [imageSourceReady, snapshot.result],
+  );
+  useEffect(() => {
+    if (kind === "image")
+      onImageSourceReadinessChange?.(
+        imageSourceReady,
+        imageSourceReady ? savedSource : undefined,
+        imageSourceShotIds,
+      );
+  }, [
+    kind,
+    onImageSourceReadinessChange,
+    imageSourceReady,
+    savedSource,
+    snapshot.source,
+    snapshot.result,
+    imageSourceShotIds,
+  ]);
   const changedSinceValidation =
     snapshot.result !== undefined &&
     snapshot.resultRevision !== snapshot.revision;
@@ -1268,23 +1299,12 @@ export function ImportPanel({
         </p>
       </div>
       {kind === "image" ? (
-        <ImageQueueProgress
-          workspaceId={workspaceId}
-          persistenceClient={persistenceClient}
-          sourceReady={Boolean(
-            currentValidation && savedSource === snapshot.source,
-          )}
-          settingsConfirmation={flowSettingsConfirmation}
-        />
-      ) : null}
-      {kind === "image" ? (
         <details className={styles.legacyTools}>
           <summary>
             Legacy count-mode and one-shot tools
             <span>Guarded diagnostics and GenerateOnce</span>
           </summary>
           <div className={styles.legacyToolsContent}>
-            {legacyFlowSetup}
             {kind === "image" ? (
               <div className={styles.sourceActions}>
                 <Button

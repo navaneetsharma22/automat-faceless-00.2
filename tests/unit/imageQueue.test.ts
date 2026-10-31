@@ -166,6 +166,105 @@ describe("timed image submission queue foundation", () => {
     ).rejects.toBeInstanceOf(DuplicateTimedImageQueueSourceError);
   });
 
+  it("creates a new idle queue for a newly saved distinct batch after a finished queue", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database, () => 500);
+    const workspaceId = "finished-then-new";
+    const oldSource =
+      '8: {"shot_id":"8","scene_title":"Old eight"}\n9: {"shot_id":"9","scene_title":"Old nine"}';
+    await repositories.savePromptBatch({
+      workspaceId,
+      kind: "image",
+      sourceText: oldSource,
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: settingsConfirmation.tabId,
+      canonicalTarget: settingsConfirmation.canonicalTarget,
+    });
+    const oldQueue = await repositories.createTimedImageSubmissionQueue({
+      workspaceId,
+      queueId: "17fc8256-37d4-45d6-a326-f8e8a0d04538",
+      settingsConfirmation,
+    });
+    const finishedOldQueue = {
+      ...oldQueue,
+      state: "sent" as const,
+      items: oldQueue.items.map((item, index) => ({
+        ...item,
+        itemState: "sent" as const,
+        providerOutcome: "unknown" as const,
+        dispatchReceipt: {
+          attemptId: `old-attempt-${index}`,
+          storedAt: 100 + index,
+          evidence: "activation_pair_sent_or_uncertain" as const,
+        },
+      })),
+      lastDispatchReceiptStoredAt: 101,
+      nextEligibleDispatchAt: null,
+      updatedAt: 101,
+      revision: oldQueue.revision + 1,
+    };
+    await database.imageSubmissionQueues.put(finishedOldQueue);
+
+    const newSource = [10, 11, 12, 13, 14]
+      .map(
+        (shotId) =>
+          `${shotId}: ${JSON.stringify({ shot_id: String(shotId), scene_title: `New shot ${shotId}` })}`,
+      )
+      .join("\n");
+    await repositories.savePromptBatch({
+      workspaceId,
+      kind: "image",
+      sourceText: newSource,
+    });
+    const newConfirmation = {
+      ...settingsConfirmation,
+      confirmationId: "new-batch-confirmation",
+      confirmedAt: 250,
+    };
+    const newQueue = await repositories.createTimedImageSubmissionQueue({
+      workspaceId,
+      queueId: "db9873c8-60c1-407d-9c08-1a64cbfbdf85",
+      settingsConfirmation: newConfirmation,
+    });
+
+    expect(newQueue.queueId).not.toBe(finishedOldQueue.queueId);
+    expect(newQueue).toMatchObject({
+      sourceText: newSource,
+      state: "ready",
+      selectedProject: {
+        tabId: newConfirmation.tabId,
+        projectId: newConfirmation.projectId,
+        canonicalTarget: newConfirmation.canonicalTarget,
+      },
+      manualSettingsDeclaration: {
+        confirmationId: "new-batch-confirmation",
+      },
+      lastDispatchReceiptStoredAt: null,
+      nextEligibleDispatchAt: null,
+    });
+    expect(newQueue.items.map((item) => item.shotId)).toEqual([
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+    ]);
+    expect(
+      newQueue.items.every(
+        (item) =>
+          item.itemState === "pending" &&
+          item.providerOutcome === "not_started" &&
+          !item.dispatchReceipt &&
+          !item.dispatchIntent,
+      ),
+    ).toBe(true);
+    expect(
+      await repositories.getTimedImageSubmissionQueue(oldQueue.queueId),
+    ).toEqual(finishedOldQueue);
+  });
+
   it("serializes concurrent queue creation so only one exact source is accepted", async () => {
     const database = createMemoryRepositoryDatabase();
     const repositories = new ExtensionRepositories(database, () => 500);

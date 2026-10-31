@@ -1,24 +1,37 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { FoundationClient } from "../../../shared/messageClient";
 import type { FlowSettingsConfirmation } from "../../../shared/schemas";
 import {
   ImageSubmissionQueueRecordSchema,
   TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+  type ImageQueueItem,
   type ImageSubmissionQueueRecord,
 } from "../../../domain/jobs/queue";
 import { Button } from "../../components/Button";
 import styles from "./Progress.module.css";
 
+const QUEUE_READBACK_INTERVAL_MS = 5_000;
+
 export function ImageQueueProgress({
   workspaceId,
   persistenceClient,
   sourceReady,
+  savedSource,
+  savedShotIds,
   settingsConfirmation,
+  settingsConfirmationPending,
+  settingsConfirmationError,
+  settingsConfirmationControls,
 }: {
   workspaceId: string;
   persistenceClient: FoundationClient;
   sourceReady: boolean;
+  savedSource?: string;
+  savedShotIds: readonly string[];
   settingsConfirmation?: FlowSettingsConfirmation;
+  settingsConfirmationPending: boolean;
+  settingsConfirmationError?: string;
+  settingsConfirmationControls: ReactNode;
 }) {
   const [queues, setQueues] = useState<ImageSubmissionQueueRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,7 +41,6 @@ export function ImageQueueProgress({
     queueId: string;
     command: "pause" | "resume" | "stop";
   }>();
-  const [, setClockTick] = useState(0);
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
@@ -45,7 +57,10 @@ export function ImageQueueProgress({
               throw new Error("A saved queue failed validation.");
             return parsed.data;
           });
-          if (active) setQueues(records);
+          if (active) {
+            setQueues(records);
+            setError(undefined);
+          }
         })
         .catch((cause: unknown) => {
           if (active)
@@ -59,10 +74,10 @@ export function ImageQueueProgress({
           if (active) setLoading(false);
         });
     void refresh();
-    const refreshTimer = window.setInterval(() => {
-      setClockTick((tick) => tick + 1);
-      void refresh();
-    }, 1000);
+    const refreshTimer = window.setInterval(
+      refresh,
+      QUEUE_READBACK_INTERVAL_MS,
+    );
     return () => {
       active = false;
       window.clearInterval(refreshTimer);
@@ -70,7 +85,7 @@ export function ImageQueueProgress({
   }, [persistenceClient, workspaceId]);
 
   const startQueue = async (queueId: string) => {
-    if (startingQueueId) return;
+    if (startingQueueId || commanding) return;
     setStartingQueueId(queueId);
     setError(undefined);
     try {
@@ -125,16 +140,15 @@ export function ImageQueueProgress({
     }
   };
 
-  const disabledReason = !sourceReady
-    ? "Validate and save the current image source before creating a queue."
-    : !settingsConfirmation
-      ? "Confirm the manually selected Flow project settings before creating a queue."
-      : creating
-        ? "Queue creation is being saved and read back."
-        : undefined;
-
   const createQueue = async () => {
-    if (!sourceReady || !settingsConfirmation || creating) return;
+    if (
+      disabledReason ||
+      !sourceReady ||
+      !savedSource ||
+      !settingsConfirmation ||
+      creating
+    )
+      return;
     setCreating(true);
     setError(undefined);
     try {
@@ -146,6 +160,35 @@ export function ImageQueueProgress({
       const parsed = ImageSubmissionQueueRecordSchema.safeParse(record);
       if (!parsed.success)
         throw new Error("The saved queue failed readback validation.");
+      const savedQueue = parsed.data;
+      const readbackMatches =
+        savedQueue.workspaceId === workspaceId &&
+        savedQueue.sourceText === savedSource &&
+        !queues.some((queue) => queue.queueId === savedQueue.queueId) &&
+        savedQueue.state === "ready" &&
+        savedQueue.nextEligibleDispatchAt === null &&
+        savedQueue.lastDispatchReceiptStoredAt === null &&
+        savedQueue.items.every(
+          (item) =>
+            item.itemState === "pending" &&
+            item.providerOutcome === "not_started" &&
+            !item.dispatchReceipt &&
+            !item.dispatchIntent,
+        ) &&
+        savedQueue.items
+          .map((item) => item.shotId ?? `Prompt ${item.order + 1}`)
+          .join("\u0000") === savedShotIds.join("\u0000") &&
+        savedQueue.manualSettingsDeclaration.confirmationId ===
+          settingsConfirmation.confirmationId &&
+        savedQueue.selectedProject.tabId === settingsConfirmation.tabId &&
+        savedQueue.selectedProject.projectId ===
+          settingsConfirmation.projectId &&
+        savedQueue.selectedProject.canonicalTarget ===
+          settingsConfirmation.canonicalTarget;
+      if (!readbackMatches)
+        throw new Error(
+          "Queue creation readback did not match the current saved source, selected project, or ready state.",
+        );
       setQueues((current) => [...current, parsed.data]);
     } catch (cause) {
       setError(
@@ -158,6 +201,32 @@ export function ImageQueueProgress({
     }
   };
 
+  const currentQueue =
+    sourceReady && savedSource
+      ? queues.find((queue) => queue.sourceText === savedSource)
+      : undefined;
+  const previousQueues = queues.filter((queue) => queue !== currentQueue);
+  const blockingPreviousQueue = previousQueues.find(isQueueCreationBlocker);
+  const disabledReason = loading
+    ? "Reading saved queues before allowing another queue."
+    : error
+      ? "Saved queue status is unavailable; creation is disabled until it can be checked."
+      : !sourceReady || !savedSource
+        ? "Validate and save the current image source before creating a queue."
+        : currentQueue
+          ? "This exact saved source already belongs to a timed queue."
+          : blockingPreviousQueue
+            ? `A previous queue is ${queueBlockerLabel(blockingPreviousQueue)}. Resolve it before creating another queue.`
+            : settingsConfirmationError
+              ? "Correct the Flow settings confirmation before creating a queue."
+              : settingsConfirmationPending
+                ? "Binding your manual settings confirmation to the selected Flow project."
+                : !settingsConfirmation
+                  ? "Confirm the manually selected Flow settings for this saved batch."
+                  : creating
+                    ? "Queue creation is being saved and read back."
+                    : undefined;
+
   return (
     <section className={styles.progress} aria-labelledby="image-queue-title">
       <div className={styles.header}>
@@ -165,17 +234,34 @@ export function ImageQueueProgress({
           <p className={styles.kicker}>TIMED SUBMISSION MODE</p>
           <h3 id="image-queue-title">Image queue</h3>
         </div>
-        <span className={styles.interval}>40 seconds between dispatches</span>
+        <span className={styles.interval}>40 seconds between prompts</span>
       </div>
       <p className={styles.helper}>
-        Each saved prompt is one submission. The manually declared variant count
-        is recorded as settings context; it does not multiply Generate actions.
+        Sent counts durable local dispatch receipts. Image results are not
+        verified.
       </p>
-      <p className={styles.helper}>
-        Start sends each exact saved prompt once. Provider results remain
-        unknown.
-      </p>
-      <div className={styles.actionRow}>
+      <div className={styles.createCard}>
+        <div>
+          <strong>Current saved image source</strong>
+          <p className={styles.helper}>
+            {sourceReady && savedSource
+              ? `${savedShotIds.length} prompt${savedShotIds.length === 1 ? "" : "s"} saved. Queue creation copies this exact source and its current Flow project binding.`
+              : "Validate and save the new image source to prepare a timed queue."}
+          </p>
+          {sourceReady && savedShotIds.length > 0 ? (
+            <p className={styles.shotSummary}>
+              {savedShotIds.map((shotId) => `Shot ${shotId}`).join(" · ")}
+            </p>
+          ) : null}
+        </div>
+        <div className={styles.createSettings}>
+          <strong>Confirm settings for this batch</strong>
+          <p className={styles.helper}>
+            The confirmation is bound to the selected Flow project. It must be
+            made again after changing the saved source.
+          </p>
+          {settingsConfirmationControls}
+        </div>
         <Button
           type="button"
           disabled={Boolean(disabledReason)}
@@ -187,7 +273,7 @@ export function ImageQueueProgress({
         </Button>
         <span className={styles.helper} role="status">
           {disabledReason ??
-            "Ready to persist after source and settings checks."}
+            `Ready to save ${savedShotIds.length} prompt${savedShotIds.length === 1 ? "" : "s"}. Creation does not start dispatch.`}
         </span>
       </div>
       {error ? (
@@ -205,184 +291,431 @@ export function ImageQueueProgress({
           Reading saved queues…
         </p>
       ) : null}
-      {!loading && !error && queues.length === 0 ? (
-        <p className={styles.empty}>
-          No timed queue saved. No provider submission has started.
-        </p>
+      {currentQueue ? (
+        <div className={styles.currentQueueBlock}>
+          <p className={styles.queueContext}>Queue for current saved batch</p>
+          <QueueCard
+            queue={currentQueue}
+            commanding={
+              commanding?.queueId === currentQueue.queueId
+                ? commanding
+                : undefined
+            }
+            starting={startingQueueId === currentQueue.queueId}
+            busy={Boolean(commanding || startingQueueId)}
+            onStart={() => void startQueue(currentQueue.queueId)}
+            onCommand={(command) => void commandQueue(currentQueue, command)}
+          />
+        </div>
       ) : null}
-      {queues.map((queue) => (
-        <section
-          className={styles.queue}
-          key={queue.queueId}
-          aria-label={`Timed image queue ${queue.queueId}`}
-        >
-          <div className={styles.queueHeader}>
-            <strong>
-              {queue.items.length} saved prompt
-              {queue.items.length === 1 ? "" : "s"}
-            </strong>
-            <span>
-              {queue.items.some((item) => item.itemState === "sending")
-                ? "Sending"
-                : queue.state === "ready"
-                  ? "Saved · not started"
-                  : queue.state}
-            </span>
-          </div>
-          <p className={styles.helper}>
-            Project and exact source are frozen in this queue snapshot.
-          </p>
-          <p className={styles.helper} role="status">
-            {queue.items.filter((item) => item.itemState === "sent").length}{" "}
-            Sent ·{" "}
-            {queue.items.filter((item) => item.itemState === "pending").length}{" "}
-            Pending
-            {queue.items.some((item) => item.itemState === "sending")
-              ? ` · Current: Prompt ${(queue.items.find((item) => item.itemState === "sending")?.order ?? 0) + 1}`
-              : ""}
-          </p>
-          {queue.state === "ready" &&
-          queue.items.every((item) => item.itemState === "pending") ? (
-            <Button
-              type="button"
-              disabled={Boolean(startingQueueId)}
-              loading={startingQueueId === queue.queueId}
-              loadingLabel="Starting queue…"
-              onClick={() => void startQueue(queue.queueId)}
-            >
-              Start timed queue
-            </Button>
-          ) : null}
-          {queue.state === "ready" || queue.state === "waiting" ? (
-            <div className={styles.actionRow}>
-              <Button
-                type="button"
-                disabled={Boolean(commanding || startingQueueId)}
-                loading={
-                  commanding?.queueId === queue.queueId &&
-                  commanding.command === "pause"
-                }
-                loadingLabel="Pausing…"
-                onClick={() => void commandQueue(queue, "pause")}
-              >
-                Pause
-              </Button>
-              <Button
-                type="button"
-                disabled={Boolean(commanding || startingQueueId)}
-                loading={
-                  commanding?.queueId === queue.queueId &&
-                  commanding.command === "stop"
-                }
-                loadingLabel="Stopping…"
-                onClick={() => void commandQueue(queue, "stop")}
-              >
-                Stop
-              </Button>
-            </div>
-          ) : null}
-          {queue.state === "paused" ? (
-            <div className={styles.actionRow}>
-              <Button
-                type="button"
-                disabled={Boolean(commanding || startingQueueId)}
-                loading={
-                  commanding?.queueId === queue.queueId &&
-                  commanding.command === "resume"
-                }
-                loadingLabel="Revalidating and resuming…"
-                onClick={() => void commandQueue(queue, "resume")}
-              >
-                Resume
-              </Button>
-              <Button
-                type="button"
-                disabled={Boolean(commanding || startingQueueId)}
-                loading={
-                  commanding?.queueId === queue.queueId &&
-                  commanding.command === "stop"
-                }
-                loadingLabel="Stopping…"
-                onClick={() => void commandQueue(queue, "stop")}
-              >
-                Stop
-              </Button>
-            </div>
-          ) : null}
-          {queue.state === "waiting" &&
-          queue.nextEligibleDispatchAt !== null ? (
-            <p className={styles.helper} role="status">
-              {Date.now() < queue.nextEligibleDispatchAt
-                ? `Next dispatch eligible in ${Math.ceil((queue.nextEligibleDispatchAt - Date.now()) / 1000)}s.`
-                : "Dispatch deadline reached; the worker must recheck saved state before dispatch."}
-            </p>
-          ) : null}
-          {queue.state === "sent" &&
-          queue.items.every((item) => item.itemState === "sent") ? (
-            <p className={styles.helper} role="status">
-              All prompts sent; results not verified.
-            </p>
-          ) : null}
-          {queue.state === "blocked" ? (
-            <p className={styles.error} role="alert">
-              Queue blocked:{" "}
-              {queue.items.find((item) => item.blockReason)?.blockReason ??
-                "review_required"}
-              . No automatic replay is available.
-            </p>
-          ) : null}
-          {queue.state === "paused" ? (
-            <p className={styles.helper} role="status">
-              Paused: {queue.pauseReason ?? "user_requested"}. No future prompt
-              will be dispatched until the saved target and settings binding are
-              revalidated.
-            </p>
-          ) : null}
-          {queue.state === "stopped" ? (
-            <p className={styles.helper} role="status">
-              Stopped. Remaining prompts will not be sent. An activation already
-              authorized may have finished; provider results are not verified.
-            </p>
-          ) : null}
-          <ol className={styles.items}>
-            {queue.items.map((item) => (
-              <li key={item.queueItemId}>
-                <div>
-                  <strong>Prompt {item.order + 1}</strong>
-                  <span>
-                    {item.shotId ? `Shot ${item.shotId}` : "No shot ID"}
-                  </span>
-                </div>
-                <span>
-                  {item.itemState.charAt(0).toUpperCase() +
-                    item.itemState.slice(1)}
-                </span>
-                <details>
-                  <summary>View exact prompt source</summary>
-                  <pre>{item.rawJsonBody}</pre>
-                </details>
-                {item.itemState === "sent" && item.dispatchReceipt ? (
-                  <small>
-                    Dispatch evidence stored; provider outcome unknown.
-                  </small>
-                ) : item.providerOutcome === "unknown" ? (
-                  <small>
-                    Activation is uncertain; provider outcome unknown. Automatic
-                    replay is blocked.
-                  </small>
-                ) : (
-                  <small>Not dispatched. Provider outcome not started.</small>
-                )}
-              </li>
-            ))}
-          </ol>
-          <small>
-            Stored interval:{" "}
-            {TIMED_IMAGE_SUBMISSION_INTERVAL_MS.toLocaleString()} ms. No
-            countdown reflects the saved dispatch deadline.
-          </small>
-        </section>
+      {previousQueues.map((queue) => (
+        <div className={styles.previousQueueBlock} key={queue.queueId}>
+          <p className={styles.queueContext}>{previousQueueLabel(queue)}</p>
+          <QueueCard
+            queue={queue}
+            commanding={
+              commanding?.queueId === queue.queueId ? commanding : undefined
+            }
+            starting={startingQueueId === queue.queueId}
+            busy={Boolean(commanding || startingQueueId)}
+            onStart={() => void startQueue(queue.queueId)}
+            onCommand={(command) => void commandQueue(queue, command)}
+          />
+        </div>
       ))}
     </section>
   );
+}
+
+export function QueueCard({
+  queue,
+  commanding,
+  starting,
+  busy,
+  onStart,
+  onCommand,
+}: {
+  queue: ImageSubmissionQueueRecord;
+  commanding?: { queueId: string; command: "pause" | "resume" | "stop" };
+  starting: boolean;
+  busy: boolean;
+  onStart: () => void;
+  onCommand: (command: "pause" | "resume" | "stop") => void;
+}) {
+  const sentCount = queue.items.filter((item) => item.dispatchReceipt).length;
+  const sendingItem = queue.items.find((item) => item.itemState === "sending");
+  const nextItem = queue.items.find((item) => item.itemState === "pending");
+  const focusItem = sendingItem ?? nextItem;
+  const isComplete = sentCount === queue.items.length && queue.items.length > 0;
+  const status = sendingItem
+    ? "Sending"
+    : queue.state === "ready"
+      ? "Ready"
+      : queue.state === "sent" && isComplete
+        ? "Finished"
+        : titleCase(queue.state);
+  const currentTitle = focusItem ? getPromptTitle(focusItem) : undefined;
+  const queueKicker =
+    queue.state === "waiting" || sendingItem
+      ? "ACTIVE QUEUE"
+      : queue.state === "ready"
+        ? "READY QUEUE"
+        : "QUEUE SUMMARY";
+
+  return (
+    <section
+      className={styles.queue}
+      aria-label={`Timed image queue ${queue.queueId}`}
+      data-state={queue.state}
+    >
+      <div className={styles.queueHeader}>
+        <div>
+          <p className={styles.kicker}>{queueKicker}</p>
+          <h4>{status}</h4>
+        </div>
+        <span
+          className={`${styles.stateBadge} ${styles[`state${status}`]}`}
+          role="status"
+          aria-live="polite"
+        >
+          {status}
+        </span>
+      </div>
+
+      <div className={styles.summaryGrid}>
+        <div className={styles.sentSummary}>
+          <span>Prompts sent</span>
+          <strong>
+            {sentCount}
+            <small> / {queue.items.length}</small>
+          </strong>
+          <span>Local dispatch receipts</span>
+        </div>
+        <div className={styles.nextSummary}>
+          <span>{sendingItem ? "Current prompt" : "Next prompt"}</span>
+          {focusItem ? (
+            <>
+              <strong>{shotLabel(focusItem)}</strong>
+              {currentTitle ? (
+                <span className={styles.promptTitle}>{currentTitle}</span>
+              ) : null}
+            </>
+          ) : (
+            <strong>
+              {isComplete ? "No prompts remaining" : "Checking next prompt…"}
+            </strong>
+          )}
+        </div>
+      </div>
+
+      {queue.state === "waiting" &&
+      queue.nextEligibleDispatchAt !== null &&
+      nextItem ? (
+        <WaitingClock
+          deadline={queue.nextEligibleDispatchAt}
+          item={nextItem}
+          intervalMs={queue.intervalMs}
+        />
+      ) : null}
+      {sendingItem ? (
+        <div className={styles.sending} role="status" aria-live="polite">
+          <span className={styles.spinner} aria-hidden="true" />
+          <span>Sending {shotLabel(sendingItem)}…</span>
+        </div>
+      ) : null}
+      {queue.state === "waiting" && queue.nextEligibleDispatchAt === null ? (
+        <p className={styles.checking} role="status" aria-live="polite">
+          Checking next prompt…
+        </p>
+      ) : null}
+
+      <div className={styles.actionRow}>
+        {queue.state === "ready" &&
+        queue.items.every((item) => item.itemState === "pending") ? (
+          <Button
+            type="button"
+            disabled={busy}
+            loading={starting}
+            loadingLabel="Starting queue…"
+            onClick={onStart}
+          >
+            Start queue
+          </Button>
+        ) : null}
+        {queue.state === "waiting" ? (
+          <Button
+            type="button"
+            disabled={busy}
+            loading={commanding?.command === "pause"}
+            loadingLabel="Pausing…"
+            onClick={() => onCommand("pause")}
+          >
+            Pause
+          </Button>
+        ) : null}
+        {queue.state === "paused" ? (
+          <Button
+            type="button"
+            disabled={busy}
+            loading={commanding?.command === "resume"}
+            loadingLabel="Resuming…"
+            onClick={() => onCommand("resume")}
+          >
+            Resume
+          </Button>
+        ) : null}
+        {queue.state === "waiting" ||
+        queue.state === "paused" ||
+        queue.state === "ready" ? (
+          <Button
+            variant="secondary"
+            className={styles.stopButton}
+            type="button"
+            disabled={busy}
+            loading={commanding?.command === "stop"}
+            loadingLabel="Stopping…"
+            onClick={() => onCommand("stop")}
+          >
+            Stop queue
+          </Button>
+        ) : null}
+        {commanding ? (
+          <span
+            className={styles.commandStatus}
+            role="status"
+            aria-live="polite"
+          >
+            {commandPendingText(commanding.command)} Readback pending; saved
+            status has not changed yet.
+          </span>
+        ) : null}
+      </div>
+
+      {isComplete ? (
+        <div className={styles.complete} role="status" aria-live="polite">
+          <strong>
+            Batch submission finished — {sentCount}/{queue.items.length} prompts
+            sent.
+          </strong>
+          <span>Image results are not verified.</span>
+        </div>
+      ) : null}
+      {queue.state === "blocked" ? (
+        <div className={styles.blocked} role="status">
+          <strong>Blocked — review required.</strong>
+          <details>
+            <summary>View block reason</summary>
+            <code>
+              {queue.items.find((item) => item.blockReason)?.blockReason ??
+                "review_required"}
+            </code>
+          </details>
+          <span>Elapsed time does not authorize replay.</span>
+        </div>
+      ) : null}
+      {queue.state === "paused" ? (
+        <p className={styles.inactiveNotice} role="status">
+          Paused. No future prompt will be dispatched until the saved target and
+          settings binding are revalidated.
+        </p>
+      ) : null}
+      {queue.state === "stopped" ? (
+        <p className={styles.inactiveNotice} role="status">
+          Stopped. Remaining prompts will not be sent. An authorized activation
+          may have finished; provider results are not verified.
+        </p>
+      ) : null}
+
+      <ol className={styles.items} aria-label="Prompt queue">
+        {queue.items.map((item) => (
+          <PromptRow
+            key={item.queueItemId}
+            item={item}
+            queueState={queue.state}
+            active={item === focusItem && !isComplete}
+          />
+        ))}
+      </ol>
+      <details className={styles.technicalDetails}>
+        <summary>Queue and provider evidence</summary>
+        <p>
+          Stored interval: {TIMED_IMAGE_SUBMISSION_INTERVAL_MS.toLocaleString()}{" "}
+          ms. A deadline makes the next prompt eligible for worker recheck; it
+          does not mark it sent.
+        </p>
+        <p>
+          Project and exact source are frozen in this queue snapshot. Sent means
+          a local dispatch receipt exists; image results are not verified.
+        </p>
+      </details>
+    </section>
+  );
+}
+
+function WaitingClock({
+  deadline,
+  item,
+  intervalMs,
+}: {
+  deadline: number;
+  item: ImageQueueItem;
+  intervalMs: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const remainingMs = Math.max(0, deadline - now);
+  const seconds = Math.ceil(remainingMs / 1000);
+  const display = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  const percent = Math.max(
+    0,
+    Math.min(100, ((intervalMs - remainingMs) / intervalMs) * 100),
+  );
+  const promptTitle = getPromptTitle(item);
+
+  return (
+    <div className={styles.waitingPanel}>
+      <div className={styles.clockHeader}>
+        <span>Time until next prompt</span>
+        <span>
+          {shotLabel(item)}
+          {promptTitle ? ` · ${promptTitle}` : ""}
+        </span>
+      </div>
+      <div
+        className={styles.countdown}
+        role="timer"
+        aria-live="off"
+        aria-label={`Time until next prompt: ${display}`}
+      >
+        {display}
+      </div>
+      <div className={styles.waitingTrack} aria-hidden="true">
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <p className={styles.clockHint}>
+        {remainingMs === 0
+          ? "Checking next prompt…"
+          : "The saved deadline controls eligibility. Sent changes only after receipt readback."}
+      </p>
+    </div>
+  );
+}
+
+function PromptRow({
+  item,
+  queueState,
+  active,
+}: {
+  item: ImageQueueItem;
+  queueState: ImageSubmissionQueueRecord["state"];
+  active: boolean;
+}) {
+  const effectiveState =
+    item.itemState === "pending" && queueState === "paused"
+      ? "paused"
+      : item.itemState === "pending" && queueState === "blocked"
+        ? "blocked"
+        : item.itemState === "pending" && queueState === "stopped"
+          ? "stopped"
+          : item.itemState;
+  const icon = {
+    pending: "○",
+    sending: "◌",
+    sent: "✓",
+    paused: "Ⅱ",
+    blocked: "!",
+    stopped: "—",
+  }[effectiveState];
+  return (
+    <li
+      className={`${styles.item} ${active ? styles.itemActive : ""}`}
+      data-active={active || undefined}
+    >
+      <span
+        className={`${styles.itemIcon} ${styles[`item${titleCase(effectiveState)}`]}`}
+        aria-hidden="true"
+      >
+        {icon}
+      </span>
+      <div className={styles.itemIdentity}>
+        <strong>{shotLabel(item)}</strong>
+        <span>{getPromptTitle(item) ?? `Prompt ${item.order + 1}`}</span>
+      </div>
+      <span
+        className={`${styles.itemBadge} ${styles[`item${titleCase(effectiveState)}`]}`}
+      >
+        {titleCase(effectiveState)}
+      </span>
+      <details className={styles.sourceDetails}>
+        <summary>Source &amp; evidence</summary>
+        <p>
+          {item.dispatchReceipt
+            ? "Dispatch receipt stored. Provider outcome is unknown."
+            : item.providerOutcome === "unknown"
+              ? "Activation is uncertain; automatic replay is blocked."
+              : "Not dispatched. Provider outcome not started."}
+        </p>
+        {item.blockReason ? <code>{item.blockReason}</code> : null}
+        <pre>{item.rawJsonBody}</pre>
+      </details>
+    </li>
+  );
+}
+
+function getPromptTitle(item: ImageQueueItem) {
+  try {
+    const body: unknown = JSON.parse(item.rawJsonBody);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return undefined;
+    const fields = body as Record<string, unknown>;
+    const title = fields.scene_title ?? fields.shot_title ?? fields.title;
+    return typeof title === "string" && title.trim() ? title.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function shotLabel(item: ImageQueueItem) {
+  return item.shotId ? `Shot ${item.shotId}` : `Prompt ${item.order + 1}`;
+}
+
+function titleCase(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function commandPendingText(command: "pause" | "resume" | "stop") {
+  return {
+    pause: "Pausing queue…",
+    resume: "Resuming queue…",
+    stop: "Stopping queue…",
+  }[command];
+}
+
+export function isQueueCreationBlocker(queue: ImageSubmissionQueueRecord) {
+  return (
+    ["ready", "waiting", "paused", "blocked"].includes(queue.state) ||
+    queue.items.some(
+      (item) =>
+        item.itemState === "sending" ||
+        (item.providerOutcome === "unknown" && !item.dispatchReceipt),
+    )
+  );
+}
+
+function queueBlockerLabel(queue: ImageSubmissionQueueRecord) {
+  if (queue.state === "blocked") return "blocked or uncertain";
+  if (queue.state === "paused") return "paused";
+  if (queue.state === "waiting") return "active";
+  if (queue.state === "ready") return "ready to start";
+  return "awaiting review";
+}
+
+function previousQueueLabel(queue: ImageSubmissionQueueRecord) {
+  const sent = queue.items.filter((item) => item.dispatchReceipt).length;
+  return queue.state === "sent"
+    ? `Previous queue — ${sent}/${queue.items.length} sent`
+    : `Previous queue — ${titleCase(queue.state)}`;
 }

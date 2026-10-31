@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "./components/Button";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import controlStyles from "./components/controls.module.css";
@@ -12,6 +12,7 @@ import { createFoundationClient } from "../shared/messageClient";
 import { flowTabFromUrl } from "../platforms/flow/connection";
 import { registerDashboardFocusResponder } from "./dashboardFocus";
 import { ImageImportPanel } from "./features/image-batch/ImportPanel";
+import { ImageQueueProgress } from "./features/image-batch/Progress";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import styles from "./Dashboard.module.css";
@@ -25,6 +26,9 @@ function Dashboard() {
   const [videoImportSession] = useState(
     () => new ImportPreviewSession("video"),
   );
+  const [imageSourceReady, setImageSourceReady] = useState(false);
+  const [imageSavedSource, setImageSavedSource] = useState<string>();
+  const [imageSavedShotIds, setImageSavedShotIds] = useState<string[]>([]);
   const [batchClient] = useState(() =>
     createFoundationClient({
       sendMessage: (message) => {
@@ -113,6 +117,19 @@ function Dashboard() {
       setImageConfirmationPending(false);
     }
   };
+
+  const updateImageSourceReadiness = useCallback(
+    (ready: boolean, savedSource?: string, shotIds: string[] = []) => {
+      setImageSourceReady(ready);
+      setImageSavedSource(ready ? savedSource : undefined);
+      setImageSavedShotIds(ready ? shotIds : []);
+      if (!ready) {
+        setImageSettingsConfirmation(null);
+        setImageConfirmationError(undefined);
+      }
+    },
+    [],
+  );
 
   useEffect(
     () => () => {
@@ -203,6 +220,10 @@ function Dashboard() {
                 setImageConfirmationError(undefined);
               }}
               setSettingsConfirmation={updateImageSettingsConfirmation}
+              sourceReady={imageSourceReady}
+              savedSource={imageSavedSource}
+              savedShotIds={imageSavedShotIds}
+              onSourceReadinessChange={updateImageSourceReadiness}
             />
           </div>
           {workspace === "References" ? <ReferencesView /> : null}
@@ -267,6 +288,10 @@ function ImagesView({
   declaredVariantCount,
   setDeclaredVariantCount,
   setSettingsConfirmation,
+  sourceReady,
+  savedSource,
+  savedShotIds,
+  onSourceReadinessChange,
 }: {
   session: ImportPreviewSession;
   persistenceClient: ReturnType<typeof createFoundationClient>;
@@ -278,6 +303,14 @@ function ImagesView({
   setSettingsConfirmation: (
     value: boolean,
     declaredVariantCount: string,
+  ) => void;
+  sourceReady: boolean;
+  savedSource?: string;
+  savedShotIds: string[];
+  onSourceReadinessChange: (
+    ready: boolean,
+    savedSource?: string,
+    shotIds?: string[],
   ) => void;
 }) {
   const [wrapLines, setWrapLines] = useState(false);
@@ -299,17 +332,34 @@ function ImagesView({
           workspaceId="default"
           persistenceClient={persistenceClient}
           settingsConfirmation={settingsConfirmation ?? undefined}
-          legacyFlowSetup={
+          onSourceReadinessChange={onSourceReadinessChange}
+          wrapLines={wrapLines}
+          setWrapLines={setWrapLines}
+          editorExpanded={editorExpanded}
+          setEditorExpanded={setEditorExpanded}
+        />
+      </section>
+      <div className={styles.workspaceSideColumn}>
+        <ImageQueueProgress
+          workspaceId="default"
+          persistenceClient={persistenceClient}
+          sourceReady={sourceReady}
+          savedSource={savedSource}
+          savedShotIds={savedShotIds}
+          settingsConfirmation={settingsConfirmation ?? undefined}
+          settingsConfirmationPending={confirmationPending}
+          settingsConfirmationError={confirmationError}
+          settingsConfirmationControls={
             <>
               <SettingsConfirmation
                 id="image-settings-confirm"
                 provider="Flow"
                 checked={settingsConfirmation !== null}
-                contextLabel={`${declaredVariantCount || "variant count required"} variants`}
+                contextLabel={`${savedShotIds.length || "current"} prompt${savedShotIds.length === 1 ? "" : "s"} in this saved batch`}
                 onChange={(checked) =>
                   void setSettingsConfirmation(checked, declaredVariantCount)
                 }
-                disabled={confirmationPending}
+                disabled={confirmationPending || !sourceReady}
                 error={confirmationError}
               />
               <Field
@@ -327,6 +377,7 @@ function ImagesView({
                   step={1}
                   inputMode="numeric"
                   value={declaredVariantCount}
+                  disabled={!sourceReady || confirmationPending}
                   onChange={(event) =>
                     setDeclaredVariantCount(event.currentTarget.value)
                   }
@@ -335,13 +386,9 @@ function ImagesView({
               </Field>
             </>
           }
-          wrapLines={wrapLines}
-          setWrapLines={setWrapLines}
-          editorExpanded={editorExpanded}
-          setEditorExpanded={setEditorExpanded}
         />
-      </section>
-      <ValidatedPromptPanel session={session} />
+        <ValidatedPromptPanel session={session} />
+      </div>
     </div>
   );
 }

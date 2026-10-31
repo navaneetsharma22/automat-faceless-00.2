@@ -33,7 +33,7 @@ test("image import is source-faithful and the cleaned dashboard fits review view
   ).toBeVisible();
   await expect(
     page.getByText(
-      "Start sends each exact saved prompt once. Provider results remain unknown.",
+      "Sent counts durable local dispatch receipts. Image results are not verified.",
     ),
   ).toBeVisible();
   await expect(
@@ -124,6 +124,7 @@ test("image import is source-faithful and the cleaned dashboard fits review view
   await legacyTools.locator("summary").click();
   const variantInput = page.locator("#image-variant-count");
   await expect(variantInput).toBeVisible();
+  await expect(variantInput).toBeDisabled();
   const countMode = page.locator("#flow-count-mode");
   await countMode.selectOption("existing_project");
   const startingCount = page.locator("#flow-starting-image-count");
@@ -142,15 +143,11 @@ test("image import is source-faithful and the cleaned dashboard fits review view
   );
   expect(sharedControlStyles[1]).toEqual(sharedControlStyles[0]);
   expect(sharedControlStyles[2]).toEqual(sharedControlStyles[0]);
-  await legacyTools.locator("summary").focus();
-  await page.keyboard.press("Tab");
-  await page.keyboard.press("Tab");
-  await expect(variantInput).toBeFocused();
-  expect(
-    await variantInput.evaluate(
-      (element) => getComputedStyle(element).outlineStyle,
-    ),
-  ).toBe("solid");
+  const previewButton = page.getByRole("button", {
+    name: "Validate & Preview",
+  });
+  await previewButton.focus();
+  await expect(previewButton).toBeFocused();
   await legacyTools.locator("summary").click();
 
   const dismissSuccess = page.getByRole("button", {

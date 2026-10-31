@@ -36,6 +36,8 @@ export default defineConfig({
     "dashboardCleanup.spec.ts",
     "imageQueueStorage.spec.ts",
     "imageQueueSequence.spec.ts",
+    "imageQueuePresentation.spec.ts",
+    "imageQueueCreateTransition.spec.ts",
   ],
   reporter: "list",
   use: {
