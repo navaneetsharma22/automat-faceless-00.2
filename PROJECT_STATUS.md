@@ -792,3 +792,26 @@ Guarded continuation implementation (`imageQueue.retryBlocked`):
 - The supported next manual action is: once unblocked into Paused, clicking the existing "Resume" button (when live Generate is authorized) to resume timed dispatch.
 
 Validation: full Vitest **30 files / 336 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; production package and build-ID validation PASS; `git diff --check` PASS. Added integration regression suite `tests/integration/imageQueueRetry.test.ts`. Validated package ID: **`automat-faceless-0.1.0-mvvz287p`**. No live Generate or provider mutation occurred.
+
+## Images workspace scrolling and compact queue-history presentation — 31 October 2026
+
+The latest five-prompt batch (Shots 15–19) finished successfully without blocking. Addressed the two observed UI presentation problems under strict scope:
+
+1. **Independent Desktop Column Scrolling**:
+   - Fixed header, breadcrumb, theme toggle, and creative workspace title at the top (`flex: 0 0 auto`).
+   - Desktop layout (`@media (min-width: 1081px)`) bounds the Images workspace below the topbar within dynamic viewport height (`100vh`/`100dvh`, `overflow: hidden`).
+   - Import/source column (`.editorPanel`) and queue column (`.workspaceSideColumn`) scroll completely independently with `overflow-y: auto`, `overscroll-behavior: contain`, and `scrollbar-gutter: stable`. Scrolling the queue panel scrolls ONLY that column, leaving the JSON editor stationary.
+   - Preserved textarea internal scrolling (`overflow: auto`). Outer document scrollbars on desktop are prevented; wide raw evidence/diagnostics are constrained to prevent horizontal page blowout.
+   - Added keyboard scroll navigation (`tabIndex={0}` and `aria-label`s) with clear `:focus-visible` focus outlines.
+   - On narrow/mobile layouts (`@media (max-width: 1080px)` and `<= 760px`), panels stack and use standard document scrolling without nested scroll traps. Non-image workspaces retain their original layout and scrolling behavior completely unchanged.
+
+2. **Compact Queue History That Scales**:
+   - Prominently displays the active current batch queue matching the validated saved source.
+   - Keeps operational queues (active, paused, blocked, waiting, or uncertain) visible as full cards so they are never lost.
+   - Renders only ONE most recent previous terminal batch as a compact collapsed summary: status badge, sent/total, date, and shot range (e.g., `Shots 15–19`, `Shots 10–14`).
+   - Groups older terminal batches behind a collapsed `<details className={styles.batchHistorySection}>` with bounded pagination (10 items per page with "Load more" control).
+   - Defers mounting full `QueueCard`s and prompt bodies until expanded on demand ("View details").
+   - 5-second queue polling preserves user expand/collapse states and scroll positions via React state (`expandedQueueIds`).
+   - Strictly ensures the active queue is never duplicated in history.
+
+Validation: full Vitest **32 files / 357 tests PASS** (including 5 new presentation and pagination unit tests in `tests/unit/imageQueuePresentation.test.tsx` covering contiguous and fallback shot ranges, deterministic date formatting, compact collapsed vs. expanded rendering without mounting prompt bodies, 100-batch scalability with bounded pagination, and preservation/no-duplication guarantees); typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` PASS; production package build and shared build-ID validation PASS. Validated package ID: **`automat-faceless-0.1.0-mvw4ist3`**. No live provider actions, generation, downloads, or unprompted migrations performed.

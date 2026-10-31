@@ -501,6 +501,189 @@
   margin: 0;
 }
 
+@media (min-width: 1081px) {
+  .appShellImages {
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .mainAreaImages {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .mainAreaImages .topbar {
+    flex: 0 0 auto;
+  }
+
+  .contentImages {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 0;
+    min-width: 0;
+    padding: var(--space-4) var(--layout-gutter) var(--space-3);
+    gap: var(--space-3);
+    overflow: hidden;
+  }
+
+  .contentImages .pageHeading {
+    flex: 0 0 auto;
+    margin-block-end: 0;
+  }
+
+  .contentImages .pageHeading h1 {
+    margin: var(--space-1) 0;
+  }
+
+  .imagesWorkspaceShell {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .imagesWorkspaceShell .workspaceGrid {
+    display: grid;
+    flex: 1 1 0;
+    min-height: 0;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1.25fr) minmax(20rem, 0.75fr);
+    gap: var(--space-4);
+    align-items: stretch;
+    overflow: hidden;
+  }
+
+  .imagesWorkspaceShell .editorPanel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding: var(--card-padding);
+  }
+
+  .imagesWorkspaceShell .workspaceSideColumn {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    gap: var(--space-4);
+  }
+
+  .imagesWorkspaceShell .editorPanel:focus-visible,
+  .imagesWorkspaceShell .workspaceSideColumn:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: -2px;
+  }
+}
+
+.imagesWorkspaceShell .editorPanel pre,
+.imagesWorkspaceShell .workspaceSideColumn pre,
+.imagesWorkspaceShell .editorPanel code,
+.imagesWorkspaceShell .workspaceSideColumn code {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-wrap: anywhere;
+}
+
+/* Sidebar and Images workspace slim themed scrollbars */
+@supports not selector(::-webkit-scrollbar) {
+  .sidebar,
+  .imagesWorkspaceShell .editorPanel,
+  .imagesWorkspaceShell .workspaceSideColumn {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+
+  .sidebar:hover,
+  .imagesWorkspaceShell .editorPanel:hover,
+  .imagesWorkspaceShell .workspaceSideColumn:hover {
+    scrollbar-color: var(--color-text-muted) transparent;
+  }
+}
+
+.sidebar::-webkit-scrollbar,
+.imagesWorkspaceShell .editorPanel::-webkit-scrollbar,
+.imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.sidebar::-webkit-scrollbar-track,
+.imagesWorkspaceShell .editorPanel::-webkit-scrollbar-track,
+.imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb,
+.imagesWorkspaceShell .editorPanel::-webkit-scrollbar-thumb,
+.imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar-thumb {
+  background-color: var(--color-border-strong);
+  border-radius: var(--radius-pill);
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover,
+.imagesWorkspaceShell .editorPanel::-webkit-scrollbar-thumb:hover,
+.imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-muted);
+}
+
+.sidebar::-webkit-scrollbar-button,
+.imagesWorkspaceShell .editorPanel::-webkit-scrollbar-button,
+.imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.sidebar::-webkit-scrollbar-corner,
+.imagesWorkspaceShell .editorPanel::-webkit-scrollbar-corner,
+.imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@media (forced-colors: active) {
+  .sidebar,
+  .imagesWorkspaceShell .editorPanel,
+  .imagesWorkspaceShell .workspaceSideColumn {
+    scrollbar-color: auto;
+  }
+
+  .sidebar::-webkit-scrollbar-thumb,
+  .imagesWorkspaceShell .editorPanel::-webkit-scrollbar-thumb,
+  .imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar-thumb {
+    background-color: ButtonText;
+  }
+
+  .sidebar::-webkit-scrollbar-thumb:hover,
+  .imagesWorkspaceShell .editorPanel::-webkit-scrollbar-thumb:hover,
+  .imagesWorkspaceShell .workspaceSideColumn::-webkit-scrollbar-thumb:hover {
+    background-color: Highlight;
+  }
+}
+
 @media (max-width: 1080px) {
   .appShell {
     grid-template-columns: 13.5rem minmax(0, 1fr);

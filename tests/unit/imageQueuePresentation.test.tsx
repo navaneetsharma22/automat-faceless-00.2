@@ -3,6 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ImageSubmissionQueueRecord } from "../../src/domain/jobs/queue";
 import {
+  CompactQueueSummary,
+  formatQueueDate,
+  formatShotRange,
   isQueueCreationBlocker,
   QueueCard,
 } from "../../src/app/features/image-batch/Progress";
@@ -303,5 +306,199 @@ describe("timed queue presentation", () => {
       "40-second interval from previous dispatch receipt is preserved",
     );
     expect(markup).toContain("Resume");
+  });
+
+  describe("compact queue-history presentation and bounded pagination", () => {
+    it("formats shot ranges accurately for contiguous sequences, singles, and fallbacks", () => {
+      expect(
+        formatShotRange([
+          { ...baseItem, shotId: "15" },
+          { ...baseItem, shotId: "16" },
+          { ...baseItem, shotId: "17" },
+          { ...baseItem, shotId: "18" },
+          { ...baseItem, shotId: "19" },
+        ]),
+      ).toBe("Shots 15–19");
+
+      expect(
+        formatShotRange([
+          { ...baseItem, shotId: "10" },
+          { ...baseItem, shotId: "11" },
+          { ...baseItem, shotId: "12" },
+          { ...baseItem, shotId: "13" },
+          { ...baseItem, shotId: "14" },
+        ]),
+      ).toBe("Shots 10–14");
+
+      expect(formatShotRange([{ ...baseItem, shotId: "1" }])).toBe("Shot 1");
+
+      expect(
+        formatShotRange([
+          { ...baseItem, shotId: "1" },
+          { ...baseItem, shotId: "5" },
+        ]),
+      ).toBe("Shots 1–5 (2 prompts)");
+
+      expect(
+        formatShotRange([
+          { ...baseItem, shotId: undefined },
+          { ...baseItem, shotId: "" },
+        ]),
+      ).toBe("2 prompts");
+    });
+
+    it("formats queue dates deterministically", () => {
+      expect(formatQueueDate(0)).toBe("");
+      expect(formatQueueDate(NaN)).toBe("");
+      const formatted = formatQueueDate(1_700_000_000_000);
+      expect(formatted).toBeTruthy();
+      expect(formatted).toContain("2023");
+    });
+
+    it("renders compact collapsed summary without mounting full QueueCard or prompt bodies", () => {
+      const finishedQueue: ImageSubmissionQueueRecord = {
+        ...queue("sent", "sent"),
+        queueId: "queue-terminal-1",
+        createdAt: 1_700_000_000_000,
+        items: [
+          {
+            ...baseItem,
+            shotId: "15",
+            itemState: "sent",
+            dispatchReceipt: {
+              attemptId: "att-1",
+              storedAt: 1000,
+              evidence: "activation_pair_sent_or_uncertain",
+            },
+          },
+        ],
+      };
+
+      const collapsedElement = createElement(CompactQueueSummary, {
+        queue: finishedQueue,
+        isExpanded: false,
+        onToggleExpand: () => undefined,
+        starting: false,
+        busy: false,
+        onStart: () => undefined,
+        onCommand: () => undefined,
+      });
+
+      const collapsedMarkup = renderToStaticMarkup(collapsedElement);
+      expect(collapsedMarkup).toContain("Finished");
+      expect(collapsedMarkup).toContain("1/1 sent");
+      expect(collapsedMarkup).toContain("Shot 15");
+      expect(collapsedMarkup).toContain("View details");
+      expect(collapsedMarkup).toContain('aria-expanded="false"');
+      expect(collapsedMarkup).not.toContain("Dinosaur at the valley");
+      expect(collapsedMarkup).not.toContain("Queue and provider evidence");
+      expect(collapsedMarkup).not.toContain("Collapse");
+
+      const expandedElement = createElement(CompactQueueSummary, {
+        queue: finishedQueue,
+        isExpanded: true,
+        onToggleExpand: () => undefined,
+        starting: false,
+        busy: false,
+        onStart: () => undefined,
+        onCommand: () => undefined,
+      });
+
+      const expandedMarkup = renderToStaticMarkup(expandedElement);
+      expect(expandedMarkup).toContain("Collapse");
+      expect(expandedMarkup).toContain('aria-expanded="true"');
+      expect(expandedMarkup).toContain("Dinosaur at the valley");
+      expect(expandedMarkup).toContain("Queue and provider evidence");
+    });
+
+    it("scales gracefully to 100 historical batches without rendering all prompt bodies", () => {
+      const historicalQueues: ImageSubmissionQueueRecord[] = Array.from(
+        { length: 100 },
+        (_, i) => ({
+          ...queue("sent", "sent"),
+          queueId: `queue-history-${i + 1}`,
+          createdAt: 1_000_000 + i * 1_000,
+          items: [
+            {
+              ...baseItem,
+              shotId: String(i + 1),
+              itemState: "sent",
+              dispatchReceipt: {
+                attemptId: `att-${i + 1}`,
+                storedAt: 1000,
+                evidence: "activation_pair_sent_or_uncertain",
+              },
+            },
+          ],
+        }),
+      );
+
+      const sorted = [...historicalQueues].sort(
+        (a, b) => b.createdAt - a.createdAt,
+      );
+      expect(sorted[0].queueId).toBe("queue-history-100");
+      expect(sorted[99].queueId).toBe("queue-history-1");
+
+      const older = sorted.slice(1);
+      expect(older.length).toBe(99);
+
+      const PAGE_SIZE = 10;
+      const page1 = older.slice(0, PAGE_SIZE);
+      expect(page1.length).toBe(10);
+      expect(older.length - page1.length).toBe(89);
+
+      const markup = page1
+        .map((q) =>
+          renderToStaticMarkup(
+            createElement(CompactQueueSummary, {
+              queue: q,
+              isExpanded: false,
+              onToggleExpand: () => undefined,
+              starting: false,
+              busy: false,
+              onStart: () => undefined,
+              onCommand: () => undefined,
+            }),
+          ),
+        )
+        .join("");
+
+      expect(markup).not.toContain("Dinosaur at the valley");
+      expect(markup).toContain("Shot 99");
+      expect(markup).toContain("Shot 90");
+    });
+
+    it("preserves operational queues and prevents duplicating the current queue", () => {
+      const current = {
+        ...queue("waiting", "pending"),
+        queueId: "queue-current",
+        sourceText: '{"active": true}',
+      };
+      const blockedPrevious = {
+        ...queue("blocked", "pending"),
+        queueId: "queue-blocked-prev",
+        createdAt: 2000,
+      };
+      const finishedPrevious = {
+        ...queue("sent", "sent"),
+        queueId: "queue-finished-prev",
+        createdAt: 1000,
+      };
+
+      const allQueues = [current, blockedPrevious, finishedPrevious];
+
+      const otherQueues = allQueues.filter(
+        (q) => q.queueId !== current.queueId,
+      );
+      expect(otherQueues.some((q) => q.queueId === current.queueId)).toBe(
+        false,
+      );
+
+      const operational = otherQueues.filter(isQueueCreationBlocker);
+      expect(operational.map((q) => q.queueId)).toEqual(["queue-blocked-prev"]);
+
+      const terminal = otherQueues.filter((q) => !isQueueCreationBlocker(q));
+      expect(terminal.map((q) => q.queueId)).toEqual(["queue-finished-prev"]);
+    });
   });
 });

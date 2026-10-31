@@ -171,7 +171,9 @@ function Dashboard() {
   }, []);
 
   return (
-    <main className={styles.appShell}>
+    <main
+      className={`${styles.appShell} ${workspace === "Images" ? styles.appShellImages : ""}`}
+    >
       <aside className={styles.sidebar}>
         <a
           className={styles.brand}
@@ -191,7 +193,10 @@ function Dashboard() {
         <ConnectionStatus />
       </aside>
 
-      <section className={styles.mainArea} id="workspace">
+      <section
+        className={`${styles.mainArea} ${workspace === "Images" ? styles.mainAreaImages : ""}`}
+        id="workspace"
+      >
         <header className={styles.topbar}>
           <div className={styles.breadcrumb}>
             <span>Studio</span>
@@ -213,7 +218,9 @@ function Dashboard() {
           </div>
         </header>
 
-        <div className={`${styles.content} motion-screen-enter`}>
+        <div
+          className={`${styles.content} ${workspace === "Images" ? styles.contentImages : ""} motion-screen-enter`}
+        >
           <div className={styles.pageHeading}>
             <div>
               <p className={styles.kicker}>CREATIVE WORKSPACE</p>
@@ -221,7 +228,10 @@ function Dashboard() {
               <p className={styles.lede}>{workspaceSubtitle(workspace)}</p>
             </div>
           </div>
-          <div hidden={workspace !== "Images"}>
+          <div
+            hidden={workspace !== "Images"}
+            className={styles.imagesWorkspaceShell}
+          >
             <ImagesView
               session={imageImportSession}
               persistenceClient={batchClient}
@@ -342,6 +352,8 @@ function ImagesView({
       <section
         className={`${styles.panel} ${styles.editorPanel}`}
         aria-labelledby="image-input-title"
+        tabIndex={0}
+        aria-label="Image prompt import and editor"
       >
         <PanelHeader
           kicker="IMAGE IMPORT"
@@ -360,7 +372,11 @@ function ImagesView({
           setEditorExpanded={setEditorExpanded}
         />
       </section>
-      <div className={styles.workspaceSideColumn}>
+      <div
+        className={styles.workspaceSideColumn}
+        tabIndex={0}
+        aria-label="Image queue and submission panel"
+      >
         <ImageQueueProgress
           workspaceId="default"
           persistenceClient={persistenceClient}

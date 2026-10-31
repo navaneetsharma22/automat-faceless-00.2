@@ -277,3 +277,39 @@ Checks: full Vitest **31 files / 345 tests PASS**; typecheck PASS; ESLint PASS; 
 - Static Checks: TypeScript typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` PASS.
 - Production Build: Packaged and validated with ID **`automat-faceless-0.1.0-mvw2sfon`**.
 - Scope boundaries: No live provider actions, generation, downloads, or unprompted migrations performed.
+
+## 6. Images Workspace Scrolling and Compact Queue-History Presentation — 31 October 2026
+
+### Context and Problem Description
+
+- Latest five-prompt batch (Shots 15–19) finished successfully without blocking.
+- Two UI presentation issues resolved:
+  1. Scrolling the Image queue previously scrolled the entire workspace, moving the JSON editor out of view and leaving a large empty area on the left.
+  2. Every previous queue rendered as a full expanded card, which becomes unwieldy after dozens or hundreds of batches.
+
+### Implementation
+
+1. **Independent Desktop Scrolling Layout**:
+   - Header, breadcrumb, theme toggle, and creative workspace title remain stationary and visible at the top (`.mainAreaImages .topbar`, `.contentImages .pageHeading` flex-frozen).
+   - Desktop layout (`@media (min-width: 1081px)`) fits the Images workspace below the topbar within viewport height (`100vh`/`100dvh`, `overflow: hidden`).
+   - Left column (`.editorPanel`) and Right column (`.workspaceSideColumn`) scroll completely independently with `overflow-y: auto`, `overscroll-behavior: contain`, and `scrollbar-gutter: stable`. Scrolling over the queue panel scrolls ONLY that panel; the JSON editor never moves.
+   - Textarea internal scrolling is preserved (`overflow: auto`).
+   - Outer document scrollbar on desktop is eliminated; expanding raw evidence/diagnostics is constrained with `max-width: 100%; overflow-x: auto; overflow-wrap: anywhere;` to prevent horizontal page blowout.
+   - Keyboard accessibility: `tabIndex={0}` and descriptive `aria-label`s added to both columns with `:focus-visible` focus outlines.
+   - Narrow/mobile layouts (`@media (max-width: 1080px)` and `<= 760px`) stack panels and preserve standard document scrolling without small nested scroll traps.
+
+2. **Compact Queue History That Scales**:
+   - Displays the current batch queue prominently when matched by saved source.
+   - Preserves discoverability of operational queues: unresolved, active, paused, blocked, waiting, or uncertain queues remain visible as full cards.
+   - Shows only ONE most recent previous terminal batch as a compact collapsed summary: status badge, sent/total, date, and shot range (e.g. `Shots 15–19`, `Shots 10–14`).
+   - Older terminal batches are grouped behind a collapsed `<details className={styles.batchHistorySection}>` with bounded pagination (10 items per page with "Load more" button).
+   - Zero prompt bodies mounted on initial render for collapsed summaries; cards expand on demand when "View details" is clicked.
+   - 5-second queue polling preserves user expand/collapse states and scroll positions via React state (`expandedQueueIds`).
+   - Guaranteed no duplication: historical queues filter out the active current queue record.
+
+### Verification
+
+- Vitest: **32 files / 357 tests PASS** (including 5 new presentation and pagination unit tests in `tests/unit/imageQueuePresentation.test.tsx` covering contiguous and fallback shot ranges, deterministic date formatting, compact collapsed vs. expanded rendering without mounting prompt bodies, 100-batch scalability with bounded pagination, and preservation/no-duplication guarantees).
+- Static Checks: TypeScript typecheck PASS (`tsc --noEmit`); ESLint PASS (`eslint .`); Prettier check PASS; `git diff --check` clean.
+- Production Build: Packaged and validated with ID **`automat-faceless-0.1.0-mvw4ist3`** (4 JavaScript bundles).
+- Strict Scope Preservation: 40-second interval, readiness wait, replay protection, receipts, connections, diagnostics, source locks, and non-image workspaces completely preserved. No live provider actions.

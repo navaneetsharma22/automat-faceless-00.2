@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   FoundationClientError,
   type FoundationClient,
@@ -209,15 +209,56 @@ export function ImageQueueProgress({
     }
   };
 
+  const [expandedQueueIds, setExpandedQueueIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [historyPage, setHistoryPage] = useState(1);
+
+  const toggleQueueExpand = (queueId: string) => {
+    setExpandedQueueIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(queueId)) next.delete(queueId);
+      else next.add(queueId);
+      return next;
+    });
+  };
+
+  const sortedQueues = useMemo(
+    () =>
+      [...queues].sort(
+        (a, b) =>
+          b.createdAt - a.createdAt ||
+          b.updatedAt - a.updatedAt ||
+          b.queueId.localeCompare(a.queueId),
+      ),
+    [queues],
+  );
+
   const currentQueue =
     sourceReady && savedSource
-      ? queues.find((queue) => queue.sourceText === savedSource)
+      ? sortedQueues.find((queue) => queue.sourceText === savedSource)
       : undefined;
-  const previousQueues = queues.filter((queue) => queue !== currentQueue);
+  const otherQueues = sortedQueues.filter(
+    (queue) => queue.queueId !== currentQueue?.queueId,
+  );
   useEffect(() => {
     onCurrentQueueChange?.(currentQueue);
   }, [currentQueue, onCurrentQueueChange]);
-  const blockingPreviousQueue = previousQueues.find(isQueueCreationBlocker);
+
+  const unresolvedQueues = otherQueues.filter(isQueueCreationBlocker);
+  const terminalQueues = otherQueues.filter(
+    (queue) => !isQueueCreationBlocker(queue),
+  );
+  const latestTerminalQueue = terminalQueues[0];
+  const olderTerminalQueues = terminalQueues.slice(1);
+  const PAGE_SIZE = 10;
+  const visibleOlderQueues = olderTerminalQueues.slice(
+    0,
+    historyPage * PAGE_SIZE,
+  );
+  const hasMoreOlder = olderTerminalQueues.length > visibleOlderQueues.length;
+
+  const blockingPreviousQueue = otherQueues.find(isQueueCreationBlocker);
   const disabledReason = loading
     ? "Reading saved queues before allowing another queue."
     : error
@@ -320,9 +361,11 @@ export function ImageQueueProgress({
           />
         </div>
       ) : null}
-      {previousQueues.map((queue) => (
+      {unresolvedQueues.map((queue) => (
         <div className={styles.previousQueueBlock} key={queue.queueId}>
-          <p className={styles.queueContext}>{previousQueueLabel(queue)}</p>
+          <p className={styles.queueContext}>
+            Operational queue — {titleCase(queue.state)}
+          </p>
           <QueueCard
             queue={queue}
             commanding={
@@ -336,7 +379,211 @@ export function ImageQueueProgress({
           />
         </div>
       ))}
+      {latestTerminalQueue ? (
+        <div
+          className={styles.previousQueueBlock}
+          key={latestTerminalQueue.queueId}
+        >
+          <p className={styles.queueContext}>Latest previous batch</p>
+          <CompactQueueSummary
+            queue={latestTerminalQueue}
+            isExpanded={expandedQueueIds.has(latestTerminalQueue.queueId)}
+            onToggleExpand={() =>
+              toggleQueueExpand(latestTerminalQueue.queueId)
+            }
+            commanding={
+              commanding?.queueId === latestTerminalQueue.queueId
+                ? commanding
+                : undefined
+            }
+            starting={startingQueueId === latestTerminalQueue.queueId}
+            busy={Boolean(commanding || startingQueueId)}
+            onStart={() => void startQueue(latestTerminalQueue.queueId)}
+            onCommand={(command) =>
+              void commandQueue(latestTerminalQueue, command)
+            }
+            persistenceClient={persistenceClient}
+          />
+        </div>
+      ) : null}
+      {olderTerminalQueues.length > 0 ? (
+        <details className={styles.batchHistorySection}>
+          <summary className={styles.batchHistorySummary}>
+            <span>Batch history</span>
+            <span className={styles.batchHistoryBadge}>
+              {olderTerminalQueues.length} older{" "}
+              {olderTerminalQueues.length === 1 ? "batch" : "batches"}
+            </span>
+          </summary>
+          <div className={styles.batchHistoryList}>
+            {visibleOlderQueues.map((queue) => (
+              <CompactQueueSummary
+                key={queue.queueId}
+                queue={queue}
+                isExpanded={expandedQueueIds.has(queue.queueId)}
+                onToggleExpand={() => toggleQueueExpand(queue.queueId)}
+                commanding={
+                  commanding?.queueId === queue.queueId ? commanding : undefined
+                }
+                starting={startingQueueId === queue.queueId}
+                busy={Boolean(commanding || startingQueueId)}
+                onStart={() => void startQueue(queue.queueId)}
+                onCommand={(command) => void commandQueue(queue, command)}
+                persistenceClient={persistenceClient}
+              />
+            ))}
+            {hasMoreOlder ? (
+              <Button
+                size="compact"
+                variant="secondary"
+                type="button"
+                className={styles.loadMoreButton}
+                onClick={() => setHistoryPage((p) => p + 1)}
+              >
+                Load more (
+                {olderTerminalQueues.length - visibleOlderQueues.length}{" "}
+                remaining)
+              </Button>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
     </section>
+  );
+}
+
+export function formatQueueDate(timestamp: number): string {
+  if (!timestamp || !Number.isFinite(timestamp)) return "";
+  const date = new Date(timestamp);
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function formatShotRange(
+  items: readonly ImageQueueItem[],
+): string | undefined {
+  if (!items || items.length === 0) return undefined;
+  const shotIds = items
+    .map((item) => item.shotId)
+    .filter(
+      (id): id is string => typeof id === "string" && id.trim().length > 0,
+    );
+  if (shotIds.length === 0) {
+    return `${items.length} prompt${items.length === 1 ? "" : "s"}`;
+  }
+  if (shotIds.length === 1) {
+    return `Shot ${shotIds[0]}`;
+  }
+  const first = shotIds[0];
+  const last = shotIds[shotIds.length - 1];
+  const nums = shotIds.map(Number);
+  const isContiguousSequence = nums.every(
+    (n, i) => !Number.isNaN(n) && (i === 0 || n === nums[i - 1] + 1),
+  );
+  if (isContiguousSequence) {
+    return `Shots ${first}–${last}`;
+  }
+  if (shotIds.length === items.length) {
+    return `Shots ${first}–${last} (${items.length} prompts)`;
+  }
+  return `${items.length} prompts`;
+}
+
+export function CompactQueueSummary({
+  queue,
+  isExpanded,
+  onToggleExpand,
+  commanding,
+  starting,
+  busy,
+  onStart,
+  onCommand,
+  persistenceClient,
+  onInspectReadback,
+  onRetryBlocked,
+}: {
+  queue: ImageSubmissionQueueRecord;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+  commanding?: { queueId: string; command: "pause" | "resume" | "stop" };
+  starting: boolean;
+  busy: boolean;
+  onStart: () => void;
+  onCommand: (command: "pause" | "resume" | "stop") => void;
+  persistenceClient?: FoundationClient;
+  onInspectReadback?: (payload: {
+    queueId: string;
+    order: number;
+  }) => Promise<FlowEditorReadbackInspectionResult>;
+  onRetryBlocked?: (payload: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+  }) => Promise<ImageSubmissionQueueRecord>;
+}) {
+  const sentCount = queue.items.filter((item) => item.dispatchReceipt).length;
+  const isComplete =
+    queue.items.length > 0 &&
+    queue.items.every((item) => item.itemState === "sent");
+  const status =
+    queue.state === "sent" && isComplete ? "Finished" : titleCase(queue.state);
+  const badgeClassKey = `state${status.replace(/[^a-zA-Z0-9]/g, "")}`;
+  const badgeClass = styles[badgeClassKey] ?? styles.stateWaiting;
+  const shotRange = formatShotRange(queue.items);
+  const dateLabel = formatQueueDate(queue.createdAt);
+
+  return (
+    <div
+      className={styles.compactCard}
+      data-state={queue.state}
+      data-queue-id={queue.queueId}
+    >
+      <div className={styles.compactHeader}>
+        <div className={styles.compactMeta}>
+          <span className={`${styles.stateBadge} ${badgeClass}`} role="status">
+            {status}
+          </span>
+          <strong className={styles.compactSent}>
+            {sentCount}/{queue.items.length} sent
+          </strong>
+          {shotRange ? (
+            <span className={styles.compactShotRange}>{shotRange}</span>
+          ) : null}
+          {dateLabel ? (
+            <span className={styles.compactDate}>{dateLabel}</span>
+          ) : null}
+        </div>
+        <Button
+          size="compact"
+          variant="secondary"
+          type="button"
+          onClick={onToggleExpand}
+          aria-expanded={isExpanded}
+        >
+          {isExpanded ? "Collapse" : "View details"}
+        </Button>
+      </div>
+      {isExpanded ? (
+        <div className={styles.compactExpanded}>
+          <QueueCard
+            queue={queue}
+            commanding={commanding}
+            starting={starting}
+            busy={busy}
+            onStart={onStart}
+            onCommand={onCommand}
+            persistenceClient={persistenceClient}
+            onInspectReadback={onInspectReadback}
+            onRetryBlocked={onRetryBlocked}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1008,11 +1255,4 @@ function queueBlockerLabel(queue: ImageSubmissionQueueRecord) {
   if (queue.state === "waiting") return "active";
   if (queue.state === "ready") return "ready to start";
   return "awaiting review";
-}
-
-function previousQueueLabel(queue: ImageSubmissionQueueRecord) {
-  const sent = queue.items.filter((item) => item.dispatchReceipt).length;
-  return queue.state === "sent"
-    ? `Previous queue — ${sent}/${queue.items.length} sent`
-    : `Previous queue — ${titleCase(queue.state)}`;
 }
