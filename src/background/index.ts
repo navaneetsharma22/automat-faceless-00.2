@@ -25,7 +25,10 @@ import {
 } from "../storage/repositories";
 import { providerTabFromUrl } from "../platforms/shared/connection";
 import { createTimedImageQueueScheduler } from "./scheduler";
-import { createFlowTimedQueueDispatcher } from "./generationQueue";
+import {
+  createFlowTimedQueueDispatcher,
+  inspectFlowEditorAgainstQueueItem,
+} from "./generationQueue";
 import { flowTabFromUrl } from "../platforms/flow/connection";
 
 const repositories = new ExtensionRepositories();
@@ -340,6 +343,8 @@ chrome.runtime.onMessage.addListener(
       timedQueueScheduler[command](queueId, expectedRevision),
     revalidateConnection: (provider, enableReconnect) =>
       connectionLifecycle.revalidate(provider, enableReconnect),
+    inspectTimedQueueItemReadback: (queueId, order) =>
+      inspectFlowEditorAgainstQueueItem({ repositories, queueId, order }),
   }),
 );
 registerDashboardAction(chrome);

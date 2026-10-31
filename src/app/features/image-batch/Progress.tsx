@@ -680,6 +680,41 @@ function PromptRow({
               : "Not dispatched. Provider outcome not started."}
         </p>
         {item.blockReason ? <code>{item.blockReason}</code> : null}
+        {item.readbackDiagnostic ? (
+          <div className={styles.technicalDetails}>
+            <strong>
+              Readback mismatch diagnostics ({item.readbackDiagnostic.stage}):
+            </strong>
+            <p>
+              Expected: {item.readbackDiagnostic.expectedCodeUnits} code units (
+              {item.readbackDiagnostic.expectedUtf8Bytes} bytes), SHA-256:{" "}
+              <code>{item.readbackDiagnostic.expectedSha256}</code>
+            </p>
+            {item.readbackDiagnostic.actualCodeUnits !== undefined ? (
+              <p>
+                Actual: {item.readbackDiagnostic.actualCodeUnits} code units (
+                {item.readbackDiagnostic.actualUtf8Bytes} bytes), SHA-256:{" "}
+                <code>{item.readbackDiagnostic.actualSha256}</code>
+              </p>
+            ) : null}
+            {item.readbackDiagnostic.firstDifferenceOffset !== undefined ? (
+              <p>
+                First difference at offset{" "}
+                {item.readbackDiagnostic.firstDifferenceOffset} (
+                {item.readbackDiagnostic.mismatchCategory}):
+                <br />
+                Expected context:{" "}
+                <code>{item.readbackDiagnostic.expectedContext}</code>
+                <br />
+                Actual context:{" "}
+                <code>{item.readbackDiagnostic.actualContext}</code>
+              </p>
+            ) : null}
+            {item.readbackDiagnostic.readError ? (
+              <p>Read error: {item.readbackDiagnostic.readError}</p>
+            ) : null}
+          </div>
+        ) : null}
         <pre>{item.rawJsonBody}</pre>
       </details>
     </li>

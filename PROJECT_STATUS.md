@@ -69,6 +69,21 @@ Fixed the confirmed presentation errors: a blocked queue now highlights its bloc
 
 Checks: focused Vitest **4 files / 33 tests PASS**; focused Chromium **5/5 PASS** (including production clear/refill success and controlled final-mismatch block, queue presentation, queue creation, and dashboard); typecheck PASS; ESLint PASS; Prettier PASS; production package/build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvvkhnk`**. No live provider operation, replay, provider navigation/refresh, storage deletion, historical settlement, or lock release occurred.
 
+## Bounded readback diagnostics and read-only inspection — 31 October 2026
+
+Existing durable diagnostics recorded only `blockReason: "editor_exact_readback_mismatch"` on the queue and item, with zero length, hash, offset, or context data. It was impossible from existing durable records to determine whether Shot 11 differed by whitespace, truncation, encoding, or trailing characters.
+
+Added bounded diagnostics at the pre-activation exact readback comparison (`PromptReadbackDiagnostic`):
+
+- Records queue/item identity (`queueId`, `order`, `shotId`), stage (`pre_activation_exact_readback`), expected and actual code-unit lengths, expected and actual SHA-256 hex digests, `firstDifferenceOffset`, and bounded JSON-escaped snippets (`expectedContextEscaped`, `actualContextEscaped`, capped at 32 characters around the difference).
+- Does not store raw prompt bodies or full editor text in diagnostic logs or database records.
+- Bound directly to the exact immutable queue item (`readbackDiagnostic` on `ImageQueueItem`). If diagnostic extraction or hashing fails, fallback error handling ensures the queue item is still marked `blocked` with `editor_exact_readback_mismatch`, never authorizing activation or masking the mismatch.
+- Added an explicit read-only inspection path (`inspectFlowEditorAgainstQueueItem`, accessible via `imageQueue.inspectReadback` message). It queries the current Flow editor via CDP evaluation and compares against the blocked item without inserting text, clicking Generate, updating queue state, or authorizing replay.
+- Preserved the exact-match guard and the 40,000 ms scheduler. No text normalization, replay, or retry was introduced.
+- Historical incident cause remains unverified because the actual historical Shot 11 prompt body and provider DOM content were not preserved in the repository; test fixtures (including the 3,874-character fixture derived from the user's preview count) are explicitly labeled synthetic.
+
+Checks: full Vitest **28 files / 323 tests PASS** (including 9 focused readback diagnostics and synthetic comparison unit tests); Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; Prettier PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvwjrlo`**. No live provider actions, replay, or storage resets occurred.
+
 ## Phase ledger
 
 | Phase                                         | Status                                                                                                                                                                                                                                                                                                                     | Evidence                                                                                                                                                                                                                                                                                                                                                                                          |

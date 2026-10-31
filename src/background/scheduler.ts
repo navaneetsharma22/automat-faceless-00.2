@@ -1,4 +1,7 @@
-import type { ImageSubmissionQueueRecord } from "../domain/jobs/queue";
+import type {
+  ImageSubmissionQueueRecord,
+  PromptReadbackDiagnostic,
+} from "../domain/jobs/queue";
 import {
   ExtensionRepositories,
   ImageQueueEligibilityError,
@@ -8,7 +11,12 @@ export const IMAGE_QUEUE_ALARM_PREFIX = "automat-image-queue:";
 
 export type TimedQueueDispatchResult =
   | { status: "activated"; at: number }
-  | { status: "blocked"; reason: string; uncertain: boolean };
+  | {
+      status: "blocked";
+      reason: string;
+      uncertain: boolean;
+      diagnostic?: PromptReadbackDiagnostic;
+    };
 
 export type TimedQueueDispatcher = (input: {
   queue: ImageSubmissionQueueRecord;
@@ -142,6 +150,7 @@ export function createTimedImageQueueScheduler(input: {
           at: now(),
           uncertain: result.uncertain,
           reason: result.reason,
+          diagnostic: result.diagnostic,
         });
         if (!blocked) {
           const current =

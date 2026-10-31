@@ -41,6 +41,7 @@ export type RequestPayloads = {
   "imageQueue.resume": { queueId: string; expectedRevision: number };
   "imageQueue.stop": { queueId: string; expectedRevision: number };
   "imageQueue.list": { workspaceId: string };
+  "imageQueue.inspectReadback": { queueId: string; order?: number };
   "connections.recordSelection": {
     provider: "Flow" | "Vids";
     tabId: number;
@@ -134,6 +135,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "imageQueue.resume": 30_000,
   "imageQueue.stop": 10_000,
   "imageQueue.list": 10_000,
+  "imageQueue.inspectReadback": 15_000,
   "connections.recordSelection": 5000,
   "connections.getSelection": 5000,
   "connections.revalidate": 10_000,

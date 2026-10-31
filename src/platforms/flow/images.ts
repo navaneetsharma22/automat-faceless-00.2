@@ -660,6 +660,42 @@ export async function inspectFlowImageGenerate(
   return discovery;
 }
 
+/** Read-only inspection of the current Flow editor text without inserting text or mutating state. */
+export async function readCurrentFlowEditorText(
+  port: Pick<FlowImagePagePort, "sendCommand">,
+  tabId: number,
+): Promise<{ found: boolean; text?: string; error?: string }> {
+  const expression = `(() => {
+    try {
+      const getEditor = (${flowComposerRuntime.toString()});
+      const readText = (${readFlowEditorRuntime.toString()});
+      const editor = getEditor("", true, readText);
+      if (!(editor instanceof HTMLElement)) return { found: false };
+      return { found: true, text: readText(editor) };
+    } catch (err) {
+      return {
+        found: true,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  })()`;
+  const response = (await port.sendCommand(tabId, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: false,
+  })) as {
+    result?: {
+      value?: { found?: boolean; text?: string; error?: string };
+    };
+  };
+  const val = response.result?.value;
+  return {
+    found: Boolean(val?.found),
+    text: typeof val?.text === "string" ? val.text : undefined,
+    error: typeof val?.error === "string" ? val.error : undefined,
+  };
+}
+
 /** Timed mode inspects only the uniquely owned composer and its Generate control.
  * It deliberately does not inspect result tiles, image counts, or observer state. */
 export async function inspectTimedFlowGenerate(

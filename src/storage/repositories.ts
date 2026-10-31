@@ -14,6 +14,7 @@ import {
   nextTimedDispatchDeadline,
   type ImageQueueManualSettingsDeclaration,
   type ImageSubmissionQueueRecord as QueueRecord,
+  type PromptReadbackDiagnostic,
 } from "../domain/jobs/queue";
 import {
   PromptBatchInputSchema,
@@ -1041,6 +1042,7 @@ export class ExtensionRepositories {
     at: number;
     uncertain: boolean;
     reason: string;
+    diagnostic?: PromptReadbackDiagnostic;
   }): Promise<QueueRecord | undefined> {
     let result: QueueRecord | undefined;
     await this.tables.transaction(["imageSubmissionQueues"], async () => {
@@ -1062,10 +1064,34 @@ export class ExtensionRepositories {
                   entry.dispatchIntent?.activationStartedAt !== undefined
                     ? "unknown"
                     : "not_started",
+                ...(input.diagnostic
+                  ? { readbackDiagnostic: input.diagnostic }
+                  : {}),
               }
             : entry,
         ),
       };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(result).success) {
+        if (input.diagnostic) {
+          result = {
+            ...result,
+            items: queue.items.map((entry, index) =>
+              index === input.order && entry.itemState === "sending"
+                ? {
+                    ...entry,
+                    itemState: "blocked",
+                    blockReason: input.reason.slice(0, 64),
+                    providerOutcome:
+                      input.uncertain ||
+                      entry.dispatchIntent?.activationStartedAt !== undefined
+                        ? "unknown"
+                        : "not_started",
+                  }
+                : entry,
+            ),
+          };
+        }
+      }
       if (!ImageSubmissionQueueRecordSchema.safeParse(result).success)
         throw new ImageQueueEligibilityError("queue_block_readback_invalid");
       await this.tables.imageSubmissionQueues.put(result);

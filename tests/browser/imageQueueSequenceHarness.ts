@@ -8,7 +8,10 @@ import {
   createTimedImageQueueScheduler,
   IMAGE_QUEUE_ALARM_PREFIX,
 } from "../../src/background/scheduler";
-import { createFlowTimedQueueDispatcher } from "../../src/background/generationQueue";
+import {
+  createFlowTimedQueueDispatcher,
+  inspectFlowEditorAgainstQueueItem,
+} from "../../src/background/generationQueue";
 import type { FlowImageGenerateOncePort } from "../../src/background/handlers/flow";
 import type { FlowPromptEntryPort } from "../../src/platforms/flow/promptEntry";
 
@@ -341,7 +344,24 @@ export async function runDexieTimedQueueSequence() {
         activationStarted:
           item.dispatchIntent?.activationStartedAt !== undefined,
         blockReason: item.blockReason,
+        readbackDiagnostic: item.readbackDiagnostic,
       })),
+      readOnlyInspectionResult:
+        final?.state === "blocked"
+          ? await inspectFlowEditorAgainstQueueItem({
+              repositories,
+              queueId: initial.queueId,
+              order: 1,
+              environment: {
+                pagePort,
+                getTab: async () => ({ id: 27 }),
+                getDocument: async () => ({
+                  documentId: "fixture-doc",
+                  frameId: 0,
+                }),
+              },
+            })
+          : undefined,
       deadlines: final?.nextEligibleDispatchAt,
       alarmCount: alarms.size,
       initialStatus: initial.items[0]?.itemState,

@@ -64,6 +64,10 @@ export type FoundationDependencies = {
     queueId: string,
     expectedRevision: number,
   ) => Promise<unknown>;
+  inspectTimedQueueItemReadback?: (
+    queueId: string,
+    order?: number,
+  ) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -261,6 +265,28 @@ async function dispatch(
       return dependencies.repositories.listTimedImageSubmissionQueues(
         request.payload.workspaceId,
       );
+    case "imageQueue.inspectReadback": {
+      if (!dependencies.inspectTimedQueueItemReadback)
+        throw new FoundationOperationError(
+          "worker_error",
+          "image_queue_inspection_unavailable",
+          "Readback inspection is unavailable in this worker.",
+        );
+      try {
+        return await dependencies.inspectTimedQueueItemReadback(
+          request.payload.queueId,
+          request.payload.order,
+        );
+      } catch (error) {
+        if (error instanceof ImageQueueEligibilityError)
+          throw new FoundationOperationError(
+            "invalid_request",
+            error.code,
+            "The saved queue or target is unavailable for readback inspection.",
+          );
+        throw error;
+      }
+    }
     case "connections.recordSelection": {
       const record = await dependencies.repositories.recordSelectedTarget(
         request.payload,

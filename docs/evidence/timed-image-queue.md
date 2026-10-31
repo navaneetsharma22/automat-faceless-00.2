@@ -51,3 +51,24 @@ The production-path local Chromium fixture reproduces first prompt → synthetic
 The reproduced UI issue was independent: blocked queue presentation selected the later Pending item as current and styled all later pending rows Blocked; the import preview also asserted every prompt was Not sent despite a matching receipt-backed queue. The dashboard now identifies the blocked shot, leaves later items Pending, and only maps source-row states when the exact validated/saved source and ordered queue body/shot/span identities match. A nonmatching draft is labeled Preview.
 
 Checks: focused Vitest **4 files / 33 tests PASS**; focused Playwright **5/5 PASS**; typecheck, ESLint, Prettier, production package/build-ID validation, and `git diff --check` PASS. Package `automat-faceless-0.1.0-mvvvkhnk`. No live Generate/provider action, replay, refresh/navigation, storage deletion, historical settlement, or lock release was performed.
+
+## Bounded readback diagnostics and read-only inspection evidence — 31 October 2026
+
+Existing durable state was insufficient: `ImageSubmissionQueueRecord` and its items stored only `blockReason: "editor_exact_readback_mismatch"` without lengths, hashes, first difference offset, or context. The exact cause of the historical Shot 11 mismatch remained unprovable from stored data alone.
+
+1. **Bounded Diagnostic Collection**:
+   When `inspectTimedFlowGenerate` detects `!inspection.exactPrompt`, `readCurrentFlowEditorText` extracts the live Flow editor text via read-only CDP evaluation without DOM mutation. `comparePromptReadbackSafely` computes code-unit lengths, SHA-256 hex digests, first difference offset, and bounded escaped context snippets (max 32 chars). Neither the full editor text nor the full prompt body is stored in logs or Dexie records.
+
+2. **Immutable Queue Item Binding & Fail-Closed Safety**:
+   The diagnostic is persisted on `item.readbackDiagnostic` via `blockTimedImageQueue`. If diagnostic collection fails, the catch block logs a bounded warning and returns `status: "blocked"` with `reason: "editor_exact_readback_mismatch"`. If storage fails schema validation, a fallback transaction blocks the item without the diagnostic. Generate activation is never authorized and the original mismatch is never masked.
+
+3. **Read-Only Inspection Path**:
+   `inspectFlowEditorAgainstQueueItem` (dispatched via `imageQueue.inspectReadback`) executes read-only CDP evaluation against the active Flow tab, retrieves the immutable queue item from Dexie, and runs `comparePromptReadbackSafely`. It does not insert text, click Generate, mutate queue or item state, or authorize replay.
+
+4. **Synthetic Fixtures & Incident Verification**:
+   The historical Shot 11 prompt body and provider DOM content were not preserved; all test fixtures (including the synthetic 3,874-character fixture derived from the user preview count) are explicitly labeled synthetic.
+
+5. **Scheduler & Guard Preservation**:
+   The exact-match guard and 40,000 ms interval remain strictly enforced. No text normalization, retry, replay, or live provider actions were performed.
+
+Checks: full Vitest **28 files / 323 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; Prettier PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvwjrlo`**.

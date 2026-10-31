@@ -137,8 +137,35 @@ for (const injectFinalMismatch of [false, true]) {
               intentStored: true,
               activationStarted: false,
               blockReason: "editor_exact_readback_mismatch",
+              readbackDiagnostic: expect.objectContaining({
+                stage: "pre_activation_inspection",
+                expectedCodeUnits: 16_332,
+                actualCodeUnits: 16_333,
+                firstDifferenceOffset: 16_332,
+                mismatchCategory: "length",
+                expectedSha256:
+                  "4486ec043e231cd054abc5ca0a0fa1c40c8e8861691304a1cd5657fc9e167e23",
+                actualSha256:
+                  "ae15d5090b4f3924d95bfeee8b3d1fd730824fa60d338b8255b805c5f5eb4032",
+              }),
             }),
           ]);
+          expect(report.readOnlyInspectionResult).toEqual(
+            expect.objectContaining({
+              order: 1,
+              shotId: "11",
+              stage: "read_only_editor_inspection",
+              equal: false,
+              expectedCodeUnits: 16_332,
+              actualCodeUnits: 16_333,
+              firstDifferenceOffset: 16_332,
+              mismatchCategory: "length",
+              expectedSha256:
+                "4486ec043e231cd054abc5ca0a0fa1c40c8e8861691304a1cd5657fc9e167e23",
+              actualSha256:
+                "ae15d5090b4f3924d95bfeee8b3d1fd730824fa60d338b8255b805c5f5eb4032",
+            }),
+          );
           expect(report.dispatchCount).toBe(1);
           expect(report.composerResetCount).toBe(1);
           console.log(

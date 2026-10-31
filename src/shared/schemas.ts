@@ -586,6 +586,15 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ workspaceId: workspaceIdSchema }).strict(),
   }),
   requestBase.extend({
+    type: z.literal("imageQueue.inspectReadback"),
+    payload: z
+      .object({
+        queueId: z.string().uuid().or(z.string().min(1).max(128)),
+        order: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
     type: z.literal("connections.recordSelection"),
     payload: z
       .object({

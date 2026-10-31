@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sha256Hex } from "../batches/hashPrompt";
 
 export const TIMED_IMAGE_SUBMISSION_INTERVAL_MS = 40_000 as const;
 
@@ -31,6 +32,26 @@ export type ImageQueueManualSettingsDeclaration = {
   readonly userAttested: true;
 };
 
+export type PromptReadbackDiagnostic = {
+  readonly queueId: string;
+  readonly queueItemId: string;
+  readonly order: number;
+  readonly shotId?: string;
+  readonly stage: string;
+  readonly recordedAt: number;
+  readonly expectedCodeUnits: number;
+  readonly actualCodeUnits?: number;
+  readonly expectedUtf8Bytes: number;
+  readonly actualUtf8Bytes?: number;
+  readonly expectedSha256: string;
+  readonly actualSha256?: string;
+  readonly firstDifferenceOffset?: number;
+  readonly mismatchCategory?: "length" | "code-unit" | "representation";
+  readonly expectedContext?: string;
+  readonly actualContext?: string;
+  readonly readError?: string;
+};
+
 export type ImageQueueItem = {
   readonly queueItemId: string;
   readonly sourceItemId: string;
@@ -47,6 +68,7 @@ export type ImageQueueItem = {
     activationStartedAt?: number;
   };
   blockReason?: string;
+  readbackDiagnostic?: PromptReadbackDiagnostic;
   dispatchReceipt?: {
     attemptId: string;
     storedAt: number;
@@ -83,6 +105,33 @@ export type ImageSubmissionQueueRecord = {
 };
 
 const hashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+export const PromptReadbackDiagnosticSchema = z
+  .object({
+    queueId: z.string().uuid().or(z.string().min(1).max(128)),
+    queueItemId: z.string().min(1).max(512),
+    order: z.number().int().nonnegative(),
+    shotId: z
+      .string()
+      .regex(/^[1-9][0-9]*$/)
+      .optional(),
+    stage: z.string().min(1).max(64),
+    recordedAt: z.number().finite().nonnegative(),
+    expectedCodeUnits: z.number().int().nonnegative(),
+    actualCodeUnits: z.number().int().nonnegative().optional(),
+    expectedUtf8Bytes: z.number().int().nonnegative(),
+    actualUtf8Bytes: z.number().int().nonnegative().optional(),
+    expectedSha256: hashSchema,
+    actualSha256: hashSchema.optional(),
+    firstDifferenceOffset: z.number().int().nonnegative().optional(),
+    mismatchCategory: z
+      .enum(["length", "code-unit", "representation"])
+      .optional(),
+    expectedContext: z.string().max(256).optional(),
+    actualContext: z.string().max(256).optional(),
+    readError: z.string().max(128).optional(),
+  })
+  .strict();
+
 const itemSchema = z
   .object({
     queueItemId: z.string().min(1).max(512),
@@ -111,6 +160,7 @@ const itemSchema = z
       .strict()
       .optional(),
     blockReason: z.string().min(1).max(64).optional(),
+    readbackDiagnostic: PromptReadbackDiagnosticSchema.optional(),
     dispatchReceipt: z
       .object({
         attemptId: z.string().min(1).max(128),
@@ -240,4 +290,67 @@ export function nextTimedDispatchDeadline(
     throw new RangeError("Dispatch deadline inputs must be finite timestamps.");
   }
   return receiptDurablyStoredAt + TIMED_IMAGE_SUBMISSION_INTERVAL_MS;
+}
+
+export type FlowPromptReadbackComparison = {
+  equal: boolean;
+  expectedCodeUnits: number;
+  actualCodeUnits: number;
+  expectedUtf8Bytes: number;
+  actualUtf8Bytes: number;
+  expectedSha256: string;
+  actualSha256: string;
+  firstDifferenceOffset?: number;
+  mismatchCategory?: "length" | "code-unit" | "representation";
+  expectedContext?: string;
+  actualContext?: string;
+};
+
+export async function comparePromptReadbackSafely(input: {
+  expectedText: string;
+  actualText: string;
+  expectedSha256?: string;
+}): Promise<FlowPromptReadbackComparison> {
+  const { expectedText, actualText } = input;
+  const limit = Math.min(expectedText.length, actualText.length);
+  let firstDifferenceOffset = 0;
+  while (
+    firstDifferenceOffset < limit &&
+    expectedText[firstDifferenceOffset] === actualText[firstDifferenceOffset]
+  ) {
+    firstDifferenceOffset += 1;
+  }
+  const equal = expectedText === actualText;
+  const contextStart = Math.max(0, firstDifferenceOffset - 16);
+  const contextEnd = firstDifferenceOffset + 16;
+  const expectedSha256 =
+    input.expectedSha256 ?? (await sha256Hex(expectedText));
+  const actualSha256 = await sha256Hex(actualText);
+  return {
+    equal,
+    expectedCodeUnits: expectedText.length,
+    actualCodeUnits: actualText.length,
+    expectedUtf8Bytes: new TextEncoder().encode(expectedText).byteLength,
+    actualUtf8Bytes: new TextEncoder().encode(actualText).byteLength,
+    expectedSha256,
+    actualSha256,
+    firstDifferenceOffset: equal ? undefined : firstDifferenceOffset,
+    mismatchCategory: equal
+      ? undefined
+      : expectedText.length === actualText.length
+        ? "code-unit"
+        : firstDifferenceOffset === limit
+          ? "length"
+          : "representation",
+    ...(equal
+      ? {}
+      : {
+          expectedContext: JSON.stringify(
+            expectedText.slice(contextStart, contextEnd),
+          ),
+          actualContext: JSON.stringify(
+            actualText.slice(contextStart, contextEnd),
+          ),
+        }),
+  };
 }

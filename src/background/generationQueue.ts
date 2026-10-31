@@ -1,4 +1,4 @@
-import { sha256Hex } from "../storage/repositories";
+import { sha256Hex, ImageQueueEligibilityError } from "../storage/repositories";
 import type { ExtensionRepositories } from "../storage/repositories";
 import {
   createChromeFlowImageGenerateOncePort,
@@ -9,12 +9,17 @@ import {
   activateFlowImageGenerate,
   inspectFlowImageButton,
   inspectTimedFlowGenerate,
+  readCurrentFlowEditorText,
 } from "../platforms/flow/images";
 import { flowTabFromUrl } from "../platforms/flow/connection";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import type { TimedQueueDispatcher } from "./scheduler";
 import type { FlowPromptEntryPort } from "../platforms/flow/promptEntry";
 import type { FlowImageGenerateOncePort } from "./handlers/flow";
+import {
+  comparePromptReadbackSafely,
+  type PromptReadbackDiagnostic,
+} from "../domain/jobs/queue";
 
 export type FlowTimedDispatchEnvironment = {
   promptPort: FlowPromptEntryPort;
@@ -209,14 +214,71 @@ export function createFlowTimedQueueDispatcher(
         !inspection.exactPrompt ||
         inspection.generate !== "identified" ||
         !inspection.buttonObjectId
-      )
+      ) {
+        if (!inspection.exactPrompt) {
+          let diagnostic: PromptReadbackDiagnostic | undefined;
+          try {
+            const editorRead = await readCurrentFlowEditorText(
+              pagePort,
+              selected.tabId,
+            );
+            if (editorRead.text !== undefined) {
+              const comparison = await comparePromptReadbackSafely({
+                expectedText: item.rawJsonBody,
+                actualText: editorRead.text,
+                expectedSha256: item.promptHash,
+              });
+              diagnostic = {
+                queueId: queue.queueId,
+                queueItemId: item.queueItemId,
+                order,
+                ...(item.shotId ? { shotId: item.shotId } : {}),
+                stage: "pre_activation_inspection",
+                recordedAt: now(),
+                expectedCodeUnits: comparison.expectedCodeUnits,
+                actualCodeUnits: comparison.actualCodeUnits,
+                expectedUtf8Bytes: comparison.expectedUtf8Bytes,
+                actualUtf8Bytes: comparison.actualUtf8Bytes,
+                expectedSha256: comparison.expectedSha256,
+                actualSha256: comparison.actualSha256,
+                firstDifferenceOffset: comparison.firstDifferenceOffset,
+                mismatchCategory: comparison.mismatchCategory,
+                expectedContext: comparison.expectedContext,
+                actualContext: comparison.actualContext,
+              };
+            } else {
+              diagnostic = {
+                queueId: queue.queueId,
+                queueItemId: item.queueItemId,
+                order,
+                ...(item.shotId ? { shotId: item.shotId } : {}),
+                stage: "pre_activation_inspection",
+                recordedAt: now(),
+                expectedCodeUnits: item.rawJsonBody.length,
+                expectedUtf8Bytes: new TextEncoder().encode(item.rawJsonBody)
+                  .byteLength,
+                expectedSha256: item.promptHash,
+                readError:
+                  editorRead.error ??
+                  (editorRead.found ? "empty_editor_read" : "editor_not_found"),
+              };
+            }
+          } catch {
+            // Diagnostic failure must not mask the mismatch or allow activation
+          }
+          return {
+            status: "blocked",
+            reason: "editor_exact_readback_mismatch",
+            uncertain: false,
+            diagnostic,
+          };
+        }
         return {
           status: "blocked",
-          reason: inspection.exactPrompt
-            ? `generate_${inspection.generate}`
-            : "editor_exact_readback_mismatch",
+          reason: `generate_${inspection.generate}`,
           uncertain: false,
         };
+      }
       const position = await inspectFlowImageButton(
         pagePort,
         selected.tabId,
@@ -271,5 +333,122 @@ export function createFlowTimedQueueDispatcher(
       if (lease)
         await pagePort.releaseDebuggerLease?.(lease).catch(() => undefined);
     }
+  };
+}
+
+export type FlowEditorReadbackInspectionResult = {
+  queueId: string;
+  queueItemId: string;
+  order: number;
+  shotId?: string;
+  stage: "read_only_editor_inspection";
+  inspectedAt: number;
+  equal: boolean;
+  expectedCodeUnits: number;
+  actualCodeUnits?: number;
+  expectedUtf8Bytes: number;
+  actualUtf8Bytes?: number;
+  expectedSha256: string;
+  actualSha256?: string;
+  firstDifferenceOffset?: number;
+  mismatchCategory?: "length" | "code-unit" | "representation";
+  expectedContext?: string;
+  actualContext?: string;
+  readError?: string;
+};
+
+/** Explicit read-only inspection that compares the current Flow editor
+ * with a blocked timed queue item without inserting text, activating Generate,
+ * mutating queue state, or authorizing replay. */
+export async function inspectFlowEditorAgainstQueueItem(input: {
+  repositories: ExtensionRepositories;
+  queueId: string;
+  order?: number;
+  now?: () => number;
+  environment?: Pick<
+    FlowTimedDispatchEnvironment,
+    "pagePort" | "getTab" | "getDocument"
+  >;
+}): Promise<FlowEditorReadbackInspectionResult> {
+  const now = input.now ?? Date.now;
+  const queue = await input.repositories.getTimedImageSubmissionQueue(
+    input.queueId,
+  );
+  if (!queue) {
+    throw new ImageQueueEligibilityError("image_queue_not_found");
+  }
+  const order =
+    input.order !== undefined
+      ? input.order
+      : queue.items.findIndex((item) => item.itemState === "blocked");
+  if (order < 0 || order >= queue.items.length) {
+    throw new ImageQueueEligibilityError("image_queue_item_not_found");
+  }
+  const item = queue.items[order]!;
+
+  const selected = await input.repositories.getSelectedTarget("Flow");
+  const binding = selected?.verificationBinding;
+  if (
+    !selected ||
+    selected.provider !== "Flow" ||
+    selected.tabId !== queue.selectedProject.tabId ||
+    selected.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+    !binding ||
+    binding.tabId !== selected.tabId ||
+    binding.canonicalTarget !== selected.canonicalTarget ||
+    binding.projectId !== queue.selectedProject.projectId
+  ) {
+    throw new ImageQueueEligibilityError(
+      "selected_project_or_connection_changed",
+    );
+  }
+
+  const pagePort =
+    input.environment?.pagePort ??
+    createChromeFlowImageGenerateOncePort(input.repositories);
+
+  const editorRead = await readCurrentFlowEditorText(pagePort, selected.tabId);
+
+  if (editorRead.text !== undefined) {
+    const comparison = await comparePromptReadbackSafely({
+      expectedText: item.rawJsonBody,
+      actualText: editorRead.text,
+      expectedSha256: item.promptHash,
+    });
+    return {
+      queueId: queue.queueId,
+      queueItemId: item.queueItemId,
+      order,
+      ...(item.shotId ? { shotId: item.shotId } : {}),
+      stage: "read_only_editor_inspection",
+      inspectedAt: now(),
+      equal: comparison.equal,
+      expectedCodeUnits: comparison.expectedCodeUnits,
+      actualCodeUnits: comparison.actualCodeUnits,
+      expectedUtf8Bytes: comparison.expectedUtf8Bytes,
+      actualUtf8Bytes: comparison.actualUtf8Bytes,
+      expectedSha256: comparison.expectedSha256,
+      actualSha256: comparison.actualSha256,
+      firstDifferenceOffset: comparison.firstDifferenceOffset,
+      mismatchCategory: comparison.mismatchCategory,
+      expectedContext: comparison.expectedContext,
+      actualContext: comparison.actualContext,
+    };
+  }
+
+  return {
+    queueId: queue.queueId,
+    queueItemId: item.queueItemId,
+    order,
+    ...(item.shotId ? { shotId: item.shotId } : {}),
+    stage: "read_only_editor_inspection",
+    inspectedAt: now(),
+    equal: false,
+    expectedCodeUnits: item.rawJsonBody.length,
+    expectedUtf8Bytes: new TextEncoder().encode(item.rawJsonBody).byteLength,
+    expectedSha256: item.promptHash,
+    readError:
+      editorRead.error ??
+      (editorRead.found ? "empty_editor_read" : "editor_not_found"),
   };
 }
