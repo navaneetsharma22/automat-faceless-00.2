@@ -95,9 +95,13 @@ function render(
   state: ImageSubmissionQueueRecord["state"],
   itemState: ImageSubmissionQueueRecord["items"][number]["itemState"],
 ) {
+  return renderRecord(queue(state, itemState));
+}
+
+function renderRecord(record: ImageSubmissionQueueRecord) {
   return renderToStaticMarkup(
     createElement(QueueCard, {
-      queue: queue(state, itemState),
+      queue: record,
       starting: false,
       busy: false,
       onStart: () => undefined,
@@ -120,6 +124,55 @@ describe("timed queue presentation", () => {
 
   it("allows a new distinct source after a completed queue", () => {
     expect(isQueueCreationBlocker(queue("sent", "sent"))).toBe(false);
+  });
+
+  it("highlights the failed prompt and leaves untouched later prompts pending", () => {
+    const base = queue("blocked", "blocked");
+    const sent = {
+      ...baseItem,
+      queueItemId: "sent-10",
+      sourceItemId: "source-10",
+      order: 0,
+      shotId: "10",
+      itemState: "sent" as const,
+      providerOutcome: "unknown" as const,
+      dispatchReceipt: {
+        attemptId: "attempt-10",
+        storedAt: 1_000,
+        evidence: "activation_pair_sent_or_uncertain" as const,
+      },
+    };
+    const blocked = {
+      ...baseItem,
+      queueItemId: "blocked-11",
+      sourceItemId: "source-11",
+      order: 1,
+      shotId: "11",
+      itemState: "blocked" as const,
+      blockReason: "editor_exact_readback_mismatch",
+    };
+    const later = [12, 13, 14].map((shotId, index) => ({
+      ...baseItem,
+      queueItemId: `pending-${shotId}`,
+      sourceItemId: `source-${shotId}`,
+      order: index + 2,
+      shotId: String(shotId),
+    }));
+    const blockedQueue = { ...base, items: [sent, blocked, ...later] };
+    const markup = renderRecord(blockedQueue);
+    const activeRow = markup.match(
+      /<li[^>]*data-active="true"[^>]*>([\s\S]*?)<\/li>/,
+    )?.[1];
+
+    expect(markup).toContain("Blocked prompt");
+    expect(markup).toContain("Shot 11");
+    expect(activeRow).toContain("Shot 11");
+    expect(activeRow).toContain("editor_exact_readback_mismatch");
+    expect(activeRow).toContain(
+      "Not dispatched. Provider outcome not started.",
+    );
+    expect(markup.match(/>Pending<\/span>/g)).toHaveLength(3);
+    expect(activeRow).not.toContain("Shot 12");
   });
 
   it("shows a deadline-derived timer and actual next shot while waiting", () => {

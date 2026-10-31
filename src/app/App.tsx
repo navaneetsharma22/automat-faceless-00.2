@@ -8,6 +8,8 @@ import { SettingsConfirmation } from "./components/SettingsConfirmation";
 import { ToastHost } from "./components/ToastHost";
 import { BUILD_ID } from "../shared/buildInfo";
 import type { FlowSettingsConfirmation } from "../shared/schemas";
+import type { ImageSubmissionQueueRecord } from "../domain/jobs/queue";
+import type { ImportedPrompt } from "../domain/batches/importBatch";
 import { createFoundationClient } from "../shared/messageClient";
 import { flowTabFromUrl } from "../platforms/flow/connection";
 import { registerDashboardFocusResponder } from "./dashboardFocus";
@@ -29,6 +31,8 @@ function Dashboard() {
   const [imageSourceReady, setImageSourceReady] = useState(false);
   const [imageSavedSource, setImageSavedSource] = useState<string>();
   const [imageSavedShotIds, setImageSavedShotIds] = useState<string[]>([]);
+  const [currentImageQueue, setCurrentImageQueue] =
+    useState<ImageSubmissionQueueRecord>();
   const [batchClient] = useState(() =>
     createFoundationClient({
       sendMessage: (message) => {
@@ -130,6 +134,17 @@ function Dashboard() {
     },
     [],
   );
+  const updateCurrentImageQueue = useCallback(
+    (queue: ImageSubmissionQueueRecord | undefined) => {
+      setCurrentImageQueue((current) =>
+        current?.queueId === queue?.queueId &&
+        current?.revision === queue?.revision
+          ? current
+          : queue,
+      );
+    },
+    [],
+  );
 
   useEffect(
     () => () => {
@@ -223,6 +238,8 @@ function Dashboard() {
               sourceReady={imageSourceReady}
               savedSource={imageSavedSource}
               savedShotIds={imageSavedShotIds}
+              currentQueue={currentImageQueue}
+              onCurrentQueueChange={updateCurrentImageQueue}
               onSourceReadinessChange={updateImageSourceReadiness}
             />
           </div>
@@ -291,6 +308,8 @@ function ImagesView({
   sourceReady,
   savedSource,
   savedShotIds,
+  currentQueue,
+  onCurrentQueueChange,
   onSourceReadinessChange,
 }: {
   session: ImportPreviewSession;
@@ -307,6 +326,8 @@ function ImagesView({
   sourceReady: boolean;
   savedSource?: string;
   savedShotIds: string[];
+  currentQueue?: ImageSubmissionQueueRecord;
+  onCurrentQueueChange: (queue: ImageSubmissionQueueRecord | undefined) => void;
   onSourceReadinessChange: (
     ready: boolean,
     savedSource?: string,
@@ -346,6 +367,7 @@ function ImagesView({
           sourceReady={sourceReady}
           savedSource={savedSource}
           savedShotIds={savedShotIds}
+          onCurrentQueueChange={onCurrentQueueChange}
           settingsConfirmation={settingsConfirmation ?? undefined}
           settingsConfirmationPending={confirmationPending}
           settingsConfirmationError={confirmationError}
@@ -387,7 +409,11 @@ function ImagesView({
             </>
           }
         />
-        <ValidatedPromptPanel session={session} />
+        <ValidatedPromptPanel
+          session={session}
+          savedSource={savedSource}
+          currentQueue={currentQueue}
+        />
       </div>
     </div>
   );
@@ -395,8 +421,12 @@ function ImagesView({
 
 export function ValidatedPromptPanel({
   session,
+  savedSource,
+  currentQueue,
 }: {
   session: ImportPreviewSession;
+  savedSource?: string;
+  currentQueue?: ImageSubmissionQueueRecord;
 }) {
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -408,6 +438,12 @@ export function ValidatedPromptPanel({
     snapshot.result !== undefined &&
     snapshot.resultRevision === snapshot.revision;
   const items = validated ? (snapshot.result?.items ?? []) : [];
+  const queueItems = exactQueueItemsForPreview(
+    validated ? snapshot.source : undefined,
+    savedSource,
+    items,
+    currentQueue,
+  );
 
   return (
     <section
@@ -426,7 +462,11 @@ export function ValidatedPromptPanel({
       </div>
       {items.length ? (
         <>
-          <p className={styles.sourceStatus}>Validated · Not sent to Flow</p>
+          <p className={styles.sourceStatus}>
+            {queueItems
+              ? "Saved source · status from its exact queue snapshot"
+              : "Validated preview · dispatch status requires an exact saved-source match"}
+          </p>
           <ol className={styles.sourcePromptList}>
             {items.map((item, index) => (
               <li
@@ -434,7 +474,11 @@ export function ValidatedPromptPanel({
                 key={`${item.shotId ?? "prompt"}:${item.sourceSpan.start}`}
               >
                 <strong>{item.shotId ?? `Prompt ${index + 1}`}</strong>
-                <span>Not sent</span>
+                <span>
+                  {queueItems
+                    ? sourceItemStatus(queueItems[index]!, currentQueue!.state)
+                    : "Preview"}
+                </span>
               </li>
             ))}
           </ol>
@@ -446,6 +490,43 @@ export function ValidatedPromptPanel({
       )}
     </section>
   );
+}
+
+function exactQueueItemsForPreview(
+  previewSource: string | undefined,
+  savedSource: string | undefined,
+  previewItems: readonly ImportedPrompt[],
+  queue: ImageSubmissionQueueRecord | undefined,
+) {
+  if (
+    !previewSource ||
+    previewSource !== savedSource ||
+    queue?.sourceText !== savedSource ||
+    queue.items.length !== previewItems.length
+  )
+    return undefined;
+  const matches = previewItems.every((item, index) => {
+    const queued = queue.items[index];
+    return (
+      queued !== undefined &&
+      queued.order === index &&
+      queued.rawJsonBody === item.rawBody &&
+      queued.shotId === item.shotId &&
+      queued.sourceSpan.start === item.sourceSpan.start &&
+      queued.sourceSpan.end === item.sourceSpan.end
+    );
+  });
+  return matches ? queue.items : undefined;
+}
+
+function sourceItemStatus(
+  item: ImageSubmissionQueueRecord["items"][number],
+  queueState: ImageSubmissionQueueRecord["state"],
+) {
+  if (item.itemState === "pending" && queueState === "paused") return "Paused";
+  if (item.itemState === "pending" && queueState === "stopped")
+    return "Stopped";
+  return item.itemState[0]!.toUpperCase() + item.itemState.slice(1);
 }
 
 function ReferencesView() {

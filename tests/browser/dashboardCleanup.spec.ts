@@ -111,7 +111,9 @@ test("image import is source-faithful and the cleaned dashboard fits review view
     page.getByRole("heading", { name: "1 validated prompt" }),
   ).toBeVisible();
   await expect(page.getByText("Shot ID 7")).toBeVisible();
-  await expect(page.getByText("Not sent to Flow")).toBeVisible();
+  await expect(page.locator('[class*="sourceStatus"]')).toContainText(
+    "Validated preview",
+  );
   await expect(
     page.getByRole("button", { name: "Save validated batch" }),
   ).toBeEnabled();

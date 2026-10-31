@@ -22,6 +22,7 @@ export function ImageQueueProgress({
   settingsConfirmationPending,
   settingsConfirmationError,
   settingsConfirmationControls,
+  onCurrentQueueChange,
 }: {
   workspaceId: string;
   persistenceClient: FoundationClient;
@@ -32,6 +33,9 @@ export function ImageQueueProgress({
   settingsConfirmationPending: boolean;
   settingsConfirmationError?: string;
   settingsConfirmationControls: ReactNode;
+  onCurrentQueueChange?: (
+    queue: ImageSubmissionQueueRecord | undefined,
+  ) => void;
 }) {
   const [queues, setQueues] = useState<ImageSubmissionQueueRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -206,6 +210,9 @@ export function ImageQueueProgress({
       ? queues.find((queue) => queue.sourceText === savedSource)
       : undefined;
   const previousQueues = queues.filter((queue) => queue !== currentQueue);
+  useEffect(() => {
+    onCurrentQueueChange?.(currentQueue);
+  }, [currentQueue, onCurrentQueueChange]);
   const blockingPreviousQueue = previousQueues.find(isQueueCreationBlocker);
   const disabledReason = loading
     ? "Reading saved queues before allowing another queue."
@@ -344,8 +351,12 @@ export function QueueCard({
 }) {
   const sentCount = queue.items.filter((item) => item.dispatchReceipt).length;
   const sendingItem = queue.items.find((item) => item.itemState === "sending");
+  const blockedItem = queue.items.find((item) => item.itemState === "blocked");
   const nextItem = queue.items.find((item) => item.itemState === "pending");
-  const focusItem = sendingItem ?? nextItem;
+  const focusItem =
+    sendingItem ??
+    blockedItem ??
+    (queue.state === "blocked" ? undefined : nextItem);
   const isComplete = sentCount === queue.items.length && queue.items.length > 0;
   const status = sendingItem
     ? "Sending"
@@ -392,7 +403,15 @@ export function QueueCard({
           <span>Local dispatch receipts</span>
         </div>
         <div className={styles.nextSummary}>
-          <span>{sendingItem ? "Current prompt" : "Next prompt"}</span>
+          <span>
+            {sendingItem
+              ? "Current prompt"
+              : blockedItem
+                ? "Blocked prompt"
+                : queue.state === "blocked"
+                  ? "Queue blocked"
+                  : "Next prompt"}
+          </span>
           {focusItem ? (
             <>
               <strong>{shotLabel(focusItem)}</strong>
@@ -402,7 +421,11 @@ export function QueueCard({
             </>
           ) : (
             <strong>
-              {isComplete ? "No prompts remaining" : "Checking next prompt…"}
+              {isComplete
+                ? "No prompts remaining"
+                : queue.state === "blocked"
+                  ? "Review required"
+                  : "Checking next prompt…"}
             </strong>
           )}
         </div>
@@ -616,11 +639,9 @@ function PromptRow({
   const effectiveState =
     item.itemState === "pending" && queueState === "paused"
       ? "paused"
-      : item.itemState === "pending" && queueState === "blocked"
-        ? "blocked"
-        : item.itemState === "pending" && queueState === "stopped"
-          ? "stopped"
-          : item.itemState;
+      : item.itemState === "pending" && queueState === "stopped"
+        ? "stopped"
+        : item.itemState;
   const icon = {
     pending: "○",
     sending: "◌",

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DownloadsView, ValidatedPromptPanel } from "./App";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
+import type { ImageSubmissionQueueRecord } from "../domain/jobs/queue";
 
 function findElements(
   node: React.ReactNode,
@@ -75,15 +76,99 @@ describe("P01.3 workspace previews", () => {
     validation?.();
     const validatedMarkup = renderElement(ValidatedPromptPanel, { session });
     expect(validatedMarkup).toContain("7");
-    expect(validatedMarkup).toContain("Not sent to Flow");
+    expect(validatedMarkup).toContain("Validated preview");
+    expect(validatedMarkup).toContain(">Preview</span>");
     expect(validatedMarkup).not.toContain("progressTrack");
     expect(validatedMarkup).not.toContain("Sent to Flow");
+  });
+
+  it("reconciles source labels only against an exact saved queue snapshot", () => {
+    let validation: (() => void) | undefined;
+    const session = new ImportPreviewSession("image", undefined, (callback) => {
+      validation = callback;
+      return 1 as ReturnType<typeof setTimeout>;
+    });
+    const source = [
+      '{"shot_id":"10","scene_title":"First"}',
+      '{"shot_id":"11","scene_title":"Blocked"}',
+      '{"shot_id":"12","scene_title":"Later"}',
+      '{"shot_id":"13","scene_title":"Later"}',
+      '{"shot_id":"14","scene_title":"Later"}',
+    ]
+      .map((body, index) => `${index + 10}: ${body}`)
+      .join("\n");
+    session.setSource(source);
+    session.validate();
+    validation?.();
+    const imported = session.getSnapshot().result!.items;
+    const items = imported.map((item, order) => ({
+      queueItemId: `queue-item-${order}`,
+      sourceItemId: `source-item-${order}`,
+      order,
+      shotId: item.shotId,
+      rawJsonBody: item.rawBody,
+      promptHash: "a".repeat(64),
+      sourceSpan: item.sourceSpan,
+      itemState:
+        order === 0
+          ? ("sent" as const)
+          : order === 1
+            ? ("blocked" as const)
+            : ("pending" as const),
+      providerOutcome:
+        order === 0 ? ("unknown" as const) : ("not_started" as const),
+      ...(order === 0
+        ? {
+            dispatchReceipt: {
+              attemptId: "attempt-10",
+              storedAt: 10,
+              evidence: "activation_pair_sent_or_uncertain" as const,
+            },
+          }
+        : order === 1
+          ? { blockReason: "editor_exact_readback_mismatch" }
+          : {}),
+    }));
+    const queue = {
+      queueId: "queue-shot-10-to-14",
+      sourceText: source,
+      state: "blocked",
+      items,
+    } as unknown as ImageSubmissionQueueRecord;
+    const exactMarkup = renderElement(ValidatedPromptPanel, {
+      session,
+      savedSource: source,
+      currentQueue: queue,
+    });
+    expect(exactMarkup).toContain(
+      "Saved source · status from its exact queue snapshot",
+    );
+    expect(exactMarkup.match(/>Sent<\/span>/g)).toHaveLength(1);
+    expect(exactMarkup.match(/>Blocked<\/span>/g)).toHaveLength(1);
+    expect(exactMarkup.match(/>Pending<\/span>/g)).toHaveLength(3);
+
+    const differentSourceMarkup = renderElement(ValidatedPromptPanel, {
+      session,
+      savedSource: `${source} `,
+      currentQueue: queue,
+    });
+    expect(differentSourceMarkup).toContain("Validated preview");
+    expect(differentSourceMarkup).toContain(">Preview</span>");
+    expect(differentSourceMarkup).not.toContain(">Sent</span>");
   });
 });
 
 function renderElement(
-  component: (props: { session: ImportPreviewSession }) => React.ReactNode,
-  props: { session: ImportPreviewSession },
+  component: (props: {
+    session: ImportPreviewSession;
+    savedSource?: string;
+    currentQueue?: ImageSubmissionQueueRecord;
+  }) => React.ReactNode,
+  props: {
+    session: ImportPreviewSession;
+    savedSource?: string;
+    currentQueue?: ImageSubmissionQueueRecord;
+  },
 ) {
   return renderToStaticMarkup(React.createElement(component, props));
 }

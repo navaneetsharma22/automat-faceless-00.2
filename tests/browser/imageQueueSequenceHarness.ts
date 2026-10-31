@@ -1,6 +1,7 @@
 import {
   ExtensionRepositories,
   createDexieRepositoryDatabase,
+  sha256Hex,
 } from "../../src/storage/repositories";
 import { AutomatDatabase } from "../../src/storage/db";
 import {
@@ -25,8 +26,21 @@ export async function runDexieTimedQueueSequence() {
       tabId: 27,
       canonicalTarget: "https://flow.google.com/project/timed-sequence",
     };
-    const source =
-      '1: {"shot_id":"01","prompt":" exact one "}\n2: {"shot_id":"02","prompt":"exact two"}';
+    const firstBody = JSON.stringify({
+      shot_id: "10",
+      scene_title: "First prompt",
+      prompt: "First synthetic prompt body.",
+    });
+    const secondBody = JSON.stringify({
+      shot_id: "11",
+      scene_title: "Long second prompt",
+      prompt: Array.from(
+        { length: 420 },
+        (_, index) => `Second prompt segment ${index} stays exact.`,
+      ).join(" "),
+    });
+    const expectedBodies = [firstBody, secondBody];
+    const source = `10: ${firstBody}\n11: ${secondBody}`;
     await repositories.savePromptBatch({
       workspaceId: "timed-sequence",
       kind: "image",
@@ -223,12 +237,92 @@ export async function runDexieTimedQueueSequence() {
     const final = await repositories.getTimedImageSubmissionQueue(
       queue.queueId,
     );
+    const evidenceFor = async (body: string) => {
+      const parsed = JSON.parse(body) as { shot_id?: string };
+      return {
+        shotId: parsed.shot_id,
+        codeUnits: body.length,
+        utf8Bytes: new TextEncoder().encode(body).byteLength,
+        sha256: await sha256Hex(body),
+      };
+    };
+    const inputEvidence = await Promise.all(syntheticClickLog.map(evidenceFor));
+    const expectedEvidence = await Promise.all(expectedBodies.map(evidenceFor));
+    const comparisonEvidence = await Promise.all(
+      expectedBodies.map(async (expected, index) => {
+        const actual = syntheticClickLog[index] ?? "";
+        const commonLength = Math.min(expected.length, actual.length);
+        let firstDifferenceOffset = 0;
+        while (
+          firstDifferenceOffset < commonLength &&
+          expected[firstDifferenceOffset] === actual[firstDifferenceOffset]
+        )
+          firstDifferenceOffset += 1;
+        const contextStart = Math.max(0, firstDifferenceOffset - 16);
+        const contextEnd = firstDifferenceOffset + 16;
+        return {
+          equal: expected === actual,
+          firstDifferenceOffset:
+            expected === actual ? undefined : firstDifferenceOffset,
+          mismatchCategory:
+            expected === actual
+              ? undefined
+              : expected.length === actual.length
+                ? "code-unit"
+                : firstDifferenceOffset === commonLength
+                  ? "length"
+                  : "representation",
+          expectedCodeUnits: expected.length,
+          actualCodeUnits: actual.length,
+          expectedUtf8Bytes: new TextEncoder().encode(expected).byteLength,
+          actualUtf8Bytes: new TextEncoder().encode(actual).byteLength,
+          expectedSha256: await sha256Hex(expected),
+          actualSha256: await sha256Hex(actual),
+          expectedContext: JSON.stringify(
+            expected.slice(contextStart, contextEnd),
+          ),
+          actualContext: JSON.stringify(actual.slice(contextStart, contextEnd)),
+        };
+      }),
+    );
+    const persistedItems = queue.items.map((item) => ({
+      shotId: item.shotId,
+      order: item.order,
+      codeUnits: item.rawJsonBody.length,
+      utf8Bytes: new TextEncoder().encode(item.rawJsonBody).byteLength,
+      sha256: item.promptHash,
+      sourceSpan: item.sourceSpan,
+    }));
+    const expectedItems = await Promise.all(
+      expectedBodies.map(async (body, order) => {
+        const start = order === 0 ? source.indexOf(body) : source.indexOf(body);
+        return {
+          shotId: (JSON.parse(body) as { shot_id: string }).shot_id,
+          order,
+          codeUnits: body.length,
+          utf8Bytes: new TextEncoder().encode(body).byteLength,
+          sha256: await sha256Hex(body),
+          sourceSpan: { start, end: start + body.length },
+        };
+      }),
+    );
     return {
-      orderedProviderInputs: syntheticClickLog,
-      expectedBodies: [
-        '{"shot_id":"01","prompt":" exact one "}',
-        '{"shot_id":"02","prompt":"exact two"}',
-      ],
+      orderedInputsMatch:
+        syntheticClickLog.length === expectedBodies.length &&
+        syntheticClickLog.every(
+          (body, index) => body === expectedBodies[index],
+        ),
+      inputEvidence,
+      expectedEvidence,
+      comparisonEvidence,
+      persistedItems,
+      expectedItems,
+      richComposerResetObserved:
+        (window as unknown as { __timedComposerResetCount?: number })
+          .__timedComposerResetCount === 2,
+      composerResetCount: (
+        window as unknown as { __timedComposerResetCount?: number }
+      ).__timedComposerResetCount,
       earlyCount,
       dispatchCount: syntheticClickLog.length,
       activationCounts: syntheticClickLog.map(
@@ -238,10 +332,20 @@ export async function runDexieTimedQueueSequence() {
       receiptTimes: final?.items.map((item) => item.dispatchReceipt?.storedAt),
       outcomes: final?.items.map((item) => item.providerOutcome),
       finalState: final?.state,
+      finalItems: final?.items.map((item) => ({
+        shotId: item.shotId,
+        itemState: item.itemState,
+        providerOutcome: item.providerOutcome,
+        receiptStored: Boolean(item.dispatchReceipt),
+        intentStored: Boolean(item.dispatchIntent),
+        activationStarted:
+          item.dispatchIntent?.activationStartedAt !== undefined,
+        blockReason: item.blockReason,
+      })),
       deadlines: final?.nextEligibleDispatchAt,
       alarmCount: alarms.size,
       initialStatus: initial.items[0]?.itemState,
-      blockedReason: initial.items.find((item) => item.itemState === "blocked")
+      blockedReason: final?.items.find((item) => item.itemState === "blocked")
         ?.blockReason,
     };
   } finally {
@@ -252,6 +356,7 @@ export async function runDexieTimedQueueSequence() {
 
 declare global {
   interface Window {
+    __timedComposerResetCount?: number;
     __TimedQueueSequenceFixture: {
       runDexieTimedQueueSequence: typeof runDexieTimedQueueSequence;
     };
