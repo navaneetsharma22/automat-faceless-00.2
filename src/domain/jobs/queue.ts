@@ -52,6 +52,27 @@ export type PromptReadbackDiagnostic = {
   readonly readError?: string;
 };
 
+export type FlowEditorReadbackInspectionResult = {
+  readonly queueId: string;
+  readonly queueItemId: string;
+  readonly order: number;
+  readonly shotId?: string;
+  readonly stage: "read_only_editor_inspection";
+  readonly inspectedAt: number;
+  readonly equal: boolean;
+  readonly expectedCodeUnits: number;
+  readonly actualCodeUnits?: number;
+  readonly expectedUtf8Bytes: number;
+  readonly actualUtf8Bytes?: number;
+  readonly expectedSha256: string;
+  readonly actualSha256?: string;
+  readonly firstDifferenceOffset?: number;
+  readonly mismatchCategory?: "length" | "code-unit" | "representation";
+  readonly expectedContext?: string;
+  readonly actualContext?: string;
+  readonly readError?: string;
+};
+
 export type ImageQueueItem = {
   readonly queueItemId: string;
   readonly sourceItemId: string;

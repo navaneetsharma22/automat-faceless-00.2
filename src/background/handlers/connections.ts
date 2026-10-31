@@ -15,6 +15,7 @@ import {
   ImageQueueEligibilityError,
   PromptBatchValidationError,
 } from "../../storage/repositories";
+import { ImageQueueInspectionError } from "../generationQueue";
 
 export type ExtensionMessageSender = {
   id?: string;
@@ -77,13 +78,19 @@ function failure(
   category: FailureCategory,
   code: string,
   message: string,
+  stage?: string,
 ): AppResponse {
   return {
     protocolVersion: PROTOCOL_VERSION,
     buildId: BUILD_ID,
     requestId,
     ok: false,
-    error: { category, code, message },
+    error: {
+      category,
+      code,
+      message,
+      ...(stage ? { stage } : {}),
+    },
   };
 }
 
@@ -271,6 +278,7 @@ async function dispatch(
           "worker_error",
           "image_queue_inspection_unavailable",
           "Readback inspection is unavailable in this worker.",
+          "request_validation",
         );
       try {
         return await dependencies.inspectTimedQueueItemReadback(
@@ -278,13 +286,40 @@ async function dispatch(
           request.payload.order,
         );
       } catch (error) {
-        if (error instanceof ImageQueueEligibilityError)
+        if (error instanceof FoundationOperationError) {
+          throw error;
+        }
+        if (error instanceof ImageQueueInspectionError) {
+          throw new FoundationOperationError(
+            error.category,
+            error.code,
+            error.message,
+            error.stage,
+          );
+        }
+        if (error instanceof ImageQueueEligibilityError) {
+          const stage =
+            error.code === "image_queue_not_found" ||
+            error.code === "image_queue_item_not_found"
+              ? "queue_lookup"
+              : "target_verification";
           throw new FoundationOperationError(
             "invalid_request",
             error.code,
             "The saved queue or target is unavailable for readback inspection.",
+            stage,
           );
-        throw error;
+        }
+        const boundedCode =
+          error instanceof Error && error.name && error.name !== "Error"
+            ? error.name.slice(0, 64)
+            : "inspection_failed";
+        throw new FoundationOperationError(
+          "worker_error",
+          boundedCode,
+          "The read-only editor inspection encountered an unexpected worker error.",
+          "editor_readback",
+        );
       }
     }
     case "connections.recordSelection": {
@@ -388,8 +423,10 @@ export class FoundationOperationError extends Error {
     readonly category: FailureCategory,
     readonly code: string,
     message: string,
+    readonly stage?: string,
   ) {
     super(message);
+    this.name = "FoundationOperationError";
   }
 }
 
@@ -530,6 +567,7 @@ export function createConnectionMessageListener(
               error.category,
               error.code,
               error.message,
+              error.stage,
             ),
           );
           return;
@@ -541,6 +579,9 @@ export function createConnectionMessageListener(
               "storage_failure",
               "image_queue_operation_failed",
               "The timed queue operation could not be safely completed.",
+              request.type === "imageQueue.inspectReadback"
+                ? "editor_readback"
+                : undefined,
             ),
           );
           return;

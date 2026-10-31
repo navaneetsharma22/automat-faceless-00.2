@@ -84,6 +84,21 @@ for (const injectFinalMismatch of [false, true]) {
           process.cwd(),
           "tests/browser/imageQueueSequenceHarness.ts",
         ),
+        plugins: [
+          {
+            name: "ignore-css",
+            resolveId(source: string) {
+              if (source.endsWith(".css")) {
+                return "\0empty.js";
+              }
+            },
+            load(id: string) {
+              if (id === "\0empty.js") {
+                return "export default {};";
+              }
+            },
+          },
+        ],
       });
       try {
         const built = await bundle.generate({
@@ -168,6 +183,53 @@ for (const injectFinalMismatch of [false, true]) {
           );
           expect(report.dispatchCount).toBe(1);
           expect(report.composerResetCount).toBe(1);
+
+          // Verify the Inspect current editor (read-only) button on the blocked queue
+          const inspectButton = page.getByRole("button", {
+            name: "Inspect current editor (read-only)",
+          });
+          await expect(inspectButton).toBeVisible();
+
+          // Verify that Queue and provider evidence displays queueId
+          const evidenceDetails = page.getByText("Queue and provider evidence");
+          await expect(evidenceDetails).toBeVisible();
+          await evidenceDetails.click();
+          await expect(
+            page.getByText(`Queue ID: ${report.queueId}`),
+          ).toBeVisible();
+
+          // Click Inspect current editor (read-only)
+          await inspectButton.click();
+          const inspectionResultPanel = page.getByTestId(
+            "read-only-inspection-result",
+          );
+          await expect(inspectionResultPanel).toBeVisible();
+          await expect(inspectionResultPanel).toContainText(
+            "Live editor inspection (read-only) — Shot 11:",
+          );
+          await expect(inspectionResultPanel).toContainText("16332");
+          await expect(inspectionResultPanel).toContainText("16333");
+          await expect(inspectionResultPanel).toContainText(
+            "First difference at offset 16332 (length)",
+          );
+
+          // Verify that the button targeted Shot 11 (order: 1) with the persisted queueId
+          const recordedCalls = await page.evaluate(
+            () =>
+              (
+                window as unknown as {
+                  __inspectCalls: Array<{ queueId: string; order: number }>;
+                }
+              ).__inspectCalls,
+          );
+          expect(recordedCalls).toEqual([
+            { queueId: report.queueId, order: 1 },
+          ]);
+
+          // Verify that no extra Generate activation or composer reset occurred
+          expect(report.dispatchCount).toBe(1);
+          expect(report.composerResetCount).toBe(1);
+
           console.log(
             "Synthetic final pre-activation mismatch evidence",
             JSON.stringify({
@@ -226,6 +288,9 @@ for (const injectFinalMismatch of [false, true]) {
           );
         }
       } finally {
+        await page.evaluate(() =>
+          window.__TimedQueueSequenceFixture?.cleanup?.(),
+        );
         await bundle.close();
         await cdp.detach();
       }

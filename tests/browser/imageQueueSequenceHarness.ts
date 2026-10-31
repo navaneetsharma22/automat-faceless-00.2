@@ -12,6 +12,9 @@ import {
   createFlowTimedQueueDispatcher,
   inspectFlowEditorAgainstQueueItem,
 } from "../../src/background/generationQueue";
+import { createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { QueueCard } from "../../src/app/features/image-batch/Progress";
 import type { FlowImageGenerateOncePort } from "../../src/background/handlers/flow";
 import type { FlowPromptEntryPort } from "../../src/platforms/flow/promptEntry";
 
@@ -309,7 +312,7 @@ export async function runDexieTimedQueueSequence() {
         };
       }),
     );
-    return {
+    const report = {
       orderedInputsMatch:
         syntheticClickLog.length === expectedBodies.length &&
         syntheticClickLog.every(
@@ -367,19 +370,84 @@ export async function runDexieTimedQueueSequence() {
       initialStatus: initial.items[0]?.itemState,
       blockedReason: final?.items.find((item) => item.itemState === "blocked")
         ?.blockReason,
+      queueId: initial.queueId,
     };
+
+    if (final?.state === "blocked") {
+      activeDb = db;
+      const inspectCalls: Array<{ queueId: string; order: number }> = [];
+      (
+        window as unknown as {
+          __inspectCalls: Array<{ queueId: string; order: number }>;
+        }
+      ).__inspectCalls = inspectCalls;
+      let container = document.getElementById("test-queue-card-root");
+      if (!container) {
+        container = document.createElement("div");
+        container.id = "test-queue-card-root";
+        document.body.appendChild(container);
+      }
+      const root = createRoot(container);
+      root.render(
+        createElement(QueueCard, {
+          queue: final,
+          starting: false,
+          busy: false,
+          onStart: () => undefined,
+          onCommand: () => undefined,
+          onInspectReadback: async (payload) => {
+            inspectCalls.push(payload);
+            return await inspectFlowEditorAgainstQueueItem({
+              repositories,
+              queueId: payload.queueId,
+              order: payload.order,
+              environment: {
+                pagePort,
+                getTab: async () => ({ id: 27 }),
+                getDocument: async () => ({
+                  documentId: "fixture-doc",
+                  frameId: 0,
+                }),
+              },
+            });
+          },
+        }),
+      );
+    }
+    return report;
   } finally {
-    db.close();
-    await db.delete();
+    if (!activeDb) {
+      db.close();
+      await db.delete();
+    }
+  }
+}
+
+let activeDb: AutomatDatabase | undefined;
+
+export async function cleanupFixture() {
+  const container = document.getElementById("test-queue-card-root");
+  if (container) {
+    container.remove();
+  }
+  if (activeDb) {
+    activeDb.close();
+    await activeDb.delete();
+    activeDb = undefined;
   }
 }
 
 declare global {
   interface Window {
     __timedComposerResetCount?: number;
+    __inspectCalls?: Array<{ queueId: string; order: number }>;
     __TimedQueueSequenceFixture: {
       runDexieTimedQueueSequence: typeof runDexieTimedQueueSequence;
+      cleanup?: typeof cleanupFixture;
     };
   }
 }
-window.__TimedQueueSequenceFixture = { runDexieTimedQueueSequence };
+window.__TimedQueueSequenceFixture = {
+  runDexieTimedQueueSequence,
+  cleanup: cleanupFixture,
+};

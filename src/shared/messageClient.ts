@@ -14,6 +14,7 @@ export class FoundationClientError extends Error {
     readonly category: FailureCategory,
     readonly code: string,
     message: string,
+    readonly stage?: string,
   ) {
     super(message);
     this.name = "FoundationClientError";
@@ -116,6 +117,7 @@ export function createFoundationClient(
             response.error.category,
             response.error.code,
             response.error.message,
+            response.error.stage,
           );
         }
         return response.data;

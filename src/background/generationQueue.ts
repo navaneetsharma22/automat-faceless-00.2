@@ -15,11 +15,41 @@ import { flowTabFromUrl } from "../platforms/flow/connection";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import type { TimedQueueDispatcher } from "./scheduler";
 import type { FlowPromptEntryPort } from "../platforms/flow/promptEntry";
-import type { FlowImageGenerateOncePort } from "./handlers/flow";
+import type {
+  FlowDebuggerLease,
+  FlowImageGenerateOncePort,
+} from "./handlers/flow";
+import type { FailureCategory } from "../shared/schemas";
 import {
   comparePromptReadbackSafely,
+  type FlowEditorReadbackInspectionResult,
   type PromptReadbackDiagnostic,
 } from "../domain/jobs/queue";
+
+export type InspectionFailureStage =
+  | "request_validation"
+  | "queue_lookup"
+  | "target_verification"
+  | "debugger_lease"
+  | "editor_readback"
+  | "response_validation";
+
+export class ImageQueueInspectionError extends ImageQueueEligibilityError {
+  constructor(
+    readonly stage: InspectionFailureStage,
+    code: string,
+    message: string,
+    readonly category: FailureCategory = "worker_error",
+    cause?: unknown,
+  ) {
+    super(code);
+    this.name = "ImageQueueInspectionError";
+    this.message = message;
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
+  }
+}
 
 export type FlowTimedDispatchEnvironment = {
   promptPort: FlowPromptEntryPort;
@@ -336,26 +366,7 @@ export function createFlowTimedQueueDispatcher(
   };
 }
 
-export type FlowEditorReadbackInspectionResult = {
-  queueId: string;
-  queueItemId: string;
-  order: number;
-  shotId?: string;
-  stage: "read_only_editor_inspection";
-  inspectedAt: number;
-  equal: boolean;
-  expectedCodeUnits: number;
-  actualCodeUnits?: number;
-  expectedUtf8Bytes: number;
-  actualUtf8Bytes?: number;
-  expectedSha256: string;
-  actualSha256?: string;
-  firstDifferenceOffset?: number;
-  mismatchCategory?: "length" | "code-unit" | "representation";
-  expectedContext?: string;
-  actualContext?: string;
-  readError?: string;
-};
+export type { FlowEditorReadbackInspectionResult } from "../domain/jobs/queue";
 
 /** Explicit read-only inspection that compares the current Flow editor
  * with a blocked timed queue item without inserting text, activating Generate,
@@ -375,14 +386,24 @@ export async function inspectFlowEditorAgainstQueueItem(input: {
     input.queueId,
   );
   if (!queue) {
-    throw new ImageQueueEligibilityError("image_queue_not_found");
+    throw new ImageQueueInspectionError(
+      "queue_lookup",
+      "image_queue_not_found",
+      "The requested timed queue was not found.",
+      "not_found",
+    );
   }
   const order =
     input.order !== undefined
       ? input.order
       : queue.items.findIndex((item) => item.itemState === "blocked");
   if (order < 0 || order >= queue.items.length) {
-    throw new ImageQueueEligibilityError("image_queue_item_not_found");
+    throw new ImageQueueInspectionError(
+      "queue_lookup",
+      "image_queue_item_not_found",
+      "The requested queue item was not found.",
+      "not_found",
+    );
   }
   const item = queue.items[order]!;
 
@@ -398,23 +419,137 @@ export async function inspectFlowEditorAgainstQueueItem(input: {
     binding.canonicalTarget !== selected.canonicalTarget ||
     binding.projectId !== queue.selectedProject.projectId
   ) {
-    throw new ImageQueueEligibilityError(
+    throw new ImageQueueInspectionError(
+      "target_verification",
       "selected_project_or_connection_changed",
+      "The selected Flow target or project changed and no longer matches the queue.",
+      "invalid_request",
     );
+  }
+
+  if (input.environment?.getTab) {
+    const liveTab = await input.environment.getTab(selected.tabId);
+    if (!liveTab) {
+      throw new ImageQueueInspectionError(
+        "target_verification",
+        "selected_target_unavailable",
+        "The target browser tab is closed or unavailable.",
+        "invalid_request",
+      );
+    }
+    if (liveTab.url) {
+      const parsedTab = flowTabFromUrl(
+        selected.tabId,
+        liveTab.title ?? "",
+        liveTab.url,
+      );
+      if (
+        !parsedTab ||
+        parsedTab.canonicalTarget !== selected.canonicalTarget
+      ) {
+        throw new ImageQueueInspectionError(
+          "target_verification",
+          "selected_project_or_connection_changed",
+          "The target tab is no longer available or its project changed.",
+          "invalid_request",
+        );
+      }
+    }
+  } else if (typeof chrome !== "undefined" && chrome.tabs?.get) {
+    try {
+      const tab = await chrome.tabs.get(selected.tabId);
+      if (!tab) {
+        throw new Error("target_tab_missing");
+      }
+    } catch (cause) {
+      throw new ImageQueueInspectionError(
+        "target_verification",
+        "selected_target_unavailable",
+        "The target browser tab is closed or unavailable.",
+        "invalid_request",
+        cause,
+      );
+    }
+  }
+
+  if (input.environment?.getDocument) {
+    const doc = await input.environment.getDocument(selected.tabId);
+    if (doc?.documentId && doc.documentId !== binding.documentId) {
+      throw new ImageQueueInspectionError(
+        "target_verification",
+        "selected_document_project_mismatch",
+        "The active browser document no longer matches the verified project binding.",
+        "invalid_request",
+      );
+    }
   }
 
   const pagePort =
     input.environment?.pagePort ??
     createChromeFlowImageGenerateOncePort(input.repositories);
 
-  const editorRead = await readCurrentFlowEditorText(pagePort, selected.tabId);
+  let lease: FlowDebuggerLease | undefined;
+  if (pagePort.acquireDebuggerLease) {
+    try {
+      lease = await pagePort.acquireDebuggerLease(
+        selected.tabId,
+        `timed-image-queue-inspect:${queue.queueId}:${order}`,
+      );
+    } catch (cause) {
+      throw new ImageQueueInspectionError(
+        "debugger_lease",
+        "debugger_lease_acquisition_failed",
+        "Debugger lease could not be acquired for read-only inspection.",
+        "worker_error",
+        cause,
+      );
+    }
+  }
 
-  if (editorRead.text !== undefined) {
-    const comparison = await comparePromptReadbackSafely({
-      expectedText: item.rawJsonBody,
-      actualText: editorRead.text,
-      expectedSha256: item.promptHash,
-    });
+  try {
+    let editorRead: { found: boolean; text?: string; error?: string };
+    try {
+      await pagePort
+        .sendCommand(selected.tabId, "Page.enable")
+        .catch(() => undefined);
+      editorRead = await readCurrentFlowEditorText(pagePort, selected.tabId);
+    } catch (cause) {
+      throw new ImageQueueInspectionError(
+        "editor_readback",
+        "editor_readback_failed",
+        "Failed to read editor text from target page.",
+        "worker_error",
+        cause,
+      );
+    }
+
+    if (editorRead.text !== undefined) {
+      const comparison = await comparePromptReadbackSafely({
+        expectedText: item.rawJsonBody,
+        actualText: editorRead.text,
+        expectedSha256: item.promptHash,
+      });
+      return {
+        queueId: queue.queueId,
+        queueItemId: item.queueItemId,
+        order,
+        ...(item.shotId ? { shotId: item.shotId } : {}),
+        stage: "read_only_editor_inspection",
+        inspectedAt: now(),
+        equal: comparison.equal,
+        expectedCodeUnits: comparison.expectedCodeUnits,
+        actualCodeUnits: comparison.actualCodeUnits,
+        expectedUtf8Bytes: comparison.expectedUtf8Bytes,
+        actualUtf8Bytes: comparison.actualUtf8Bytes,
+        expectedSha256: comparison.expectedSha256,
+        actualSha256: comparison.actualSha256,
+        firstDifferenceOffset: comparison.firstDifferenceOffset,
+        mismatchCategory: comparison.mismatchCategory,
+        expectedContext: comparison.expectedContext,
+        actualContext: comparison.actualContext,
+      };
+    }
+
     return {
       queueId: queue.queueId,
       queueItemId: item.queueItemId,
@@ -422,33 +557,17 @@ export async function inspectFlowEditorAgainstQueueItem(input: {
       ...(item.shotId ? { shotId: item.shotId } : {}),
       stage: "read_only_editor_inspection",
       inspectedAt: now(),
-      equal: comparison.equal,
-      expectedCodeUnits: comparison.expectedCodeUnits,
-      actualCodeUnits: comparison.actualCodeUnits,
-      expectedUtf8Bytes: comparison.expectedUtf8Bytes,
-      actualUtf8Bytes: comparison.actualUtf8Bytes,
-      expectedSha256: comparison.expectedSha256,
-      actualSha256: comparison.actualSha256,
-      firstDifferenceOffset: comparison.firstDifferenceOffset,
-      mismatchCategory: comparison.mismatchCategory,
-      expectedContext: comparison.expectedContext,
-      actualContext: comparison.actualContext,
+      equal: false,
+      expectedCodeUnits: item.rawJsonBody.length,
+      expectedUtf8Bytes: new TextEncoder().encode(item.rawJsonBody).byteLength,
+      expectedSha256: item.promptHash,
+      readError:
+        editorRead.error ??
+        (editorRead.found ? "empty_editor_read" : "editor_not_found"),
     };
+  } finally {
+    if (lease && pagePort.releaseDebuggerLease) {
+      await pagePort.releaseDebuggerLease(lease).catch(() => undefined);
+    }
   }
-
-  return {
-    queueId: queue.queueId,
-    queueItemId: item.queueItemId,
-    order,
-    ...(item.shotId ? { shotId: item.shotId } : {}),
-    stage: "read_only_editor_inspection",
-    inspectedAt: now(),
-    equal: false,
-    expectedCodeUnits: item.rawJsonBody.length,
-    expectedUtf8Bytes: new TextEncoder().encode(item.rawJsonBody).byteLength,
-    expectedSha256: item.promptHash,
-    readError:
-      editorRead.error ??
-      (editorRead.found ? "empty_editor_read" : "editor_not_found"),
-  };
 }

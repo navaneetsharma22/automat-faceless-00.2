@@ -173,6 +173,8 @@ describe("timed queue presentation", () => {
     );
     expect(markup.match(/>Pending<\/span>/g)).toHaveLength(3);
     expect(activeRow).not.toContain("Shot 12");
+    expect(markup).toContain("Inspect current editor (read-only)");
+    expect(markup).toContain("Queue ID: <code>queue-blocked</code>");
   });
 
   it("shows a deadline-derived timer and actual next shot while waiting", () => {
@@ -216,4 +218,67 @@ describe("timed queue presentation", () => {
       }
     },
   );
+
+  it("targets Shot 11 in a blocked queue when onInspectReadback is provided", () => {
+    const base = queue("blocked", "blocked");
+    const sent = {
+      ...baseItem,
+      queueItemId: "sent-10",
+      order: 0,
+      shotId: "10",
+      itemState: "sent" as const,
+      dispatchReceipt: {
+        attemptId: "attempt-10",
+        storedAt: 1_000,
+        evidence: "activation_pair_sent_or_uncertain" as const,
+      },
+    };
+    const blocked = {
+      ...baseItem,
+      queueItemId: "blocked-11",
+      order: 1,
+      shotId: "11",
+      itemState: "blocked" as const,
+      blockReason: "editor_exact_readback_mismatch",
+    };
+    const blockedQueue = {
+      ...base,
+      queueId: "queue-shot-11-test",
+      items: [sent, blocked],
+    };
+    const inspectMock = vi.fn().mockResolvedValue({
+      queueId: "queue-shot-11-test",
+      queueItemId: "blocked-11",
+      order: 1,
+      shotId: "11",
+      stage: "read_only_editor_inspection" as const,
+      inspectedAt: 1000,
+      equal: false,
+      expectedCodeUnits: 3874,
+      actualCodeUnits: 3875,
+      expectedUtf8Bytes: 3874,
+      actualUtf8Bytes: 3875,
+      expectedSha256: "hash-expected",
+      actualSha256: "hash-actual",
+      firstDifferenceOffset: 3874,
+      mismatchCategory: "length" as const,
+      expectedContext: '"end"}',
+      actualContext: '"end"} ',
+    });
+
+    const element = createElement(QueueCard, {
+      queue: blockedQueue,
+      starting: false,
+      busy: false,
+      onStart: () => undefined,
+      onCommand: () => undefined,
+      onInspectReadback: inspectMock,
+    });
+
+    const markup = renderToStaticMarkup(element);
+    expect(markup).toContain("Inspect current editor (read-only)");
+    expect(markup).toContain("Queue ID: <code>queue-shot-11-test</code>");
+    expect(markup).toContain("Blocked prompt");
+    expect(markup).toContain("Shot 11");
+  });
 });

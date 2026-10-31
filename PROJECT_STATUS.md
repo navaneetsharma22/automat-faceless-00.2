@@ -84,6 +84,22 @@ Added bounded diagnostics at the pre-activation exact readback comparison (`Prom
 
 Checks: full Vitest **28 files / 323 tests PASS** (including 9 focused readback diagnostics and synthetic comparison unit tests); Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; Prettier PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvwjrlo`**. No live provider actions, replay, or storage resets occurred.
 
+## Blocked queue read-only inspection button — 31 October 2026
+
+The dashboard's expanded “Queue and provider evidence” now displays `Queue ID: <code>{queue.queueId}</code>`.
+
+Added an “Inspect current editor (read-only)” button to the blocked queue card. When invoked, it reads the displayed queue's actual persisted `queueId` and blocked item's `order` (targeting Shot 11 in the mismatch scenario) and calls the existing worker operation `imageQueue.inspectReadback`. The response is displayed directly on the card with:
+
+- Shot identity (e.g. `Shot 11`)
+- Match status (`equal: true` or `false` with mismatch category)
+- Expected and actual code-unit lengths, UTF-8 byte sizes, and SHA-256 digests
+- First difference offset and bounded escaped context snippets
+- Any inspection or read error if the request or editor read failed
+
+This action does not insert text, click Generate, mutate queue state in Dexie, authorize replay, or alter the 40,000 ms scheduler.
+
+Checks: full Vitest **28 files / 324 tests PASS**; Playwright browser sequence **2/2 PASS** (asserting the button targets Shot 11 with order 1, displays the length mismatch result, and sends zero Generate clicks); typecheck PASS; ESLint PASS; Prettier PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvxbkzj`**. No live provider actions, replay, or storage resets occurred.
+
 ## Phase ledger
 
 | Phase                                         | Status                                                                                                                                                                                                                                                                                                                     | Evidence                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -687,3 +703,11 @@ Added the worker `imageQueue.start` route and a globally serialized one-dispatch
 Each dispatch validates the immutable exact body/hash and current selected Flow project/tab/document, holds the shared debugger lease through prompt entry and activation preflight, uses exact immediate and settled editor readback, finds the uniquely enabled Generate control inside the owned composer, and rechecks binding before one activation pair. On successful local dispatch evidence the receipt and per-item deadline are atomically stored/read back; the deadline is exactly `receiptStoredAt + 40,000 ms`. Chrome alarms only wake the scheduler, which rereads current durable state and refuses early dispatches. Late alarms never cause catch-up bursts. Historical attempts, snapshots, unknown outcomes, observations, and exact-source locks remain unchanged. The dashboard shows actual item states and a countdown derived from the persisted deadline; zero means eligible for worker recheck, not sent. Final queue copy is “All prompts sent; results not verified.”
 
 Validation: focused queue/scheduler Vitest **2 files / 9 tests PASS**; full Vitest **25 files / 290 tests PASS**; real-Dexie Chromium sequence with the production timed dispatcher and synthetic local CDP provider input **1/1 PASS**; full configured Chromium suite **66/66 PASS**; typecheck PASS; ESLint PASS; production MV3 package and shared build-ID validation PASS; `git diff --check` PASS. Exact source ordering, one activation each, durable first receipt before item two, refusal at 39,999 ms, eligibility at 40,000 ms, duplicate/late alarms, uncertain activation, binding refusal, failed receipt persistence, and unknown provider outcomes were covered offline. Chrome/alarm APIs were adapted in the Chromium fixture; installed-MV3 behavior is **NOT_RUN**. No live provider generation/input/navigation/refresh, historical mutation, settlement, lock release, or deletion occurred. Validated package ID: **`automat-faceless-0.1.0-mvv2q5pz`**. P06.3 pause/restart/uncertainty handling and P06.4 controlled live acceptance remain NOT_STARTED; no G-IMAGE gate is passed.
+
+## Standalone debugger lease acquisition and bounded inspection error mapping — 31 October 2026
+
+The generic failure `"Inspection error: The timed queue operation could not be safely completed."` on the installed extension was traced to `inspectFlowEditorAgainstQueueItem` attempting `pagePort.sendCommand` without acquiring its own debugger lease. After dispatch cleanup released its lease, `sendCommand` threw `Error: Debugger is not attached to that target`. Because `connections.ts` only caught `ImageQueueEligibilityError`, the unhandled rejection fell to the generic queue catch-all at `connections.ts:537-546`.
+
+`inspectFlowEditorAgainstQueueItem` now explicitly requests a standalone debugger lease (`timed-image-queue-inspect:${queue.queueId}:${order}`) and releases it in a strict `finally` block. Pre-read checks validate queue lookup, item order bounds, stored target and verification binding, live tab availability, and document binding. `ImageQueueInspectionError` and `FoundationOperationError` now carry a bounded `stage` (`request_validation`, `queue_lookup`, `target_verification`, `debugger_lease`, `editor_readback`, `response_validation`) and classification `code`. The UI formats inspection errors as `[stage] code (category): message` without leaking raw sensitive stack traces or prompt JSON bodies.
+
+Validation: full Vitest **29 files / 329 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; production package and build-ID validation PASS; `git diff --check` PASS. Added integration regression `tests/integration/imageQueueInspection.test.ts` exercising the real message listener and production port adapter after dispatch cleanup with no active lease. Validated package ID: **`automat-faceless-0.1.0-mvvy408d`**. Mocked API tests and installed-MV3 verification boundaries remain clearly distinguished. No live provider generation/input, replay, or historical mutation occurred.

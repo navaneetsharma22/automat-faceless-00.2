@@ -710,6 +710,7 @@ export const AppResponseSchema = z.discriminatedUnion("ok", [
         category: FailureCategorySchema,
         code: z.string().min(1).max(64),
         message: z.string().min(1).max(240),
+        stage: z.string().min(1).max(64).optional(),
       })
       .strict(),
   }),

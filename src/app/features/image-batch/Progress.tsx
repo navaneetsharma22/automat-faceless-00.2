@@ -1,9 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { FoundationClient } from "../../../shared/messageClient";
+import {
+  FoundationClientError,
+  type FoundationClient,
+} from "../../../shared/messageClient";
 import type { FlowSettingsConfirmation } from "../../../shared/schemas";
 import {
   ImageSubmissionQueueRecordSchema,
   TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+  type FlowEditorReadbackInspectionResult,
   type ImageQueueItem,
   type ImageSubmissionQueueRecord,
 } from "../../../domain/jobs/queue";
@@ -312,6 +316,7 @@ export function ImageQueueProgress({
             busy={Boolean(commanding || startingQueueId)}
             onStart={() => void startQueue(currentQueue.queueId)}
             onCommand={(command) => void commandQueue(currentQueue, command)}
+            persistenceClient={persistenceClient}
           />
         </div>
       ) : null}
@@ -327,6 +332,7 @@ export function ImageQueueProgress({
             busy={Boolean(commanding || startingQueueId)}
             onStart={() => void startQueue(queue.queueId)}
             onCommand={(command) => void commandQueue(queue, command)}
+            persistenceClient={persistenceClient}
           />
         </div>
       ))}
@@ -341,6 +347,8 @@ export function QueueCard({
   busy,
   onStart,
   onCommand,
+  persistenceClient,
+  onInspectReadback,
 }: {
   queue: ImageSubmissionQueueRecord;
   commanding?: { queueId: string; command: "pause" | "resume" | "stop" };
@@ -348,7 +356,17 @@ export function QueueCard({
   busy: boolean;
   onStart: () => void;
   onCommand: (command: "pause" | "resume" | "stop") => void;
+  persistenceClient?: FoundationClient;
+  onInspectReadback?: (payload: {
+    queueId: string;
+    order: number;
+  }) => Promise<FlowEditorReadbackInspectionResult>;
 }) {
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectionResult, setInspectionResult] =
+    useState<FlowEditorReadbackInspectionResult>();
+  const [inspectionError, setInspectionError] = useState<string>();
+
   const sentCount = queue.items.filter((item) => item.dispatchReceipt).length;
   const sendingItem = queue.items.find((item) => item.itemState === "sending");
   const blockedItem = queue.items.find((item) => item.itemState === "blocked");
@@ -357,6 +375,48 @@ export function QueueCard({
     sendingItem ??
     blockedItem ??
     (queue.state === "blocked" ? undefined : nextItem);
+
+  const handleInspectEditor = async () => {
+    if (inspecting || busy) return;
+    setInspecting(true);
+    setInspectionError(undefined);
+    try {
+      const targetOrder = blockedItem ? blockedItem.order : 0;
+      let response: unknown;
+      if (onInspectReadback) {
+        response = await onInspectReadback({
+          queueId: queue.queueId,
+          order: targetOrder,
+        });
+      } else if (persistenceClient) {
+        response = await persistenceClient.request(
+          "imageQueue.inspectReadback",
+          {
+            queueId: queue.queueId,
+            order: targetOrder,
+          },
+        );
+      } else {
+        throw new Error("No inspection client available.");
+      }
+      setInspectionResult(response as FlowEditorReadbackInspectionResult);
+    } catch (cause) {
+      if (cause instanceof FoundationClientError) {
+        const stagePrefix = cause.stage ? `[${cause.stage}] ` : "";
+        setInspectionError(
+          `${stagePrefix}${cause.code} (${cause.category}): ${cause.message}`,
+        );
+      } else {
+        setInspectionError(
+          cause instanceof Error
+            ? cause.message
+            : "Editor readback inspection failed.",
+        );
+      }
+    } finally {
+      setInspecting(false);
+    }
+  };
   const isComplete = sentCount === queue.items.length && queue.items.length > 0;
   const status = sendingItem
     ? "Sending"
@@ -502,6 +562,18 @@ export function QueueCard({
             Stop queue
           </Button>
         ) : null}
+        {queue.state === "blocked" ? (
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy || inspecting}
+            loading={inspecting}
+            loadingLabel="Inspecting editor…"
+            onClick={() => void handleInspectEditor()}
+          >
+            Inspect current editor (read-only)
+          </Button>
+        ) : null}
         {commanding ? (
           <span
             className={styles.commandStatus}
@@ -536,6 +608,68 @@ export function QueueCard({
           <span>Elapsed time does not authorize replay.</span>
         </div>
       ) : null}
+      {inspectionError ? (
+        <p className={styles.error} role="alert">
+          Inspection error: {inspectionError}
+        </p>
+      ) : null}
+      {inspectionResult ? (
+        <div
+          className={styles.technicalDetails}
+          data-testid="read-only-inspection-result"
+        >
+          <strong>
+            Live editor inspection (read-only) —{" "}
+            {inspectionResult.shotId
+              ? `Shot ${inspectionResult.shotId}`
+              : `Prompt ${inspectionResult.order + 1}`}
+            :
+          </strong>
+          {inspectionResult.equal ? (
+            <p>
+              Current editor text matches prompt exactly (
+              {inspectionResult.expectedCodeUnits} code units, SHA-256:{" "}
+              <code>{inspectionResult.expectedSha256}</code>).
+            </p>
+          ) : (
+            <>
+              <p>
+                Editor text does not match prompt (
+                {inspectionResult.mismatchCategory ?? "mismatch"}).
+              </p>
+              <p>
+                Expected: {inspectionResult.expectedCodeUnits} code units (
+                {inspectionResult.expectedUtf8Bytes} bytes), SHA-256:{" "}
+                <code>{inspectionResult.expectedSha256}</code>
+              </p>
+              {inspectionResult.actualCodeUnits !== undefined ? (
+                <p>
+                  Actual: {inspectionResult.actualCodeUnits} code units (
+                  {inspectionResult.actualUtf8Bytes} bytes), SHA-256:{" "}
+                  <code>{inspectionResult.actualSha256}</code>
+                </p>
+              ) : null}
+              {inspectionResult.firstDifferenceOffset !== undefined ? (
+                <p>
+                  First difference at offset{" "}
+                  {inspectionResult.firstDifferenceOffset} (
+                  {inspectionResult.mismatchCategory}):
+                  <br />
+                  Expected context:{" "}
+                  <code>{inspectionResult.expectedContext}</code>
+                  <br />
+                  Actual context: <code>{inspectionResult.actualContext}</code>
+                </p>
+              ) : null}
+              {inspectionResult.readError ? (
+                <p>
+                  Read error: <code>{inspectionResult.readError}</code>
+                </p>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
       {queue.state === "paused" ? (
         <p className={styles.inactiveNotice} role="status">
           Paused. No future prompt will be dispatched until the saved target and
@@ -561,6 +695,9 @@ export function QueueCard({
       </ol>
       <details className={styles.technicalDetails}>
         <summary>Queue and provider evidence</summary>
+        <p>
+          Queue ID: <code>{queue.queueId}</code>
+        </p>
         <p>
           Stored interval: {TIMED_IMAGE_SUBMISSION_INTERVAL_MS.toLocaleString()}{" "}
           ms. A deadline makes the next prompt eligible for worker recheck; it

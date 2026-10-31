@@ -72,3 +72,53 @@ Existing durable state was insufficient: `ImageSubmissionQueueRecord` and its it
    The exact-match guard and 40,000 ms interval remain strictly enforced. No text normalization, retry, replay, or live provider actions were performed.
 
 Checks: full Vitest **28 files / 323 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; Prettier PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvwjrlo`**.
+
+## Blocked queue read-only inspection button — 31 October 2026
+
+1. **Queue ID Display**:
+   The expanded “Queue and provider evidence” details discloses the persisted `Queue ID: <code>{queue.queueId}</code>`.
+
+2. **Read-Only Inspection Button on Blocked Queue**:
+   An “Inspect current editor (read-only)” button renders in the blocked queue's action row. It automatically binds to that queue's persisted `queueId` and the blocked item's `order` (targeting Shot 11).
+
+3. **Response Presentation**:
+   Clicking the button calls `imageQueue.inspectReadback` and presents the response:
+   - Identifies the shot (`Live editor inspection (read-only) — Shot 11:`).
+   - Reports match status and mismatch category.
+   - Displays expected and actual code-unit lengths, UTF-8 byte sizes, and SHA-256 digests.
+   - Highlights first difference offset and bounded context snippets.
+   - Displays any inspection error or read error without modifying queue state, inserting text, clicking Generate, or authorizing replay.
+
+Checks: full Vitest **28 files / 324 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; Prettier PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvxbkzj`**.
+
+## Standalone debugger lease acquisition and bounded inspection error mapping — 31 October 2026
+
+1. **Proven Cause Tracing**:
+   - The generic error `"Inspection error: The timed queue operation could not be safely completed."` was produced by `createConnectionMessageListener` catch-all at `connections.ts:537-546`.
+   - `inspectFlowEditorAgainstQueueItem` called `readCurrentFlowEditorText(pagePort, selected.tabId)` directly without acquiring its own debugger lease.
+   - After a timed queue item blocked or dispatch completed, dispatch cleanup had already released its debugger lease (`pagePort.releaseDebuggerLease(lease)`) and detached Chrome's debugger.
+   - In production, calling `pagePort.sendCommand` without an active debugger lease threw `Error: Debugger is not attached to that target`.
+   - `connections.ts` `case "imageQueue.inspectReadback"` only caught `ImageQueueEligibilityError`, so the unhandled debugger error escaped to the outer `.catch` and was masked by the generic `"image_queue_operation_failed"` response.
+
+2. **Standalone Debugger Lease Acquisition & Cleanup**:
+   - `inspectFlowEditorAgainstQueueItem` now explicitly requests a dedicated standalone debugger lease with owner `timed-image-queue-inspect:${queue.queueId}:${order}` before reading editor text.
+   - The lease is released in a strict `finally` block, leaving no dangling attachment or held tab lock.
+   - It performs full pre-read validation: queue lookup, item order bounds, stored target and verification binding validation, live tab availability check, and document binding verification.
+
+3. **Bounded Failure Stage and Error Classification**:
+   - Added optional `stage` (`request_validation`, `queue_lookup`, `target_verification`, `debugger_lease`, `editor_readback`, `response_validation`) to `AppResponseSchema` error payload, `FoundationOperationError`, and `FoundationClientError`.
+   - Introduced `ImageQueueInspectionError` to carry `stage`, bounded classification `code`, safe `message`, and private `cause` (preserving original error without exposing raw stack traces or JSON prompt text across the wire).
+   - In `connections.ts`, all inspection errors are mapped to `FoundationOperationError` with bounded stage and code; none fall through to generic queue failure.
+   - In `Progress.tsx`, errors are displayed as `[stage] code (category): message`.
+
+4. **Integration Regression**:
+   - Added `tests/integration/imageQueueInspection.test.ts` traversing the real message handler (`createConnectionMessageListener`) and production port adapter (`createChromeFlowImageGenerateOncePort`) after dispatch cleanup with no existing lease.
+   - Verified:
+     - Standalone lease acquisition and release in production adapter.
+     - Bounded `debugger_lease` / `debugger_lease_acquisition_failed` mapping when attach fails.
+     - Bounded `target_verification` / `selected_project_or_connection_changed` mapping when target changes.
+     - Bounded `target_verification` / `selected_target_unavailable` mapping when tab is closed.
+     - Immutability: zero queue state mutations, zero text insertions, zero Generate activations.
+   - Clearly documented the distinction between Node/Vitest mocked API unit tests and installed-MV3 verification.
+
+Checks: full Vitest **29 files / 329 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvy408d`**.
