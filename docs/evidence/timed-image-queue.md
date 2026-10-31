@@ -311,5 +311,19 @@ Checks: full Vitest **31 files / 345 tests PASS**; typecheck PASS; ESLint PASS; 
 
 - Vitest: **32 files / 357 tests PASS** (including 5 new presentation and pagination unit tests in `tests/unit/imageQueuePresentation.test.tsx` covering contiguous and fallback shot ranges, deterministic date formatting, compact collapsed vs. expanded rendering without mounting prompt bodies, 100-batch scalability with bounded pagination, and preservation/no-duplication guarantees).
 - Static Checks: TypeScript typecheck PASS (`tsc --noEmit`); ESLint PASS (`eslint .`); Prettier check PASS; `git diff --check` clean.
-- Production Build: Packaged and validated with ID **`automat-faceless-0.1.0-mvw4ist3`** (4 JavaScript bundles).
+- Production Build: Packaged and validated with ID **`automat-faceless-0.1.0-mvw54jk3`** (4 JavaScript bundles).
 - Strict Scope Preservation: 40-second interval, readiness wait, replay protection, receipts, connections, diagnostics, source locks, and non-image workspaces completely preserved. No live provider actions.
+
+### 6.1 Themed Slim Scrollbars Polish — 31 October 2026
+
+- Replaced native grey scrollbars and arrow buttons on the sidebar, left import panel, and right queue column with slim, theme-consistent scrollbars (~6px).
+- Styling:
+  - Track: transparent.
+  - Thumb: rounded pill geometry (`--radius-pill: 999px`) using `--color-border-strong` (`#b9a5aa` in light theme, `#596574` in dark theme).
+  - Hover: strengthened contrast to `--color-text-muted` (`#75636d` in light theme, `#a7b0bd` in dark theme).
+  - Arrow buttons: completely hidden where supported (`::-webkit-scrollbar-button { display: none; width: 0; height: 0; }`).
+  - Cross-browser compatibility: standard `scrollbar-width: thin` and `scrollbar-color` in non-WebKit browsers, paired with Chromium `::-webkit-scrollbar` styling via `@supports not selector(::-webkit-scrollbar)` to avoid native Windows arrow-button fallback.
+  - Accessibility: `@media (forced-colors: active)` respects system colors (`scrollbar-color: auto`, thumb `ButtonText`, hover `Highlight`).
+  - Gutter & dimensions: existing `scrollbar-gutter: stable` and panel geometry preserved; zero impact on textarea resizing or other workspace views.
+- Verified visually in Chromium across both themes and captured screenshots in `artifacts/scrollbar-visual/` (`light-theme-scrollbars.png`, `dark-theme-scrollbars.png`, and `light-theme-hover.png`).
+- Checks: full Vitest **32 files / 357 tests PASS**; Playwright `sidebarLayout.spec.ts` **1/1 PASS**; typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` clean. Package ID: **`automat-faceless-0.1.0-mvw57oga`**.

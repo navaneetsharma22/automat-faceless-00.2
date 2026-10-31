@@ -812,6 +812,19 @@ The latest five-prompt batch (Shots 15–19) finished successfully without block
    - Groups older terminal batches behind a collapsed `<details className={styles.batchHistorySection}>` with bounded pagination (10 items per page with "Load more" control).
    - Defers mounting full `QueueCard`s and prompt bodies until expanded on demand ("View details").
    - 5-second queue polling preserves user expand/collapse states and scroll positions via React state (`expandedQueueIds`).
-   - Strictly ensures the active queue is never duplicated in history.
+     Validation: full Vitest **32 files / 357 tests PASS** (including 5 new presentation and pagination unit tests in `tests/unit/imageQueuePresentation.test.tsx` covering contiguous and fallback shot ranges, deterministic date formatting, compact collapsed vs. expanded rendering without mounting prompt bodies, 100-batch scalability with bounded pagination, and preservation/no-duplication guarantees); typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` PASS; production package build and shared build-ID validation PASS. Validated package ID: **`automat-faceless-0.1.0-mvw4ist3`**. No live provider actions, generation, downloads, or unprompted migrations performed.
 
-Validation: full Vitest **32 files / 357 tests PASS** (including 5 new presentation and pagination unit tests in `tests/unit/imageQueuePresentation.test.tsx` covering contiguous and fallback shot ranges, deterministic date formatting, compact collapsed vs. expanded rendering without mounting prompt bodies, 100-batch scalability with bounded pagination, and preservation/no-duplication guarantees); typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` PASS; production package build and shared build-ID validation PASS. Validated package ID: **`automat-faceless-0.1.0-mvw4ist3`**. No live provider actions, generation, downloads, or unprompted migrations performed.
+### Themed slim scrollbars polish — 31 October 2026
+
+Polished native scrollbars on the sidebar, left import panel, and right queue panel:
+
+- Replaced thick native grey scrollbars and native arrow buttons with a slim (~6px) transparent-track scrollbar.
+- Thumb styled with rounded pill geometry (`--radius-pill`) using existing theme tokens:
+  - Light theme: subtle dusty maroon (`--color-border-strong: #b9a5aa`), strengthening on hover to deep maroon (`--color-text-muted: #75636d`).
+  - Dark theme: muted slate blue (`--color-border-strong: #596574`), strengthening on hover to slate grey (`--color-text-muted: #a7b0bd`).
+- Arrow buttons hidden where supported (`::-webkit-scrollbar-button { display: none; width: 0; height: 0; }`).
+- Clean cross-browser support: standard `scrollbar-width: thin` and `scrollbar-color` in non-WebKit browsers, paired with Chromium `::-webkit-scrollbar` styling via `@supports not selector(::-webkit-scrollbar)`.
+- Accessibility: `@media (forced-colors: active)` respects system colors (`scrollbar-color: auto`, thumb `ButtonText`, hover `Highlight`).
+- Preserved independent column scrolling, wheel/touch/keyboard scrolling, scrollbar gutter stability (`scrollbar-gutter: stable`), panel dimensions, and JSON textarea behavior.
+- Verified in Chromium across both themes and captured visual screenshots in `artifacts/scrollbar-visual/` (`light-theme-scrollbars.png`, `dark-theme-scrollbars.png`, and `light-theme-hover.png`).
+- Checks: full Vitest **32 files / 357 tests PASS**; Playwright `sidebarLayout.spec.ts` **1/1 PASS**; typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` PASS. Validated package ID: **`automat-faceless-0.1.0-mvw57oga`**. No live provider actions.
