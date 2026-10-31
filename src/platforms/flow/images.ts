@@ -698,15 +698,24 @@ export async function readCurrentFlowEditorText(
 
 /** Timed mode inspects only the uniquely owned composer and its Generate control.
  * It deliberately does not inspect result tiles, image counts, or observer state. */
+export type TimedFlowGenerateInspection = {
+  composer: "identified" | "missing" | "unsupported";
+  exactPrompt: boolean;
+  generate: "identified" | "missing" | "ambiguous" | "disabled";
+  actualText?: string;
+  readError?: string;
+  buttonObjectId?: string;
+};
+
+/** Timed mode inspects only the uniquely owned composer and its Generate control.
+ * It captures comparison outcome and text diagnostics from the SAME editor sample
+ * without DOM dataset mutation, and revalidates editor/button ownership before activation.
+ * It deliberately does not inspect result tiles, image counts, or observer state. */
 export async function inspectTimedFlowGenerate(
   port: FlowImagePagePort,
   tabId: number,
   expectedText: string,
-): Promise<{
-  exactPrompt: boolean;
-  generate: "identified" | "missing" | "ambiguous" | "disabled";
-  buttonObjectId?: string;
-}> {
+): Promise<TimedFlowGenerateInspection> {
   const expression = `(${flowTimedGenerateRuntime.toString()})(${JSON.stringify(expectedText)},(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}))`;
   const response = (await port.sendCommand(tabId, "Runtime.evaluate", {
     expression,
@@ -715,58 +724,125 @@ export async function inspectTimedFlowGenerate(
   })) as {
     result?: {
       objectId?: string;
+      type?: string;
       subtype?: string;
-      description?: string;
-      value?: unknown;
     };
   };
-  const buttonObjectId = response.result?.objectId;
-  if (!buttonObjectId || response.result?.subtype !== "node")
-    return { exactPrompt: false, generate: "missing" };
-  const metadata = (await port.sendCommand(tabId, "Runtime.callFunctionOn", {
-    objectId: buttonObjectId,
-    functionDeclaration:
-      "function(){return {exact:this.dataset.afExact==='true',state:this.dataset.afState, count:Number(this.dataset.afCount)}}",
-    returnByValue: true,
-    awaitPromise: false,
-  })) as {
-    result?: { value?: { exact?: boolean; state?: string; count?: number } };
-  };
-  const value = metadata.result?.value;
-  return {
-    exactPrompt: value?.exact === true,
-    generate:
-      value?.state === "ambiguous"
-        ? "ambiguous"
-        : value?.state === "disabled"
-          ? "disabled"
-          : value?.state === "identified"
-            ? "identified"
-            : "missing",
-    ...(value?.state === "identified" ? { buttonObjectId } : {}),
-  };
+  const wrapperObjectId = response.result?.objectId;
+  if (!wrapperObjectId) {
+    return { composer: "missing", exactPrompt: false, generate: "missing" };
+  }
+  try {
+    const dataResponse = (await port.sendCommand(
+      tabId,
+      "Runtime.callFunctionOn",
+      {
+        objectId: wrapperObjectId,
+        functionDeclaration:
+          "function(){return {composer:this.composer,exactPrompt:this.exactPrompt,generate:this.generate,actualText:this.actualText,readError:this.readError,hasButton:Boolean(this.button)}}",
+        returnByValue: true,
+        awaitPromise: false,
+      },
+    )) as {
+      result?: {
+        value?: {
+          composer?: "identified" | "missing" | "unsupported";
+          exactPrompt?: boolean;
+          generate?: "identified" | "missing" | "ambiguous" | "disabled";
+          actualText?: string;
+          readError?: string;
+          hasButton?: boolean;
+        };
+      };
+    };
+    const value = dataResponse.result?.value;
+    if (!value) {
+      return { composer: "missing", exactPrompt: false, generate: "missing" };
+    }
+    let buttonObjectId: string | undefined;
+    if (value.hasButton && value.generate === "identified") {
+      const buttonResponse = (await port.sendCommand(
+        tabId,
+        "Runtime.callFunctionOn",
+        {
+          objectId: wrapperObjectId,
+          functionDeclaration: "function(){return this.button;}",
+          returnByValue: false,
+          awaitPromise: false,
+        },
+      )) as {
+        result?: {
+          objectId?: string;
+          subtype?: string;
+        };
+      };
+      if (
+        buttonResponse.result?.objectId &&
+        buttonResponse.result.subtype === "node"
+      ) {
+        buttonObjectId = buttonResponse.result.objectId;
+      }
+    }
+    return {
+      composer: value.composer ?? "missing",
+      exactPrompt: Boolean(value.exactPrompt),
+      generate: value.generate ?? "missing",
+      actualText: value.actualText,
+      readError: value.readError,
+      ...(buttonObjectId ? { buttonObjectId } : {}),
+    };
+  } finally {
+    await port
+      .sendCommand(tabId, "Runtime.releaseObject", {
+        objectId: wrapperObjectId,
+      })
+      .catch(() => undefined);
+  }
 }
 
 function flowTimedGenerateRuntime(
   expectedText: string,
   composerRuntime: typeof flowComposerRuntime,
   readText: typeof readFlowEditorRuntime,
-): HTMLElement | null {
+): {
+  composer: "identified" | "missing" | "unsupported";
+  exactPrompt: boolean;
+  actualText?: string;
+  readError?: string;
+  generate: "identified" | "missing" | "ambiguous" | "disabled";
+  button: HTMLElement | null;
+} {
   const editor = composerRuntime("", true, readText);
-  if (!(editor instanceof HTMLElement)) return null;
+  if (!(editor instanceof HTMLElement)) {
+    return {
+      composer: "missing",
+      exactPrompt: false,
+      generate: "missing",
+      button: null,
+    };
+  }
   const rich = editor.closest("flow-rich-text-editor");
   const boundary = rich
     ? editor.closest<HTMLElement>("flow-base-prompt-box")
     : editor.closest<HTMLElement>(
         'form, [role="form"], [role="group"], [role="region"], [data-composer]',
       );
-  if (!boundary) return null;
-  let actual: string;
+  if (!boundary) {
+    return {
+      composer: "unsupported",
+      exactPrompt: false,
+      generate: "missing",
+      button: null,
+    };
+  }
+  let actual: string | undefined;
+  let readError: string | undefined;
   try {
     actual = readText(editor);
-  } catch {
-    return null;
+  } catch (err) {
+    readError = err instanceof Error ? err.message : String(err);
   }
+  const exactPrompt = typeof actual === "string" && actual === expectedText;
   const name = (element: HTMLElement) =>
     (
       element.getAttribute("aria-label")?.trim() ||
@@ -791,21 +867,77 @@ function flowTimedGenerateRuntime(
       button.getClientRects().length > 0
     );
   });
-  if (candidates.length !== 1 || enabled.length !== 1) {
-    const marker = document.createElement("span");
-    marker.dataset.afState =
-      candidates.length > 1
-        ? "ambiguous"
-        : candidates.length === 1
-          ? "disabled"
-          : "missing";
-    return marker;
+  let generate: "identified" | "missing" | "ambiguous" | "disabled";
+  if (candidates.length > 1) {
+    generate = "ambiguous";
+  } else if (candidates.length === 0) {
+    generate = "missing";
+  } else if (enabled.length === 0) {
+    generate = "disabled";
+  } else {
+    generate = "identified";
   }
-  const button = enabled[0]!;
-  button.dataset.afExact = String(actual === expectedText);
-  button.dataset.afState = "identified";
-  button.dataset.afCount = String(candidates.length);
-  return button;
+  return {
+    composer: "identified",
+    exactPrompt,
+    actualText: actual,
+    readError,
+    generate,
+    button: generate === "identified" ? enabled[0]! : null,
+  };
+}
+
+function revalidateAndInspectButtonRuntime(
+  this: unknown,
+  composerRuntime: typeof flowComposerRuntime,
+  readText: typeof readFlowEditorRuntime,
+): { x: number; y: number } | null {
+  const button = this as unknown;
+  if (!(button instanceof HTMLElement)) return null;
+  if (
+    !button.isConnected ||
+    button.matches(":disabled, [disabled], [aria-disabled='true']") ||
+    button.closest("[hidden], [inert], [aria-hidden='true']")
+  ) {
+    return null;
+  }
+  const editor = composerRuntime("", true, readText);
+  if (!(editor instanceof HTMLElement)) return null;
+  const rich = editor.closest("flow-rich-text-editor");
+  const boundary = rich
+    ? editor.closest<HTMLElement>("flow-base-prompt-box")
+    : editor.closest<HTMLElement>(
+        'form, [role="form"], [role="group"], [role="region"], [data-composer]',
+      );
+  if (!boundary || !boundary.contains(button)) return null;
+  const name = (element: HTMLElement) =>
+    (
+      element.getAttribute("aria-label")?.trim() ||
+      element.textContent?.trim() ||
+      ""
+    ).replace(/\s+/g, " ");
+  const candidates = Array.from(
+    boundary.querySelectorAll<HTMLElement>("button, [role='button']"),
+  ).filter((btn) =>
+    /^(generate|generate image|create image|start generation)$/i.test(
+      name(btn),
+    ),
+  );
+  const enabled = candidates.filter((btn) => {
+    const style = getComputedStyle(btn);
+    return (
+      btn.isConnected &&
+      !btn.matches(":disabled, [disabled], [aria-disabled='true']") &&
+      !btn.closest("[hidden], [inert], [aria-hidden='true']") &&
+      style.display !== "none" &&
+      style.visibility === "visible" &&
+      btn.getClientRects().length > 0
+    );
+  });
+  if (enabled.length !== 1 || enabled[0] !== button) return null;
+  const r = button.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
 export async function inspectFlowImageButton(
@@ -813,10 +945,10 @@ export async function inspectFlowImageButton(
   tabId: number,
   buttonObjectId: string,
 ): Promise<{ x: number; y: number } | undefined> {
+  const functionDeclaration = `function(){return (${revalidateAndInspectButtonRuntime.toString()}).call(this,(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}));}`;
   const response = (await port.sendCommand(tabId, "Runtime.callFunctionOn", {
     objectId: buttonObjectId,
-    functionDeclaration:
-      "function(){ if(!this.isConnected || this.matches(':disabled,[disabled],[aria-disabled=true]')) return null; const r=this.getBoundingClientRect(); if(!r.width||!r.height) return null; return {x:r.left+r.width/2,y:r.top+r.height/2}; }",
+    functionDeclaration,
     returnByValue: true,
     awaitPromise: false,
   })) as { result?: { value?: { x?: number; y?: number } | null } };

@@ -349,6 +349,7 @@ export function QueueCard({
   onCommand,
   persistenceClient,
   onInspectReadback,
+  onRetryBlocked,
 }: {
   queue: ImageSubmissionQueueRecord;
   commanding?: { queueId: string; command: "pause" | "resume" | "stop" };
@@ -361,11 +362,18 @@ export function QueueCard({
     queueId: string;
     order: number;
   }) => Promise<FlowEditorReadbackInspectionResult>;
+  onRetryBlocked?: (payload: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+  }) => Promise<ImageSubmissionQueueRecord>;
 }) {
   const [inspecting, setInspecting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [inspectionResult, setInspectionResult] =
     useState<FlowEditorReadbackInspectionResult>();
   const [inspectionError, setInspectionError] = useState<string>();
+  const [retryError, setRetryError] = useState<string>();
 
   const sentCount = queue.items.filter((item) => item.dispatchReceipt).length;
   const sendingItem = queue.items.find((item) => item.itemState === "sending");
@@ -415,6 +423,45 @@ export function QueueCard({
       }
     } finally {
       setInspecting(false);
+    }
+  };
+
+  const handleGuardedRetry = async () => {
+    if (retrying || busy || !blockedItem) return;
+    setRetrying(true);
+    setRetryError(undefined);
+    try {
+      if (onRetryBlocked) {
+        await onRetryBlocked({
+          queueId: queue.queueId,
+          expectedRevision: queue.revision,
+          order: blockedItem.order,
+        });
+      } else if (persistenceClient) {
+        await persistenceClient.request("imageQueue.retryBlocked", {
+          queueId: queue.queueId,
+          expectedRevision: queue.revision,
+          order: blockedItem.order,
+        });
+      } else {
+        throw new Error("No client available for guarded retry.");
+      }
+      setInspectionResult(undefined);
+    } catch (cause) {
+      if (cause instanceof FoundationClientError) {
+        const stagePrefix = cause.stage ? `[${cause.stage}] ` : "";
+        setRetryError(
+          `${stagePrefix}${cause.code} (${cause.category}): ${cause.message}`,
+        );
+      } else {
+        setRetryError(
+          cause instanceof Error
+            ? cause.message
+            : "Guarded retry operation failed.",
+        );
+      }
+    } finally {
+      setRetrying(false);
     }
   };
   const isComplete = sentCount === queue.items.length && queue.items.length > 0;
@@ -566,12 +613,25 @@ export function QueueCard({
           <Button
             type="button"
             variant="secondary"
-            disabled={busy || inspecting}
+            disabled={busy || inspecting || retrying}
             loading={inspecting}
             loadingLabel="Inspecting editor…"
             onClick={() => void handleInspectEditor()}
           >
             Inspect current editor (read-only)
+          </Button>
+        ) : null}
+        {queue.state === "blocked" && inspectionResult?.equal ? (
+          <Button
+            type="button"
+            variant="primary"
+            disabled={busy || inspecting || retrying}
+            loading={retrying}
+            loadingLabel="Retrying…"
+            onClick={() => void handleGuardedRetry()}
+          >
+            Retry {blockedItem ? shotLabel(blockedItem) : "blocked prompt"}{" "}
+            (guarded)
           </Button>
         ) : null}
         {commanding ? (
@@ -611,6 +671,11 @@ export function QueueCard({
       {inspectionError ? (
         <p className={styles.error} role="alert">
           Inspection error: {inspectionError}
+        </p>
+      ) : null}
+      {retryError ? (
+        <p className={styles.error} role="alert">
+          Retry error: {retryError}
         </p>
       ) : null}
       {inspectionResult ? (
@@ -672,8 +737,9 @@ export function QueueCard({
       ) : null}
       {queue.state === "paused" ? (
         <p className={styles.inactiveNotice} role="status">
-          Paused. No future prompt will be dispatched until the saved target and
-          settings binding are revalidated.
+          {queue.pauseReason === "guarded_retry_ready"
+            ? "Paused — guarded retry ready. The 40-second interval from previous dispatch receipt is preserved."
+            : "Paused. No future prompt will be dispatched until the saved target and settings binding are revalidated."}
         </p>
       ) : null}
       {queue.state === "stopped" ? (
@@ -845,6 +911,24 @@ function PromptRow({
                 <br />
                 Actual context:{" "}
                 <code>{item.readbackDiagnostic.actualContext}</code>
+              </p>
+            ) : null}
+            {item.readbackDiagnostic.settledEqual !== undefined ? (
+              <p>
+                Settled editor sample:{" "}
+                {item.readbackDiagnostic.settledEqual ? (
+                  <span>
+                    Matched expected text (
+                    {item.readbackDiagnostic.settledActualCodeUnits} code
+                    units). Initial dispatch sample failed.
+                  </span>
+                ) : (
+                  <span>
+                    Mismatched ({item.readbackDiagnostic.settledActualCodeUnits}{" "}
+                    code units, SHA-256:{" "}
+                    <code>{item.readbackDiagnostic.settledActualSha256}</code>)
+                  </span>
+                )}
               </p>
             ) : null}
             {item.readbackDiagnostic.readError ? (

@@ -240,69 +240,90 @@ export function createFlowTimedQueueDispatcher(
         selected.tabId,
         item.rawJsonBody,
       );
-      if (
-        !inspection.exactPrompt ||
-        inspection.generate !== "identified" ||
-        !inspection.buttonObjectId
-      ) {
-        if (!inspection.exactPrompt) {
-          let diagnostic: PromptReadbackDiagnostic | undefined;
+      if (inspection.composer !== "identified") {
+        return {
+          status: "blocked",
+          reason: `composer_${inspection.composer}`,
+          uncertain: false,
+        };
+      }
+      if (!inspection.exactPrompt) {
+        let diagnostic: PromptReadbackDiagnostic | undefined;
+        try {
+          if (inspection.actualText !== undefined) {
+            const comparison = await comparePromptReadbackSafely({
+              expectedText: item.rawJsonBody,
+              actualText: inspection.actualText,
+              expectedSha256: item.promptHash,
+            });
+            diagnostic = {
+              queueId: queue.queueId,
+              queueItemId: item.queueItemId,
+              order,
+              ...(item.shotId ? { shotId: item.shotId } : {}),
+              stage: "pre_activation_inspection",
+              recordedAt: now(),
+              expectedCodeUnits: comparison.expectedCodeUnits,
+              actualCodeUnits: comparison.actualCodeUnits,
+              expectedUtf8Bytes: comparison.expectedUtf8Bytes,
+              actualUtf8Bytes: comparison.actualUtf8Bytes,
+              expectedSha256: comparison.expectedSha256,
+              actualSha256: comparison.actualSha256,
+              firstDifferenceOffset: comparison.firstDifferenceOffset,
+              mismatchCategory: comparison.mismatchCategory,
+              expectedContext: comparison.expectedContext,
+              actualContext: comparison.actualContext,
+            };
+          } else {
+            diagnostic = {
+              queueId: queue.queueId,
+              queueItemId: item.queueItemId,
+              order,
+              ...(item.shotId ? { shotId: item.shotId } : {}),
+              stage: "pre_activation_inspection",
+              recordedAt: now(),
+              expectedCodeUnits: item.rawJsonBody.length,
+              expectedUtf8Bytes: new TextEncoder().encode(item.rawJsonBody)
+                .byteLength,
+              expectedSha256: item.promptHash,
+              readError: inspection.readError ?? "editor_read_unavailable",
+            };
+          }
+
           try {
             const editorRead = await readCurrentFlowEditorText(
               pagePort,
               selected.tabId,
             );
-            if (editorRead.text !== undefined) {
-              const comparison = await comparePromptReadbackSafely({
+            if (editorRead.text !== undefined && diagnostic) {
+              const settledComparison = await comparePromptReadbackSafely({
                 expectedText: item.rawJsonBody,
                 actualText: editorRead.text,
                 expectedSha256: item.promptHash,
               });
-              diagnostic = {
-                queueId: queue.queueId,
-                queueItemId: item.queueItemId,
-                order,
-                ...(item.shotId ? { shotId: item.shotId } : {}),
-                stage: "pre_activation_inspection",
-                recordedAt: now(),
-                expectedCodeUnits: comparison.expectedCodeUnits,
-                actualCodeUnits: comparison.actualCodeUnits,
-                expectedUtf8Bytes: comparison.expectedUtf8Bytes,
-                actualUtf8Bytes: comparison.actualUtf8Bytes,
-                expectedSha256: comparison.expectedSha256,
-                actualSha256: comparison.actualSha256,
-                firstDifferenceOffset: comparison.firstDifferenceOffset,
-                mismatchCategory: comparison.mismatchCategory,
-                expectedContext: comparison.expectedContext,
-                actualContext: comparison.actualContext,
-              };
-            } else {
-              diagnostic = {
-                queueId: queue.queueId,
-                queueItemId: item.queueItemId,
-                order,
-                ...(item.shotId ? { shotId: item.shotId } : {}),
-                stage: "pre_activation_inspection",
-                recordedAt: now(),
-                expectedCodeUnits: item.rawJsonBody.length,
-                expectedUtf8Bytes: new TextEncoder().encode(item.rawJsonBody)
-                  .byteLength,
-                expectedSha256: item.promptHash,
-                readError:
-                  editorRead.error ??
-                  (editorRead.found ? "empty_editor_read" : "editor_not_found"),
-              };
+              diagnostic.settledActualCodeUnits =
+                settledComparison.actualCodeUnits;
+              diagnostic.settledActualUtf8Bytes =
+                settledComparison.actualUtf8Bytes;
+              diagnostic.settledActualSha256 = settledComparison.actualSha256;
+              diagnostic.settledEqual = settledComparison.equal;
+              diagnostic.settledDifferenceOffset =
+                settledComparison.firstDifferenceOffset;
             }
           } catch {
-            // Diagnostic failure must not mask the mismatch or allow activation
+            // Settled read failure must not mask the primary dispatch sample failure
           }
-          return {
-            status: "blocked",
-            reason: "editor_exact_readback_mismatch",
-            uncertain: false,
-            diagnostic,
-          };
+        } catch {
+          // Diagnostic failure must not mask the mismatch or allow activation
         }
+        return {
+          status: "blocked",
+          reason: "editor_exact_readback_mismatch",
+          uncertain: false,
+          diagnostic,
+        };
+      }
+      if (inspection.generate !== "identified" || !inspection.buttonObjectId) {
         return {
           status: "blocked",
           reason: `generate_${inspection.generate}`,

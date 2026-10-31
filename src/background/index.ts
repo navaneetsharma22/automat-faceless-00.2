@@ -27,6 +27,7 @@ import { providerTabFromUrl } from "../platforms/shared/connection";
 import { createTimedImageQueueScheduler } from "./scheduler";
 import {
   createFlowTimedQueueDispatcher,
+  ImageQueueInspectionError,
   inspectFlowEditorAgainstQueueItem,
 } from "./generationQueue";
 import { flowTabFromUrl } from "../platforms/flow/connection";
@@ -345,6 +346,28 @@ chrome.runtime.onMessage.addListener(
       connectionLifecycle.revalidate(provider, enableReconnect),
     inspectTimedQueueItemReadback: (queueId, order) =>
       inspectFlowEditorAgainstQueueItem({ repositories, queueId, order }),
+    retryBlockedImageQueueItem: async (queueId, expectedRevision, order) => {
+      const inspection = await inspectFlowEditorAgainstQueueItem({
+        repositories,
+        queueId,
+        order,
+      });
+      if (!inspection.equal || !inspection.actualSha256) {
+        throw new ImageQueueInspectionError(
+          "editor_readback",
+          "fresh_exact_check_failed",
+          "The live Flow editor does not exactly match the saved prompt.",
+          "invalid_request",
+        );
+      }
+      return await repositories.retryBlockedTimedImageQueueItem({
+        queueId,
+        expectedRevision,
+        order,
+        at: Date.now(),
+        freshExactSha256: inspection.actualSha256,
+      });
+    },
   }),
 );
 registerDashboardAction(chrome);

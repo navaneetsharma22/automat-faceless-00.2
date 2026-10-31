@@ -281,4 +281,27 @@ describe("timed queue presentation", () => {
     expect(markup).toContain("Blocked prompt");
     expect(markup).toContain("Shot 11");
   });
+
+  it("presents the guarded retry pause notice explaining preserved 40-second interval", () => {
+    const paused = queue("paused", "pending");
+    const guardedPaused = {
+      ...paused,
+      pauseReason: "guarded_retry_ready",
+      lastDispatchReceiptStoredAt: 1_000_000,
+      nextEligibleDispatchAt: 1_040_000,
+    };
+    const element = createElement(QueueCard, {
+      queue: guardedPaused,
+      starting: false,
+      busy: false,
+      onStart: () => undefined,
+      onCommand: () => undefined,
+    });
+    const markup = renderToStaticMarkup(element);
+    expect(markup).toContain("Paused — guarded retry ready");
+    expect(markup).toContain(
+      "40-second interval from previous dispatch receipt is preserved",
+    );
+    expect(markup).toContain("Resume");
+  });
 });

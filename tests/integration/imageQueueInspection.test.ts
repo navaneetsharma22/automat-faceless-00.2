@@ -19,7 +19,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
-import { createFoundationClient, FoundationClientError } from "../../src/shared/messageClient";
+import {
+  createFoundationClient,
+  FoundationClientError,
+} from "../../src/shared/messageClient";
 import { createChromeFlowImageGenerateOncePort } from "../../src/background/handlers/flow";
 import { inspectFlowEditorAgainstQueueItem } from "../../src/background/generationQueue";
 import { ChromePreferenceRepository } from "../../src/storage/repositories";
@@ -27,7 +30,8 @@ import { ChromePreferenceRepository } from "../../src/storage/repositories";
 describe("imageQueue.inspectReadback with real message handler and production adapter", () => {
   const extensionId = "test-extension-inspection";
   const tabId = 42;
-  const canonicalTarget = "https://flow.google.com/project/test-project-inspection";
+  const canonicalTarget =
+    "https://flow.google.com/project/test-project-inspection";
   const projectId = "test-project-inspection";
   const queueId = "4cad6e62-e5bc-4892-8de6-d909772b7530";
 
@@ -93,7 +97,10 @@ describe("imageQueue.inspectReadback with real message handler and production ad
         detach: detachMock,
         sendCommand: sendCommandMock,
         getTargets: vi.fn(async () =>
-          Array.from(attachedTargets).map((t) => ({ tabId: t, attached: true })),
+          Array.from(attachedTargets).map((t) => ({
+            tabId: t,
+            attached: true,
+          })),
         ),
       },
     };
@@ -116,7 +123,10 @@ describe("imageQueue.inspectReadback with real message handler and production ad
 
     // Prompt source with Shot 10 and Shot 11
     const prompt10 = JSON.stringify({ shot_id: "10", prompt: "first shot" });
-    const prompt11 = JSON.stringify({ shot_id: "11", prompt: "second shot blocked" });
+    const prompt11 = JSON.stringify({
+      shot_id: "11",
+      prompt: "second shot blocked",
+    });
     const sourceText = `10: ${prompt10}\n11: ${prompt11}`;
 
     await repositories.savePromptBatch({
@@ -204,7 +214,11 @@ describe("imageQueue.inspectReadback with real message handler and production ad
       repositories,
       preferences,
       inspectTimedQueueItemReadback: (qId, order) =>
-        inspectFlowEditorAgainstQueueItem({ repositories, queueId: qId, order }),
+        inspectFlowEditorAgainstQueueItem({
+          repositories,
+          queueId: qId,
+          order,
+        }),
     });
 
     const client = createFoundationClient({
@@ -277,7 +291,9 @@ describe("imageQueue.inspectReadback with real message handler and production ad
     const { queue, client } = await createFixture();
 
     // Make chrome.debugger.attach fail (e.g. another debugger is attached or user cancelled)
-    attachMock.mockRejectedValueOnce(new Error("Another debugger is already attached"));
+    attachMock.mockRejectedValueOnce(
+      new Error("Another debugger is already attached"),
+    );
 
     let errorCaught: unknown;
     try {
@@ -299,7 +315,9 @@ describe("imageQueue.inspectReadback with real message handler and production ad
     expect(clientErr.category).toBe("worker_error");
     // Message does not expose raw internal error message or stack trace
     expect(clientErr.message).not.toContain("Another debugger");
-    expect(clientErr.message).toBe("Debugger lease could not be acquired for read-only inspection.");
+    expect(clientErr.message).toBe(
+      "Debugger lease could not be acquired for read-only inspection.",
+    );
   });
 
   it("returns bounded failure stage and error classification when target project verification fails", async () => {
@@ -336,7 +354,11 @@ describe("imageQueue.inspectReadback with real message handler and production ad
     const { queue, client } = await createFixture();
 
     // Make chrome.tabs.get reject (tab closed)
-    const mockTabs = (globalThis as unknown as { chrome: { tabs: { get: ReturnType<typeof vi.fn> } } }).chrome.tabs;
+    const mockTabs = (
+      globalThis as unknown as {
+        chrome: { tabs: { get: ReturnType<typeof vi.fn> } };
+      }
+    ).chrome.tabs;
     mockTabs.get.mockRejectedValueOnce(new Error("No tab with id: 42"));
 
     let errorCaught: unknown;
@@ -354,7 +376,9 @@ describe("imageQueue.inspectReadback with real message handler and production ad
     expect(clientErr.stage).toBe("target_verification");
     expect(clientErr.code).toBe("selected_target_unavailable");
     expect(clientErr.category).toBe("invalid_request");
-    expect(clientErr.message).toBe("The target browser tab is closed or unavailable.");
+    expect(clientErr.message).toBe(
+      "The target browser tab is closed or unavailable.",
+    );
   });
 
   it("does not mutate queue state, insert text, or activate Generate during read-only inspection", async () => {
@@ -370,7 +394,9 @@ describe("imageQueue.inspectReadback with real message handler and production ad
       order: 1,
     });
 
-    const queueAfter = await repositories.getTimedImageSubmissionQueue(queue.queueId);
+    const queueAfter = await repositories.getTimedImageSubmissionQueue(
+      queue.queueId,
+    );
     expect(queueAfter?.revision).toBe(revisionBefore);
     expect(queueAfter?.state).toBe("blocked");
     expect(queueAfter?.items[1]?.itemState).toBe("blocked");

@@ -100,6 +100,44 @@ This action does not insert text, click Generate, mutate queue state in Dexie, a
 
 Checks: full Vitest **28 files / 324 tests PASS**; Playwright browser sequence **2/2 PASS** (asserting the button targets Shot 11 with order 1, displays the length mismatch result, and sends zero Generate clicks); typecheck PASS; ESLint PASS; Prettier PASS; production package and build-ID validation PASS; `git diff --check` PASS. Package ID: **`automat-faceless-0.1.0-mvvxbkzj`**. No live provider actions, replay, or storage resets occurred.
 
+## Shot 13 readback mismatch and diagnostic contradiction investigation — 31 October 2026
+
+Investigated the contradiction where Shot 13 blocked with `editor_exact_readback_mismatch`, while persisted `pre_activation_inspection` diagnostics showed identical expected/actual lengths (3,920 code units / bytes) and identical SHA-256 hashes, with the UI displaying “Not dispatched. Provider outcome not started.”
+
+Trace of four target areas:
+
+1. `flowTimedGenerateRuntime` exact comparison:
+   - Evaluated `actual === expectedText` in-page, but discarded `actualText` rather than returning it.
+   - When candidate buttons were disabled or missing (`candidates.length !== 1 || enabled.length !== 1`), it created a dummy marker node `<span>` with `dataset.afState`, omitting `dataset.afExact`.
+2. Writing and reading `button.dataset.afExact`:
+   - Writing comparison results to DOM attributes mutated host page DOM elements.
+   - When button readiness failed, `marker.dataset.afExact` was absent/undefined, evaluating to `false` when read.
+3. `Runtime.evaluate` / `Runtime.callFunctionOn` result parsing:
+   - Evaluated wrapper object via CDP `Runtime.evaluate` (`returnByValue: false`) and parsed `this.dataset.afExact === 'true'`.
+   - In `generationQueue.ts`, `if (!inspection.exactPrompt)` was prioritized before checking `inspection.generate !== "identified"`. A disabled or unready button was erroneously classified as `editor_exact_readback_mismatch`.
+   - The remote button handle was passed to `inspectFlowImageButton`, which previously only checked `!this.isConnected`, failing to verify ownership or connection to the active composer boundary.
+4. The later diagnostic text read:
+   - Because Sample 1's actual text was discarded, `generationQueue.ts` performed a separate second CDP call `readCurrentFlowEditorText` (Sample 2).
+   - In Sample 2, the text in the editor was settled (or had been matching all along while Generate was disabled).
+   - `generationQueue.ts` stamped Sample 2's matching 3,920 code units and identical SHA-256 into the diagnostic, creating the observed contradiction.
+
+Evaluated hypotheses:
+
+- **Different DOM samples**: CONFIRMED. Sample 1 failed or was misclassified, but Sample 2 was read later for diagnostics and stamped over Sample 1.
+- **Replaced button**: CONFIRMED RISK. Between CDP round trips, button identity was not revalidated against the active composer boundary; now guarded by `revalidateAndInspectButtonRuntime`.
+- **Stale metadata / Incorrect CDP parsing**: CONFIRMED. Missing `dataset.afExact` on dummy marker spans was parsed as `exactPrompt: false`, misclassifying button disabled state as a text mismatch.
+
+Demonstrated fix:
+
+- Capture comparison outcome and bounded text diagnostics from the **SAME editor sample** (Sample 1).
+- Discontinue DOM attribute mutation (`dataset.afExact`). Return pure data `{ composer, exactPrompt, actualText, readError, generate, button }`.
+- Preserve remote button handle (`buttonObjectId`) separately and cleanly release the evaluation wrapper object.
+- Revalidate editor and button ownership via `revalidateAndInspectButtonRuntime`: verifies the button is connected, visible, enabled, located inside `boundary.contains(button)` enclosing the active editor, and is the unique enabled candidate.
+- When Sample 1 mismatches but a later settled Sample 2 matches, report the samples separately (`settledActualCodeUnits`, `settledActualSha256`, `settledEqual: true`) without bypassing exact equality.
+- Preserve Shots 10–12 receipts, 40-second scheduler interval, and Shot 13 failure evidence. Zero live provider actions.
+
+Checks: full Vitest **31 files / 345 tests PASS** (including 9 focused unit/integration tests in `flowTimedInspection.test.ts`); typecheck PASS; ESLint PASS; production package build PASS. Validated package ID: **`automat-faceless-0.1.0-mvw1i1z5`**.
+
 ## Phase ledger
 
 | Phase                                         | Status                                                                                                                                                                                                                                                                                                                     | Evidence                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -711,3 +749,28 @@ The generic failure `"Inspection error: The timed queue operation could not be s
 `inspectFlowEditorAgainstQueueItem` now explicitly requests a standalone debugger lease (`timed-image-queue-inspect:${queue.queueId}:${order}`) and releases it in a strict `finally` block. Pre-read checks validate queue lookup, item order bounds, stored target and verification binding, live tab availability, and document binding. `ImageQueueInspectionError` and `FoundationOperationError` now carry a bounded `stage` (`request_validation`, `queue_lookup`, `target_verification`, `debugger_lease`, `editor_readback`, `response_validation`) and classification `code`. The UI formats inspection errors as `[stage] code (category): message` without leaking raw sensitive stack traces or prompt JSON bodies.
 
 Validation: full Vitest **29 files / 329 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; production package and build-ID validation PASS; `git diff --check` PASS. Added integration regression `tests/integration/imageQueueInspection.test.ts` exercising the real message listener and production port adapter after dispatch cleanup with no active lease. Validated package ID: **`automat-faceless-0.1.0-mvvy408d`**. Mocked API tests and installed-MV3 verification boundaries remain clearly distinguished. No live provider generation/input, replay, or historical mutation occurred.
+
+## Guarded continuation and readback comparison for blocked Shot 11 — 31 October 2026
+
+Live read-only inspection confirmed that Shot 11 in Queue `4cad6e62-e5bc-4892-8de6-d909772b7530` exactly matches its immutable prompt (3,874 code units, SHA-256 `3da7fe8413546bf5992a03b7a66e5f9570bcce001845003cbfc305c2d9849387`). This does NOT explain the historical mismatch; post-facto quiescence cannot retroactively prove transient DOM states during earlier dispatch.
+
+Comparison of final pre-activation readback vs read-only inspection:
+
+1. **Editor selection**: Identical (`flowComposerRuntime("", true, readText)` within `flow-base-prompt-box`).
+2. **Text extraction**: Identical (`readFlowEditorRuntime` walking direct block children and inline nodes, joined with `\n`).
+3. **Execution context**: Pre-activation evaluates in-page DOM equality, sets button dataset attributes, and reads back via `Runtime.callFunctionOn`; read-only inspection extracts text via `returnByValue: true` and compares code units, bytes, and SHA-256 in the worker via `comparePromptReadbackSafely`.
+4. **Timing**: Pre-activation readback executes immediately after synthetic input insertion and frame binding checks, where transient DOM mutations/reconciliation microtasks could interfere; read-only inspection executes on demand against a completely settled, quiescent DOM.
+
+Guarded continuation implementation (`imageQueue.retryBlocked`):
+
+- Requires durable proof of no activation authorization (`providerOutcome === "not_started"`, `dispatchIntent.activationStartedAt === undefined`).
+- Requires durable proof of no receipt or uncertain dispatch (`dispatchReceipt === undefined`, no subsequent receipts).
+- Requires unchanged source hash, verified target project binding, and document ID.
+- Requires a fresh exact check against the active editor (`freshExactSha256 === item.promptHash`).
+- Refuses incompatible states (`incompatible_activation_state`, `uncertain_activation_replay_prohibited`, `dispatch_receipt_already_exists`, `selected_project_or_document_changed`, `fresh_exact_check_failed`).
+- Strictly preserves Shot 10's receipt and Shot 11's historical readback diagnostic.
+- Transitions the queue safely to `paused` (`pauseReason: "guarded_retry_ready"`): does not skip Shot 11, clear locks, automatically resume, or perform live Generate.
+- Preserves the 40-second scheduler interval (`lastDispatchReceiptStoredAt` and `nextEligibleDispatchAt` from Shot 10).
+- The supported next manual action is: once unblocked into Paused, clicking the existing "Resume" button (when live Generate is authorized) to resume timed dispatch.
+
+Validation: full Vitest **30 files / 336 tests PASS**; Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; production package and build-ID validation PASS; `git diff --check` PASS. Added integration regression suite `tests/integration/imageQueueRetry.test.ts`. Validated package ID: **`automat-faceless-0.1.0-mvvz287p`**. No live Generate or provider mutation occurred.

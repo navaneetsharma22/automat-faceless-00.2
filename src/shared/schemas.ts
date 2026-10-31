@@ -595,6 +595,16 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
       .strict(),
   }),
   requestBase.extend({
+    type: z.literal("imageQueue.retryBlocked"),
+    payload: z
+      .object({
+        queueId: z.string().uuid().or(z.string().min(1).max(128)),
+        expectedRevision: z.number().int().nonnegative(),
+        order: z.number().int().nonnegative(),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
     type: z.literal("connections.recordSelection"),
     payload: z
       .object({

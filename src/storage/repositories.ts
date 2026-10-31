@@ -29,6 +29,7 @@ import { importPromptBatch } from "../domain/batches/importBatch";
 import type { PromptKind } from "../domain/batches/types";
 import { sha256Hex } from "../domain/batches/hashPrompt";
 export { sha256Hex } from "../domain/batches/hashPrompt";
+import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
 import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnapshot";
 import {
@@ -1290,6 +1291,149 @@ export class ExtensionRepositories {
           readback.state !== state
         )
           throw new ImageQueueEligibilityError("queue_resume_readback_failed");
+        result = readback;
+      },
+    );
+    return result;
+  }
+
+  async retryBlockedTimedImageQueueItem(input: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+    at: number;
+    freshExactSha256: string;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(
+      ["imageSubmissionQueues+selectedTargets"],
+      async () => {
+        const queue = await this.tables.imageSubmissionQueues.get(
+          input.queueId,
+        );
+        if (!queue || !(await isValidTimedQueueSnapshot(queue)))
+          throw new ImageQueueEligibilityError("queue_record_invalid");
+        if (queue.revision !== input.expectedRevision)
+          throw new ImageQueueEligibilityError("queue_revision_changed");
+        if (queue.state !== "blocked")
+          throw new ImageQueueEligibilityError("queue_not_blocked");
+        if (input.order < 0 || input.order >= queue.items.length)
+          throw new ImageQueueEligibilityError("image_queue_item_not_found");
+
+        const item = queue.items[input.order]!;
+        if (item.itemState !== "blocked")
+          throw new ImageQueueEligibilityError("item_not_blocked");
+
+        // Durable proof 1: No activation authorization
+        if (item.providerOutcome !== "not_started")
+          throw new ImageQueueEligibilityError("incompatible_activation_state");
+        if (item.dispatchIntent?.activationStartedAt !== undefined)
+          throw new ImageQueueEligibilityError(
+            "uncertain_activation_replay_prohibited",
+          );
+
+        // Durable proof 2: No receipt or uncertain dispatch for this or subsequent items
+        if (item.dispatchReceipt !== undefined)
+          throw new ImageQueueEligibilityError(
+            "dispatch_receipt_already_exists",
+          );
+        const subsequentDispatched = queue.items
+          .slice(input.order + 1)
+          .some(
+            (entry) =>
+              entry.itemState !== "pending" ||
+              entry.dispatchReceipt !== undefined,
+          );
+        if (subsequentDispatched)
+          throw new ImageQueueEligibilityError("incompatible_queue_state");
+
+        // Prior items (e.g. Shot 10) must be sent with valid dispatch receipt
+        const priorIncomplete = queue.items
+          .slice(0, input.order)
+          .some(
+            (entry) => entry.itemState !== "sent" || !entry.dispatchReceipt,
+          );
+        if (priorIncomplete)
+          throw new ImageQueueEligibilityError("prior_item_not_sent");
+
+        // Durable proof 3: Unchanged source text hash
+        const sourceHashMatches =
+          (await sha256Hex(item.rawJsonBody)) === item.promptHash;
+        if (!sourceHashMatches)
+          throw new ImageQueueEligibilityError("source_hash_mismatch");
+
+        // Durable proof 3: Unchanged project and document binding
+        const selected = await this.getSelectedTarget("Flow");
+        const binding = selected?.verificationBinding;
+        if (
+          !selected ||
+          selected.provider !== "Flow" ||
+          selected.tabId !== queue.selectedProject.tabId ||
+          selected.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          selected.verification !== "verified" ||
+          selected.connectionState !== "verified" ||
+          !binding ||
+          binding.projectId !== queue.selectedProject.projectId ||
+          binding.tabId !== queue.selectedProject.tabId ||
+          binding.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          !binding.documentId ||
+          binding.extensionBuildId !== BUILD_ID ||
+          binding.connectorBuildId !== BUILD_ID ||
+          binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+          binding.connectorProtocolVersion !== 1
+        )
+          throw new ImageQueueEligibilityError(
+            "selected_project_or_document_changed",
+          );
+
+        // Durable proof 4: Fresh exact check
+        if (input.freshExactSha256 !== item.promptHash)
+          throw new ImageQueueEligibilityError("fresh_exact_check_failed");
+
+        // Transition: Unblock only the target item to "pending", clearing dispatchIntent
+        // and blockReason, while strictly preserving readbackDiagnostic and Shot 10 receipt.
+        const updatedItems = queue.items.map((entry, idx) => {
+          if (idx !== input.order) return entry;
+          const { dispatchIntent, blockReason, ...preserved } = entry;
+          void dispatchIntent;
+          void blockReason;
+          return {
+            ...preserved,
+            itemState: "pending" as const,
+            providerOutcome: "not_started" as const,
+          };
+        });
+
+        // The queue transitions safely to "paused" so that it does NOT automatically resume
+        // and does NOT perform live Generate. The 40s scheduler timing is preserved.
+        const next: QueueRecord = {
+          ...queue,
+          state: "paused",
+          pauseReason: "guarded_retry_ready",
+          items: updatedItems,
+          lastDispatchReceiptStoredAt: queue.lastDispatchReceiptStoredAt,
+          nextEligibleDispatchAt: queue.lastDispatchReceiptStoredAt
+            ? nextTimedDispatchDeadline(queue.lastDispatchReceiptStoredAt)
+            : null,
+          revision: queue.revision + 1,
+          updatedAt: input.at,
+        };
+
+        if (!ImageSubmissionQueueRecordSchema.safeParse(next).success)
+          throw new ImageQueueEligibilityError("queue_retry_invalid");
+
+        await this.tables.imageSubmissionQueues.put(next);
+        const readback = await this.tables.imageSubmissionQueues.get(
+          input.queueId,
+        );
+        if (
+          !readback ||
+          readback.revision !== next.revision ||
+          readback.state !== "paused" ||
+          readback.items[input.order]?.itemState !== "pending"
+        )
+          throw new ImageQueueEligibilityError("queue_retry_readback_failed");
+
         result = readback;
       },
     );

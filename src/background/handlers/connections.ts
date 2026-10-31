@@ -69,6 +69,11 @@ export type FoundationDependencies = {
     queueId: string,
     order?: number,
   ) => Promise<unknown>;
+  retryBlockedImageQueueItem?: (
+    queueId: string,
+    expectedRevision: number,
+    order: number,
+  ) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -318,6 +323,59 @@ async function dispatch(
           "worker_error",
           boundedCode,
           "The read-only editor inspection encountered an unexpected worker error.",
+          "editor_readback",
+        );
+      }
+    }
+    case "imageQueue.retryBlocked": {
+      if (!dependencies.retryBlockedImageQueueItem)
+        throw new FoundationOperationError(
+          "worker_error",
+          "image_queue_retry_unavailable",
+          "Guarded retry is unavailable in this worker.",
+          "request_validation",
+        );
+      try {
+        return await dependencies.retryBlockedImageQueueItem(
+          request.payload.queueId,
+          request.payload.expectedRevision,
+          request.payload.order,
+        );
+      } catch (error) {
+        if (error instanceof FoundationOperationError) {
+          throw error;
+        }
+        if (error instanceof ImageQueueInspectionError) {
+          throw new FoundationOperationError(
+            error.category,
+            error.code,
+            error.message,
+            error.stage,
+          );
+        }
+        if (error instanceof ImageQueueEligibilityError) {
+          const stage =
+            error.code === "image_queue_not_found" ||
+            error.code === "image_queue_item_not_found"
+              ? "queue_lookup"
+              : error.code === "selected_project_or_document_changed"
+                ? "target_verification"
+                : "request_validation";
+          throw new FoundationOperationError(
+            "invalid_request",
+            error.code,
+            "The guarded retry could not be safely authorized for this item.",
+            stage,
+          );
+        }
+        const boundedCode =
+          error instanceof Error && error.name && error.name !== "Error"
+            ? error.name.slice(0, 64)
+            : "retry_failed";
+        throw new FoundationOperationError(
+          "worker_error",
+          boundedCode,
+          "The guarded retry encountered an unexpected worker error.",
           "editor_readback",
         );
       }
@@ -579,7 +637,8 @@ export function createConnectionMessageListener(
               "storage_failure",
               "image_queue_operation_failed",
               "The timed queue operation could not be safely completed.",
-              request.type === "imageQueue.inspectReadback"
+              request.type === "imageQueue.inspectReadback" ||
+                request.type === "imageQueue.retryBlocked"
                 ? "editor_readback"
                 : undefined,
             ),

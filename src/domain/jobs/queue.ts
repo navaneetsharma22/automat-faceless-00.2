@@ -50,6 +50,11 @@ export type PromptReadbackDiagnostic = {
   readonly expectedContext?: string;
   readonly actualContext?: string;
   readonly readError?: string;
+  settledActualCodeUnits?: number;
+  settledActualUtf8Bytes?: number;
+  settledActualSha256?: string;
+  settledEqual?: boolean;
+  settledDifferenceOffset?: number;
 };
 
 export type FlowEditorReadbackInspectionResult = {
@@ -150,6 +155,11 @@ export const PromptReadbackDiagnosticSchema = z
     expectedContext: z.string().max(256).optional(),
     actualContext: z.string().max(256).optional(),
     readError: z.string().max(128).optional(),
+    settledActualCodeUnits: z.number().int().nonnegative().optional(),
+    settledActualUtf8Bytes: z.number().int().nonnegative().optional(),
+    settledActualSha256: hashSchema.optional(),
+    settledEqual: z.boolean().optional(),
+    settledDifferenceOffset: z.number().int().nonnegative().optional(),
   })
   .strict();
 

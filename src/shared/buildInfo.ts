@@ -1,2 +1,6 @@
 export const PROTOCOL_VERSION = 4 as const;
-export const BUILD_ID = __AUTOMAT_BUILD_ID__;
+declare const __AUTOMAT_BUILD_ID__: string | undefined;
+export const BUILD_ID =
+  typeof __AUTOMAT_BUILD_ID__ !== "undefined"
+    ? __AUTOMAT_BUILD_ID__
+    : "automat-faceless-test";
