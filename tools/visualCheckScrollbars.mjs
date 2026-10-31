@@ -1,3 +1,4 @@
+/* global console, document, getComputedStyle, process */
 import { chromium } from "playwright";
 import { readFile, mkdir } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
@@ -20,9 +21,18 @@ const installedChromium =
 
 async function main() {
   const root = process.cwd();
-  const tokens = await readFile(resolve(root, "src/app/styles/tokens.css"), "utf8");
-  const globals = await readFile(resolve(root, "src/app/styles/globals.css"), "utf8");
-  const dashboardCss = await readFile(resolve(root, "src/app/Dashboard.module.css"), "utf8");
+  const tokens = await readFile(
+    resolve(root, "src/app/styles/tokens.css"),
+    "utf8",
+  );
+  const globals = await readFile(
+    resolve(root, "src/app/styles/globals.css"),
+    "utf8",
+  );
+  const dashboardCss = await readFile(
+    resolve(root, "src/app/Dashboard.module.css"),
+    "utf8",
+  );
 
   const artifactsDir = resolve(root, "artifacts/scrollbar-visual");
   await mkdir(artifactsDir, { recursive: true });
@@ -33,7 +43,9 @@ async function main() {
     ignoreDefaultArgs: ["--hide-scrollbars"],
     args: ["--disable-features=OverlayScrollbar"],
   });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
   const page = await context.newPage();
 
   const generateHtml = (theme) => `<!doctype html>
@@ -139,8 +151,14 @@ async function main() {
       },
     };
   });
-  console.log("Light theme element metrics:", JSON.stringify(lightStyles, null, 2));
-  await page.screenshot({ path: join(artifactsDir, "light-theme-scrollbars.png"), fullPage: false });
+  console.log(
+    "Light theme element metrics:",
+    JSON.stringify(lightStyles, null, 2),
+  );
+  await page.screenshot({
+    path: join(artifactsDir, "light-theme-scrollbars.png"),
+    fullPage: false,
+  });
 
   // 2. Dark theme
   await page.setContent(generateHtml("dark"));
@@ -157,11 +175,20 @@ async function main() {
       queueScrollbarColor: getComputedStyle(queue).scrollbarColor,
     };
   });
-  console.log("Dark theme computed scrollbar styles:", JSON.stringify(darkStyles, null, 2));
-  await page.screenshot({ path: join(artifactsDir, "dark-theme-scrollbars.png"), fullPage: false });
+  console.log(
+    "Dark theme computed scrollbar styles:",
+    JSON.stringify(darkStyles, null, 2),
+  );
+  await page.screenshot({
+    path: join(artifactsDir, "dark-theme-scrollbars.png"),
+    fullPage: false,
+  });
 
   await browser.close();
-  console.log("Visual inspection screenshots captured successfully in:", artifactsDir);
+  console.log(
+    "Visual inspection screenshots captured successfully in:",
+    artifactsDir,
+  );
 }
 
 main().catch((err) => {

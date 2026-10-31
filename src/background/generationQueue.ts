@@ -104,7 +104,21 @@ export function createFlowTimedQueueDispatcher(
           reason: "source_hash_mismatch",
           uncertain: false,
         };
-      const selected = await repositories.getSelectedTarget("Flow");
+      let selected = await repositories.getSelectedTarget("Flow");
+      if (selected && selected.connectionState === "checking") {
+        const deadline = now() + 2_000;
+        const sleep =
+          environment?.sleep ??
+          ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+        while (
+          selected &&
+          selected.connectionState === "checking" &&
+          now() < deadline
+        ) {
+          await sleep(100);
+          selected = await repositories.getSelectedTarget("Flow");
+        }
+      }
       const confirmation = queue.manualSettingsDeclaration;
       const binding = selected?.verificationBinding;
       if (
@@ -381,7 +395,8 @@ export function createFlowTimedQueueDispatcher(
           environment?.sleep ??
           ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
 
-        const readinessStartedAt = now();
+        const readinessStartedAt =
+          item.dispatchIntent?.readinessStartedAt ?? now();
         const deadlineAt =
           item.dispatchIntent?.readinessDeadlineAt ??
           readinessStartedAt + timeoutMs;
@@ -400,7 +415,7 @@ export function createFlowTimedQueueDispatcher(
         }
 
         let backoff = initialBackoffMs;
-        let elapsed = 0;
+        let elapsed = Math.max(0, now() - readinessStartedAt);
 
         while (!buttonPosition && elapsed < timeoutMs && now() < deadlineAt) {
           const latestQueue = await repositories.getTimedImageSubmissionQueue(

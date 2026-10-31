@@ -82,8 +82,29 @@ describe("P03.3 import preview integration", () => {
     expect(imageMarkup).toContain("&quot;shot_id&quot;:&quot;3&quot;");
     expect(videoMarkup).toContain("&quot;shot_id&quot;:&quot;02&quot;");
 
+    expect(imageMarkup).toContain("New batch");
+    expect(videoMarkup).not.toContain("New batch");
     expect(imageMarkup).not.toContain("Load synthetic example");
     expect(imageMarkup).not.toContain("Start image batch");
+  });
+
+  it("clears editable draft, validation preview and error when cleared", () => {
+    const { session, run } = makeScheduledSession("image");
+    session.setSource('{"shot_id":"01","prompt":"test"}');
+    session.validate();
+    run();
+    expect(session.getSnapshot().status).toBe("success");
+    expect(session.getSnapshot().result?.items.length).toBe(1);
+
+    const prevRevision = session.getSnapshot().revision;
+    session.clear();
+    const snapshot = session.getSnapshot();
+    expect(snapshot.source).toBe("");
+    expect(snapshot.revision).toBe(prevRevision + 1);
+    expect(snapshot.status).toBe("idle");
+    expect(snapshot.result).toBeUndefined();
+    expect(snapshot.resultRevision).toBeUndefined();
+    expect(snapshot.error).toBeUndefined();
   });
 
   it("shows only current complete result counts and IDs with provider-safe wording", () => {
@@ -106,6 +127,7 @@ describe("P03.3 import preview integration", () => {
     expect(markup).toContain("Shot ID 2");
     expect(markup).toContain("Nothing has been sent to a provider");
     expect(markup).toContain("Show raw body");
+    expect(markup).toContain("New batch");
     expect(markup).toContain("Load saved batch");
     expect(markup).toContain("Export saved source");
     expect(markup).toMatch(/<button[^>]*>Save validated batch<\/button>/);

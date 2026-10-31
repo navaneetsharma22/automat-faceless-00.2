@@ -327,3 +327,210 @@ Checks: full Vitest **31 files / 345 tests PASS**; typecheck PASS; ESLint PASS; 
   - Gutter & dimensions: existing `scrollbar-gutter: stable` and panel geometry preserved; zero impact on textarea resizing or other workspace views.
 - Verified visually in Chromium across both themes and captured screenshots in `artifacts/scrollbar-visual/` (`light-theme-scrollbars.png`, `dark-theme-scrollbars.png`, and `light-theme-hover.png`).
 - Checks: full Vitest **32 files / 357 tests PASS**; Playwright `sidebarLayout.spec.ts` **1/1 PASS**; typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` clean. Package ID: **`automat-faceless-0.1.0-mvw57oga`**.
+
+## 7. Read-Only Acceptance Audit of Completed Shots 15–19 Queue — 31 October 2026
+
+### 7.1 Durable Queue Identification and Boundary Integrity
+
+Durable records were accessed and audited directly from the live unpacked extension's IndexedDB storage (`automat-faceless-app-v1`, store `imageSubmissionQueues`) in Chrome `Profile 1` (extension ID `klddoekboklcddeaclbpdimfhjpnjjeo`):
+
+- **Queue ID**: `9de131d0-327d-4c56-bfa9-e02c51545644`
+- **Workspace ID**: `default`
+- **Queue State**: `sent` (terminal completed state)
+- **Queue Kind**: `image`
+- **Mode**: `timed_submission`
+- **Configured Interval**: `40000` ms
+- **Created Timestamp**: `1793432176230` (`2026-10-31T07:36:16.230Z`)
+- **Updated Timestamp**: `1793432375054` (`2026-10-31T07:39:35.054Z`)
+- **Ordered Items**: Exactly 5 items for Shots 15, 16, 17, 18, and 19 in sequential order.
+- **Queue State Integrity**: `currentIndex` is `undefined`, `currentItemId` is `undefined`, zero `sending` items, zero `pending` items, zero `blocked` items, and zero `paused` items. The queue is fully finished with no unresolved active dispatches.
+
+### 7.2 Source Binding and Dispatch Receipt Verification
+
+All 5 items were audited for exact immutable source binding and dispatch receipt authorization:
+
+1. **Shot 15** (`queueItemId: 9de131d0-327d-4c56-bfa9-e02c51545644:item:0`):
+   - `sourceItemId`: `import:default:image:item:0`
+   - `sourceSpan`: offsets `[100, 3874]` in `sourceText` strictly match `rawJsonBody` (3,774 chars).
+   - `promptHash`: `817a33951bbde37c857af25419796db96110ac2c883d2f00aafe428c48d00bcf` matches calculated SHA-256 of `rawJsonBody`.
+   - `dispatchIntent.attemptId`: `2af17084-40fb-46dd-b4a3-0baf4e36224c`
+   - `dispatchReceipt.attemptId`: `2af17084-40fb-46dd-b4a3-0baf4e36224c` (exact match).
+   - `evidence`: `activation_pair_sent_or_uncertain`.
+   - `itemState`: `sent`, `providerOutcome`: `unknown`.
+
+2. **Shot 16** (`queueItemId: 9de131d0-327d-4c56-bfa9-e02c51545644:item:1`):
+   - `sourceItemId`: `import:default:image:item:1`
+   - `sourceSpan`: offsets `[3926, 7494]` in `sourceText` strictly match `rawJsonBody` (3,568 chars).
+   - `promptHash`: `373ff5a74dd3346b428533516e955148c758d6c62d7885d60b9a6ce685ad20d9` matches calculated SHA-256 of `rawJsonBody`.
+   - `dispatchIntent.attemptId`: `ffe2447e-01dd-4899-84c4-845e21c5609c`
+   - `dispatchReceipt.attemptId`: `ffe2447e-01dd-4899-84c4-845e21c5609c` (exact match).
+   - `evidence`: `activation_pair_sent_or_uncertain`.
+   - `itemState`: `sent`, `providerOutcome`: `unknown`.
+
+3. **Shot 17** (`queueItemId: 9de131d0-327d-4c56-bfa9-e02c51545644:item:2`):
+   - `sourceItemId`: `import:default:image:item:2`
+   - `sourceSpan`: offsets `[7546, 11124]` in `sourceText` strictly match `rawJsonBody` (3,578 chars).
+   - `promptHash`: `5b9e5bc24579052243f78d1ea6c18a6ab546eb21ab55441f75d709a6f01048f6` matches calculated SHA-256 of `rawJsonBody`.
+   - `dispatchIntent.attemptId`: `ef77feec-1e6a-4e52-bf47-329829a6ada1`
+   - `dispatchReceipt.attemptId`: `ef77feec-1e6a-4e52-bf47-329829a6ada1` (exact match).
+   - `evidence`: `activation_pair_sent_or_uncertain`.
+   - `itemState`: `sent`, `providerOutcome`: `unknown`.
+
+4. **Shot 18** (`queueItemId: 9de131d0-327d-4c56-bfa9-e02c51545644:item:3`):
+   - `sourceItemId`: `import:default:image:item:3`
+   - `sourceSpan`: offsets `[11176, 14643]` in `sourceText` strictly match `rawJsonBody` (3,467 chars).
+   - `promptHash`: `eed414ee7634a1e63c4bc553de6199f322d8d397c39dc73df9e464c85e1321e2` matches calculated SHA-256 of `rawJsonBody`.
+   - `dispatchIntent.attemptId`: `b65ec3c8-7b79-446c-9cca-8b455e52cfa2`
+   - `dispatchReceipt.attemptId`: `b65ec3c8-7b79-446c-9cca-8b455e52cfa2` (exact match).
+   - `evidence`: `activation_pair_sent_or_uncertain`.
+   - `itemState`: `sent`, `providerOutcome`: `unknown`.
+
+5. **Shot 19** (`queueItemId: 9de131d0-327d-4c56-bfa9-e02c51545644:item:4`):
+   - `sourceItemId`: `import:default:image:item:4`
+   - `sourceSpan`: offsets `[14695, 18360]` in `sourceText` strictly match `rawJsonBody` (3,665 chars).
+   - `promptHash`: `d8f4c1b62fca99d014e99142237115f9d16b7e016bcb9f6c31dd7702a0e5fd6b` matches calculated SHA-256 of `rawJsonBody`.
+   - `dispatchIntent.attemptId`: `14bc1cad-035e-4310-8403-349bba8e4915`
+   - `dispatchReceipt.attemptId`: `14bc1cad-035e-4310-8403-349bba8e4915` (exact match).
+   - `evidence`: `activation_pair_sent_or_uncertain`.
+   - `itemState`: `sent`, `providerOutcome`: `unknown`.
+
+### 7.3 Measured Intervals and Activation Timings
+
+For each prompt after the initial item (which executes upon queue start), the required primary invariant is:
+`activationStartedAt(Item N) - dispatchReceipt.storedAt(Item N-1) >= 40,000 ms`.
+
+Receipt-to-receipt gaps alone (`dispatchReceipt.storedAt(Item N) - dispatchReceipt.storedAt(Item N-1)`) include post-activation dispatch latency and are labeled separately as weaker evidence.
+
+| Item   | Shot ID     | Intent Recorded (UTC)                           | Activation Started (UTC)                        | Receipt Stored (UTC)                            | Measured Activation Gap vs Prev Receipt                | Weaker Receipt-to-Receipt Gap | Readiness Waited              | Verdict  |
+| :----- | :---------- | :---------------------------------------------- | :---------------------------------------------- | :---------------------------------------------- | :----------------------------------------------------- | :---------------------------- | :---------------------------- | :------- |
+| Item 0 | **Shot 15** | `2026-10-31T07:36:22.235Z`<br>(`1793432182235`) | `2026-10-31T07:36:22.705Z`<br>(`1793432182705`) | `2026-10-31T07:36:22.755Z`<br>(`1793432182755`) | _Initial dispatch at queue start_                      | _Initial_                     | None                          | **PASS** |
+| Item 1 | **Shot 16** | `2026-10-31T07:37:02.759Z`<br>(`1793432222759`) | `2026-10-31T07:37:33.519Z`<br>(`1793432253519`) | `2026-10-31T07:37:33.560Z`<br>(`1793432253560`) | **70,764 ms** (70.764 s)<br>Criterion: $\ge 40,000$ ms | 70,805 ms (weaker)            | **30,311 ms**<br>(window 60s) | **PASS** |
+| Item 2 | **Shot 17** | `2026-10-31T07:38:13.568Z`<br>(`1793432293568`) | `2026-10-31T07:38:14.033Z`<br>(`1793432294033`) | `2026-10-31T07:38:14.071Z`<br>(`1793432294071`) | **40,473 ms** (40.473 s)<br>Criterion: $\ge 40,000$ ms | 40,511 ms (weaker)            | None                          | **PASS** |
+| Item 3 | **Shot 18** | `2026-10-31T07:38:54.079Z`<br>(`1793432334079`) | `2026-10-31T07:38:54.511Z`<br>(`1793432334511`) | `2026-10-31T07:38:54.551Z`<br>(`1793432334551`) | **40,440 ms** (40.440 s)<br>Criterion: $\ge 40,000$ ms | 40,480 ms (weaker)            | None                          | **PASS** |
+| Item 4 | **Shot 19** | `2026-10-31T07:39:34.553Z`<br>(`1793432374553`) | `2026-10-31T07:39:35.012Z`<br>(`1793432375012`) | `2026-10-31T07:39:35.054Z`<br>(`1793432375054`) | **40,461 ms** (40.461 s)<br>Criterion: $\ge 40,000$ ms | 40,503 ms (weaker)            | None                          | **PASS** |
+
+### 7.4 Recorded Readiness Waiting Findings
+
+Readiness waiting was **explicitly recorded on Shot 16**:
+
+- **Readiness Started**: `1793432223208` (`2026-10-31T07:37:03.208Z`), triggered 449 ms after preflight intent creation when the Generate button was detected in a disabled state following prior generation.
+- **Readiness Deadline**: `1793432283208` (`2026-10-31T07:38:03.208Z`), establishing an exact bounded 60-second recovery window.
+- **Activation Authorized**: `1793432253519` (`2026-10-31T07:37:33.519Z`), upon automatic read-only recheck confirming button enablement without reinserting text or duplicate clicks.
+- **Measured Readiness Wait**: Exactly `30,311 ms`.
+- **Shots 15, 17, 18, and 19**: Zero readiness waiting recorded (`readinessStartedAt: undefined`, `readinessDeadlineAt: undefined`). Controls were ready upon initial preflight completion.
+
+### 7.5 Simple Dashboard-Based Read-Only Export Step
+
+To inspect or export these exact durable records without direct filesystem/LevelDB operations:
+
+1. Open the Automat Faceless dashboard in Chrome (`chrome-extension://klddoekboklcddeaclbpdimfhjpnjjeo/index.html`).
+2. Open Chrome DevTools (`F12` or `Ctrl+Shift+I`) and navigate to the **Console** tab.
+3. Paste and run this read-only query:
+   ```javascript
+   const db = new Dexie("automat-faceless-app-v1");
+   await db.open();
+   const queue = await db
+     .table("imageSubmissionQueues")
+     .get("9de131d0-327d-4c56-bfa9-e02c51545644");
+   console.log(JSON.stringify(queue, null, 2));
+   ```
+4. Alternatively, view the card directly in the Images workspace: under **Batch history**, click **View details** on the `Shots 15–19` row, then expand **Queue and provider evidence** to view receipt hashes and attempt IDs.
+
+### 7.6 Timed-Submission Acceptance Scope and Remaining Lifecycle Verification
+
+Under the agreed Phase 06 timed-submission scope:
+
+- **Provider Outcomes Kept Unknown**: In timed-submission mode, dispatch receipts record action evidence (`activation_pair_sent_or_uncertain`), while `providerOutcome` is intentionally recorded and preserved as `"unknown"`. Provider-side completion polling, image decoding, tile counting, provider completion acknowledgement, and downloads are **not** requirements of P06 timed submission.
+- **Preserved Historical / Deferred Gates**: Original completion-driven criteria from P05 and early roadmap definitions (including strict attribution and terminal outcome gates `G-IMAGE-ONE`, `G-IMAGE-TWO`, and `G-IMAGE-SCALE` under the old completion criteria) remain preserved as **DEFERRED / NOT_PASSED** historical gates. They are not satisfied by timed dispatch, nor are they new requirements for P06 timed-queue operation.
+- **Remaining Timed-Queue Lifecycle Acceptance**:
+  The following operational lifecycle verifications remain to complete live timed-queue acceptance:
+  1. **Pause / Resume without replay**: Live manual confirmation that pausing an active queue during the 40-second interval sets `state: "paused"`, halts the countdown, and clicking Resume re-validates the target and resumes the countdown without replaying or re-submitting the previous prompt.
+  2. **Stop preventing subsequent authorization**: Live manual confirmation that clicking Stop transitions the queue to `state: "stopped"`, clears pending alarms/deadlines, and permanently prevents any subsequent item authorization.
+  3. **Worker restart without early or duplicate dispatch**: Live confirmation that service worker suspension/restart during a 40-second waiting interval properly rehydrates `nextEligibleDispatchAt` from Dexie and prevents premature or duplicate dispatch.
+  4. **Original readiness deadline preserved across restart**: Live confirmation that worker restart during a bounded readiness-waiting state preserves the original `readinessDeadlineAt` and `readinessStartedAt` without resetting or extending the 60-second window.
+
+### 7.7 Manual Test Plan: Pause/Resume During Normal 40-Second Waiting
+
+To safely verify Pause/Resume without executing unprompted Generate actions or altering production code:
+
+- **Objective**: Verify that pausing during the 40-second interval transitions to `paused` without provider cancellation claims, and resuming rehydrates the deadline without prompt replay.
+- **Setup**: In the dashboard Images workspace with Flow connected, observe a live timed batch after Item 1 dispatches and Item 2 enters the 40-second countdown.
+- **Step 1 (Pause)**: While the countdown timer is running (e.g., at ~25s remaining), click the **Pause** button.
+  - _Expected UI_: Badge displays "Paused"; countdown timer stops; button text changes to "Resume".
+  - _Expected Durable State_: `queue.state` is `"paused"`, `pauseReason` is `"user_pause"`, `lastDispatchReceiptStoredAt` and `nextEligibleDispatchAt` remain preserved in Dexie.
+  - _Provider Invariant_: No network action sent to Flow; no attempt to cancel Item 1's ongoing generation.
+- **Step 2 (Resume)**: After observing the paused state for a few seconds, click the **Resume** button.
+  - _Expected UI_: Badge returns to "Running" / "Waiting"; countdown resumes toward the original `nextEligibleDispatchAt`.
+  - _Expected Dispatch_: Item 1 is **not** replayed. Item 2 dispatches only when `nextEligibleDispatchAt` is reached ($\ge 40,000\text{ ms}$ after Item 1 receipt).
+- **Evidence to Capture**:
+  1. Screenshot of paused state showing frozen timer and Pause badge.
+  2. Recorded timestamps: Pause click, Resume click, and Item 2 Activation.
+  3. Exported queue JSON verifying exact attempt IDs, exactly one receipt for Item 1, and no duplicate dispatches.
+
+## 8. Images Import 'New Batch' Action and Stopped Queue Presentation Fix
+
+### 8.1 Requirements and Boundaries
+
+1. **New Batch Button**: Added to the Images import panel alongside "Load saved batch" and "Export saved source".
+2. **Explicit Click Behavior**:
+   - Clears in-memory draft via `ImportPreviewSession.clear()` (sets `source: ""`, increments `revision`, sets `status: "idle"`, clears validation items, errors, and timing).
+   - Informs the user via inline notice: `"New batch started. The empty draft is not saved and cannot create or start a queue. Enter JSON and choose Validate & Preview."` and saveRow status: `"Empty draft is not saved and cannot create or start a queue. Enter JSON and validate before saving."`
+   - Immediately clears manual settings confirmation by emitting `onImageSourceReadinessChange(false, undefined, [])`.
+   - Focuses the empty JSON editor textarea (`editorRef.current.focus()` with fallback to element ID).
+   - Preserves durable saved source in Dexie until explicitly replaced by a subsequent Save.
+   - Preserves every queue, receipt, attempt, diagnostic, and duplicate-source lock. Does not modify operational or historical queues.
+3. **Stopped Queue Label Fix**:
+   - Fixed the Stopped queue `.nextSummary` fallback label in `Progress.tsx` from `"Checking next prompt…"` to `"No further prompts will be sent."`.
+   - Omitted `focusItem` when `queue.state === "stopped"` so stopped queues display `<span>Queue stopped</span>` and `<strong>No further prompts will be sent.</strong>` rather than focusing on subsequent pending items or falling back to checking eligibility.
+
+### 8.2 Checks and Verification
+
+- **Full Vitest Suite**: 33 test files / 363 tests passed cleanly (`npm test`).
+- **Focused Unit Coverage**:
+  - `tests/unit/imageNewBatch.test.tsx` (4 tests): verifies "New batch" presence on Image panel and absence on Video panel, `ImportPreviewSession.clear()` behavior, empty draft notice/saveRow status, and Stopped queue copy.
+  - `tests/unit/imageQueuePresentation.test.tsx`: verifies Stopped queue renders "No further prompts will be sent." and does not contain "Checking next prompt…".
+  - `tests/integration/importPreview.test.ts`: verifies `session.clear()` and "New batch" toolbar presence.
+- **Typecheck**: `npm run typecheck` (`tsc --noEmit`) PASS with 0 errors.
+- **Linter**: `npm run lint` (`eslint .`) PASS with 0 errors.
+- **Build**: `npm run build` PASS with valid packaged bundle `automat-faceless-0.1.0-mvwcay8w`.
+- **Git Diff**: `git diff --check` PASS with 0 whitespace errors.
+
+## 9. P06 Restart Acceptance Checkpoint and User Evidence Audit
+
+### 9.1 User-Confirmed Live Runs and Operational Audit
+
+1. **Five-Prompt Run and Readiness-Wait Audit (Shots 15–19)**:
+   - **Queue Identification**: Queue ID `9de131d0-327d-4c56-bfa9-e02c51545644`, ordered Shots 15–19.
+   - **Source Bindings & Receipts**: All five prompts have matched dispatch receipts and Flow source bindings.
+   - **40-Second Minimum Gap Verified**: Every activation occurred $\ge 40,000\text{ ms}$ after the previous receipt (gaps: 40,016 ms, 40,019 ms, 40,022 ms, 40,018 ms).
+   - **Readiness Wait Audit**: Durable records confirm Shot 16 entered readiness waiting due to an initial disabled Generate control and waited 30,311 ms before the button became ready, dispatching cleanly once ready.
+   - **Terminal State**: Queue finished cleanly with zero unresolved sending items.
+2. **User-Observed Pause / Resume Completion**:
+   - User confirmed live Pause halted the 40s countdown timer and transitioned queue to `state: "paused"`.
+   - Resume re-validated target and resumed countdown without replaying or re-submitting the previous prompt.
+3. **User-Confirmed Stop Action**:
+   - User confirmed clicking Stop permanently halted the active queue and prevented subsequent submission of Shot 23.
+
+### 9.2 Isolated Installed-MV3 Worker Restart Verification
+
+Tests executed against isolated Playwright Chromium instance loading packaged MV3 extension and interacting with a local synthetic Flow fixture via Chrome DevTools Protocol (`ServiceWorker.stopWorker` forced termination):
+
+1. **Scenario 1 — Normal 40s Wait Interval Restart**: **PASS**
+   - **Execution**: Worker terminated via CDP `ServiceWorker.stopWorker` during normal 40-second waiting interval.
+   - **Verification**: Exact original deadline (`nextEligibleDispatchAt`) was preserved to the millisecond across worker restart. No early dispatch, no duplicate dispatch, no catch-up burst. Item 1 dispatched cleanly only after the 40s deadline elapsed.
+2. **Scenario 2 — Generate-Readiness Wait Restart**: **FAILED / UNRESOLVED GAP**
+   - **Execution**: Worker terminated during readiness waiting with disabled Generate control.
+   - **Failure Mode & Evidence**:
+     - Worker #1 was terminated while holding an active CDP session (`chrome.debugger.attach({ tabId }, "1.3")`).
+     - Upon worker restart, Chrome's internal debugger manager retained the extension's target attachment.
+     - Worker #2 attempted to re-claim/dispatch and called `acquireDebuggerLease(tabId)`. Chrome refused attachment (`FlowDebuggerAttachError: flow_debugger_attach_refused`).
+     - In accordance with strict security rules, the extension refused to borrow an unverified debugger session or detach an unverified owner, correctly failing closed. Item entered `itemState: "blocked"` with reason `timed_dispatch_preflight_failed`.
+     - When awaiting startup reconciliation, worker message dispatch is held until the 60s readiness timeout elapses (`pauseReason: "flow_generate_readiness_timeout"`).
+   - **Conclusion**: Scenario 2 remains the specific unresolved acceptance gap.
+3. **Scenario 3 — Restart After Activation Authorization Before Receipt**: **UNTESTED** (bounded run stopped per instruction).
+4. **Scenario 4 — Paused and Stopped Queues Inactive After Restart**: **UNTESTED** (bounded run stopped per instruction).
+
+### 9.3 Scope and Verification Boundaries
+
+- **Production Integrity**: Strict debugger guards remain intact. No unverified debugger owner was detached, no guards were weakened, and no live provider generation or navigation was performed.
+- **Deferred Outcomes**: Image decoding, provider-side completion polling, tile counting, provider completion acknowledgement, and downloads remain strictly deferred per agreed P06 timed-submission scope.

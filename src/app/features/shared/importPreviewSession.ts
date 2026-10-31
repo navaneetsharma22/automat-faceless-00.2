@@ -64,6 +64,21 @@ export class ImportPreviewSession {
     this.publish();
   }
 
+  clear(): void {
+    this.invalidateScheduledValidation();
+    this.snapshot = {
+      source: "",
+      revision: this.snapshot.revision + 1,
+      status: "idle",
+      validationId: this.nextValidationId++,
+      result: undefined,
+      resultRevision: undefined,
+      error: undefined,
+      elapsedMs: undefined,
+    };
+    this.publish();
+  }
+
   validate(): number {
     this.invalidateScheduledValidation();
     const validationId = this.nextValidationId++;

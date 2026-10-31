@@ -629,7 +629,9 @@ export function QueueCard({
   const focusItem =
     sendingItem ??
     blockedItem ??
-    (queue.state === "blocked" ? undefined : nextItem);
+    (queue.state === "blocked" || queue.state === "stopped"
+      ? undefined
+      : nextItem);
 
   const handleInspectEditor = async () => {
     if (inspecting || busy) return;
@@ -772,7 +774,9 @@ export function QueueCard({
                 ? "Blocked prompt"
                 : queue.state === "blocked"
                   ? "Queue blocked"
-                  : "Next prompt"}
+                  : queue.state === "stopped"
+                    ? "Queue stopped"
+                    : "Next prompt"}
           </span>
           {focusItem ? (
             <>
@@ -783,11 +787,13 @@ export function QueueCard({
             </>
           ) : (
             <strong>
-              {isComplete
-                ? "No prompts remaining"
-                : queue.state === "blocked"
-                  ? "Review required"
-                  : "Checking next prompt…"}
+              {queue.state === "stopped"
+                ? "No further prompts will be sent."
+                : isComplete
+                  ? "No prompts remaining"
+                  : queue.state === "blocked"
+                    ? "Review required"
+                    : "Checking next prompt…"}
             </strong>
           )}
         </div>

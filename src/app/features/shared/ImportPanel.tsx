@@ -128,6 +128,8 @@ export function ImportPanel({
   const toast = useToast();
   const [replacement, setReplacement] =
     useState<FileReplacementConfirmation | null>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const [newBatchNotice, setNewBatchNotice] = useState<string | undefined>();
   const [fileError, setFileError] = useState<string | undefined>();
   const [fileLoading, setFileLoading] = useState(false);
   const [selectedPreview, setSelectedPreview] = useState<number | null>(null);
@@ -234,7 +236,42 @@ export function ImportPanel({
     setPersistenceError(undefined);
     setFlowEntryResult(undefined);
     setReplacement(null);
+    setNewBatchNotice(undefined);
     session.setSource(source);
+  };
+
+  const handleNewBatch = () => {
+    fileRequest.current += 1;
+    session.clear();
+    setSelectedPreview(null);
+    setFileError(undefined);
+    setFileLoading(false);
+    setReplacement(null);
+    setConfirmLoad(false);
+    setPersistenceStatus("idle");
+    setPersistenceError(undefined);
+    setExportError(undefined);
+    setExportDetails(undefined);
+    setFlowEntryResult(undefined);
+    setFlowEntryRequiresReview(false);
+    setFlowReadinessResult(undefined);
+    setFlowReadinessExportStatus(undefined);
+    setNewBatchNotice(
+      "New batch started. The empty draft is not saved and cannot create or start a queue. Enter JSON and choose Validate & Preview.",
+    );
+
+    if (kind === "image") {
+      onImageSourceReadinessChange?.(false, undefined, []);
+    }
+
+    if (editorRef.current) {
+      editorRef.current.focus();
+    } else {
+      const textarea = document.getElementById(`${kind}-import-source`);
+      if (textarea instanceof HTMLElement) {
+        textarea.focus();
+      }
+    }
   };
 
   const loadFile = async (file: File, expectedRevision: number) => {
@@ -251,6 +288,7 @@ export function ImportPanel({
         return;
       }
       session.setSource(source);
+      setNewBatchNotice(undefined);
       setFileError(undefined);
     } catch (error) {
       if (request !== fileRequest.current) return;
@@ -490,6 +528,7 @@ export function ImportPanel({
       }
       setSavedSource(saved.batch.sourceText);
       setPersistenceStatus("saved");
+      setNewBatchNotice(undefined);
       session.setSource(saved.batch.sourceText);
       session.validate();
     } catch (error) {
@@ -951,6 +990,7 @@ export function ImportPanel({
     >
       <JsonEditor
         id={`${kind}-import-source`}
+        editorRef={editorRef}
         label={`${label} prompt source`}
         hint="Paste or edit one JSON prompt, numbered complete JSON blocks, or a supported versioned envelope. The source is kept as entered."
         error={snapshot.error?.message}
@@ -969,6 +1009,7 @@ export function ImportPanel({
         Validation runs only when you choose Validate &amp; Preview. No draft is
         sent to a provider.
       </p>
+      {newBatchNotice ? <Notice kind="info">{newBatchNotice}</Notice> : null}
       {replacement ? (
         <div
           className={styles.replacePrompt}
@@ -1021,6 +1062,20 @@ export function ImportPanel({
           />
         </Field>
         <div className={styles.sourceToolbarButtons}>
+          {kind === "image" ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={
+                persistenceStatus === "loading" ||
+                persistenceStatus === "saving" ||
+                exportingSavedSource
+              }
+              onClick={handleNewBatch}
+            >
+              New batch
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="secondary"
@@ -1275,27 +1330,29 @@ export function ImportPanel({
             exportingSavedSource
           }
           loading={persistenceStatus === "saving"}
-          loadingLabel="Savingâ€¦"
+          loadingLabel="Saving…"
           onClick={() => void saveValidatedBatch()}
         >
           Save validated batch
         </Button>
         <p role="status" aria-live="polite">
-          {persistenceStatus === "saving"
-            ? "Saving validated sourceâ€¦"
-            : persistenceStatus === "loading"
-              ? "Reading saved sourceâ€¦"
-              : changedSinceSave
-                ? "Unsaved changes. The current draft differs from the saved source."
-                : changedSinceValidation
-                  ? "Unsaved changes. Validate the current draft before saving."
-                  : currentValidation && savedSource === snapshot.source
-                    ? "Saved."
-                    : currentValidation
-                      ? "Validated. Save is available for this exact revision."
-                      : persistenceStatus === "saved"
-                        ? "Saved source is unchanged."
-                        : "Not saved. Validate before saving."}
+          {newBatchNotice
+            ? "Empty draft is not saved and cannot create or start a queue. Enter JSON and validate before saving."
+            : persistenceStatus === "saving"
+              ? "Saving validated source…"
+              : persistenceStatus === "loading"
+                ? "Reading saved source…"
+                : changedSinceSave
+                  ? "Unsaved changes. The current draft differs from the saved source."
+                  : changedSinceValidation
+                    ? "Unsaved changes. Validate the current draft before saving."
+                    : currentValidation && savedSource === snapshot.source
+                      ? "Saved."
+                      : currentValidation
+                        ? "Validated. Save is available for this exact revision."
+                        : persistenceStatus === "saved"
+                          ? "Saved source is unchanged."
+                          : "Not saved. Validate before saving."}
         </p>
       </div>
       {kind === "image" ? (

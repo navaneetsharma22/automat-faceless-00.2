@@ -222,6 +222,18 @@ describe("timed queue presentation", () => {
     },
   );
 
+  it("presents a stopped queue with 'No further prompts will be sent.' instead of checking next prompt", () => {
+    const markupStopped = render("stopped", "stopped");
+    expect(markupStopped).toContain("Queue stopped");
+    expect(markupStopped).toContain("No further prompts will be sent.");
+    expect(markupStopped).not.toContain("Checking next prompt…");
+
+    const markupWithPending = render("stopped", "pending");
+    expect(markupWithPending).toContain("Queue stopped");
+    expect(markupWithPending).toContain("No further prompts will be sent.");
+    expect(markupWithPending).not.toContain("Checking next prompt…");
+  });
+
   it("targets Shot 11 in a blocked queue when onInspectReadback is provided", () => {
     const base = queue("blocked", "blocked");
     const sent = {

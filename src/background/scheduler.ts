@@ -76,6 +76,7 @@ export function createTimedImageQueueScheduler(input: {
           (item) =>
             item.itemState === "sending" ||
             (item.dispatchIntent &&
+              item.dispatchIntent.readinessDeadlineAt === undefined &&
               item.itemState !== "sent" &&
               item.itemState !== "blocked"),
         )
@@ -336,12 +337,14 @@ export function createTimedImageQueueScheduler(input: {
               continue;
             }
             const reverted =
-              await input.repositories.revertSendingItemToPendingForReadiness({
-                queueId: queue.queueId,
-                expectedRevision: queue.revision,
-                order: unresolved.order,
-                at: now(),
-              });
+              unresolved.itemState === "sending"
+                ? await input.repositories.revertSendingItemToPendingForReadiness({
+                    queueId: queue.queueId,
+                    expectedRevision: queue.revision,
+                    order: unresolved.order,
+                    at: now(),
+                  })
+                : queue;
             if (
               reverted.nextEligibleDispatchAt !== null &&
               now() < reverted.nextEligibleDispatchAt

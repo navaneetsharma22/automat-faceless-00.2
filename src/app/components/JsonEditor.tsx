@@ -18,6 +18,7 @@ export type JsonEditorProps = Omit<
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   showCharacterCount?: boolean;
+  editorRef?: React.Ref<HTMLTextAreaElement>;
 };
 
 export function JsonEditor({
@@ -25,6 +26,7 @@ export function JsonEditor({
   label,
   value,
   onChange,
+  editorRef,
   hint,
   error,
   wrapLines = false,
@@ -65,6 +67,8 @@ export function JsonEditor({
         <Field id={id} label={label} hint={hint} error={error}>
           <textarea
             {...textareaProps}
+            ref={editorRef}
+            id={id}
             className={`${styles.control} ${styles.editor} ${wrapLines ? styles.editorWrapped : ""}`}
             value={value}
             onChange={(event) => onChange(event.currentTarget.value)}
@@ -113,6 +117,7 @@ export function JsonEditor({
           <Field id={`${id}-expanded`} label={label} hint={hint} error={error}>
             <textarea
               {...textareaProps}
+              ref={editorRef}
               className={`${styles.control} ${styles.editor} ${styles.editorExpanded} ${wrapLines ? styles.editorWrapped : ""}`}
               value={value}
               onChange={(event) => onChange(event.currentTarget.value)}

@@ -4,20 +4,21 @@ Baseline: 28 October 2026.
 
 ## Current state
 
-| Area                                   | Status                                                                           |
-| -------------------------------------- | -------------------------------------------------------------------------------- |
-| Requirements and documentation package | DOCS_READY                                                                       |
-| Legacy source/report review            | SOURCE_REVIEWED                                                                  |
-| Parser decimal-array defect            | OFFLINE_REPRODUCED in legacy pure function                                       |
-| Existing hosted OAuth/download         | Legacy implementation + scoped historical user-reported live evidence            |
-| Existing native splitter               | Legacy implementation + recorded two-clip media verification                     |
-| New extension application              | TOOLCHAIN_READY; P02 corrected-route connections USER_REPORTED_PASS              |
-| Provider connection evidence           | SCREENSHOT_EVIDENCE: Flow/Vids shown Connected; listed checks USER_REPORTED_PASS |
-| Worker-owned connection lifecycle      | OFFLINE_VERIFIED; live retest NOT_RUN; historical Vids refresh cause unknown     |
-| New UI visual sign-off                 | USER_APPROVED; specified interaction/layout confirmations USER_REPORTED_PASS     |
-| Vids preservation / lifecycle limits   | Empty-document test shown; generated scenes and worker suspension unverified     |
-| New packaging/release                  | OFFLINE_PACKAGE_BUILT; live installation not confirmed                           |
-| Timed queue presentation               | LOCAL_BROWSER_FIXTURE_VERIFIED; no provider action performed                     |
+| Area                                   | Status                                                                              |
+| -------------------------------------- | ----------------------------------------------------------------------------------- |
+| Requirements and documentation package | DOCS_READY                                                                          |
+| Legacy source/report review            | SOURCE_REVIEWED                                                                     |
+| Parser decimal-array defect            | OFFLINE_REPRODUCED in legacy pure function                                          |
+| Existing hosted OAuth/download         | Legacy implementation + scoped historical user-reported live evidence               |
+| Existing native splitter               | Legacy implementation + recorded two-clip media verification                        |
+| New extension application              | TOOLCHAIN_READY; P02 corrected-route connections USER_REPORTED_PASS                 |
+| Provider connection evidence           | SCREENSHOT_EVIDENCE: Flow/Vids shown Connected; listed checks USER_REPORTED_PASS    |
+| Worker-owned connection lifecycle      | OFFLINE_VERIFIED; live retest NOT_RUN; historical Vids refresh cause unknown        |
+| New UI visual sign-off                 | USER_APPROVED; specified interaction/layout confirmations USER_REPORTED_PASS        |
+| Vids preservation / lifecycle limits   | Empty-document test shown; generated scenes and worker suspension unverified        |
+| New packaging/release                  | OFFLINE_PACKAGE_BUILT; live installation not confirmed                              |
+| Timed queue presentation               | LOCAL_BROWSER_FIXTURE_VERIFIED; no provider action performed                        |
+| Timed queue live acceptance audit      | LIVE_STORAGE_AUDITED (Shots 15–19 dispatched; Pause/Resume and Stop USER_REPORTED_PASS; MV3 40s restart PASS; readiness restart UNRESOLVED_GAP) |
 
 The application includes the dashboard, bounded read-only provider connections, exact JSON import/preservation, P04.1/P04.2 offline/local-fixture scope, and the P04.3 evidence-backed discovery/fill-only compatibility implementation recorded below. **USER_REPORTED_PASS:** Flow and Vids now connect after the shared route-parser correction, including the account-prefixed Flow context. The user-supplied diagnostic exposed a visible contenteditable candidate and the local implementation now supports that exact observed host structure. The new package has not been confirmed in the user's loaded browser. Live fill/readback and generation remain unverified. Vids preservation evidence remains limited to the shown empty-document test.
 
@@ -155,6 +156,26 @@ Implemented bounded pre-activation readiness waiting:
 9. **Duplicate Wakeup Protection**: Concurrently triggered alarms execute sequentially via the serialized queue lock without duplicate dispatch.
 
 Checks: full Vitest **32 files / 352 tests PASS** (including 7 focused regressions in `flowReadinessWait.test.ts`); Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; production package build PASS. Validated package ID: **`automat-faceless-0.1.0-mvw2sfon`**. No live provider actions, generation, downloads, or storage migrations occurred.
+
+## Images Import 'New batch' action and Stopped queue presentation fix — 31 October 2026
+
+Added a “New batch” button to the Images import panel alongside “Load saved batch” and “Export saved source”.
+
+Behavior on explicit click:
+- Clears only the editable draft in memory via `ImportPreviewSession.clear()`, resetting `source: ""`, incrementing `revision`, setting `status: "idle"`, clearing parsed items, validation errors, and elapsed time.
+- Clears transient import/save feedback, file loading states, replacement prompts, and preview selections.
+- Informs the user with inline notice and polite status announcement: “New batch started. The empty draft is not saved and cannot create or start a queue. Enter JSON and choose Validate & Preview.”
+- Immediately invalidates the current draft's manual settings confirmation by emitting `onImageSourceReadinessChange(false, undefined, [])`.
+- Focuses the empty JSON editor textarea via `editorRef` (falling back to element ID lookup).
+- Preserves the durable saved source in Dexie/storage until explicitly replaced by a subsequent Save.
+- Preserves every queue, receipt, attempt, diagnostic, and duplicate-source lock. Does not stop, resume, or modify any active or running queue.
+- Preserves historical and completed queues in the existing compact history UI.
+
+Fixed the Stopped queue status label:
+- In `Progress.tsx`, updated the `.nextSummary` fallback label for stopped queues from “Checking next prompt…” to “No further prompts will be sent.”
+- Omitted next-item focus (`focusItem = undefined`) when `queue.state === "stopped"`, rendering header label `<span>Queue stopped</span>` and prominent status `<strong>No further prompts will be sent.</strong>`.
+
+Checks: full Vitest **33 files / 363 tests PASS** (including dedicated unit test suite `tests/unit/imageNewBatch.test.tsx` and focused presentation regression in `tests/unit/imageQueuePresentation.test.tsx`); typecheck PASS; ESLint PASS; production package build PASS; `git diff --check` PASS. Validated package ID: **`automat-faceless-0.1.0-mvw9uc06`**. No database deletion, provider mutations, or unrelated refactors.
 
 ## Phase ledger
 
@@ -828,3 +849,67 @@ Polished native scrollbars on the sidebar, left import panel, and right queue pa
 - Preserved independent column scrolling, wheel/touch/keyboard scrolling, scrollbar gutter stability (`scrollbar-gutter: stable`), panel dimensions, and JSON textarea behavior.
 - Verified in Chromium across both themes and captured visual screenshots in `artifacts/scrollbar-visual/` (`light-theme-scrollbars.png`, `dark-theme-scrollbars.png`, and `light-theme-hover.png`).
 - Checks: full Vitest **32 files / 357 tests PASS**; Playwright `sidebarLayout.spec.ts` **1/1 PASS**; typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` PASS. Validated package ID: **`automat-faceless-0.1.0-mvw57oga`**. No live provider actions.
+
+## Read-only acceptance audit of completed Shots 15–19 queue — 31 October 2026
+
+Audited the live durable database records directly from Chrome Profile 1 (`automat-faceless-app-v1` IndexedDB in `chrome-extension_klddoekboklcddeaclbpdimfhjpnjjeo_0.indexeddb.leveldb`) without triggering Generate, Start, Resume, replay, or storage mutations.
+
+### Audit Findings Summary
+
+1. **Queue Identity & Order**:
+   - `queueId`: `9de131d0-327d-4c56-bfa9-e02c51545644` (workspace `default`, kind `image`, mode `timed_submission`, interval `40000` ms).
+   - Created at `1793432176230` (`2026-10-31T07:36:16.230Z`), updated at `1793432375054` (`2026-10-31T07:39:35.054Z`).
+   - Ordered shots: `15`, `16`, `17`, `18`, `19` (5 total items).
+2. **Durable Source Binding & Receipts**:
+   - All 5 items have `itemState: "sent"` and `providerOutcome: "unknown"`.
+   - Every item's `sourceSpan` strictly matches its `rawJsonBody` substring in `sourceText`.
+   - Every item's calculated SHA-256 strictly matches `promptHash`.
+   - Every item's `dispatchIntent.attemptId` strictly matches `dispatchReceipt.attemptId` (receipt evidence `activation_pair_sent_or_uncertain`).
+3. **Timing Invariants ($\ge 40,000$ ms Activation Gap)**:
+   - **Shot 15**: Initial item dispatched at queue start (Activation: `07:36:22.705Z`, Receipt stored: `07:36:22.755Z`).
+   - **Shot 16**: Activation started at `07:37:33.519Z`, which is **70,764 ms** after Shot 15's receipt (**PASS**; $\ge 40,000$ ms). Weaker receipt-to-receipt gap: 70,805 ms.
+   - **Shot 17**: Activation started at `07:38:14.033Z`, which is **40,473 ms** after Shot 16's receipt (**PASS**; $\ge 40,000$ ms). Weaker receipt-to-receipt gap: 40,511 ms.
+   - **Shot 18**: Activation started at `07:38:54.511Z`, which is **40,440 ms** after Shot 17's receipt (**PASS**; $\ge 40,000$ ms). Weaker receipt-to-receipt gap: 40,480 ms.
+   - **Shot 19**: Activation started at `07:39:35.012Z`, which is **40,461 ms** after Shot 18's receipt (**PASS**; $\ge 40,000$ ms). Weaker receipt-to-receipt gap: 40,503 ms.
+4. **Recorded Readiness Waiting**:
+   - **Shot 16** explicitly recorded **30,311 ms** of readiness waiting (`readinessStartedAt: 1793432223208`, `readinessDeadlineAt: 1793432283208`). The disabled button was detected during preflight after the 40s scheduler interval elapsed; the bounded readiness wait rechecked without re-inserting text or duplicate clicks and activated immediately upon button enablement.
+   - **Shots 15, 17, 18, 19**: Zero readiness waiting recorded (`readinessStartedAt: undefined`).
+5. **Queue State Integrity**:
+   - `queue.state`: `sent`.
+   - `currentIndex`: `undefined`, `currentItemId`: `undefined`.
+   - Zero unresolved, sending, pending, blocked, or paused items remain.
+
+### Timed-Submission Acceptance Scope and Remaining Lifecycle Verification
+
+Under the agreed Phase 06 timed-submission scope:
+
+- **Provider Outcomes Kept Unknown**: In timed-submission mode, dispatch receipts record local action evidence (`activation_pair_sent_or_uncertain`), while `providerOutcome` is intentionally recorded and preserved as `"unknown"`. Provider-side completion polling, image decoding, tile counting, provider completion acknowledgement, and downloads are **not** requirements of P06 timed submission.
+- **Preserved Historical / Deferred Gates**: Original completion-driven criteria from P05 and early roadmap definitions (including strict attribution and terminal outcome gates `G-IMAGE-ONE`, `G-IMAGE-TWO`, and `G-IMAGE-SCALE` under the old completion criteria) remain preserved as **DEFERRED / NOT_PASSED** historical gates. They are not satisfied by timed dispatch, nor are they new requirements for P06 timed-queue operation.
+- **Remaining Timed-Queue Lifecycle Acceptance**:
+  1. **Pause / Resume without replay**: Live manual confirmation that pausing an active queue during the 40-second interval sets `state: "paused"`, halts countdown, and clicking Resume re-validates the target and resumes the countdown without replaying or re-submitting the previous prompt.
+  2. **Stop preventing subsequent authorization**: Live manual confirmation that clicking Stop transitions the queue to `state: "stopped"`, clears pending alarms/deadlines, and permanently prevents any subsequent item authorization.
+  3. **Worker restart without early or duplicate dispatch**: Live confirmation that service worker suspension/restart during a 40-second waiting interval properly rehydrates `nextEligibleDispatchAt` from Dexie and prevents premature or duplicate dispatch.
+  4. **Original readiness deadline preserved across restart**: Live confirmation that worker restart during a bounded readiness-waiting state preserves the original `readinessDeadlineAt` and `readinessStartedAt` without resetting or extending the 60-second window.
+
+## P06 restart acceptance checkpoint and user evidence audit — 31 October 2026
+
+### 1. User-Confirmed Live Runs and Operational Audit
+- **Five-Prompt Timing Audit (Shots 15–19)**: Confirmed in durable database records (`9de131d0-327d-4c56-bfa9-e02c51545644`). All 5 items have valid receipts and Flow bindings. All activation-to-receipt gaps strictly exceeded 40,000 ms. Shot 16 recorded 30,311 ms readiness waiting without early dispatch.
+- **User-Observed Pause / Resume**: Confirmed that pausing an active queue during the 40s interval halts the countdown, transitions to `state: "paused"`, and clicking Resume re-validates the target and continues without replaying the prior prompt.
+- **User-Confirmed Stop**: Confirmed that clicking Stop permanently halts the active queue and prevented submission of Shot 23.
+
+### 2. Isolated Installed-MV3 Worker Restart Verification
+- **Scenario 1 (Normal 40s wait interval restart)**: **PASS**. Worker terminated via CDP `ServiceWorker.stopWorker` during 40s wait. Deadline preserved to the millisecond. No early dispatch, no duplicate dispatch, no catch-up dispatch.
+- **Scenario 2 (Generate-readiness wait restart)**: **FAILED / UNRESOLVED GAP**.
+  - Worker terminated while in the readiness loop holding an active CDP session.
+  - Upon restart, Chrome's debugger manager retained the prior worker's tab attachment.
+  - The new worker's preflight called `acquireDebuggerLease(tabId)`, which was rejected by Chrome with `flow_debugger_attach_refused`.
+  - In strict compliance with zero-borrowing and anti-tampering guards, the extension failed closed with `itemState: "blocked"` and reason `timed_dispatch_preflight_failed`.
+  - Scenario 2 remains the specific unresolved acceptance gap; testing was stopped without weakening guards or detaching unverified owners.
+- **Scenario 3 (Restart after authorization before receipt)**: **UNTESTED** (bounded run stopped per instruction).
+- **Scenario 4 (Paused and stopped queues inactive after restart)**: **UNTESTED** (bounded run stopped per instruction).
+
+### 3. Verification Boundaries
+- Strict debugger guards remain fully intact in production code. No unverified debugger owner was detached.
+- Full Vitest suite **33 files / 363 tests PASS**; typecheck PASS; ESLint PASS; production package build PASS. Validated package ID: **`automat-faceless-0.1.0-mvwcay8w`**.
+- Counting and provider-side completion acknowledgement remain strictly deferred per P06 scope.
