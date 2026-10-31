@@ -618,12 +618,16 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
       expect(diag?.settledDifferenceOffset).toBeUndefined();
     });
 
-    it("disabled button with matching text blocks as generate_disabled without falsely claiming readback mismatch", async () => {
+    it("disabled button with matching text enters readiness wait and pauses on timeout without falsely claiming readback mismatch", async () => {
       const { repositories, queue, clock } = await createTestQueueFixture();
       const { environment, mouseEventsSent } = createMockEnvironment({
         inDispatchSampleText: promptShot13,
         generateState: "disabled",
       });
+      environment.readinessTimeoutMs = 10;
+      environment.readinessInitialBackoffMs = 2;
+      environment.readinessMaxBackoffMs = 5;
+      environment.sleep = async () => {};
 
       let authorizationCalled = false;
       const dispatcher = createFlowTimedQueueDispatcher(
@@ -641,8 +645,8 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
         },
       });
 
-      expect(result.status).toBe("blocked");
-      expect(result.reason).toBe("generate_disabled");
+      expect(result.status).toBe("paused");
+      expect(result.reason).toBe("flow_generate_readiness_timeout");
       expect(authorizationCalled).toBe(false);
       expect(mouseEventsSent).toHaveLength(0);
       expect((result as { diagnostic?: unknown }).diagnostic).toBeUndefined();

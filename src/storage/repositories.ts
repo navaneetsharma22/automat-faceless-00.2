@@ -1036,6 +1036,116 @@ export class ExtensionRepositories {
     return result;
   }
 
+  async markTimedImageQueueWaitingForReadiness(input: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+    attemptId: string;
+    deadlineAt: number;
+    startedAt: number;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(["imageSubmissionQueues"], async () => {
+      const queue = await this.tables.imageSubmissionQueues.get(input.queueId);
+      const item = queue?.items[input.order];
+      if (
+        !queue ||
+        queue.revision !== input.expectedRevision ||
+        (queue.state !== "ready" && queue.state !== "waiting") ||
+        item?.itemState !== "sending" ||
+        item.dispatchIntent?.attemptId !== input.attemptId ||
+        item.dispatchIntent.activationStartedAt !== undefined
+      )
+        throw new ImageQueueEligibilityError(
+          "readiness_intent_revision_changed",
+        );
+      result = {
+        ...queue,
+        revision: queue.revision + 1,
+        updatedAt: input.startedAt,
+        items: queue.items.map((entry, index) =>
+          index === input.order
+            ? {
+                ...entry,
+                dispatchIntent: {
+                  ...entry.dispatchIntent!,
+                  readinessDeadlineAt: input.deadlineAt,
+                  readinessStartedAt: input.startedAt,
+                },
+              }
+            : entry,
+        ),
+      };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(result).success)
+        throw new ImageQueueEligibilityError("readiness_intent_invalid");
+      await this.tables.imageSubmissionQueues.put(result);
+      const readback = await this.tables.imageSubmissionQueues.get(
+        input.queueId,
+      );
+      if (
+        !readback ||
+        readback.revision !== result.revision ||
+        readback.items[input.order]?.dispatchIntent?.readinessDeadlineAt !==
+          input.deadlineAt
+      )
+        throw new ImageQueueEligibilityError(
+          "readiness_intent_readback_failed",
+        );
+      result = readback;
+    });
+    return result;
+  }
+
+  async revertSendingItemToPendingForReadiness(input: {
+    queueId: string;
+    expectedRevision: number;
+    order: number;
+    at: number;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(["imageSubmissionQueues"], async () => {
+      const queue = await this.tables.imageSubmissionQueues.get(input.queueId);
+      const item = queue?.items[input.order];
+      if (
+        !queue ||
+        queue.revision !== input.expectedRevision ||
+        item?.itemState !== "sending" ||
+        item.dispatchIntent?.activationStartedAt !== undefined
+      )
+        throw new ImageQueueEligibilityError("revert_sending_revision_changed");
+      const { dispatchIntent, ...withoutIntent } = item;
+      void dispatchIntent;
+      result = {
+        ...queue,
+        revision: queue.revision + 1,
+        updatedAt: input.at,
+        items: queue.items.map((entry, index) =>
+          index === input.order
+            ? {
+                ...withoutIntent,
+                itemState: "pending" as const,
+                providerOutcome: "not_started" as const,
+              }
+            : entry,
+        ),
+      };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(result).success)
+        throw new ImageQueueEligibilityError("revert_sending_invalid");
+      await this.tables.imageSubmissionQueues.put(result);
+      const readback = await this.tables.imageSubmissionQueues.get(
+        input.queueId,
+      );
+      if (
+        !readback ||
+        readback.revision !== result.revision ||
+        readback.items[input.order]?.itemState !== "pending"
+      )
+        throw new ImageQueueEligibilityError("revert_sending_readback_failed");
+      result = readback;
+    });
+    return result;
+  }
+
   async blockTimedImageQueue(input: {
     queueId: string;
     expectedRevision: number;

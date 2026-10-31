@@ -146,6 +146,7 @@
 }
 
 .stateWaiting,
+.stateWaitingforFlowreadiness,
 .itemSending {
   border-color: var(--color-info);
   background: var(--color-info-surface);

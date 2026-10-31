@@ -138,6 +138,24 @@ Demonstrated fix:
 
 Checks: full Vitest **31 files / 345 tests PASS** (including 9 focused unit/integration tests in `flowTimedInspection.test.ts`); typecheck PASS; ESLint PASS; production package build PASS. Validated package ID: **`automat-faceless-0.1.0-mvw1i1z5`**.
 
+## Bounded pre-activation readiness waiting and Shot 14 guarded recovery — 31 October 2026
+
+Investigated premature blocking on transient Generate button unreadiness (live Shots 10–13 Sent, Shot 14 blocked with `generate_disabled` while matching prompt text 3,954 code units remained intact in the editor). Requiring manual retry for ordinary temporary unreadiness defeated timed queue operation.
+
+Implemented bounded pre-activation readiness waiting:
+
+1. **Minimum Interval Preservation**: Preserved 40,000 ms as the minimum interval after the previous dispatch receipt before examining readiness.
+2. **Visible Waiting State**: When the verified Generate button is disabled during pre-activation inspection, the queue enters a visible `Waiting for Flow readiness` state instead of immediately blocking.
+3. **Persisted Readiness Deadline**: Bounded 60-second maximum additional wait (`FLOW_READINESS_WAIT_TIMEOUT_MS = 60_000`) persisted in Dexie on `dispatchIntent.readinessDeadlineAt`. Read-only rechecks use exponential backoff (500 ms up to 2,000 ms).
+4. **Zero Mutation While Waiting**: No text reinsertion, prompt rewriting, or clicks are sent while waiting.
+5. **Fresh Revalidation Before Activation**: When enabled, the dispatcher freshly revalidates exact source text equality, project/document bindings, unique button ownership via `revalidateAndInspectButtonRuntime` (`boundary.contains(button)` and unique enabled candidate), queue revision, and Pause/Stop state before authorizing activation. Changed text, bindings, or button ownership safely refuse (block).
+6. **Timeout and Pause/Stop**: If the button remains disabled after 60 seconds, the queue pauses with `flow_generate_readiness_timeout` and reverts the item to `pending` with `providerOutcome: "not_started"`. Pause/Stop during waiting prevents activation authorization.
+7. **Worker Restart Reconcilation**: Unactivated items with expired deadlines pause with `flow_generate_readiness_timeout`; unexpired items safely revert to `pending` and reschedule without early or duplicate dispatch.
+8. **Shot 14 Guarded Recovery**: Existing blocked Shot 14 is not automatically unblocked during upgrade. The user runs read-only inspection, verifies prompt equality (3,954 code units), and triggers guarded retry ("Retry Shot 14 (guarded)"), which unblocks Shot 14 to `pending` and pauses the queue (`guarded_retry_ready`) for safe resumption.
+9. **Duplicate Wakeup Protection**: Concurrently triggered alarms execute sequentially via the serialized queue lock without duplicate dispatch.
+
+Checks: full Vitest **32 files / 352 tests PASS** (including 7 focused regressions in `flowReadinessWait.test.ts`); Playwright browser sequence **2/2 PASS**; typecheck PASS; ESLint PASS; production package build PASS. Validated package ID: **`automat-faceless-0.1.0-mvw2sfon`**. No live provider actions, generation, downloads, or storage migrations occurred.
+
 ## Phase ledger
 
 | Phase                                         | Status                                                                                                                                                                                                                                                                                                                     | Evidence                                                                                                                                                                                                                                                                                                                                                                                          |

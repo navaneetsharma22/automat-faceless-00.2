@@ -2,6 +2,9 @@ import { z } from "zod";
 import { sha256Hex } from "../batches/hashPrompt";
 
 export const TIMED_IMAGE_SUBMISSION_INTERVAL_MS = 40_000 as const;
+export const FLOW_READINESS_WAIT_TIMEOUT_MS = 60_000 as const;
+export const FLOW_READINESS_RECHECK_INITIAL_MS = 500 as const;
+export const FLOW_READINESS_RECHECK_MAX_MS = 2_000 as const;
 
 export const IMAGE_QUEUE_ITEM_STATES = [
   "pending",
@@ -92,6 +95,8 @@ export type ImageQueueItem = {
     attemptId: string;
     recordedAt: number;
     activationStartedAt?: number;
+    readinessDeadlineAt?: number;
+    readinessStartedAt?: number;
   };
   blockReason?: string;
   readbackDiagnostic?: PromptReadbackDiagnostic;
@@ -187,6 +192,8 @@ const itemSchema = z
         attemptId: z.string().min(1).max(128),
         recordedAt: z.number().finite().nonnegative(),
         activationStartedAt: z.number().finite().nonnegative().optional(),
+        readinessDeadlineAt: z.number().finite().nonnegative().optional(),
+        readinessStartedAt: z.number().finite().nonnegative().optional(),
       })
       .strict()
       .optional(),

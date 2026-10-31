@@ -465,13 +465,18 @@ export function QueueCard({
     }
   };
   const isComplete = sentCount === queue.items.length && queue.items.length > 0;
-  const status = sendingItem
-    ? "Sending"
-    : queue.state === "ready"
-      ? "Ready"
-      : queue.state === "sent" && isComplete
-        ? "Finished"
-        : titleCase(queue.state);
+  const isWaitingForReadiness = Boolean(
+    sendingItem?.dispatchIntent?.readinessDeadlineAt,
+  );
+  const status = isWaitingForReadiness
+    ? "Waiting for Flow readiness"
+    : sendingItem
+      ? "Sending"
+      : queue.state === "ready"
+        ? "Ready"
+        : queue.state === "sent" && isComplete
+          ? "Finished"
+          : titleCase(queue.state);
   const currentTitle = focusItem ? getPromptTitle(focusItem) : undefined;
   const queueKicker =
     queue.state === "waiting" || sendingItem
@@ -479,6 +484,9 @@ export function QueueCard({
       : queue.state === "ready"
         ? "READY QUEUE"
         : "QUEUE SUMMARY";
+
+  const badgeClassKey = `state${status.replace(/[^a-zA-Z0-9]/g, "")}`;
+  const badgeClass = styles[badgeClassKey] ?? styles.stateWaiting;
 
   return (
     <section
@@ -492,7 +500,7 @@ export function QueueCard({
           <h4>{status}</h4>
         </div>
         <span
-          className={`${styles.stateBadge} ${styles[`state${status}`]}`}
+          className={`${styles.stateBadge} ${badgeClass}`}
           role="status"
           aria-live="polite"
         >
@@ -547,11 +555,23 @@ export function QueueCard({
           intervalMs={queue.intervalMs}
         />
       ) : null}
-      {sendingItem ? (
+      {isWaitingForReadiness && sendingItem ? (
+        <div className={styles.sending} role="status" aria-live="polite">
+          <span className={styles.spinner} aria-hidden="true" />
+          <span>Waiting for Flow readiness for {shotLabel(sendingItem)}…</span>
+        </div>
+      ) : sendingItem ? (
         <div className={styles.sending} role="status" aria-live="polite">
           <span className={styles.spinner} aria-hidden="true" />
           <span>Sending {shotLabel(sendingItem)}…</span>
         </div>
+      ) : null}
+      {queue.state === "paused" &&
+      queue.pauseReason === "flow_generate_readiness_timeout" ? (
+        <p className={styles.helper} role="status" aria-live="polite">
+          Paused: Flow readiness timed out after 60s. Click Resume when the
+          Generate button is ready.
+        </p>
       ) : null}
       {queue.state === "waiting" && queue.nextEligibleDispatchAt === null ? (
         <p className={styles.checking} role="status" aria-live="polite">

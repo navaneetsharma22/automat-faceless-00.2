@@ -21,6 +21,9 @@ import type {
 } from "./handlers/flow";
 import type { FailureCategory } from "../shared/schemas";
 import {
+  FLOW_READINESS_WAIT_TIMEOUT_MS,
+  FLOW_READINESS_RECHECK_INITIAL_MS,
+  FLOW_READINESS_RECHECK_MAX_MS,
   comparePromptReadbackSafely,
   type FlowEditorReadbackInspectionResult,
   type PromptReadbackDiagnostic,
@@ -62,6 +65,10 @@ export type FlowTimedDispatchEnvironment = {
   ) => Promise<
     { documentId?: string; frameId?: number; result?: string } | undefined
   >;
+  readinessTimeoutMs?: number;
+  readinessInitialBackoffMs?: number;
+  readinessMaxBackoffMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export function createFlowTimedQueueDispatcher(
@@ -323,24 +330,175 @@ export function createFlowTimedQueueDispatcher(
           diagnostic,
         };
       }
-      if (inspection.generate !== "identified" || !inspection.buttonObjectId) {
+      if (inspection.generate === "ambiguous") {
         return {
           status: "blocked",
-          reason: `generate_${inspection.generate}`,
+          reason: "generate_ambiguous",
           uncertain: false,
         };
       }
-      const position = await inspectFlowImageButton(
-        pagePort,
-        selected.tabId,
-        inspection.buttonObjectId,
-      );
-      if (!position)
+      if (inspection.generate === "missing") {
         return {
           status: "blocked",
-          reason: "generate_control_not_enabled",
+          reason: "generate_missing",
           uncertain: false,
         };
+      }
+
+      let buttonPosition: { x: number; y: number } | undefined;
+      let currentInspection = inspection;
+      let currentRevision = queue.revision;
+
+      if (currentInspection.generate === "identified") {
+        if (!currentInspection.buttonObjectId) {
+          return {
+            status: "blocked",
+            reason: "generate_identified_missing_handle",
+            uncertain: false,
+          };
+        }
+        buttonPosition = await inspectFlowImageButton(
+          pagePort,
+          selected.tabId,
+          currentInspection.buttonObjectId,
+        );
+        if (!buttonPosition) {
+          return {
+            status: "blocked",
+            reason: "generate_control_not_enabled",
+            uncertain: false,
+          };
+        }
+      } else if (currentInspection.generate === "disabled") {
+        const timeoutMs =
+          environment?.readinessTimeoutMs ?? FLOW_READINESS_WAIT_TIMEOUT_MS;
+        const initialBackoffMs =
+          environment?.readinessInitialBackoffMs ??
+          FLOW_READINESS_RECHECK_INITIAL_MS;
+        const maxBackoffMs =
+          environment?.readinessMaxBackoffMs ?? FLOW_READINESS_RECHECK_MAX_MS;
+        const sleep =
+          environment?.sleep ??
+          ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+        const readinessStartedAt = now();
+        const deadlineAt =
+          item.dispatchIntent?.readinessDeadlineAt ??
+          readinessStartedAt + timeoutMs;
+
+        if (item.dispatchIntent?.readinessDeadlineAt === undefined) {
+          const updated =
+            await repositories.markTimedImageQueueWaitingForReadiness({
+              queueId: queue.queueId,
+              expectedRevision: currentRevision,
+              order,
+              attemptId,
+              deadlineAt,
+              startedAt: readinessStartedAt,
+            });
+          currentRevision = updated.revision;
+        }
+
+        let backoff = initialBackoffMs;
+        let elapsed = 0;
+
+        while (!buttonPosition && elapsed < timeoutMs && now() < deadlineAt) {
+          const latestQueue = await repositories.getTimedImageSubmissionQueue(
+            queue.queueId,
+          );
+          if (
+            latestQueue?.state === "paused" ||
+            latestQueue?.state === "stopped"
+          ) {
+            return {
+              status: "paused",
+              reason: latestQueue.pauseReason ?? "user_requested",
+            };
+          }
+
+          await sleep(backoff);
+          elapsed += backoff;
+          backoff = Math.min(backoff * 1.5, maxBackoffMs);
+
+          const checkFrame = await pagePort.readFrame(selected.tabId, lease);
+          if (
+            !checkFrame ||
+            checkFrame.frameId !== frame.frameId ||
+            checkFrame.loaderId !== frame.loaderId ||
+            checkFrame.documentId !== binding.documentId ||
+            checkFrame.senderFrameId !== 0
+          ) {
+            return {
+              status: "blocked",
+              reason: "frame_binding_changed",
+              uncertain: false,
+            };
+          }
+
+          currentInspection = await inspectTimedFlowGenerate(
+            pagePort,
+            selected.tabId,
+            item.rawJsonBody,
+          );
+
+          if (currentInspection.composer !== "identified") {
+            return {
+              status: "blocked",
+              reason: `composer_${currentInspection.composer}`,
+              uncertain: false,
+            };
+          }
+
+          if (!currentInspection.exactPrompt) {
+            return {
+              status: "blocked",
+              reason: "editor_exact_readback_mismatch",
+              uncertain: false,
+            };
+          }
+
+          if (currentInspection.generate === "ambiguous") {
+            return {
+              status: "blocked",
+              reason: "generate_ambiguous",
+              uncertain: false,
+            };
+          }
+
+          if (currentInspection.generate === "missing") {
+            return {
+              status: "blocked",
+              reason: "generate_missing",
+              uncertain: false,
+            };
+          }
+
+          if (
+            currentInspection.generate === "identified" &&
+            currentInspection.buttonObjectId
+          ) {
+            buttonPosition = await inspectFlowImageButton(
+              pagePort,
+              selected.tabId,
+              currentInspection.buttonObjectId,
+            );
+            if (!buttonPosition) {
+              return {
+                status: "blocked",
+                reason: "generate_control_not_enabled",
+                uncertain: false,
+              };
+            }
+          }
+        }
+      }
+
+      if (!buttonPosition) {
+        return {
+          status: "paused",
+          reason: "flow_generate_readiness_timeout",
+        };
+      }
       const lastFrame = await pagePort.readFrame(selected.tabId, lease);
       if (
         !lastFrame ||
@@ -358,8 +516,8 @@ export function createFlowTimedQueueDispatcher(
       const activation = await activateFlowImageGenerate(
         pagePort,
         selected.tabId,
-        position.x,
-        position.y,
+        buttonPosition.x,
+        buttonPosition.y,
       );
       if (
         !activation.complete ||

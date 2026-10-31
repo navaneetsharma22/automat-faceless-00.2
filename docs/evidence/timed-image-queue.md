@@ -232,3 +232,48 @@ Shot 13 blocked with `editor_exact_readback_mismatch`, yet persisted `pre_activa
    - No live provider actions.
 
 Checks: full Vitest **31 files / 345 tests PASS**; typecheck PASS; ESLint PASS; production package build PASS. Added regression test suite `tests/unit/flowTimedInspection.test.ts` (9/9 PASS). Validated package ID: **`automat-faceless-0.1.0-mvw1i1z5`**.
+
+## 5. Bounded Pre-Activation Readiness Waiting and Shot 14 Guarded Recovery
+
+### Live Incident Context
+
+- Live state: Shots 10–13 Sent (4/5).
+- Shot 14: blocked with `generate_disabled`.
+- Current Flow editor exactly matches Shot 14 (3,954 code units, SHA-256 `aafcc94900aa41cfba0109e3e0922269d1708eea1f7fd04176a53f962d0eec84`).
+- Cause of button disablement remains unestablished; requiring manual guarded retry for ordinary temporary unreadiness defeats the timed queue's automation.
+
+### Implemented Waiting Policy
+
+1. **40,000 ms Minimum Interval**: Preserves the minimum 40,000 ms interval after the previous dispatch receipt before examining readiness.
+2. **Readiness Waiting State**: When the Generate button is disabled during pre-activation inspection, the dispatcher enters a visible `Waiting for Flow readiness` state instead of immediately blocking.
+3. **Persisted Readiness Deadline**:
+   - 60-second maximum additional wait (`FLOW_READINESS_WAIT_TIMEOUT_MS = 60_000`).
+   - Persisted in Dexie on the sending item's `dispatchIntent` (`readinessDeadlineAt`, `readinessStartedAt`).
+   - Read-only rechecks with exponential backoff (`FLOW_READINESS_RECHECK_INITIAL_MS = 500`, doubling up to `FLOW_READINESS_RECHECK_MAX_MS = 2_000`).
+4. **Zero Reinsertion and Zero Clicks While Waiting**: Does not reinsert text or click while waiting.
+5. **Fresh Revalidation When Ready**:
+   - Upon button becoming enabled, rechecks exact prompt text equality (`exactPrompt: true`).
+   - Rechecks document and frame binding (`targetAndFrameCurrent`).
+   - Acquires fresh remote button handle and revalidates button ownership via `revalidateAndInspectButtonRuntime` (must be connected, visible, enabled, contained in composer boundary `boundary.contains(button)`, and unique enabled candidate).
+   - Rechecks queue revision and Pause/Stop state before authorizing activation.
+   - Any text mismatch, binding change, or ambiguous control safely refuses (blocks).
+6. **Timeout and Pause/Stop Handling**:
+   - If the button remains disabled after the 60-second deadline, the queue transitions to `paused` with reason `flow_generate_readiness_timeout`.
+   - The timed item reverts to `pending` with `providerOutcome: "not_started"` and prompt text left in the editor, allowing zero-reinsertion resumption.
+   - If user triggers Pause or Stop during waiting, activation authorization is prevented.
+7. **Worker Restart Reconcilation**:
+   - If worker restarts and `activationStartedAt !== undefined`: blocks fail-closed with `uncertain: true`.
+   - If worker restarts with unactivated readiness wait and deadline has expired: pauses with `flow_generate_readiness_timeout` and reverts item to `pending`.
+   - If worker restarts with unactivated readiness wait and deadline is unexpired: safely reverts item to `pending` and reschedules alarm via `schedule(reverted)` without duplicate dispatch.
+8. **Guarded Recovery Path for Existing Shot 14**:
+   - Existing blocked Shot 14 is NOT automatically unblocked during upgrade.
+   - Guarded recovery procedure: User executes read-only inspection ("Inspect current editor (read-only)"), verifies exact prompt match (3,954 code units), then triggers guarded retry ("Retry Shot 14 (guarded)").
+   - This unblocks Shot 14 to `pending` and pauses the queue (`guarded_retry_ready`) for safe resumption.
+
+### Verification
+
+- Vitest: **32 files / 352 tests PASS** (including 7 new tests in `tests/unit/flowReadinessWait.test.ts` covering delayed enablement, permanent disablement, Pause/Stop during wait, worker restart expired/unexpired, safe refusal on changed text/project/button ownership, duplicate wakeups, and Shot 14 guarded recovery).
+- Playwright: **2/2 PASS** against local synthetic browser fixture (`tests/browser/imageQueueSequence.spec.ts`).
+- Static Checks: TypeScript typecheck PASS; ESLint PASS; Prettier check PASS; `git diff --check` PASS.
+- Production Build: Packaged and validated with ID **`automat-faceless-0.1.0-mvw2sfon`**.
+- Scope boundaries: No live provider actions, generation, downloads, or unprompted migrations performed.

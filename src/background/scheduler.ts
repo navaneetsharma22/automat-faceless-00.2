@@ -11,6 +11,7 @@ export const IMAGE_QUEUE_ALARM_PREFIX = "automat-image-queue:";
 
 export type TimedQueueDispatchResult =
   | { status: "activated"; at: number }
+  | { status: "paused"; reason: string }
   | {
       status: "blocked";
       reason: string;
@@ -124,10 +125,13 @@ export function createTimedImageQueueScheduler(input: {
           order,
           attemptId,
           authorizeActivation: async () => {
+            const currentQueue =
+              await input.repositories.getTimedImageSubmissionQueue(queueId);
+            const freshRevision = currentQueue?.revision ?? currentRevision;
             queue =
               await input.repositories.markTimedImageQueueActivationStarted({
                 queueId,
-                expectedRevision: currentRevision,
+                expectedRevision: freshRevision,
                 order,
                 attemptId,
                 at: now(),
@@ -142,10 +146,33 @@ export function createTimedImageQueueScheduler(input: {
           uncertain: true,
         };
       }
+      if (result.status === "paused") {
+        const current =
+          await input.repositories.getTimedImageSubmissionQueue(queueId);
+        if (!current) throw new Error("image_queue_not_found");
+        if (current.state === "paused" || current.state === "stopped") {
+          void input.alarms.clear(`${IMAGE_QUEUE_ALARM_PREFIX}${queueId}`);
+          return current;
+        }
+        const paused = await input.repositories.pauseTimedImageQueue({
+          queueId,
+          expectedRevision: current.revision,
+          at: now(),
+          reason: result.reason,
+        });
+        void input.alarms.clear(`${IMAGE_QUEUE_ALARM_PREFIX}${queueId}`);
+        return paused;
+      }
       if (result.status === "blocked") {
+        const current =
+          await input.repositories.getTimedImageSubmissionQueue(queueId);
+        if (!current) throw new Error("image_queue_not_found");
+        if (current.state === "paused" || current.state === "stopped") {
+          return current;
+        }
         const blocked = await input.repositories.blockTimedImageQueue({
           queueId,
-          expectedRevision: queue.revision,
+          expectedRevision: current.revision,
           order,
           at: now(),
           uncertain: result.uncertain,
@@ -153,11 +180,11 @@ export function createTimedImageQueueScheduler(input: {
           diagnostic: result.diagnostic,
         });
         if (!blocked) {
-          const current =
+          const fresh =
             await input.repositories.getTimedImageSubmissionQueue(queueId);
-          if (current?.state === "paused" || current?.state === "stopped")
-            return current;
-          throw new Error("image_queue_block_revision_changed");
+          if (fresh?.state === "paused" || fresh?.state === "stopped")
+            return fresh;
+          throw new Error("timed_queue_block_lost_race");
         }
         void input.alarms.clear(`${IMAGE_QUEUE_ALARM_PREFIX}${queueId}`);
         return blocked;
@@ -275,13 +302,62 @@ export function createTimedImageQueueScheduler(input: {
               item.itemState !== "blocked"),
         );
         if (unresolved) {
+          if (unresolved.dispatchIntent?.activationStartedAt !== undefined) {
+            await input.repositories.blockTimedImageQueue({
+              queueId: queue.queueId,
+              expectedRevision: queue.revision,
+              order: unresolved.order,
+              at: now(),
+              uncertain: true,
+              reason: "worker_restart_during_dispatch",
+            });
+            continue;
+          }
+          const readinessDeadline =
+            unresolved.dispatchIntent?.readinessDeadlineAt;
+          if (readinessDeadline !== undefined) {
+            if (now() >= readinessDeadline) {
+              await input.repositories.pauseTimedImageQueue({
+                queueId: queue.queueId,
+                expectedRevision: queue.revision,
+                at: now(),
+                reason: "flow_generate_readiness_timeout",
+              });
+              continue;
+            }
+            const invalid = await input.verifyTargetForContinuation?.(queue);
+            if (invalid) {
+              await input.repositories.pauseTimedImageQueue({
+                queueId: queue.queueId,
+                expectedRevision: queue.revision,
+                at: now(),
+                reason: invalid,
+              });
+              continue;
+            }
+            const reverted =
+              await input.repositories.revertSendingItemToPendingForReadiness({
+                queueId: queue.queueId,
+                expectedRevision: queue.revision,
+                order: unresolved.order,
+                at: now(),
+              });
+            if (
+              reverted.nextEligibleDispatchAt !== null &&
+              now() < reverted.nextEligibleDispatchAt
+            ) {
+              schedule(reverted);
+            } else {
+              await run(queue.queueId);
+            }
+            continue;
+          }
           await input.repositories.blockTimedImageQueue({
             queueId: queue.queueId,
             expectedRevision: queue.revision,
             order: unresolved.order,
             at: now(),
-            uncertain:
-              unresolved.dispatchIntent?.activationStartedAt !== undefined,
+            uncertain: false,
             reason: "worker_restart_during_dispatch",
           });
           continue;
