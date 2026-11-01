@@ -12,6 +12,7 @@ import {
 } from "../../src/app/features/shared/importFile";
 import { ToastHost } from "../../src/app/components/ToastHost";
 import { createFoundationClient } from "../../src/shared/messageClient";
+import type { FoundationClient } from "../../src/shared/messageClient";
 import {
   promptSizeFixtures,
   representativeCases,
@@ -41,6 +42,7 @@ function makeScheduledSession(kind: "image" | "video") {
 function renderImportPanel(
   kind: "image" | "video",
   session: ImportPreviewSession,
+  persistenceClient?: FoundationClient,
 ) {
   const props = {
     session,
@@ -50,9 +52,11 @@ function renderImportPanel(
     editorExpanded: false,
     setEditorExpanded: () => undefined,
     workspaceId: "default",
-    persistenceClient: createFoundationClient({
-      sendMessage: async () => ({}),
-    }),
+    persistenceClient:
+      persistenceClient ??
+      createFoundationClient({
+        sendMessage: async () => ({}),
+      }),
   };
   const panel =
     kind === "image"
@@ -86,6 +90,39 @@ describe("P03.3 import preview integration", () => {
     expect(videoMarkup).not.toContain("New batch");
     expect(imageMarkup).not.toContain("Load synthetic example");
     expect(imageMarkup).not.toContain("Start image batch");
+  });
+
+  it("previews arbitrary command-like video JSON verbatim without provider actions", () => {
+    const { session, run } = makeScheduledSession("video");
+    const body =
+      '{\r\n  "director_notes": {"camera_path": [[1.25, 2.5], [3.75, 4.0]]},\n' +
+      '  "duration": 8, "unusedField": "\u0928\u092E\u0938\u094D\u0924\u0947 \u{1F3AC}",\r\n' +
+      '  "instruction": "Generate once; download; Prompt 42: {\\"nested\\":true}"\n}';
+    const requests: string[] = [];
+    const client = createFoundationClient({
+      sendMessage: async (request) => {
+        requests.push(request.type);
+        return {};
+      },
+    });
+
+    session.setSource(body);
+    session.validate();
+    run();
+    const snapshot = session.getSnapshot();
+    expect(snapshot.status).toBe("success");
+    expect(snapshot.result?.items).toHaveLength(1);
+    expect(snapshot.result?.items[0]!.rawBody).toBe(body);
+    expect(snapshot.result?.items[0]!.shotId).toBeUndefined();
+
+    const markup = renderImportPanel("video", session, client);
+    expect(markup).toContain("1 prompt");
+    expect(markup).toContain("No shot ID");
+    expect(markup).toContain("Show raw body");
+    expect(markup).toContain("Save validated batch");
+    expect(markup).not.toContain("Generate once in Flow");
+    expect(markup).not.toContain("Check Flow readiness");
+    expect(requests).toEqual([]);
   });
 
   it("clears editable draft, validation preview and error when cleared", () => {

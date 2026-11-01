@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { importPromptBatch } from "../../src/domain/batches/importBatch";
+import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import { INPUT_POLICY } from "../../src/domain/batches/inputPolicy";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
 import { createFoundationClient } from "../../src/shared/messageClient";
@@ -190,6 +191,90 @@ describe("P03.4 prompt preservation through schema, repository, and worker messa
       }
     },
   );
+
+  it("saves and exports arbitrary command-like video JSON as exact inert source", async () => {
+    const body = [
+      "{\r\n",
+      '  "duration": 8,\n',
+      '  "director_notes": {"camera_path": [[1.25, 2.5], [3.75, 4.0]]},\r\n',
+      `  "unusedCreativeField": ${JSON.stringify("\u0928\u092E\u0938\u094D\u0924\u0947 \u{1F3AC}")},\n`,
+      `  "literalInstructions": ${JSON.stringify('Prompt 99: {"command":"Generate once"}; download; effects; duration 6')},\r\n`,
+      `  "escaping": ${JSON.stringify('quote: "; slash: \\; newline: \n')}\n`,
+      "}",
+    ].join("");
+    const source = `  Prompt 004: ${body}\r\n`;
+    const imported = importPromptBatch(source, "video");
+    expect(
+      imported.ok,
+      imported.ok ? undefined : JSON.stringify(imported.error),
+    ).toBe(true);
+    if (!imported.ok) return;
+    expect(imported.items).toHaveLength(1);
+    expect(imported.items[0]!.shotId).toBe("4");
+    expect(imported.items[0]!.rawBody).toBe(body);
+
+    const { transport } = createHarness();
+    const operations: string[] = [];
+    const client = createFoundationClient({
+      sendMessage: (request) => {
+        operations.push(request.type);
+        return transport.sendMessage(request);
+      },
+    });
+    const workspaceId = "video-json-inert-source";
+    const saved = await putBatch(client, workspaceId, "video", source);
+    expect(operations).toEqual(["promptBatch.put"]);
+    expect(saved.batch.sourceText).toBe(source);
+    expect(saved.items[0]!.rawJsonBody).toBe(body);
+    expect(saved.items[0]!.contentHash).toBe(await sha256Hex(body));
+
+    const restored = await getBatch(client, workspaceId, "video");
+    expect(restored.batch.sourceText).toBe(source);
+    expect(restored.items[0]!.rawJsonBody).toBe(body);
+    expect(restored.items[0]!.contentHash).toBe(await sha256Hex(body));
+    let exportedBytes: Uint8Array | undefined;
+    const exportDetails = await exportSavedPromptSource(
+      client,
+      workspaceId,
+      "video",
+      (bytes) => {
+        exportedBytes = bytes.slice();
+      },
+    );
+    expect(exportedBytes).toEqual(new TextEncoder().encode(source));
+    expect(exportDetails.sha256).toBe(await sha256Hex(source));
+    expect(exportDetails.codeUnits).toBe(source.length);
+    expect(operations).toEqual([
+      "promptBatch.put",
+      "promptBatch.get",
+      "promptBatch.get",
+    ]);
+
+    const previous = await getBatch(client, workspaceId, "video");
+    const malformed = await client
+      .request("promptBatch.put", {
+        workspaceId,
+        kind: "video",
+        sourceText: '{"duration":, "command":"Generate"}',
+      })
+      .then(
+        () => false,
+        () => true,
+      );
+    const oversized = await client
+      .request("promptBatch.put", {
+        workspaceId,
+        kind: "video",
+        sourceText: " ".repeat(INPUT_POLICY.maxBatchCodeUnits + 1),
+      })
+      .then(
+        () => false,
+        () => true,
+      );
+    expect(malformed).toBe(true);
+    expect(oversized).toBe(true);
+    expect(await getBatch(client, workspaceId, "video")).toEqual(previous);
+  });
 
   it("keeps image/video and separate workspace batches isolated", async () => {
     const { client, repositories } = createHarness();
