@@ -22,8 +22,6 @@ import type {
 import type { FailureCategory } from "../shared/schemas";
 import {
   FLOW_READINESS_WAIT_TIMEOUT_MS,
-  FLOW_READINESS_RECHECK_INITIAL_MS,
-  FLOW_READINESS_RECHECK_MAX_MS,
   comparePromptReadbackSafely,
   type FlowEditorReadbackInspectionResult,
   type PromptReadbackDiagnostic,
@@ -66,8 +64,6 @@ export type FlowTimedDispatchEnvironment = {
     { documentId?: string; frameId?: number; result?: string } | undefined
   >;
   readinessTimeoutMs?: number;
-  readinessInitialBackoffMs?: number;
-  readinessMaxBackoffMs?: number;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -98,6 +94,11 @@ export function createFlowTimedQueueDispatcher(
           reason: "dispatch_intent_mismatch",
           uncertain: false,
         };
+      if (
+        item.dispatchIntent.readinessDeadlineAt !== undefined &&
+        now() >= item.dispatchIntent.readinessDeadlineAt
+      )
+        return { status: "paused", reason: "flow_generate_readiness_timeout" };
       if ((await sha256Hex(item.rawJsonBody)) !== item.promptHash)
         return {
           status: "blocked",
@@ -181,7 +182,14 @@ export function createFlowTimedQueueDispatcher(
         };
 
       const owner = `timed-image-queue:${queue.queueId}:${order}`;
-      lease = await pagePort.acquireDebuggerLease!(selected.tabId, owner);
+      try {
+        lease = await pagePort.acquireDebuggerLease!(selected.tabId, owner);
+      } catch {
+        return {
+          status: "paused",
+          reason: "flow_debugger_attach_refused",
+        };
+      }
       await pagePort.sendCommand(selected.tabId, "Page.enable");
       await pagePort.sendCommand(selected.tabId, "Runtime.enable");
       const frame = await pagePort.readFrame(selected.tabId, lease);
@@ -202,65 +210,84 @@ export function createFlowTimedQueueDispatcher(
           reason: "frame_binding_changed",
           uncertain: false,
         };
-      // The acquired lease serializes this complete operation and proves debugger
-      // ownership. Prompt-entry reuses it through the scoped adapter; it does not
-      // attach, borrow, or detach another owner's session.
-      const leasedPromptPort = {
-        ...promptPort,
-        attach: async () => undefined,
-        detach: async () => undefined,
-        sendCommand: (tabId: number, method: string, params?: object) =>
-          pagePort.sendCommand(tabId, method, params),
-        expectedFrame: { frameId: frame.frameId, loaderId: frame.loaderId },
-      };
-      const fill = await enterFlowPrompt(item.rawJsonBody, leasedPromptPort);
-      if (
-        !fill.fillVerified ||
-        !fill.immediateMatch ||
-        !fill.settledMatch ||
-        !fill.stableReadback
-      )
-        return {
-          status: "blocked",
-          reason: fill.code || "exact_editor_readback_failed",
-          uncertain: false,
-        };
 
-      const afterFill = environment
-        ? await environment.getDocument(selected.tabId)
-        : (
-            await chrome.scripting.executeScript({
-              target: { tabId: selected.tabId, frameIds: [0] },
-              func: () => location.href,
-            })
-          )[0];
-      if (
-        afterFill?.documentId !== binding.documentId ||
-        afterFill?.frameId !== 0
-      )
-        return {
-          status: "blocked",
-          reason: "document_changed_after_fill",
-          uncertain: false,
-        };
-      const freshFrame = await pagePort.readFrame(selected.tabId, lease);
-      if (
-        !freshFrame ||
-        freshFrame.frameId !== frame.frameId ||
-        freshFrame.loaderId !== frame.loaderId ||
-        freshFrame.documentId !== binding.documentId ||
-        freshFrame.senderFrameId !== 0
-      )
-        return {
-          status: "blocked",
-          reason: "frame_binding_changed_before_dispatch",
-          uncertain: false,
-        };
-      const inspection = await inspectTimedFlowGenerate(
+      // Check if prompt text is ALREADY in the editor (e.g. after restart during readiness waiting)
+      let initialInspection = await inspectTimedFlowGenerate(
         pagePort,
         selected.tabId,
         item.rawJsonBody,
       );
+      if (initialInspection.composer !== "identified") {
+        return {
+          status: "blocked",
+          reason: `composer_${initialInspection.composer}`,
+          uncertain: false,
+        };
+      }
+
+      if (!initialInspection.exactPrompt) {
+        // The acquired lease serializes this complete operation and proves debugger
+        // ownership. Prompt-entry reuses it through the scoped adapter; it does not
+        // attach, borrow, or detach another owner's session.
+        const leasedPromptPort = {
+          ...promptPort,
+          attach: async () => undefined,
+          detach: async () => undefined,
+          sendCommand: (tabId: number, method: string, params?: object) =>
+            pagePort.sendCommand(tabId, method, params),
+          expectedFrame: { frameId: frame.frameId, loaderId: frame.loaderId },
+        };
+        const fill = await enterFlowPrompt(item.rawJsonBody, leasedPromptPort);
+        if (
+          !fill.fillVerified ||
+          !fill.immediateMatch ||
+          !fill.settledMatch ||
+          !fill.stableReadback
+        )
+          return {
+            status: "blocked",
+            reason: fill.code || "exact_editor_readback_failed",
+            uncertain: false,
+          };
+
+        const afterFill = environment
+          ? await environment.getDocument(selected.tabId)
+          : (
+              await chrome.scripting.executeScript({
+                target: { tabId: selected.tabId, frameIds: [0] },
+                func: () => location.href,
+              })
+            )[0];
+        if (
+          afterFill?.documentId !== binding.documentId ||
+          afterFill?.frameId !== 0
+        )
+          return {
+            status: "blocked",
+            reason: "document_changed_after_fill",
+            uncertain: false,
+          };
+        const freshFrame = await pagePort.readFrame(selected.tabId, lease);
+        if (
+          !freshFrame ||
+          freshFrame.frameId !== frame.frameId ||
+          freshFrame.loaderId !== frame.loaderId ||
+          freshFrame.documentId !== binding.documentId ||
+          freshFrame.senderFrameId !== 0
+        )
+          return {
+            status: "blocked",
+            reason: "frame_binding_changed_before_dispatch",
+            uncertain: false,
+          };
+        initialInspection = await inspectTimedFlowGenerate(
+          pagePort,
+          selected.tabId,
+          item.rawJsonBody,
+        );
+      }
+
+      const inspection = initialInspection;
       if (inspection.composer !== "identified") {
         return {
           status: "blocked",
@@ -360,11 +387,9 @@ export function createFlowTimedQueueDispatcher(
       }
 
       let buttonPosition: { x: number; y: number } | undefined;
-      let currentInspection = inspection;
-      let currentRevision = queue.revision;
 
-      if (currentInspection.generate === "identified") {
-        if (!currentInspection.buttonObjectId) {
+      if (inspection.generate === "identified") {
+        if (!inspection.buttonObjectId) {
           return {
             status: "blocked",
             reason: "generate_identified_missing_handle",
@@ -374,7 +399,7 @@ export function createFlowTimedQueueDispatcher(
         buttonPosition = await inspectFlowImageButton(
           pagePort,
           selected.tabId,
-          currentInspection.buttonObjectId,
+          inspection.buttonObjectId,
         );
         if (!buttonPosition) {
           return {
@@ -383,168 +408,125 @@ export function createFlowTimedQueueDispatcher(
             uncertain: false,
           };
         }
-      } else if (currentInspection.generate === "disabled") {
-        const timeoutMs =
-          environment?.readinessTimeoutMs ?? FLOW_READINESS_WAIT_TIMEOUT_MS;
-        const initialBackoffMs =
-          environment?.readinessInitialBackoffMs ??
-          FLOW_READINESS_RECHECK_INITIAL_MS;
-        const maxBackoffMs =
-          environment?.readinessMaxBackoffMs ?? FLOW_READINESS_RECHECK_MAX_MS;
-        const sleep =
-          environment?.sleep ??
-          ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
-
-        const readinessStartedAt =
-          item.dispatchIntent?.readinessStartedAt ?? now();
-        const deadlineAt =
-          item.dispatchIntent?.readinessDeadlineAt ??
-          readinessStartedAt + timeoutMs;
-
-        if (item.dispatchIntent?.readinessDeadlineAt === undefined) {
-          const updated =
-            await repositories.markTimedImageQueueWaitingForReadiness({
-              queueId: queue.queueId,
-              expectedRevision: currentRevision,
-              order,
-              attemptId,
-              deadlineAt,
-              startedAt: readinessStartedAt,
-            });
-          currentRevision = updated.revision;
-        }
-
-        let backoff = initialBackoffMs;
-        let elapsed = Math.max(0, now() - readinessStartedAt);
-
-        while (!buttonPosition && elapsed < timeoutMs && now() < deadlineAt) {
-          const latestQueue = await repositories.getTimedImageSubmissionQueue(
-            queue.queueId,
-          );
-          if (
-            latestQueue?.state === "paused" ||
-            latestQueue?.state === "stopped"
-          ) {
-            return {
-              status: "paused",
-              reason: latestQueue.pauseReason ?? "user_requested",
-            };
-          }
-
-          await sleep(backoff);
-          elapsed += backoff;
-          backoff = Math.min(backoff * 1.5, maxBackoffMs);
-
-          const checkFrame = await pagePort.readFrame(selected.tabId, lease);
-          if (
-            !checkFrame ||
-            checkFrame.frameId !== frame.frameId ||
-            checkFrame.loaderId !== frame.loaderId ||
-            checkFrame.documentId !== binding.documentId ||
-            checkFrame.senderFrameId !== 0
-          ) {
-            return {
-              status: "blocked",
-              reason: "frame_binding_changed",
-              uncertain: false,
-            };
-          }
-
-          currentInspection = await inspectTimedFlowGenerate(
-            pagePort,
+        const lastFrame = await pagePort.readFrame(selected.tabId, lease);
+        if (
+          !lastFrame ||
+          lastFrame.frameId !== frame.frameId ||
+          lastFrame.loaderId !== frame.loaderId ||
+          lastFrame.documentId !== binding.documentId
+        )
+          return {
+            status: "blocked",
+            reason: "binding_changed_at_activation",
+            uncertain: false,
+          };
+        const currentQueue = await repositories.getTimedImageSubmissionQueue(
+          queue.queueId,
+        );
+        if (
+          currentQueue?.state === "paused" ||
+          currentQueue?.state === "stopped"
+        )
+          return {
+            status: "paused",
+            reason: currentQueue.pauseReason ?? "user_requested",
+          };
+        const currentSelected = await repositories.getSelectedTarget("Flow");
+        const currentBinding = currentSelected?.verificationBinding;
+        const currentTab = await (environment?.getTab(selected.tabId) ??
+          chrome.tabs.get(selected.tabId));
+        const currentDocument = environment
+          ? await environment.getDocument(selected.tabId)
+          : (
+              await chrome.scripting.executeScript({
+                target: { tabId: selected.tabId, frameIds: [0] },
+                func: () => location.href,
+              })
+            )[0];
+        const currentFrame = await pagePort.readFrame(selected.tabId, lease);
+        if (
+          !currentSelected ||
+          currentSelected.tabId !== queue.selectedProject.tabId ||
+          currentSelected.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          currentSelected.verification !== "verified" ||
+          currentSelected.connectionState !== "verified" ||
+          currentSelected.reconnectEnabled === false ||
+          !currentBinding ||
+          currentBinding.tabId !== queue.selectedProject.tabId ||
+          currentBinding.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          currentBinding.projectId !== queue.selectedProject.projectId ||
+          currentBinding.documentId !== binding.documentId ||
+          currentBinding.extensionBuildId !== BUILD_ID ||
+          currentBinding.connectorBuildId !== BUILD_ID ||
+          currentBinding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+          currentBinding.connectorProtocolVersion !== 1 ||
+          flowTabFromUrl(selected.tabId, currentTab.title ?? "", currentTab.url)
+            ?.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          currentDocument?.documentId !== binding.documentId ||
+          currentDocument.frameId !== 0 ||
+          flowTabFromUrl(
             selected.tabId,
-            item.rawJsonBody,
-          );
-
-          if (currentInspection.composer !== "identified") {
-            return {
-              status: "blocked",
-              reason: `composer_${currentInspection.composer}`,
-              uncertain: false,
-            };
-          }
-
-          if (!currentInspection.exactPrompt) {
-            return {
-              status: "blocked",
-              reason: "editor_exact_readback_mismatch",
-              uncertain: false,
-            };
-          }
-
-          if (currentInspection.generate === "ambiguous") {
-            return {
-              status: "blocked",
-              reason: "generate_ambiguous",
-              uncertain: false,
-            };
-          }
-
-          if (currentInspection.generate === "missing") {
-            return {
-              status: "blocked",
-              reason: "generate_missing",
-              uncertain: false,
-            };
-          }
-
-          if (
-            currentInspection.generate === "identified" &&
-            currentInspection.buttonObjectId
-          ) {
-            buttonPosition = await inspectFlowImageButton(
-              pagePort,
-              selected.tabId,
-              currentInspection.buttonObjectId,
-            );
-            if (!buttonPosition) {
-              return {
-                status: "blocked",
-                reason: "generate_control_not_enabled",
-                uncertain: false,
-              };
-            }
-          }
-        }
+            "",
+            currentDocument.result as string,
+          )?.canonicalTarget !== queue.selectedProject.canonicalTarget ||
+          !currentFrame ||
+          currentFrame.frameId !== frame.frameId ||
+          currentFrame.loaderId !== frame.loaderId ||
+          currentFrame.documentId !== binding.documentId ||
+          currentFrame.senderFrameId !== 0 ||
+          currentQueue?.items[order]?.itemState !== "sending" ||
+          currentQueue.items[order]?.dispatchIntent?.attemptId !== attemptId ||
+          currentQueue.items[order]?.rawJsonBody !== item.rawJsonBody ||
+          currentQueue.items[order]?.promptHash !== item.promptHash
+        )
+          return {
+            status: "blocked",
+            reason: "activation_preflight_binding_changed",
+            uncertain: false,
+          };
+        await authorizeActivation();
+        activationAttempted = true;
+        const activation = await activateFlowImageGenerate(
+          pagePort,
+          selected.tabId,
+          buttonPosition.x,
+          buttonPosition.y,
+        );
+        if (
+          !activation.complete ||
+          !activation.pressAttempted ||
+          !activation.releaseAttempted
+        )
+          return {
+            status: "blocked",
+            reason: "activation_evidence_uncertain",
+            uncertain: true,
+          };
+        return { status: "activated", at: now() };
       }
 
-      if (!buttonPosition) {
+      // A disabled Generate control ends this short lease. Persist a supported
+      // wake time and return; the scheduler will claim/recheck on that alarm.
+      const readinessStartedAt = item.dispatchIntent.readinessStartedAt ?? now();
+      const deadlineAt = item.dispatchIntent.readinessDeadlineAt ??
+        readinessStartedAt +
+          (environment?.readinessTimeoutMs ?? FLOW_READINESS_WAIT_TIMEOUT_MS);
+      const checkAt = Math.min(deadlineAt, now() + 30_000);
+      const waiting = await repositories.markTimedImageQueueWaitingForReadiness({
+        queueId: queue.queueId,
+        expectedRevision: queue.revision,
+        order,
+        attemptId,
+        deadlineAt,
+        startedAt: readinessStartedAt,
+        checkAt,
+      });
+      if (waiting.state === "paused" || waiting.state === "stopped")
         return {
           status: "paused",
-          reason: "flow_generate_readiness_timeout",
+          reason: waiting.pauseReason ?? "user_requested",
         };
-      }
-      const lastFrame = await pagePort.readFrame(selected.tabId, lease);
-      if (
-        !lastFrame ||
-        lastFrame.frameId !== frame.frameId ||
-        lastFrame.loaderId !== frame.loaderId ||
-        lastFrame.documentId !== binding.documentId
-      )
-        return {
-          status: "blocked",
-          reason: "binding_changed_at_activation",
-          uncertain: false,
-        };
-      await authorizeActivation();
-      activationAttempted = true;
-      const activation = await activateFlowImageGenerate(
-        pagePort,
-        selected.tabId,
-        buttonPosition.x,
-        buttonPosition.y,
-      );
-      if (
-        !activation.complete ||
-        !activation.pressAttempted ||
-        !activation.releaseAttempted
-      )
-        return {
-          status: "blocked",
-          reason: "activation_evidence_uncertain",
-          uncertain: true,
-        };
-      return { status: "activated", at: now() };
+      return { status: "waiting" };
     } catch {
       return {
         status: "blocked",

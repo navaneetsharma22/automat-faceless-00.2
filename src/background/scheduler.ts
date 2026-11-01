@@ -8,9 +8,13 @@ import {
 } from "../storage/repositories";
 
 export const IMAGE_QUEUE_ALARM_PREFIX = "automat-image-queue:";
+// Chrome 120+ enforces a 30 second minimum for alarms. Readiness polling must
+// use a persisted supported wake time rather than short in-worker timers.
+export const CHROME_MIN_ALARM_DELAY_MS = 30_000;
 
 export type TimedQueueDispatchResult =
   | { status: "activated"; at: number }
+  | { status: "waiting" }
   | { status: "paused"; reason: string }
   | {
       status: "blocked";
@@ -51,16 +55,29 @@ export function createTimedImageQueueScheduler(input: {
       .catch(() => undefined);
     return current;
   };
-  const schedule = (queue: ImageSubmissionQueueRecord) => {
+  const schedule = async (queue: ImageSubmissionQueueRecord) => {
     const name = `${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`;
     if (
-      queue.nextEligibleDispatchAt === null ||
       ["paused", "stopped", "blocked", "sent"].includes(queue.state)
     ) {
-      void input.alarms.clear(name);
+      await input.alarms.clear(name);
       return;
     }
-    input.alarms.create(name, { when: queue.nextEligibleDispatchAt });
+    const readinessItem = queue.items.find(
+      (item) =>
+        item.dispatchIntent?.readinessDeadlineAt !== undefined &&
+        (item.itemState === "pending" || item.itemState === "sending"),
+    );
+    const when = readinessItem
+      ? (readinessItem.dispatchIntent?.readinessCheckAt ??
+        readinessItem.dispatchIntent?.readinessDeadlineAt ??
+        null)
+      : queue.nextEligibleDispatchAt;
+    if (when === null) {
+      await input.alarms.clear(name);
+      return;
+    }
+    await input.alarms.create(name, { when });
   };
 
   const run = (
@@ -93,11 +110,31 @@ export function createTimedImageQueueScheduler(input: {
         (item) => item.itemState === "pending",
       );
       if (order < 0) return queue;
+      const readinessIntent = queue.items[order]?.dispatchIntent;
+      if (readinessIntent?.readinessDeadlineAt !== undefined) {
+        if (now() >= readinessIntent.readinessDeadlineAt) {
+          const paused = await input.repositories.pauseTimedImageQueue({
+            queueId,
+            expectedRevision: queue.revision,
+            at: now(),
+            reason: "flow_generate_readiness_timeout",
+          });
+          void input.alarms.clear(`${IMAGE_QUEUE_ALARM_PREFIX}${queueId}`);
+          return paused;
+        }
+        if (
+          readinessIntent.readinessCheckAt !== undefined &&
+          now() < readinessIntent.readinessCheckAt
+        ) {
+          await schedule(queue);
+          return queue;
+        }
+      }
       if (
         queue.nextEligibleDispatchAt !== null &&
         now() < queue.nextEligibleDispatchAt
       ) {
-        schedule(queue);
+        await schedule(queue);
         return queue;
       }
       if (
@@ -164,6 +201,24 @@ export function createTimedImageQueueScheduler(input: {
         void input.alarms.clear(`${IMAGE_QUEUE_ALARM_PREFIX}${queueId}`);
         return paused;
       }
+      if (result.status === "waiting") {
+        const current =
+          await input.repositories.getTimedImageSubmissionQueue(queueId);
+        if (!current) throw new Error("image_queue_not_found");
+        if (current.state === "paused" || current.state === "stopped") {
+          void input.alarms.clear(`${IMAGE_QUEUE_ALARM_PREFIX}${queueId}`);
+          return current;
+        }
+        const pending =
+          await input.repositories.revertSendingItemToPendingForReadiness({
+            queueId,
+            expectedRevision: current.revision,
+            order,
+            at: now(),
+          });
+        await schedule(pending);
+        return pending;
+      }
       if (result.status === "blocked") {
         const current =
           await input.repositories.getTimedImageSubmissionQueue(queueId);
@@ -216,7 +271,7 @@ export function createTimedImageQueueScheduler(input: {
         queue.items[order]?.providerOutcome !== "unknown"
       )
         throw new Error("image_queue_receipt_readback_failed");
-      schedule(queue);
+      await schedule(queue);
       return queue;
     });
 
@@ -281,7 +336,7 @@ export function createTimedImageQueueScheduler(input: {
           resumed.nextEligibleDispatchAt !== null &&
           now() < resumed.nextEligibleDispatchAt
         )
-          schedule(resumed);
+          await schedule(resumed);
         else return run(queueId);
       }
       return resumed;
@@ -326,16 +381,6 @@ export function createTimedImageQueueScheduler(input: {
               });
               continue;
             }
-            const invalid = await input.verifyTargetForContinuation?.(queue);
-            if (invalid) {
-              await input.repositories.pauseTimedImageQueue({
-                queueId: queue.queueId,
-                expectedRevision: queue.revision,
-                at: now(),
-                reason: invalid,
-              });
-              continue;
-            }
             const reverted =
               unresolved.itemState === "sending"
                 ? await input.repositories.revertSendingItemToPendingForReadiness({
@@ -345,14 +390,7 @@ export function createTimedImageQueueScheduler(input: {
                     at: now(),
                   })
                 : queue;
-            if (
-              reverted.nextEligibleDispatchAt !== null &&
-              now() < reverted.nextEligibleDispatchAt
-            ) {
-              schedule(reverted);
-            } else {
-              await run(queue.queueId);
-            }
+            await schedule(reverted);
             continue;
           }
           await input.repositories.blockTimedImageQueue({
@@ -367,17 +405,8 @@ export function createTimedImageQueueScheduler(input: {
         }
         if (queue.state !== "waiting" || queue.nextEligibleDispatchAt === null)
           continue;
-        const invalid = await input.verifyTargetForContinuation?.(queue);
-        if (invalid) {
-          await input.repositories.pauseTimedImageQueue({
-            queueId: queue.queueId,
-            expectedRevision: queue.revision,
-            at: now(),
-            reason: invalid,
-          });
-          continue;
-        }
-        schedule(queue);
+        if (queue.state === "waiting" || queue.state === "ready")
+          await schedule(queue);
       }
     },
   };

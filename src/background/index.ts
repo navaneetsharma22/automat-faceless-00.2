@@ -144,6 +144,8 @@ const workerReady = Promise.all([
 ])
   .then(() => flowImageObservation.resumeReadOnlyAfterWorkerRestart())
   .then(() => undefined);
+// Reconciliation is intentionally limited to durable queue state and alarm
+// restoration, so queue messages can await it without waiting on dispatch.
 const timedQueueReady = targetStartupReady.then(() =>
   timedQueueScheduler.reconcileStartup(),
 );

@@ -277,6 +277,9 @@ try {
   // =========================================================================
   if (!targetScenario || targetScenario === "2") {
     console.log("Running Scenario 2: Generate-readiness wait restart...");
+    const dispatchesBeforeScenario2 = await provider.evaluate(
+      () => window.__syntheticDispatches.length,
+    );
     // Disable button in fixture
     await provider.evaluate(() => {
       document.querySelector("flow-base-prompt-box button").disabled = true;
@@ -366,13 +369,45 @@ try {
       "Restart 2 altered readinessStartedAt!",
     );
 
+    // Pause/readback/resume stay responsive during the durable readiness wait.
+    const pauseStartedAt = Date.now();
+    const pausedDuringReadiness = await request(dash3, "imageQueue.pause", {
+      queueId: q2Id,
+      expectedRevision: afterRestart2.data.revision,
+    });
+    assert.ok(pausedDuringReadiness.ok, "Pause during readiness was not acknowledged");
+    assert.equal(pausedDuringReadiness.data.state, "paused");
+    assert.ok(Date.now() - pauseStartedAt < 5_000, "Pause request stalled behind readiness waiting");
+    assert.equal(
+      pausedDuringReadiness.data.items[0].dispatchIntent?.readinessDeadlineAt,
+      origDeadlineAt,
+    );
+    assert.equal(
+      (await provider.evaluate(() => window.__syntheticDispatches)).length,
+      dispatchesBeforeScenario2,
+      "Paused readiness must not activate Generate.",
+    );
+    const resumedDuringReadiness = await request(dash3, "imageQueue.resume", {
+      queueId: q2Id,
+      expectedRevision: pausedDuringReadiness.data.revision,
+    });
+    assert.ok(resumedDuringReadiness.ok, "Resume during readiness failed");
+    assert.equal(
+      resumedDuringReadiness.data.items[0].dispatchIntent?.readinessStartedAt,
+      origStartedAt,
+    );
+    assert.equal(
+      resumedDuringReadiness.data.items[0].dispatchIntent?.readinessDeadlineAt,
+      origDeadlineAt,
+    );
+
     // Now enable the button in the provider page
     await provider.evaluate(() => {
       document.querySelector("flow-base-prompt-box button").disabled = false;
     });
 
     // Wait for automatic recovery and dispatch
-    const recovDeadline = Date.now() + 15_000;
+    const recovDeadline = Date.now() + 40_000; // Chrome alarms support 30-second minimum wake intervals.
     let q2Final;
     while (Date.now() < recovDeadline) {
       const qState = await request(dash3, "imageQueue.get", { queueId: q2Id });
@@ -386,6 +421,15 @@ try {
     assert.equal(q2Final.items[0].itemState, "sent");
     assert.equal(q2Final.items[0].providerOutcome, "unknown");
     assert.ok(q2Final.items[0].dispatchReceipt);
+    const scenario2Dispatches = await provider.evaluate(
+      () => window.__syntheticDispatches,
+    );
+    assert.equal(scenario2Dispatches.length, dispatchesBeforeScenario2 + 1);
+    assert.equal(
+      scenario2Dispatches.at(-1).body,
+      '{"shot_id":"10","prompt":"readiness wait prompt"}',
+      "Readiness recovery must submit the existing exact prompt body once.",
+    );
     await dash2.close();
     await dash3.close();
     await startPromise;
@@ -577,6 +621,91 @@ try {
   await dash6.close();
   console.log("✓ Scenario 4 PASS: Paused and stopped queues remain inactive after worker restart.");
 
+  // Scenario 5: an expired persisted readiness deadline pauses after restart
+  // without a Generate activation.
+  console.log("Running Scenario 5: Expired readiness deadline...");
+  await provider.evaluate(() => {
+    document.querySelector("flow-base-prompt-box button").disabled = true;
+  });
+  const source5 = '50: {"shot_id":"50","prompt":"expired readiness prompt"}';
+  const save5 = await request(dashboard, "promptBatch.put", {
+    workspaceId: "ws-scen-5",
+    kind: "image",
+    sourceText: source5,
+  });
+  assert.ok(save5.ok, `save5 failed: ${JSON.stringify(save5)}`);
+  const q5 = await request(dashboard, "imageQueue.createTimed", {
+    workspaceId: "ws-scen-5",
+    queueId: crypto.randomUUID(),
+    settingsConfirmation: {
+      confirmationId: crypto.randomUUID(),
+      confirmedAt: Date.now(),
+      tabId,
+      projectId: "p06-restart-fixture",
+      canonicalTarget: fixtureUrl,
+      declaredVariantCount: 1,
+    },
+  });
+  assert.ok(q5.ok, `q5 create failed: ${JSON.stringify(q5)}`);
+  const beforeExpiredScenario = await provider.evaluate(
+    () => window.__syntheticDispatches.length,
+  );
+  const started5 = await request(dashboard, "imageQueue.start", {
+    queueId: q5.data.queueId,
+  });
+  assert.ok(started5.ok, `q5 start failed: ${JSON.stringify(started5)}`);
+  assert.ok(
+    started5.data.items[0].dispatchIntent?.readinessDeadlineAt,
+    "q5 did not persist readiness deadline",
+  );
+  await dashboard.evaluate(
+    ({ queueId }) =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open("automat-faceless-app-v1");
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(["imageSubmissionQueues"], "readwrite");
+          const store = tx.objectStore("imageSubmissionQueues");
+          const getReq = store.get(queueId);
+          getReq.onsuccess = () => {
+            const record = getReq.result;
+            const expiredAt = Date.now() - 1;
+            record.items[0].dispatchIntent.readinessDeadlineAt = expiredAt;
+            record.items[0].dispatchIntent.readinessCheckAt = expiredAt;
+            store.put(record).onsuccess = () => resolve();
+          };
+          getReq.onerror = () => reject(getReq.error);
+        };
+      }),
+    { queueId: q5.data.queueId },
+  );
+  await stopWorker(provider);
+  await sleep(1_000);
+  const dash7 = await context.newPage();
+  await dash7.goto(`chrome-extension://${extensionId}/index.html`);
+  let expiredState;
+  const expiredDeadline = Date.now() + 5_000;
+  while (Date.now() < expiredDeadline) {
+    const response = await request(dash7, "imageQueue.get", {
+      queueId: q5.data.queueId,
+    });
+    if (response.data?.state === "paused") {
+      expiredState = response.data;
+      break;
+    }
+    await sleep(100);
+  }
+  assert.equal(expiredState?.pauseReason, "flow_generate_readiness_timeout");
+  assert.equal(expiredState?.items[0].itemState, "pending");
+  assert.equal(
+    (await provider.evaluate(() => window.__syntheticDispatches)).length,
+    beforeExpiredScenario,
+    "Expired readiness deadline must have zero activation events.",
+  );
+  await dash7.close();
+  console.log("✓ Scenario 5 PASS: expired readiness deadline pauses with zero activation.");
+
   // Output summary
   console.log(
     JSON.stringify(
@@ -584,10 +713,13 @@ try {
         acceptance: "P06-restart-installed-mv3-acceptance",
         buildId,
         scenarios: {
-          scenario1_waiting_restart: "PASS",
-          scenario2_readiness_restart: "PASS",
+          scenario1_waiting_restart:
+            !targetScenario || targetScenario === "1" ? "PASS" : "NOT_RUN",
+          scenario2_readiness_restart:
+            !targetScenario || targetScenario === "2" ? "PASS" : "NOT_RUN",
           scenario3_unresolved_authorization: "PASS",
           scenario4_paused_stopped_inactive: "PASS",
+          scenario5_expired_readiness: "PASS",
         },
         workerTerminationMethod: "CDP ServiceWorker.stopWorker (forced termination)",
         naturalIdleDistinction:

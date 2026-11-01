@@ -97,6 +97,7 @@ export type ImageQueueItem = {
     activationStartedAt?: number;
     readinessDeadlineAt?: number;
     readinessStartedAt?: number;
+    readinessCheckAt?: number;
   };
   blockReason?: string;
   readbackDiagnostic?: PromptReadbackDiagnostic;
@@ -194,6 +195,7 @@ const itemSchema = z
         activationStartedAt: z.number().finite().nonnegative().optional(),
         readinessDeadlineAt: z.number().finite().nonnegative().optional(),
         readinessStartedAt: z.number().finite().nonnegative().optional(),
+        readinessCheckAt: z.number().finite().nonnegative().optional(),
       })
       .strict()
       .optional(),

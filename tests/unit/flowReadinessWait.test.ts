@@ -96,8 +96,10 @@ describe("bounded pre-activation readiness waiting", () => {
     environment: FlowTimedDispatchEnvironment;
     mouseEventsSent: Array<{ type: string; x: number; y: number }>;
     checkCount: () => number;
+    insertTextCount: () => number;
   } {
     const mouseEventsSent: Array<{ type: string; x: number; y: number }> = [];
+    let insertedTextCount = 0;
     let inspectCheckCount = 0;
     let editorCurrentText = "";
 
@@ -185,6 +187,7 @@ describe("bounded pre-activation readiness waiting", () => {
           };
         }
         if (method === "Input.insertText") {
+          insertedTextCount++;
           editorCurrentText = (params as { text: string }).text;
           return {};
         }
@@ -326,13 +329,11 @@ describe("bounded pre-activation readiness waiting", () => {
           documentId: "doc-shot-14",
           result: "https://flow.google.com/project/shot-14-test",
         }),
-        readinessTimeoutMs: 100,
-        readinessInitialBackoffMs: 10,
-        readinessMaxBackoffMs: 25,
-        sleep: async () => {},
+        readinessTimeoutMs: 60_000,
       },
       mouseEventsSent,
       checkCount: () => inspectCheckCount,
+      insertTextCount: () => insertedTextCount,
     };
   }
 
@@ -351,62 +352,39 @@ describe("bounded pre-activation readiness waiting", () => {
 
   it("Delayed enablement: disabled button transitions to enabled, acquires fresh handle, and activates exactly once", async () => {
     const { repositories, queue, clock } = await createTestQueueFixture();
-    const claimed = await repositories.claimTimedImageQueueItem({
-      queueId: queue.queueId,
-      expectedRevision: queue.revision,
-      order: 0,
-      attemptId: "attempt-delayed",
-      at: clock(),
-    });
-
-    const { environment, mouseEventsSent, checkCount } = createMockEnvironment({
+    const { environment, mouseEventsSent, checkCount, insertTextCount } = createMockEnvironment({
       initialGenerateState: "disabled",
-      enableAfterChecks: 2, // Becomes enabled on check 2
+      enableAfterChecks: 3, // First inspection follows prompt entry; next alarm recheck enables.
     });
 
-    let authorized = false;
-    let currentRevision = claimed.revision;
-    const dispatcher = createFlowTimedQueueDispatcher(
+    const alarms = mockAlarms();
+    const scheduler = createTimedImageQueueScheduler({
       repositories,
-      () => clock(),
-      environment,
-    );
-
-    const result = await dispatcher({
-      queue: claimed,
-      order: 0,
-      attemptId: "attempt-delayed",
-      authorizeActivation: async () => {
-        authorized = true;
-        const currentQueue = await repositories.getTimedImageSubmissionQueue(
-          queue.queueId,
-        );
-        currentRevision = currentQueue!.revision;
-        await repositories.markTimedImageQueueActivationStarted({
-          queueId: queue.queueId,
-          expectedRevision: currentRevision,
-          order: 0,
-          attemptId: "attempt-delayed",
-          at: clock(),
-        });
-      },
+      alarms: alarms.api,
+      now: () => clock(),
+      dispatch: createFlowTimedQueueDispatcher(repositories, () => clock(), environment),
     });
-
-    expect(result.status).toBe("activated");
-    expect(authorized).toBe(true);
-    expect(mouseEventsSent).toHaveLength(2); // mousePressed + mouseReleased
-    expect(checkCount()).toBeGreaterThanOrEqual(2);
-
-    // Verify readiness state was persisted to Dexie before activation
+    const waiting = await scheduler.start(queue.queueId);
+    expect(waiting.items[0]?.itemState).toBe("pending");
+    expect(waiting.items[0]?.dispatchIntent?.readinessStartedAt).toBe(clock());
+    expect(waiting.items[0]?.dispatchIntent?.readinessDeadlineAt).toBe(clock() + 60_000);
+    expect(waiting.items[0]?.dispatchIntent?.readinessCheckAt).toBe(clock() + 30_000);
+    expect(mouseEventsSent).toHaveLength(0);
+    expect(checkCount()).toBe(2);
+    clock(clock() + 30_000);
+    await scheduler.onAlarm(`${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`);
     const finalQueue = await repositories.getTimedImageSubmissionQueue(
       queue.queueId,
     );
-    expect(
-      finalQueue?.items[0]?.dispatchIntent?.readinessDeadlineAt,
-    ).toBeDefined();
-    expect(
-      finalQueue?.items[0]?.dispatchIntent?.readinessStartedAt,
-    ).toBeDefined();
+    expect(finalQueue?.items[0]?.itemState).toBe("sent");
+    expect(mouseEventsSent).toHaveLength(2); // One guarded press/release pair.
+    expect(insertTextCount()).toBe(1);
+    expect(finalQueue?.items[0]?.dispatchIntent?.readinessStartedAt).toBe(
+      waiting.items[0]?.dispatchIntent?.readinessStartedAt,
+    );
+    expect(finalQueue?.items[0]?.dispatchIntent?.readinessDeadlineAt).toBe(
+      waiting.items[0]?.dispatchIntent?.readinessDeadlineAt,
+    );
   });
 
   it("Permanent disablement: persistently disabled button pauses queue with flow_generate_readiness_timeout after bounded deadline", async () => {
@@ -429,71 +407,71 @@ describe("bounded pre-activation readiness waiting", () => {
       ),
     });
 
-    const result = await scheduler.start(queue.queueId);
+    const waiting = await scheduler.start(queue.queueId);
+    const deadline = waiting.items[0]?.dispatchIntent?.readinessDeadlineAt;
+    expect(deadline).toBeDefined();
+    clock(deadline!);
+    const result = await scheduler.onAlarm(`${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`);
 
-    expect(result.state).toBe("paused");
+    expect(result?.state).toBe("paused");
     expect(result.pauseReason).toBe("flow_generate_readiness_timeout");
     expect(mouseEventsSent).toHaveLength(0);
-    expect(result.items[0]?.itemState).toBe("pending");
-    expect(result.items[0]?.providerOutcome).toBe("not_started");
-    expect(result.items[0]?.dispatchIntent).toBeUndefined();
+    expect(result?.items[0]?.itemState).toBe("pending");
+    expect(result?.items[0]?.providerOutcome).toBe("not_started");
+    expect(result?.items[0]?.dispatchIntent?.readinessDeadlineAt).toBe(deadline);
     expect(alarms.entries.size).toBe(0);
   });
 
   it("Pause or Stop winning during readiness wait prevents subsequent activation authorization", async () => {
     const { repositories, queue, clock } = await createTestQueueFixture();
-    const claimed = await repositories.claimTimedImageQueueItem({
-      queueId: queue.queueId,
-      expectedRevision: queue.revision,
-      order: 0,
-      attemptId: "attempt-pause-during-wait",
-      at: clock(),
-    });
-
-    let pauseCalled = false;
     const { environment, mouseEventsSent } = createMockEnvironment({
       initialGenerateState: "disabled",
     });
 
-    // Custom sleep that pauses the queue in the middle of readiness waiting
-    environment.sleep = async () => {
-      if (!pauseCalled) {
-        pauseCalled = true;
-        const current = await repositories.getTimedImageSubmissionQueue(
-          queue.queueId,
-        );
-        await repositories.pauseTimedImageQueue({
-          queueId: queue.queueId,
-          expectedRevision: current!.revision,
-          at: clock(),
-          reason: "user_pause_during_readiness",
-        });
-      }
-    };
-
-    const dispatcher = createFlowTimedQueueDispatcher(
+    const scheduler = createTimedImageQueueScheduler({
       repositories,
-      () => clock(),
-      environment,
-    );
-
-    const result = await dispatcher({
-      queue: claimed,
-      order: 0,
-      attemptId: "attempt-pause-during-wait",
-      authorizeActivation: async () => {
-        throw new Error("Activation must never be authorized after pause");
-      },
+      alarms: mockAlarms().api,
+      now: () => clock(),
+      dispatch: createFlowTimedQueueDispatcher(repositories, () => clock(), environment),
     });
-
-    expect(result.status).toBe("paused");
-    expect(result.reason).toBe("user_pause_during_readiness");
+    const waiting = await scheduler.start(queue.queueId);
+    const paused = await scheduler.pause(queue.queueId, waiting.revision);
+    clock(clock() + 60_000);
+    await scheduler.onAlarm(`${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`);
+    expect(paused.state).toBe("paused");
     expect(mouseEventsSent).toHaveLength(0);
 
     const readback = await repositories.getTimedImageSubmissionQueue(
       queue.queueId,
     );
     expect(readback?.state).toBe("paused");
+  });
+
+  it("debugger ownership refusal pauses promptly without releasing an unverified owner", async () => {
+    const { repositories, queue, clock } = await createTestQueueFixture();
+    const { environment, mouseEventsSent } = createMockEnvironment({
+      initialGenerateState: "disabled",
+    });
+    let releases = 0;
+    environment.pagePort.acquireDebuggerLease = async () => {
+      throw new Error("simulated stale Chrome debugger owner");
+    };
+    environment.pagePort.releaseDebuggerLease = async () => {
+      releases++;
+    };
+    const scheduler = createTimedImageQueueScheduler({
+      repositories,
+      alarms: mockAlarms().api,
+      now: () => clock(),
+      dispatch: createFlowTimedQueueDispatcher(repositories, () => clock(), environment),
+    });
+
+    const result = await scheduler.start(queue.queueId);
+
+    expect(result.state).toBe("paused");
+    expect(result.pauseReason).toBe("flow_debugger_attach_refused");
+    expect(releases).toBe(0);
+    expect(mouseEventsSent).toHaveLength(0);
   });
 
   it("Worker restart during waiting: expired deadline pauses with timeout; unexpired deadline safely reverts to pending and reschedules without duplicate dispatch", async () => {
@@ -516,6 +494,7 @@ describe("bounded pre-activation readiness waiting", () => {
       attemptId: "attempt-restart",
       deadlineAt: 15_000,
       startedAt: 10_000,
+      checkAt: 15_000,
     });
 
     // Scenario A: Worker restarts AFTER the readiness deadline has expired (clock = 20_000)
@@ -537,47 +516,47 @@ describe("bounded pre-activation readiness waiting", () => {
     expect(queueAfterTimeoutRestart?.items[0]?.itemState).toBe("pending");
 
     // Scenario B: Worker restarts BEFORE the readiness deadline has expired (clock = 12_000)
-    const resumedQueue = await repositories.resumeTimedImageQueue({
-      queueId: queue.queueId,
-      expectedRevision: queueAfterTimeoutRestart!.revision,
-      at: clock(),
-    });
+    const fixtureB = await createTestQueueFixture();
 
-    const claimedB = await repositories.claimTimedImageQueueItem({
-      queueId: queue.queueId,
-      expectedRevision: resumedQueue.revision,
+    const claimedB = await fixtureB.repositories.claimTimedImageQueueItem({
+      queueId: fixtureB.queue.queueId,
+      expectedRevision: fixtureB.queue.revision,
       order: 0,
       attemptId: "attempt-restart-unexpired",
-      at: clock(),
+      at: fixtureB.clock(),
     });
 
-    await repositories.markTimedImageQueueWaitingForReadiness({
-      queueId: queue.queueId,
+    await fixtureB.repositories.markTimedImageQueueWaitingForReadiness({
+      queueId: fixtureB.queue.queueId,
       expectedRevision: claimedB.revision,
       order: 0,
       attemptId: "attempt-restart-unexpired",
       deadlineAt: 30_000,
-      startedAt: clock(),
+      startedAt: fixtureB.clock(),
+      checkAt: 15_000,
     });
 
-    clock(14_000); // 14_000 < 30_000
+    fixtureB.clock(14_000); // Before the persisted check time.
     let dispatchesB = 0;
     const schedulerB = createTimedImageQueueScheduler({
-      repositories,
+      repositories: fixtureB.repositories,
       alarms: alarms.api,
-      now: () => clock(),
+      now: () => fixtureB.clock(),
       dispatch: async ({ authorizeActivation }) => {
         dispatchesB++;
         await authorizeActivation();
-        return { status: "activated", at: clock() };
+        return { status: "activated", at: fixtureB.clock() };
       },
     });
 
     await schedulerB.reconcileStartup();
-    expect(dispatchesB).toBe(1); // Safely resumed and dispatched once
+    expect(dispatchesB).toBe(0); // Startup restores alarms without dispatch.
+    fixtureB.clock(15_000);
+    await schedulerB.onAlarm(`${IMAGE_QUEUE_ALARM_PREFIX}${fixtureB.queue.queueId}`);
+    expect(dispatchesB).toBe(1);
 
-    const finalQueueB = await repositories.getTimedImageSubmissionQueue(
-      queue.queueId,
+    const finalQueueB = await fixtureB.repositories.getTimedImageSubmissionQueue(
+      fixtureB.queue.queueId,
     );
     expect(finalQueueB?.items[0]?.itemState).toBe("sent");
     expect(finalQueueB?.items[0]?.dispatchReceipt).toBeDefined();
@@ -628,7 +607,7 @@ describe("bounded pre-activation readiness waiting", () => {
 
     const envFrame = createMockEnvironment({
       initialGenerateState: "disabled",
-      frameChangesOnCheck: 2, // Frame URL/doc changes on check 2
+      frameChangesOnCheck: 1, // Frame URL/doc changes before post-fill verification
     });
 
     const dispatcherFrame = createFlowTimedQueueDispatcher(
@@ -645,7 +624,7 @@ describe("bounded pre-activation readiness waiting", () => {
     });
 
     expect(resultFrame.status).toBe("blocked");
-    expect(resultFrame.reason).toBe("frame_binding_changed");
+    expect(resultFrame.reason).toBe("frame_binding_changed_before_dispatch");
     expect(envFrame.mouseEventsSent).toHaveLength(0);
 
     // 3. Button ownership fails upon enablement

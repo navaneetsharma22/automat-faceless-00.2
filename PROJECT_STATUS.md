@@ -913,3 +913,21 @@ Under the agreed Phase 06 timed-submission scope:
 - Strict debugger guards remain fully intact in production code. No unverified debugger owner was detached.
 - Full Vitest suite **33 files / 363 tests PASS**; typecheck PASS; ESLint PASS; production package build PASS. Validated package ID: **`automat-faceless-0.1.0-mvwcay8w`**.
 - Counting and provider-side completion acknowledgement remain strictly deferred per P06 scope.
+
+## P06 readiness-wait restart recovery and startup responsiveness — 1 November 2026
+
+The installed-MV3 synthetic fixture reproduced the readiness-restart defect recorded above: worker startup waited on scheduler reconciliation, and readiness was held in a long debugger-backed loop. The replacement worker could encounter a stale Chrome debugger attachment. Readiness now uses one short check per durable alarm wake. Each check acquires a verified lease and releases it in `finally`; the disabled-button path saves and returns. `readinessStartedAt` and `readinessDeadlineAt` are written once, while `readinessCheckAt` is updated for the next supported wake. Rechecks and startup preserve the original deadline, and expiry pauses with `flow_generate_readiness_timeout`.
+
+Startup now invalidates target verification and restores queue alarms without awaiting dispatch, target revalidation, or readiness inspection. Queue messages wait for this bounded durable reconciliation, which does not perform provider work. Activation still requires the claimed current item, exact saved prompt and hash, current selected project/tab/document/frame, uniquely owned composer and enabled button, and the atomic activation-start repository transition. Pause/Stop winning the repository revision/state race prevents the activation marker and input. An activation marker remains a no-replay boundary.
+
+The package minimum Chrome version is now 120 because earlier Chrome versions required a one-minute minimum alarm span, which cannot provide an intermediate readiness check within the existing 60-second readiness deadline. Chrome 120 supports durable alarm wakes at 30 seconds; Chrome may delay any wake further. A worker crash during a short lease can still leave Chrome's debugger attachment owned by the terminated worker. The replacement worker never borrows or detaches that unverified owner; an attach refusal pauses promptly with `flow_debugger_attach_refused`. Recovery then requires Chrome to clear the stale owner before the user resumes.
+
+Validation on packaged build **`automat-faceless-0.1.0-mvx7eheq`**:
+
+- Focused readiness/restart/queue sequencing: **3 files / 20 tests PASS**.
+- Typecheck, ESLint, `git diff --check`, and production package build: **PASS**.
+- Installed-MV3 isolated synthetic Flow fixture using CDP forced worker termination: readiness restart with repeated restart kept the original timestamps and activated the exact saved body once (**PASS**); Pause/Resume and dashboard queue readback during waiting stayed responsive (**PASS**); restart after activation authorization refused replay (**PASS**); paused/stopped queues remained inactive (**PASS**); expired persisted deadline paused with zero activations (**PASS**). Scenario 1 (normal 40-second interval restart) was **NOT_RUN** in this targeted fixture run.
+- Simulated debugger attach refusal unit coverage confirms prompt pause without calling release on an unverified owner. The installed-MV3 run did not force termination during the short active-lease window.
+- Live Flow acceptance and live Generate remain **NOT_RUN**. These are installed-MV3 synthetic fixture facts, not live provider acceptance.
+
+Detailed procedure and boundaries: [readiness wait restart recovery evidence](docs/evidence/timed-image-queue.md#p063-readiness-wait-restart-recovery-and-startup-responsiveness--1-november-2026).

@@ -877,6 +877,17 @@ export class ExtensionRepositories {
                   dispatchIntent: {
                     attemptId: input.attemptId,
                     recordedAt: input.at,
+                    ...(entry.dispatchIntent?.readinessDeadlineAt !== undefined
+                      ? {
+                          readinessDeadlineAt:
+                            entry.dispatchIntent.readinessDeadlineAt,
+                          readinessStartedAt:
+                            entry.dispatchIntent.readinessStartedAt,
+                          ...(entry.dispatchIntent.readinessCheckAt !== undefined
+                            ? { readinessCheckAt: entry.dispatchIntent.readinessCheckAt }
+                            : {}),
+                        }
+                      : {}),
                   },
                 }
               : entry,
@@ -1043,6 +1054,7 @@ export class ExtensionRepositories {
     attemptId: string;
     deadlineAt: number;
     startedAt: number;
+    checkAt: number;
   }): Promise<QueueRecord> {
     let result!: QueueRecord;
     await this.tables.transaction(["imageSubmissionQueues"], async () => {
@@ -1069,8 +1081,11 @@ export class ExtensionRepositories {
                 ...entry,
                 dispatchIntent: {
                   ...entry.dispatchIntent!,
-                  readinessDeadlineAt: input.deadlineAt,
-                  readinessStartedAt: input.startedAt,
+                  readinessDeadlineAt:
+                    entry.dispatchIntent?.readinessDeadlineAt ?? input.deadlineAt,
+                  readinessStartedAt:
+                    entry.dispatchIntent?.readinessStartedAt ?? input.startedAt,
+                  readinessCheckAt: input.checkAt,
                 },
               }
             : entry,
@@ -1086,7 +1101,11 @@ export class ExtensionRepositories {
         !readback ||
         readback.revision !== result.revision ||
         readback.items[input.order]?.dispatchIntent?.readinessDeadlineAt !==
-          input.deadlineAt
+          (item.dispatchIntent?.readinessDeadlineAt ?? input.deadlineAt) ||
+        readback.items[input.order]?.dispatchIntent?.readinessStartedAt !==
+          (item.dispatchIntent?.readinessStartedAt ?? input.startedAt) ||
+        readback.items[input.order]?.dispatchIntent?.readinessCheckAt !==
+          input.checkAt
       )
         throw new ImageQueueEligibilityError(
           "readiness_intent_readback_failed",
@@ -1114,7 +1133,6 @@ export class ExtensionRepositories {
       )
         throw new ImageQueueEligibilityError("revert_sending_revision_changed");
       const { dispatchIntent, ...withoutIntent } = item;
-      void dispatchIntent;
       result = {
         ...queue,
         revision: queue.revision + 1,
@@ -1125,6 +1143,19 @@ export class ExtensionRepositories {
                 ...withoutIntent,
                 itemState: "pending" as const,
                 providerOutcome: "not_started" as const,
+                ...(dispatchIntent?.readinessDeadlineAt !== undefined
+                  ? {
+                      dispatchIntent: {
+                        attemptId: dispatchIntent.attemptId,
+                        recordedAt: dispatchIntent.recordedAt,
+                        readinessDeadlineAt: dispatchIntent.readinessDeadlineAt,
+                        readinessStartedAt: dispatchIntent.readinessStartedAt,
+                        ...(dispatchIntent.readinessCheckAt !== undefined
+                          ? { readinessCheckAt: dispatchIntent.readinessCheckAt }
+                          : {}),
+                      },
+                    }
+                  : {}),
               }
             : entry,
         ),
@@ -1354,6 +1385,7 @@ export class ExtensionRepositories {
             (item) =>
               item.itemState === "sending" ||
               (item.dispatchIntent &&
+                item.dispatchIntent.readinessDeadlineAt === undefined &&
                 item.itemState !== "sent" &&
                 item.itemState !== "blocked"),
           )

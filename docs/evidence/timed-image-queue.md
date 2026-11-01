@@ -534,3 +534,27 @@ Tests executed against isolated Playwright Chromium instance loading packaged MV
 
 - **Production Integrity**: Strict debugger guards remain intact. No unverified debugger owner was detached, no guards were weakened, and no live provider generation or navigation was performed.
 - **Deferred Outcomes**: Image decoding, provider-side completion polling, tile counting, provider completion acknowledgement, and downloads remain strictly deferred per agreed P06 timed-submission scope.
+
+## P06.3 readiness-wait restart recovery and startup responsiveness — 1 November 2026
+
+### Proven defect
+
+The 31 October installed-MV3 Scenario 2 failure was specifically a forced service-worker termination during a long readiness loop that held a debugger lease. On restart Chrome could reject a new attach with `flow_debugger_attach_refused`. Startup also awaited scheduler reconciliation, which could perform dispatch/readiness work before serving dashboard messages. This established the forced-termination fixture failure; it did not establish that every worker restart fails.
+
+### Change
+
+- One readiness inspection is performed per dispatch wake. A successful acquisition is verified and released in `finally`; the disabled-button path persists state and returns without a sleep loop or remote handle retained between checks.
+- `readinessStartedAt` and `readinessDeadlineAt` are stable after their first durable write. `readinessCheckAt` stores the next alarm time. Chrome alarms wake the scheduler; each wake reloads queue state, checks the original deadline, and either rechecks, pauses at `flow_generate_readiness_timeout`, or activates through the guarded path.
+- Queue startup reconciliation now reads durable queues and restores alarms only. It does not await dispatcher work or target revalidation. Queue messages wait for this bounded durable reconciliation, leaving queue readback and Pause/Stop responsive.
+- Repository revision, state, item, attempt and activation-marker conditions authorize activation atomically. A fresh revision lookup cannot by itself permit stale work. Pause/Stop committed before activation authorization makes the marker write fail, preventing input.
+- `minimum_chrome_version` is 120. Before Chrome 120, alarms could not provide a one-minute-or-shorter intermediate wake; Chrome 120 introduced a 30-second alarm interval. This is needed to recheck inside the existing 60-second readiness window. Alarms may still be delayed, so every wake rechecks the persisted deadline. [Chrome 120 extension updates](https://developer.chrome.com/blog/chrome-120-beta-whats-new-for-extensions)
+
+### Verification
+
+Build `automat-faceless-0.1.0-mvx7eheq` was installed into an isolated Playwright Chromium profile with a synthetic local Flow page. Forced worker termination was performed between readiness checks. Repeated restarts preserved identical readiness start/deadline values; enabling the button produced one activation with the exact saved prompt body. The fixture also passed Pause/Resume during readiness, dashboard queue readback, restart after activation authorization with no replay, paused/stopped queue inactivity, and an expired-deadline restart that paused with zero activation. Scenario 1 (the normal 40-second dispatch interval restart) was not run in this targeted invocation.
+
+Focused offline regressions passed: `flowReadinessWait.test.ts`, `imageQueueRestart.test.ts`, and `imageQueueSequence.test.ts` — **3 files / 20 tests**. Typecheck, ESLint, diff check and production build passed. Unit coverage confirms attach refusal pauses with `flow_debugger_attach_refused` and never releases an unverified debugger owner.
+
+### Remaining limit
+
+A worker can still be killed during the short interval after acquiring a debugger lease. The replacement worker will not borrow or detach a debugger owner it cannot verify. If Chrome retains the terminated worker's attachment, the attempted check pauses with `flow_debugger_attach_refused`; the user must wait for Chrome to clear that stale owner before resuming. The installed-MV3 fixture run did not force termination during that narrow active-lease window. Live Flow acceptance and Generate were not run.
