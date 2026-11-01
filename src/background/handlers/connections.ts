@@ -89,6 +89,12 @@ export type FoundationDependencies = {
       sessionId: string,
       candidateId: string,
     ) => Promise<unknown>;
+    getPreview?: (
+      sessionId: string,
+      candidateId: string,
+      previewId: string,
+    ) => Promise<unknown>;
+    cancelPreview?: (sessionId: string, previewId: string) => Promise<unknown>;
     clearCandidate: (workspaceId: string, shotId: string) => Promise<unknown>;
     handleCandidateSelected: (
       message: unknown,
@@ -582,6 +588,51 @@ async function dispatch(
             err.message,
           );
         }
+        throw err;
+      }
+    case "flow.reference.getPreview":
+      if (!dependencies.flowReferenceHandler?.getPreview) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference preview is unavailable in this worker context.",
+        );
+      }
+      try {
+        return await dependencies.flowReferenceHandler.getPreview(
+          request.payload.sessionId,
+          request.payload.candidateId,
+          request.payload.previewId,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError)
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
+        throw err;
+      }
+    case "flow.reference.cancelPreview":
+      if (!dependencies.flowReferenceHandler?.cancelPreview) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference preview is unavailable in this worker context.",
+        );
+      }
+      try {
+        return await dependencies.flowReferenceHandler.cancelPreview(
+          request.payload.sessionId,
+          request.payload.previewId,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError)
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
         throw err;
       }
     case "flow.reference.clearCandidate":

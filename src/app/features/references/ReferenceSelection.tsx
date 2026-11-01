@@ -32,6 +32,72 @@ function PanelHeader({
   );
 }
 
+export type PickerThumbnailFailureDiagnostic = {
+  sourceComparison: string;
+  protocol: string;
+  origin: string;
+  referrerPolicy: string;
+  imageState: string;
+  httpStatus: string;
+  transferTiming: string;
+  redirectTiming: string;
+  contentType: string;
+  cspDirective: string;
+};
+
+export function summarizePickerThumbnailFailure(input: {
+  sourceUrl: string;
+  referrerPolicy: string;
+  complete: boolean;
+  naturalWidth: number;
+  naturalHeight: number;
+  responseStatus?: number;
+  transferSize?: number;
+  redirectStart?: number;
+  redirectEnd?: number;
+  cspDirective?: string;
+  cspDisposition?: string;
+}): PickerThumbnailFailureDiagnostic {
+  let protocol = "unavailable";
+  let origin = "unavailable";
+  try {
+    const source = new URL(input.sourceUrl);
+    protocol = source.protocol.slice(0, 16);
+    origin = source.origin.slice(0, 256);
+  } catch {
+    // Do not include the unparsed source because it may contain a signed URL.
+  }
+  const status = input.responseStatus;
+  const transferSize = input.transferSize;
+  return {
+    sourceComparison:
+      "Same candidate URL used for preview; final redirect target is not exposed here",
+    protocol,
+    origin,
+    referrerPolicy: input.referrerPolicy.slice(0, 32) || "default",
+    imageState: `complete=${input.complete}; natural=${Math.max(0, input.naturalWidth)}x${Math.max(0, input.naturalHeight)}`,
+    httpStatus:
+      typeof status === "number" &&
+      Number.isInteger(status) &&
+      status >= 100 &&
+      status <= 599
+        ? `HTTP ${status}`
+        : "not exposed by Resource Timing",
+    transferTiming:
+      typeof transferSize === "number" && transferSize > 0
+        ? `${Math.min(2_147_483_647, Math.trunc(transferSize))} bytes reported`
+        : "0 or unavailable (may be cached or cross-origin redacted)",
+    redirectTiming:
+      (input.redirectStart ?? 0) > 0 || (input.redirectEnd ?? 0) > 0
+        ? "redirect timing exposed"
+        : "none or cross-origin redacted",
+    contentType: "not exposed to an HTMLImageElement",
+    cspDirective: input.cspDirective
+      ? `${input.cspDirective.slice(0, 80)} (${(input.cspDisposition ?? "unknown").slice(0, 16)})`
+      : "no matching img-src violation observed",
+  };
+}
+
 export function ReferenceSelection({
   persistenceClient,
   workspaceId = "default",
@@ -62,6 +128,77 @@ export function ReferenceSelection({
   const [thumbnailFailures, setThumbnailFailures] = useState<
     Record<string, boolean>
   >({});
+  const [thumbnailDiagnostics, setThumbnailDiagnostics] = useState<
+    Record<string, PickerThumbnailFailureDiagnostic>
+  >({});
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const [previewLoaded, setPreviewLoaded] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>(
+    {},
+  );
+  const previewRequests = useRef(
+    new Map<string, { sessionId: string; previewId: string }>(),
+  );
+  const previewObjectUrls = useRef(new Map<string, string>());
+  const previewConcurrency = useRef(new Set<string>());
+
+  const clearPreviews = useCallback(() => {
+    for (const [candidateId, request] of previewRequests.current) {
+      void persistenceClient
+        .request("flow.reference.cancelPreview", {
+          sessionId: request.sessionId,
+          previewId: request.previewId,
+        })
+        .catch(() => undefined);
+      previewRequests.current.delete(candidateId);
+    }
+    for (const url of previewObjectUrls.current.values())
+      URL.revokeObjectURL(url);
+    previewObjectUrls.current.clear();
+    setPreviewUrls({});
+    setPreviewLoaded({});
+    setPreviewLoading({});
+  }, [persistenceClient]);
+  const cspDiagnostics = useRef<
+    Record<string, { directive: string; disposition: string }>
+  >({});
+
+  useEffect(() => {
+    const onSecurityPolicyViolation = (event: SecurityPolicyViolationEvent) => {
+      if (!event.effectiveDirective.startsWith("img-src")) return;
+      let blockedOrigin = "opaque";
+      try {
+        blockedOrigin = new URL(event.blockedURI).origin.slice(0, 256);
+      } catch {
+        // Keep only a fixed category for inline, data, and unparsable values.
+      }
+      cspDiagnostics.current = {
+        ...cspDiagnostics.current,
+        [blockedOrigin]: {
+          directive: event.effectiveDirective.slice(0, 80),
+          disposition: event.disposition.slice(0, 16),
+        },
+      };
+      const origins = Object.keys(cspDiagnostics.current);
+      for (const oldOrigin of origins.slice(
+        0,
+        Math.max(0, origins.length - 8),
+      )) {
+        delete cspDiagnostics.current[oldOrigin];
+      }
+    };
+    window.addEventListener(
+      "securitypolicyviolation",
+      onSecurityPolicyViolation,
+    );
+    return () =>
+      window.removeEventListener(
+        "securitypolicyviolation",
+        onSecurityPolicyViolation,
+      );
+  }, []);
 
   const checkFlowConnection = useCallback(async () => {
     try {
@@ -161,6 +298,7 @@ export function ReferenceSelection({
         if (eventMsg.event === "candidate_selected") {
           if (eventMsg.batchId !== batch?.batch.id) return;
           pickerReadGeneration.current += 1;
+          clearPreviews();
           setPickerCandidates([]);
           setSelectionNotice(
             `Candidate selected for Shot ${eventMsg.shotId}. Image capture and saving are not implemented in this phase.`,
@@ -175,11 +313,13 @@ export function ReferenceSelection({
         } else if (eventMsg.event === "session_cancelled") {
           if (eventMsg.sessionId !== activeSession?.sessionId) return;
           pickerReadGeneration.current += 1;
+          clearPreviews();
           setPickerCandidates([]);
           setActionPending(false);
           setActiveSession(null);
         } else if (eventMsg.event === "session_started") {
           pickerReadGeneration.current += 1;
+          clearPreviews();
           setPickerCandidates([]);
           setPickerSessionId(null);
           setPickerStatus(null);
@@ -205,23 +345,38 @@ export function ReferenceSelection({
     activeSession?.sessionId,
     checkFlowConnection,
     loadBatchAndState,
+    clearPreviews,
   ]);
 
   useEffect(
     () => () => {
       pickerReadGeneration.current += 1;
+      for (const request of previewRequests.current.values()) {
+        void persistenceClient
+          .request("flow.reference.cancelPreview", {
+            sessionId: request.sessionId,
+            previewId: request.previewId,
+          })
+          .catch(() => undefined);
+      }
+      for (const url of previewObjectUrls.current.values())
+        URL.revokeObjectURL(url);
+      previewObjectUrls.current.clear();
+      previewRequests.current.clear();
     },
     [workspaceId, persistenceClient],
   );
 
   const loadFlowImageCandidates = async (sessionId: string) => {
     const generation = ++pickerReadGeneration.current;
+    clearPreviews();
     setActionPending(true);
     setPickerAmbiguousCount(0);
     setPickerUnsupportedCount(0);
     setPickerStatus("Reading eligible images from the verified Flow document…");
     setPickerCandidates([]);
     setThumbnailFailures({});
+    setThumbnailDiagnostics({});
     setPickerSessionId(sessionId);
     try {
       const result = (await persistenceClient.request(
@@ -260,8 +415,118 @@ export function ReferenceSelection({
     }
   };
 
+  const handleLoadPreview = async (candidateId: string) => {
+    if (
+      !activeSession ||
+      pickerSessionId !== activeSession.sessionId ||
+      previewRequests.current.has(candidateId)
+    )
+      return;
+    if (previewConcurrency.current.size >= 2) {
+      setPickerStatus(
+        "Two previews are already loading. Wait for one to finish.",
+      );
+      return;
+    }
+    const sessionId = activeSession.sessionId;
+    const previewId = crypto.randomUUID();
+    const generation = pickerReadGeneration.current;
+    previewConcurrency.current.add(previewId);
+    previewRequests.current.set(candidateId, { sessionId, previewId });
+    setPreviewLoading((current) => ({ ...current, [candidateId]: true }));
+    setThumbnailFailures((current) => ({ ...current, [candidateId]: false }));
+    setPickerStatus(
+      "Loading a bounded preview from the verified Flow document…",
+    );
+    try {
+      const response = (await persistenceClient.request(
+        "flow.reference.getPreview",
+        { sessionId, candidateId, previewId },
+      )) as {
+        ok: boolean;
+        sessionId: string;
+        candidateId: string;
+        previewId: string;
+        mimeType: string;
+        byteLength: number;
+        width: number;
+        height: number;
+        data: string;
+      };
+      if (
+        generation !== pickerReadGeneration.current ||
+        activeSession?.sessionId !== sessionId ||
+        previewRequests.current.get(candidateId)?.previewId !== previewId
+      )
+        return;
+      if (
+        !response?.ok ||
+        response.sessionId !== sessionId ||
+        response.candidateId !== candidateId ||
+        response.previewId !== previewId ||
+        response.mimeType !== "image/webp" ||
+        response.byteLength < 1 ||
+        response.byteLength > 96 * 1024 ||
+        response.width < 1 ||
+        response.width > 320 ||
+        response.height < 1 ||
+        response.height > 320 ||
+        response.data.length > 128 * 1024
+      )
+        throw new Error("preview_invalid_response");
+      const binary = atob(response.data);
+      if (binary.length !== response.byteLength)
+        throw new Error("preview_invalid_response");
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1)
+        bytes[index] = binary.charCodeAt(index);
+      const url = URL.createObjectURL(
+        new Blob([bytes], { type: response.mimeType }),
+      );
+      previewObjectUrls.current.set(candidateId, url);
+      setPreviewUrls((current) => ({ ...current, [candidateId]: url }));
+      setThumbnailFailures((current) => ({ ...current, [candidateId]: false }));
+      setThumbnailDiagnostics((current) => ({
+        ...current,
+        [candidateId]: {
+          sourceComparison: "Preview transported from verified Flow document",
+          protocol: "https:",
+          origin: "verified document origin",
+          referrerPolicy: "same-origin fetch",
+          imageState: `preview ${response.width}x${response.height}`,
+          httpStatus: "HTTP success",
+          transferTiming: `${response.byteLength} preview bytes`,
+          redirectTiming: "same-origin only",
+          contentType: response.mimeType,
+          cspDirective: "extension-local object URL",
+        },
+      }));
+      setPickerStatus(
+        "Preview ready. Confirm the candidate against its original Flow identity before choosing.",
+      );
+    } catch (error) {
+      if (
+        generation !== pickerReadGeneration.current ||
+        activeSession?.sessionId !== sessionId
+      )
+        return;
+      const message =
+        error instanceof Error ? error.message.slice(0, 140) : "preview_failed";
+      setThumbnailFailures((current) => ({ ...current, [candidateId]: true }));
+      setPickerStatus(
+        `Preview failed (${message}). Refresh images or try another candidate.`,
+      );
+    } finally {
+      previewConcurrency.current.delete(previewId);
+      if (previewRequests.current.get(candidateId)?.previewId === previewId)
+        previewRequests.current.delete(candidateId);
+      setPreviewLoading((current) => ({ ...current, [candidateId]: false }));
+    }
+  };
+
   const handleStartSelection = async (shotId: string, browse = false) => {
     if (!batch) return;
+    clearPreviews();
     pickerReadGeneration.current += 1;
     setSelectionNotice(null);
     setActionPending(true);
@@ -349,6 +614,7 @@ export function ReferenceSelection({
 
   const handleCancelSelection = async () => {
     if (!activeSession) return;
+    clearPreviews();
     pickerReadGeneration.current += 1;
     setPickerCandidates([]);
     setActionPending(true);
@@ -543,24 +809,76 @@ export function ReferenceSelection({
                         key={candidate.candidateId}
                         className={refStyles.pickerCard}
                       >
-                        <img
-                          src={candidate.sourceUrl}
-                          loading="lazy"
-                          referrerPolicy="no-referrer"
-                          alt={`Flow image candidate for Shot ${activeSession.shotId}`}
-                          className={refStyles.pickerThumbnail}
-                          onError={() =>
-                            setThumbnailFailures((previous) => ({
-                              ...previous,
-                              [candidate.candidateId]: true,
-                            }))
+                        {previewUrls[candidate.candidateId] ? (
+                          <img
+                            src={previewUrls[candidate.candidateId]}
+                            alt={`Flow image candidate preview for Shot ${activeSession.shotId}`}
+                            className={refStyles.pickerThumbnail}
+                            onLoad={() =>
+                              setPreviewLoaded((current) => ({
+                                ...current,
+                                [candidate.candidateId]: true,
+                              }))
+                            }
+                            onError={() => {
+                              setPreviewLoaded((current) => ({
+                                ...current,
+                                [candidate.candidateId]: false,
+                              }));
+                              setThumbnailFailures((current) => ({
+                                ...current,
+                                [candidate.candidateId]: true,
+                              }));
+                              setPickerStatus(
+                                "The transferred preview could not be displayed. Refresh images before choosing.",
+                              );
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className={refStyles.pickerThumbnail}
+                            role="img"
+                            aria-label="Preview not loaded"
+                          >
+                            Preview not loaded
+                          </div>
+                        )}
+                        <Button
+                          onClick={() =>
+                            void handleLoadPreview(candidate.candidateId)
                           }
-                        />
+                          disabled={
+                            actionPending ||
+                            !!previewLoading[candidate.candidateId] ||
+                            !!previewUrls[candidate.candidateId]
+                          }
+                        >
+                          {previewLoading[candidate.candidateId]
+                            ? "Loading preview…"
+                            : previewUrls[candidate.candidateId]
+                              ? "Preview loaded"
+                              : "Load preview"}
+                        </Button>
                         {thumbnailFailures[candidate.candidateId] ? (
                           <p className={refStyles.pickerWarning} role="status">
                             Thumbnail could not load. No substitute image was
                             used; refresh the picker or choose another image.
                           </p>
+                        ) : null}
+                        {thumbnailDiagnostics[candidate.candidateId] ? (
+                          <details className={refStyles.thumbnailDiagnostics}>
+                            <summary>Preview diagnostics</summary>
+                            <dl>
+                              {Object.entries(
+                                thumbnailDiagnostics[candidate.candidateId]!,
+                              ).map(([label, value]) => (
+                                <div key={label}>
+                                  <dt>{label}</dt>
+                                  <dd>{value}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                          </details>
                         ) : null}
                         <span className={refStyles.candidateMeta}>
                           {candidate.providerAssetId
@@ -576,7 +894,8 @@ export function ReferenceSelection({
                           disabled={
                             actionPending ||
                             !flowVerified ||
-                            !!thumbnailFailures[candidate.candidateId]
+                            !!thumbnailFailures[candidate.candidateId] ||
+                            !previewLoaded[candidate.candidateId]
                           }
                         >
                           Choose for Shot {activeSession.shotId}
@@ -622,22 +941,15 @@ export function ReferenceSelection({
 
                     {candidate ? (
                       <div className={refStyles.candidateDisplay}>
-                        <img
-                          src={candidate.sourceUrl}
-                          loading="lazy"
-                          referrerPolicy="no-referrer"
-                          alt={`Reference candidate for Shot ${shotId}`}
-                          className={refStyles.candidateThumbnail}
-                          onError={(e) => {
-                            (
-                              e.currentTarget as HTMLImageElement
-                            ).style.display = "none";
-                          }}
-                        />
                         <div className={refStyles.candidateDetails}>
                           <span className={refStyles.candidateHonestStatus}>
                             Candidate selected — image capture and saving are
                             not implemented in this phase.
+                          </span>
+                          <span className={refStyles.candidateMeta}>
+                            Preview bytes are temporary and cleared when the
+                            picker closes. Reopen Browse Flow images to preview
+                            this candidate again.
                           </span>
                           <span className={refStyles.candidateMeta}>
                             Dimensions:{" "}

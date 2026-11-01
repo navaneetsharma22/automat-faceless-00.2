@@ -7,6 +7,7 @@ import {
   FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
   createFlowReferenceContextMenuProperties,
   createFlowReferenceSelectionInjection,
+  flowReferencePreviewInPage,
   flowReferenceContextMenuId,
   flowReferenceSelectionProducer,
 } from "../../src/platforms/flow/references";
@@ -81,6 +82,35 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       scripting: {
         executeScript: async (injection) => {
           scriptInjections.push(injection);
+          if (
+            (injection as { func?: unknown }).func ===
+            flowReferencePreviewInPage
+          ) {
+            const args = (
+              injection as {
+                args?: Array<{
+                  sessionId: string;
+                  candidateId: string;
+                  previewId: string;
+                }>;
+              }
+            ).args?.[0];
+            return [
+              {
+                documentId: currentDocumentId,
+                frameId: 0,
+                result: {
+                  ok: true,
+                  ...args,
+                  mimeType: "image/webp",
+                  width: 1,
+                  height: 1,
+                  byteLength: 3,
+                  data: "AQID",
+                },
+              },
+            ];
+          }
           return [
             {
               documentId: currentDocumentId,
@@ -552,6 +582,78 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         type: FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
         sessionId: active.sessionId,
         shotId: active.shotId,
+      });
+    });
+
+    it("rejects a preview request from a stale or wrong session before document access", async () => {
+      const { handler, documentMessages, scriptInjections } =
+        await setupActiveSession();
+      const priorInjectionCount = scriptInjections.length;
+      await expect(
+        handler.getPreview(
+          "not-the-active-session",
+          "00000000-0000-4000-8000-000000000001",
+          "00000000-0000-4000-8000-000000000002",
+        ),
+      ).rejects.toMatchObject({ code: "stale_session" });
+      expect(documentMessages).toHaveLength(0);
+      expect(scriptInjections).toHaveLength(priorInjectionCount);
+    });
+
+    it("requests a compact preview by candidate ID in the verified same document", async () => {
+      const { handler, setDocumentReply, scriptInjections } =
+        await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      const candidateId = "00000000-0000-4000-8000-000000000004";
+      const previewId = "00000000-0000-4000-8000-000000000005";
+      const candidate = {
+        candidateId,
+        sourceUrl: "https://flow.google.com/media/observed-image.webp",
+        naturalWidth: 900,
+        naturalHeight: 600,
+        displayWidth: 300,
+        displayHeight: 200,
+        cardTag: "flow-image-tile",
+        selectedAt: 10,
+      };
+      setDocumentReply({
+        ok: true,
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidate,
+      });
+
+      const result = await handler.getPreview(
+        active.sessionId,
+        candidateId,
+        previewId,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        sessionId: active.sessionId,
+        candidateId,
+        previewId,
+        mimeType: "image/webp",
+        byteLength: 3,
+      });
+      expect(
+        scriptInjections.find(
+          (entry) =>
+            (entry as { func?: unknown }).func === flowReferencePreviewInPage,
+        ),
+      ).toMatchObject({
+        target: { tabId: active.tabId, documentIds: [active.documentId] },
+        world: "MAIN",
+        args: [
+          {
+            action: "fetch",
+            sessionId: active.sessionId,
+            candidateId,
+            previewId,
+            sourceUrl: candidate.sourceUrl,
+          },
+        ],
       });
     });
 

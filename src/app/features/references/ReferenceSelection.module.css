@@ -158,6 +158,36 @@
   font-size: var(--font-size-xs);
 }
 
+.thumbnailDiagnostics {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.thumbnailDiagnostics summary {
+  cursor: pointer;
+}
+
+.thumbnailDiagnostics dl {
+  display: grid;
+  gap: 2px;
+  margin: var(--space-2) 0 0;
+}
+
+.thumbnailDiagnostics dl > div {
+  display: grid;
+  grid-template-columns: minmax(78px, auto) 1fr;
+  gap: var(--space-2);
+}
+
+.thumbnailDiagnostics dt {
+  font-weight: 600;
+}
+
+.thumbnailDiagnostics dd {
+  margin: 0;
+}
+
 .pickerGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));

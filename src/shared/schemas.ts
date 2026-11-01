@@ -846,6 +846,25 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
       })
       .strict(),
   }),
+  requestBase.extend({
+    type: z.literal("flow.reference.getPreview"),
+    payload: z
+      .object({
+        sessionId: z.string().min(1).max(128),
+        candidateId: z.string().uuid(),
+        previewId: z.string().uuid(),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.cancelPreview"),
+    payload: z
+      .object({
+        sessionId: z.string().min(1).max(128),
+        previewId: z.string().uuid(),
+      })
+      .strict(),
+  }),
 ]);
 
 export const FailureCategorySchema = z.enum([

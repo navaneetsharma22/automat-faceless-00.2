@@ -16,6 +16,7 @@ import {
 import type { ExtensionRepositories } from "../../storage/repositories";
 import {
   createFlowReferenceSelectionInjection,
+  flowReferencePreviewInPage,
   FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
   flowReferenceContextMenuId,
 } from "../../platforms/flow/references";
@@ -142,6 +143,95 @@ export function createFlowReferenceHandler(
     }
   };
   const candidateClaims = new Set<string>();
+  const previewClaims = new Map<
+    string,
+    {
+      sessionId: string;
+      candidateId: string;
+      active: ActiveReferenceSelectionSession;
+    }
+  >();
+
+  const resolvePickerCandidate = async (
+    active: ActiveReferenceSelectionSession,
+    candidateId: string,
+  ): Promise<FlowReferencePickerCandidate> => {
+    const raw = await dependencies.sendToDocument!(
+      active.tabId,
+      active.documentId,
+      {
+        type: "AUTOMAT_FLOW_REFERENCE_PICKER_REQUEST",
+        action: "resolve",
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidateId,
+      },
+    );
+    if (
+      !raw ||
+      typeof raw !== "object" ||
+      !("ok" in raw) ||
+      raw.ok !== true ||
+      !("buildId" in raw) ||
+      raw.buildId !== BUILD_ID ||
+      !("sessionId" in raw) ||
+      raw.sessionId !== active.sessionId ||
+      !("candidate" in raw) ||
+      !raw.candidate ||
+      typeof raw.candidate !== "object" ||
+      !("candidateId" in raw.candidate) ||
+      raw.candidate.candidateId !== candidateId
+    ) {
+      const code =
+        raw !== null &&
+        typeof raw === "object" &&
+        "code" in raw &&
+        typeof raw.code === "string"
+          ? raw.code
+          : "candidate_missing_or_changed";
+      throw new ReferenceSelectionError(
+        code,
+        "This image changed or disappeared from the verified Flow document. Refresh the picker and choose again.",
+      );
+    }
+    const parsed = FlowReferencePickerCandidateSchema.safeParse(raw.candidate);
+    if (!parsed.success)
+      throw new ReferenceSelectionError(
+        "candidate_invalid",
+        "Flow returned invalid image evidence. Refresh the picker and retry.",
+      );
+    return parsed.data;
+  };
+  const abortSessionPreviews = async (sessionId: string) => {
+    const claims = [...previewClaims.entries()].filter(
+      ([, claim]) => claim.sessionId === sessionId,
+    );
+    await Promise.all(
+      claims.map(async ([previewId, claim]) => {
+        try {
+          await scripting?.executeScript({
+            target: {
+              tabId: claim.active.tabId,
+              documentIds: [claim.active.documentId],
+            },
+            world: "MAIN",
+            func: flowReferencePreviewInPage,
+            args: [
+              {
+                action: "cancel",
+                sessionId,
+                candidateId: claim.candidateId,
+                previewId,
+                expectedOrigin: new URL(claim.active.canonicalTarget).origin,
+              },
+            ],
+          });
+        } catch {
+          /* The preview request will fail its final session validation. */
+        }
+      }),
+    );
+  };
 
   const getActiveSession =
     async (): Promise<ActiveReferenceSelectionSession | null> => {
@@ -484,6 +574,7 @@ export function createFlowReferenceHandler(
       // Invalidate any existing selection session
       const existing = await getActiveSession();
       if (existing) {
+        await abortSessionPreviews(existing.sessionId);
         await setActiveSession(null);
         await removeContextMenu(existing.sessionId);
         if (scripting?.executeScript) {
@@ -565,6 +656,7 @@ export function createFlowReferenceHandler(
         return { ok: true, cancelled: false };
       }
 
+      await abortSessionPreviews(current.sessionId);
       await setActiveSession(null);
       await removeContextMenu(current.sessionId);
 
@@ -591,6 +683,7 @@ export function createFlowReferenceHandler(
     async invalidateActiveSession(reason: string) {
       const current = await getActiveSession();
       if (!current) return;
+      await abortSessionPreviews(current.sessionId);
       await setActiveSession(null);
       await removeContextMenu(current.sessionId);
       if (scripting?.executeScript) {
@@ -691,6 +784,164 @@ export function createFlowReferenceHandler(
           "unsupportedCount" in raw && typeof raw.unsupportedCount === "number"
             ? Math.max(0, Math.min(1000, Math.trunc(raw.unsupportedCount)))
             : 0,
+      };
+    },
+
+    async getPreview(
+      sessionId: string,
+      candidateId: string,
+      previewId: string,
+    ) {
+      if (previewClaims.size >= 2)
+        throw new ReferenceSelectionError(
+          "preview_concurrency_limit",
+          "Two previews are already loading. Wait for one to finish.",
+        );
+      const active = await validatePickerSession(sessionId);
+      const candidate = await resolvePickerCandidate(active, candidateId);
+      let source: URL;
+      try {
+        source = new URL(candidate.sourceUrl);
+      } catch {
+        throw new ReferenceSelectionError(
+          "preview_source_invalid",
+          "The observed Flow image source is invalid.",
+        );
+      }
+      let pageOrigin: string;
+      try {
+        pageOrigin = new URL(active.canonicalTarget).origin;
+      } catch {
+        throw new ReferenceSelectionError(
+          "preview_source_invalid",
+          "The verified Flow project origin is invalid.",
+        );
+      }
+      if (source.protocol !== "https:" || source.origin !== pageOrigin) {
+        throw new ReferenceSelectionError(
+          "preview_origin_not_same_origin",
+          "This candidate is not served from the verified Flow document origin, so a safe preview is unavailable.",
+        );
+      }
+      if (previewClaims.has(previewId))
+        throw new ReferenceSelectionError(
+          "duplicate_preview",
+          "This preview is already being requested.",
+        );
+      previewClaims.set(previewId, { sessionId, candidateId, active });
+      try {
+        const [injected] = await scripting!.executeScript({
+          target: { tabId: active.tabId, documentIds: [active.documentId] },
+          world: "MAIN",
+          func: flowReferencePreviewInPage,
+          args: [
+            {
+              action: "fetch",
+              sessionId,
+              candidateId,
+              previewId,
+              sourceUrl: candidate.sourceUrl,
+              expectedOrigin: pageOrigin,
+            },
+          ],
+        });
+        if (
+          injected?.documentId !== active.documentId ||
+          injected.frameId !== 0
+        )
+          throw new ReferenceSelectionError(
+            "wrong_document",
+            "The preview came from a different Flow document.",
+            "context_invalidated",
+          );
+        const result = injected.result;
+        if (!result || typeof result !== "object")
+          throw new ReferenceSelectionError(
+            "preview_invalid_response",
+            "Flow returned an invalid preview response.",
+          );
+        if (!("ok" in result) || result.ok !== true) {
+          const code =
+            "code" in result && typeof result.code === "string"
+              ? result.code.slice(0, 64)
+              : "preview_failed";
+          throw new ReferenceSelectionError(
+            code,
+            `Preview failed (${code}). Refresh the candidate and retry.`,
+          );
+        }
+        if (
+          !("data" in result) ||
+          typeof result.data !== "string" ||
+          result.data.length > 128 * 1024 ||
+          !/^[A-Za-z0-9+/]*={0,2}$/.test(result.data) ||
+          !("sessionId" in result) ||
+          result.sessionId !== sessionId ||
+          !("candidateId" in result) ||
+          result.candidateId !== candidateId ||
+          !("previewId" in result) ||
+          result.previewId !== previewId ||
+          !("mimeType" in result) ||
+          result.mimeType !== "image/webp" ||
+          !("byteLength" in result) ||
+          typeof result.byteLength !== "number" ||
+          result.byteLength < 1 ||
+          result.byteLength > 96 * 1024 ||
+          result.data.length !== Math.ceil(result.byteLength / 3) * 4 ||
+          !("width" in result) ||
+          typeof result.width !== "number" ||
+          result.width < 1 ||
+          result.width > 320 ||
+          !("height" in result) ||
+          typeof result.height !== "number" ||
+          result.height < 1 ||
+          result.height > 320
+        )
+          throw new ReferenceSelectionError(
+            "preview_invalid_response",
+            "Flow returned an invalid or oversized preview.",
+          );
+        const fresh = await validatePickerSession(sessionId);
+        const confirmed = await resolvePickerCandidate(fresh, candidateId);
+        if (
+          confirmed.sourceUrl !== candidate.sourceUrl ||
+          confirmed.providerAssetId !== candidate.providerAssetId ||
+          confirmed.cardTag !== candidate.cardTag ||
+          confirmed.naturalWidth !== candidate.naturalWidth ||
+          confirmed.naturalHeight !== candidate.naturalHeight
+        )
+          throw new ReferenceSelectionError(
+            "candidate_missing_or_changed",
+            "The candidate changed while its preview was loading. Refresh the picker.",
+          );
+        return result;
+      } finally {
+        previewClaims.delete(previewId);
+      }
+    },
+
+    async cancelPreview(sessionId: string, previewId: string) {
+      const claim = previewClaims.get(previewId);
+      if (!claim || claim.sessionId !== sessionId)
+        return { ok: true, cancelled: false };
+      const active = claim.active;
+      const [injected] = await scripting!.executeScript({
+        target: { tabId: active.tabId, documentIds: [active.documentId] },
+        world: "MAIN",
+        func: flowReferencePreviewInPage,
+        args: [
+          {
+            action: "cancel",
+            sessionId,
+            candidateId: claim.candidateId,
+            previewId,
+            expectedOrigin: new URL(active.canonicalTarget).origin,
+          },
+        ],
+      });
+      return {
+        ok: true,
+        cancelled: injected?.documentId === active.documentId,
       };
     },
 

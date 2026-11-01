@@ -33,6 +33,228 @@ export function createFlowReferenceContextMenuProperties(
 export const FLOW_REFERENCE_SELECTION_KEY =
   "__AUTOMAT_FLOW_REFERENCE_SELECTION_V1__";
 
+/** Fetches and downsizes one already-resolved candidate in its verified Flow document. */
+export async function flowReferencePreviewInPage(input: {
+  action: "fetch" | "cancel";
+  sessionId: string;
+  candidateId: string;
+  previewId: string;
+  sourceUrl?: string;
+  expectedOrigin: string;
+}): Promise<Record<string, unknown>> {
+  const key = "__AUTOMAT_FLOW_REFERENCE_PREVIEW_V1__";
+  const scope = globalThis as typeof globalThis & {
+    [key]?: Map<
+      string,
+      { sessionId: string; candidateId: string; controller: AbortController }
+    >;
+  };
+  const pending = (scope[key] ??= new Map());
+  const existing = pending.get(input.previewId);
+  if (input.action === "cancel") {
+    if (
+      existing?.sessionId === input.sessionId &&
+      existing.candidateId === input.candidateId
+    ) {
+      existing.cancelled = true;
+      existing.controller.abort();
+      return {
+        ok: false,
+        code: "preview_cancelled",
+        sessionId: input.sessionId,
+        candidateId: input.candidateId,
+        previewId: input.previewId,
+      };
+    }
+    return {
+      ok: false,
+      code: "preview_not_active",
+      sessionId: input.sessionId,
+      candidateId: input.candidateId,
+      previewId: input.previewId,
+    };
+  }
+  if (pending.size >= 2)
+    return { ok: false, code: "preview_concurrency_limit" };
+  if (
+    location.origin !== input.expectedOrigin ||
+    !input.sourceUrl ||
+    input.sourceUrl.length > 4096
+  ) {
+    return { ok: false, code: "preview_wrong_origin" };
+  }
+  let source: URL;
+  try {
+    source = new URL(input.sourceUrl);
+  } catch {
+    return { ok: false, code: "preview_source_invalid" };
+  }
+  if (
+    source.protocol !== "https:" ||
+    source.origin !== location.origin ||
+    source.origin !== input.expectedOrigin
+  ) {
+    return { ok: false, code: "preview_wrong_origin" };
+  }
+  const controller = new AbortController();
+  const record: {
+    sessionId: string;
+    candidateId: string;
+    controller: AbortController;
+    timedOut: boolean;
+    cancelled: boolean;
+  } = {
+    sessionId: input.sessionId,
+    candidateId: input.candidateId,
+    controller,
+    timedOut: false,
+    cancelled: false,
+  };
+  pending.set(input.previewId, record);
+  let rejectAbort!: (error: Error) => void;
+  const aborted = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+  controller.signal.addEventListener(
+    "abort",
+    () => rejectAbort(new Error("preview_aborted")),
+    { once: true },
+  );
+  const timer = setTimeout(() => {
+    record.timedOut = true;
+    controller.abort();
+  }, 8000);
+  try {
+    const response = await Promise.race([
+      fetch(source.href, {
+        mode: "same-origin",
+        credentials: "same-origin",
+        redirect: "follow",
+        signal: controller.signal,
+      }),
+      aborted,
+    ]);
+    if (!response.ok)
+      return { ok: false, code: `preview_http_${response.status}` };
+    let finalUrl: URL;
+    try {
+      finalUrl = new URL(response.url);
+    } catch {
+      return { ok: false, code: "preview_source_invalid" };
+    }
+    if (finalUrl.origin !== location.origin)
+      return { ok: false, code: "preview_redirect_origin" };
+    const type = (response.headers.get("content-type") ?? "")
+      .split(";", 1)[0]!
+      .trim()
+      .toLowerCase();
+    if (
+      ![
+        "image/webp",
+        "image/png",
+        "image/jpeg",
+        "image/avif",
+        "image/gif",
+      ].includes(type)
+    )
+      return { ok: false, code: "preview_content_type_unsupported" };
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > 8 * 1024 * 1024) {
+      await response.body?.cancel().catch(() => undefined);
+      return { ok: false, code: "preview_input_too_large" };
+    }
+    if (!response.body) return { ok: false, code: "preview_fetch_failed" };
+    const reader = response.body.getReader();
+    const chunks: ArrayBuffer[] = [];
+    let size = 0;
+    while (true) {
+      const part = await Promise.race([reader.read(), aborted]);
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > 8 * 1024 * 1024) {
+        await reader.cancel();
+        return { ok: false, code: "preview_input_too_large" };
+      }
+      chunks.push(part.value.slice().buffer as ArrayBuffer);
+    }
+    const blob = new Blob(chunks, { type });
+    let bitmap: ImageBitmap;
+    try {
+      bitmap = await Promise.race([
+        createImageBitmap(blob).then((decoded) => {
+          if (record.timedOut || record.cancelled) decoded.close();
+          return decoded;
+        }),
+        aborted,
+      ]);
+    } catch {
+      return {
+        ok: false,
+        code: record.cancelled
+          ? "preview_cancelled"
+          : record.timedOut
+            ? "preview_timeout"
+            : "preview_decode_failed",
+      };
+    }
+    try {
+      if (
+        !bitmap.width ||
+        !bitmap.height ||
+        bitmap.width * bitmap.height > 16_000_000
+      )
+        return { ok: false, code: "preview_pixel_limit" };
+      const scale = Math.min(1, 320 / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = new OffscreenCanvas(width, height);
+      const context = canvas.getContext("2d");
+      if (!context) return { ok: false, code: "preview_encoding_failed" };
+      context.drawImage(bitmap, 0, 0, width, height);
+      const preview = await Promise.race([
+        canvas.convertToBlob({ type: "image/webp", quality: 0.72 }),
+        aborted,
+      ]);
+      if (preview.size > 96 * 1024)
+        return { ok: false, code: "preview_output_too_large" };
+      const bytes = new Uint8Array(
+        await Promise.race([preview.arrayBuffer(), aborted]),
+      );
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000)
+        binary += String.fromCharCode(
+          ...bytes.subarray(offset, offset + 0x8000),
+        );
+      return {
+        ok: true,
+        sessionId: input.sessionId,
+        candidateId: input.candidateId,
+        previewId: input.previewId,
+        mimeType: "image/webp",
+        width,
+        height,
+        byteLength: bytes.length,
+        data: btoa(binary),
+      };
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return {
+      ok: false,
+      code: record.cancelled
+        ? "preview_cancelled"
+        : record.timedOut
+          ? "preview_timeout"
+          : "preview_fetch_failed",
+    };
+  } finally {
+    clearTimeout(timer);
+    if (pending.get(input.previewId) === record)
+      pending.delete(input.previewId);
+  }
+}
+
 export function createFlowReferenceSelectionInjection(
   session: ActiveReferenceSelectionSession,
   command: "start" | "cancel",
@@ -625,7 +847,7 @@ export async function flowReferenceSelectionProducer(
           ok: true,
           buildId,
           sessionId: session.sessionId,
-          candidate: matches[0],
+          candidate: { ...matches[0]!, candidateId: message.candidateId },
         });
       }
     }

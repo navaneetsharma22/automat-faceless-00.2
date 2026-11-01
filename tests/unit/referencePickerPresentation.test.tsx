@@ -2,7 +2,10 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ReferenceSelection } from "../../src/app/features/references/ReferenceSelection";
+import {
+  ReferenceSelection,
+  summarizePickerThumbnailFailure,
+} from "../../src/app/features/references/ReferenceSelection";
 import type { FoundationClient } from "../../src/shared/messageClient";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -32,54 +35,68 @@ async function setup() {
     ambiguousCount: 0,
     unsupportedCount: 0,
   });
-  const request = vi.fn(async (type: string) => {
-    if (type === "promptBatch.get")
-      return {
-        batch: { id: "batch-1" },
-        items: [
-          {
-            id: "item-1",
-            shotId: "34",
-            order: 0,
-            rawJsonBody: '{"shot_id":"34"}',
-          },
-        ],
-      };
-    if (type === "connections.getSelection")
-      return { verification: "verified", connectionState: "verified" };
-    if (type === "flow.reference.getState")
-      return {
-        activeSession: active
-          ? {
-              sessionId: "session-1",
+  const request = vi.fn(
+    async (type: string, payload?: Record<string, unknown>) => {
+      if (type === "promptBatch.get")
+        return {
+          batch: { id: "batch-1" },
+          items: [
+            {
+              id: "item-1",
               shotId: "34",
-              projectId: "project-1",
-              tabId: 101,
-            }
-          : null,
-        candidates: chosen ? { "34": candidate } : {},
-      };
-    if (type === "flow.reference.startSelection") {
-      active = true;
-      return {
-        sessionId: "session-1",
-        tabId: 101,
-        projectId: "project-1",
-        canonicalTarget: "https://flow.google.com/project/project-1",
-      };
-    }
-    if (type === "flow.reference.listCandidates") return listResponse();
-    if (type === "flow.reference.chooseCandidate") {
-      chosen = true;
-      active = false;
-      return { accepted: true, candidate };
-    }
-    if (type === "flow.reference.cancelSelection") {
-      active = false;
-      return { cancelled: true };
-    }
-    throw new Error(`Unexpected request: ${type}`);
-  });
+              order: 0,
+              rawJsonBody: '{"shot_id":"34"}',
+            },
+          ],
+        };
+      if (type === "connections.getSelection")
+        return { verification: "verified", connectionState: "verified" };
+      if (type === "flow.reference.getState")
+        return {
+          activeSession: active
+            ? {
+                sessionId: "session-1",
+                shotId: "34",
+                projectId: "project-1",
+                tabId: 101,
+              }
+            : null,
+          candidates: chosen ? { "34": candidate } : {},
+        };
+      if (type === "flow.reference.startSelection") {
+        active = true;
+        return {
+          sessionId: "session-1",
+          tabId: 101,
+          projectId: "project-1",
+          canonicalTarget: "https://flow.google.com/project/project-1",
+        };
+      }
+      if (type === "flow.reference.listCandidates") return listResponse();
+      if (type === "flow.reference.getPreview")
+        return {
+          ok: true,
+          sessionId: "session-1",
+          candidateId: candidate.candidateId,
+          previewId: payload?.previewId,
+          mimeType: "image/webp",
+          byteLength: 3,
+          width: 1,
+          height: 1,
+          data: "AQID",
+        };
+      if (type === "flow.reference.chooseCandidate") {
+        chosen = true;
+        active = false;
+        return { accepted: true, candidate };
+      }
+      if (type === "flow.reference.cancelSelection") {
+        active = false;
+        return { cancelled: true };
+      }
+      throw new Error(`Unexpected request: ${type}`);
+    },
+  );
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -107,12 +124,42 @@ async function setup() {
 }
 
 describe("References-owned Flow image picker", () => {
+  it("summarizes preview failure evidence without exposing signed URL components", () => {
+    const diagnostic = summarizePickerThumbnailFailure({
+      sourceUrl:
+        "https://images.example.test/path/image.webp?token=secret-value",
+      referrerPolicy: "no-referrer",
+      complete: true,
+      naturalWidth: 0,
+      naturalHeight: 0,
+      responseStatus: 403,
+      transferSize: 0,
+      redirectStart: 0,
+      redirectEnd: 0,
+      cspDirective: "img-src",
+      cspDisposition: "enforce",
+    });
+    expect(diagnostic).toMatchObject({
+      sourceComparison:
+        "Same candidate URL used for preview; final redirect target is not exposed here",
+      protocol: "https:",
+      origin: "https://images.example.test",
+      referrerPolicy: "no-referrer",
+      httpStatus: "HTTP 403",
+      contentType: "not exposed to an HTMLImageElement",
+      cspDirective: "img-src (enforce)",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("secret-value");
+    expect(JSON.stringify(diagnostic)).not.toContain("/path/image.webp");
+  });
+
   it("browses and chooses without provider clicks, retaining visible acknowledgement after session closes", async () => {
     const { click, request } = await setup();
     await click("Browse Flow images");
-    expect(container.querySelector("img")?.getAttribute("src")).toBe(
-      "https://example.test/chosen-image.png",
-    );
+    await click("Load preview");
+    const preview = container.querySelector("img")!;
+    expect(preview.getAttribute("src")).toMatch(/^blob:/);
+    await act(async () => preview.dispatchEvent(new Event("load")));
     await click("Choose for Shot 34");
     expect(request).toHaveBeenCalledWith("flow.reference.chooseCandidate", {
       sessionId: "session-1",
@@ -128,6 +175,7 @@ describe("References-owned Flow image picker", () => {
   it("reports failed thumbnail loading and prevents choosing an unseen substitute", async () => {
     const { click } = await setup();
     await click("Browse Flow images");
+    await click("Load preview");
     await act(async () =>
       container.querySelector("img")!.dispatchEvent(new Event("error")),
     );
@@ -136,6 +184,21 @@ describe("References-owned Flow image picker", () => {
       (b) => b.textContent === "Choose for Shot 34",
     );
     expect(choose?.disabled).toBe(true);
+  });
+
+  it("revokes transient preview URLs when candidate results refresh", async () => {
+    const revoke = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => undefined);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:transient-preview");
+    const { click } = await setup();
+    await click("Browse Flow images");
+    await click("Load preview");
+    await click("Refresh images");
+    expect(revoke).toHaveBeenCalledWith("blob:transient-preview");
+    expect(
+      container.querySelector('img[src="blob:transient-preview"]'),
+    ).toBeNull();
   });
 
   it("ignores a delayed refresh after the References view unmounts", async () => {

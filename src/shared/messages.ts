@@ -125,6 +125,12 @@ export type RequestPayloads = {
     sessionId: string;
     candidateId: string;
   };
+  "flow.reference.getPreview": {
+    sessionId: string;
+    candidateId: string;
+    previewId: string;
+  };
+  "flow.reference.cancelPreview": { sessionId: string; previewId: string };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -173,6 +179,8 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.reference.clearCandidate": 5000,
   "flow.reference.listCandidates": 10_000,
   "flow.reference.chooseCandidate": 10_000,
+  "flow.reference.getPreview": 15_000,
+  "flow.reference.cancelPreview": 5000,
 };
 
 export function makeRequest<T extends RequestTypes>(
