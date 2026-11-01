@@ -10,6 +10,7 @@ export function VideoImportPanel({
   setEditorExpanded,
   workspaceId,
   persistenceClient,
+  onSourceReadinessChange,
 }: {
   session: ImportPreviewSession;
   wrapLines: boolean;
@@ -18,6 +19,11 @@ export function VideoImportPanel({
   setEditorExpanded: (value: boolean) => void;
   workspaceId: string;
   persistenceClient: FoundationClient;
+  onSourceReadinessChange?: (
+    ready: boolean,
+    savedSource?: string,
+    shotIds?: string[],
+  ) => void;
 }) {
   return (
     <SharedImportPanel
@@ -29,6 +35,7 @@ export function VideoImportPanel({
       setWrapLines={setWrapLines}
       editorExpanded={editorExpanded}
       setEditorExpanded={setEditorExpanded}
+      onVideoSourceReadinessChange={onSourceReadinessChange}
     />
   );
 }

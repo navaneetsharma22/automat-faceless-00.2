@@ -4,23 +4,24 @@ Baseline: 28 October 2026.
 
 ## Current state
 
-| Area                                   | Status                                                                              |
-| -------------------------------------- | ----------------------------------------------------------------------------------- |
-| Requirements and documentation package | DOCS_READY                                                                          |
-| Legacy source/report review            | SOURCE_REVIEWED                                                                     |
-| Parser decimal-array defect            | OFFLINE_REPRODUCED in legacy pure function                                          |
-| Existing hosted OAuth/download         | Legacy implementation + scoped historical user-reported live evidence               |
-| Existing native splitter               | Legacy implementation + recorded two-clip media verification                        |
-| New extension application              | TOOLCHAIN_READY; P02 corrected-route connections USER_REPORTED_PASS                 |
-| Provider connection evidence           | SCREENSHOT_EVIDENCE: Flow/Vids shown Connected; listed checks USER_REPORTED_PASS    |
-| Worker-owned connection lifecycle      | OFFLINE_VERIFIED; live retest NOT_RUN; historical Vids refresh cause unknown        |
-| New UI visual sign-off                 | USER_APPROVED; specified interaction/layout confirmations USER_REPORTED_PASS        |
-| Vids preservation / lifecycle limits   | Empty-document test shown; generated scenes and worker suspension unverified        |
-| New packaging/release                  | OFFLINE_PACKAGE_BUILT; live installation not confirmed                              |
-| Timed queue presentation               | LOCAL_BROWSER_FIXTURE_VERIFIED; no provider action performed                        |
-| Timed queue live and offline evidence   | Shots 15–19 historical live storage audit; Amazon Shots 34–43 USER_REPORTED_GENERATED (build/queue/receipts/timing unverified); P06.1–P06.3 OFFLINE_VERIFIED including installed-MV3 synthetic restart tests |
-| Manual Flow reference selection (P07.1) | OFFLINE_VERIFIED; extension-owned picker is the supported path; user-reported live selection/save evidence for Shots 34/35; direct Flow click/right-click alternatives unverified |
-| Durable reference capture and assignment review (P07.2/P07.3) | OFFLINE_VERIFIED; real IndexedDB capture/replacement/reopen/reorder regression; user-reported live saved-image persistence for Shots 34/35; G-REFERENCE COMPLETE for Phase 07 scope |
+| Area                                                          | Status                                                                                                                                                                                                       |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Requirements and documentation package                        | DOCS_READY                                                                                                                                                                                                   |
+| Legacy source/report review                                   | SOURCE_REVIEWED                                                                                                                                                                                              |
+| Parser decimal-array defect                                   | OFFLINE_REPRODUCED in legacy pure function                                                                                                                                                                   |
+| Existing hosted OAuth/download                                | Legacy implementation + scoped historical user-reported live evidence                                                                                                                                        |
+| Existing native splitter                                      | Legacy implementation + recorded two-clip media verification                                                                                                                                                 |
+| New extension application                                     | TOOLCHAIN_READY; P02 corrected-route connections USER_REPORTED_PASS                                                                                                                                          |
+| Provider connection evidence                                  | SCREENSHOT_EVIDENCE: Flow/Vids shown Connected; listed checks USER_REPORTED_PASS                                                                                                                             |
+| Worker-owned connection lifecycle                             | OFFLINE_VERIFIED; live retest NOT_RUN; historical Vids refresh cause unknown                                                                                                                                 |
+| New UI visual sign-off                                        | USER_APPROVED; specified interaction/layout confirmations USER_REPORTED_PASS                                                                                                                                 |
+| Vids preservation / lifecycle limits                          | Empty-document test shown; generated scenes and worker suspension unverified                                                                                                                                 |
+| New packaging/release                                         | OFFLINE_PACKAGE_BUILT; live installation not confirmed                                                                                                                                                       |
+| Timed queue presentation                                      | LOCAL_BROWSER_FIXTURE_VERIFIED; no provider action performed                                                                                                                                                 |
+| Timed queue live and offline evidence                         | Shots 15–19 historical live storage audit; Amazon Shots 34–43 USER_REPORTED_GENERATED (build/queue/receipts/timing unverified); P06.1–P06.3 OFFLINE_VERIFIED including installed-MV3 synthetic restart tests |
+| Manual Flow reference selection (P07.1)                       | OFFLINE_VERIFIED; extension-owned picker is the supported path; user-reported live selection/save evidence for Shots 34/35; direct Flow click/right-click alternatives unverified                            |
+| Durable reference capture and assignment review (P07.2/P07.3) | OFFLINE_VERIFIED; real IndexedDB capture/replacement/reopen/reorder regression; user-reported live saved-image persistence for Shots 34/35; G-REFERENCE COMPLETE for Phase 07 scope                          |
+| Stable Shot-ID pairing and video review (P08.2)               | OFFLINE_VERIFIED; pure deterministic validator joins explicit canonical Shot IDs; UI displays exact video JSON, thumbnails, matched/invalid counts, and unused references                                    |
 
 The application includes the dashboard, bounded read-only provider connections, exact JSON import/preservation, P04.1/P04.2 offline/local-fixture scope, and the P04.3 evidence-backed discovery/fill-only compatibility implementation recorded below. **USER_REPORTED_PASS:** Flow and Vids now connect after the shared route-parser correction, including the account-prefixed Flow context. The user-supplied diagnostic exposed a visible contenteditable candidate and the local implementation now supports that exact observed host structure. The new package has not been confirmed in the user's loaded browser. Live fill/readback and generation remain unverified. Vids preservation evidence remains limited to the shown empty-document test.
 
@@ -164,6 +165,7 @@ Checks: full Vitest **32 files / 352 tests PASS** (including 7 focused regressio
 Added a “New batch” button to the Images import panel alongside “Load saved batch” and “Export saved source”.
 
 Behavior on explicit click:
+
 - Clears only the editable draft in memory via `ImportPreviewSession.clear()`, resetting `source: ""`, incrementing `revision`, setting `status: "idle"`, clearing parsed items, validation errors, and elapsed time.
 - Clears transient import/save feedback, file loading states, replacement prompts, and preview selections.
 - Informs the user with inline notice and polite status announcement: “New batch started. The empty draft is not saved and cannot create or start a queue. Enter JSON and choose Validate & Preview.”
@@ -174,6 +176,7 @@ Behavior on explicit click:
 - Preserves historical and completed queues in the existing compact history UI.
 
 Fixed the Stopped queue status label:
+
 - In `Progress.tsx`, updated the `.nextSummary` fallback label for stopped queues from “Checking next prompt…” to “No further prompts will be sent.”
 - Omitted next-item focus (`focusItem = undefined`) when `queue.state === "stopped"`, rendering header label `<span>Queue stopped</span>` and prominent status `<strong>No further prompts will be sent.</strong>`.
 
@@ -189,9 +192,9 @@ Checks: full Vitest **33 files / 363 tests PASS** (including dedicated unit test
 | [P03](phases/PHASE_03_JSON_IMPORT.md)         | DONE — import/preservation scope                                                                                                                                                                                                                                                                                           | AC03–AC06 satisfied for this scope. Offline evidence, user-reported dinosaur restoration and CRLF browser round trips, and uploaded export hash matches are recorded below. Provider acceptance/generation, provisional limits, “Keep current draft,” and worker-restart recovery remain open.                                                                                                    |
 | [P04](phases/PHASE_04_FLOW_ONE_IMAGE.md)      | INCOMPLETE; P04.4 failure attribution and hash-scoped active-attempt identity OFFLINE_VERIFIED; first and second live tests are user-provided screenshots; attempts `54589885-74c8-4088-beeb-e41f7fda9341` and `5344f4f1-7277-452b-9e1e-d863b70d7a12` not independently inspected; automatic result attribution unverified | Second screenshot report: 3,321-code-unit exact readback, `dispatched` / `activation_pair_sent`, one activation-pair attempt, provider outcome `unverified`, manually selected x2, two completed images; press/release remains uncertain as displayed. Preserve attempts; do not reset/replay.                                                                                                    |
 | [P05](phases/PHASE_05_FLOW_COMPLETION.md)     | INCOMPLETE; structural observer and revised count-heuristic implementation OFFLINE_VERIFIED; revised live acceptance NOT_RUN; strict provider attribution/terminal semantics deferred                                                                                                                                      | Count-matched is a separate heuristic decision and leaves provider outcome unknown. Dynamic declarations are frozen per attempt; measured viewport/recycling risk and unresolved attempts pause. A scroll-container element alone does not. No P06 queue advancement. See [flow-completion evidence](docs/evidence/flow-completion.md#revised-p05-count-based-observation-mode--29-october-2026). |
-| [P06](phases/PHASE_06_IMAGE_QUEUE.md)         | P06.1–P06.3 OFFLINE_VERIFIED; P06.4 has a user-reported live outcome, but acceptance remains NOT_PASSED                                                                                                                                                                                                                    | Amazon Shots 34–43 generation was user-confirmed with a Flow results screenshot. Installed-MV3 synthetic readiness and 40-second restart checks passed. Build/queue IDs, receipts, and measured timing for Shots 34–43 remain unverified. G-IMAGE-ONE/TWO/SCALE NOT_PASSED.                                                                                                                    |
-| [P07](phases/PHASE_07_REFERENCE_SELECTION.md) | DONE — G-REFERENCE COMPLETE for Phase 07 scope; P07.1/P07.2/P07.3 evidence recorded                                                                                                                                                                                                                                       | Synthetic three-Shot IndexedDB reorder/replacement/reopen check and References UI order check pass; user-reported live picker/save/reselect/cancel/clear behavior is separately recorded. Direct Flow click/right-click alternatives remain unverified; P08 pairing, attempt/result identity, and their gates remain future scope. |
-| [P08](phases/PHASE_08_VIDEO_PAIRING.md)       | P08.1 OFFLINE_VERIFIED; P08.2 and P08.3 NOT_STARTED                                                                                                                                                                                                                                                                        | Shared lossless import/save/preview behavior verified for video JSON. Build package `automat-faceless-0.1.0-mvxho67e` in `dist/`; no live/provider acceptance. Pairing, destination/settings confirmation and prepared execution remain unstarted. |
+| [P06](phases/PHASE_06_IMAGE_QUEUE.md)         | P06.1–P06.3 OFFLINE_VERIFIED; P06.4 has a user-reported live outcome, but acceptance remains NOT_PASSED                                                                                                                                                                                                                    | Amazon Shots 34–43 generation was user-confirmed with a Flow results screenshot. Installed-MV3 synthetic readiness and 40-second restart checks passed. Build/queue IDs, receipts, and measured timing for Shots 34–43 remain unverified. G-IMAGE-ONE/TWO/SCALE NOT_PASSED.                                                                                                                       |
+| [P07](phases/PHASE_07_REFERENCE_SELECTION.md) | DONE — G-REFERENCE COMPLETE for Phase 07 scope; P07.1/P07.2/P07.3 evidence recorded                                                                                                                                                                                                                                        | Synthetic three-Shot IndexedDB reorder/replacement/reopen check and References UI order check pass; user-reported live picker/save/reselect/cancel/clear behavior is separately recorded. Direct Flow click/right-click alternatives remain unverified; P08 pairing, attempt/result identity, and their gates remain future scope.                                                                |
+| [P08](phases/PHASE_08_VIDEO_PAIRING.md)       | P08.1 OFFLINE_VERIFIED; P08.2 and P08.3 NOT_STARTED                                                                                                                                                                                                                                                                        | Shared lossless import/save/preview behavior verified for video JSON. Build package `automat-faceless-0.1.0-mvxho67e` in `dist/`; no live/provider acceptance. Pairing, destination/settings confirmation and prepared execution remain unstarted.                                                                                                                                                |
 | git push -u origin main                       |
 | [P09](phases/PHASE_09_FLOW_VIDEO.md)          | NOT_STARTED                                                                                                                                                                                                                                                                                                                | No new implementation/live evidence                                                                                                                                                                                                                                                                                                                                                               |
 | [P10](phases/PHASE_10_VIDS_VIDEO.md)          | NOT_STARTED                                                                                                                                                                                                                                                                                                                | No new implementation/live evidence                                                                                                                                                                                                                                                                                                                                                               |
@@ -896,11 +899,13 @@ Under the agreed Phase 06 timed-submission scope:
 ## P06 restart acceptance checkpoint and user evidence audit — 31 October 2026
 
 ### 1. User-Confirmed Live Runs and Operational Audit
+
 - **Five-Prompt Timing Audit (Shots 15–19)**: Confirmed in durable database records (`9de131d0-327d-4c56-bfa9-e02c51545644`). All 5 items have valid receipts and Flow bindings. All activation-to-receipt gaps strictly exceeded 40,000 ms. Shot 16 recorded 30,311 ms readiness waiting without early dispatch.
 - **User-Observed Pause / Resume**: Confirmed that pausing an active queue during the 40s interval halts the countdown, transitions to `state: "paused"`, and clicking Resume re-validates the target and continues without replaying the prior prompt.
 - **User-Confirmed Stop**: Confirmed that clicking Stop permanently halts the active queue and prevented submission of Shot 23.
 
 ### 2. Isolated Installed-MV3 Worker Restart Verification
+
 - **Scenario 1 (Normal 40s wait interval restart)**: **PASS**. Worker terminated via CDP `ServiceWorker.stopWorker` during 40s wait. Deadline preserved to the millisecond. No early dispatch, no duplicate dispatch, no catch-up dispatch.
 - **Scenario 2 (Generate-readiness wait restart)**: **FAILED / UNRESOLVED GAP**.
   - Worker terminated while in the readiness loop holding an active CDP session.
@@ -912,6 +917,7 @@ Under the agreed Phase 06 timed-submission scope:
 - **Scenario 4 (Paused and stopped queues inactive after restart)**: **UNTESTED** (bounded run stopped per instruction).
 
 ### 3. Verification Boundaries
+
 - Strict debugger guards remain fully intact in production code. No unverified debugger owner was detached.
 - Full Vitest suite **33 files / 363 tests PASS**; typecheck PASS; ESLint PASS; production package build PASS. Validated package ID: **`automat-faceless-0.1.0-mvwcay8w`**.
 - Counting and provider-side completion acknowledgement remain strictly deferred per P06 scope.
@@ -947,6 +953,7 @@ Detailed procedure and boundaries: [readiness wait restart recovery evidence](do
 P07.1 is **OFFLINE_VERIFIED** for manual Flow reference selection sessions, strict target and unambiguous Shot ID binding, isolated content-script selection injection, and honest candidate-only reporting.
 
 ### 1. Implemented Features
+
 - **References Workspace UI** (`src/app/features/references/ReferenceSelection.tsx` and `src/app/App.tsx`):
   - Directly embedded within the existing References navigation workspace (no modal replacement).
   - Inspects saved image batch: refuses selection and explains ambiguous identity if items lack Shot IDs or contain duplicate Shot IDs.
@@ -954,9 +961,9 @@ P07.1 is **OFFLINE_VERIFIED** for manual Flow reference selection sessions, stri
   - Target selection: Start selection explicitly targets a single Shot ID.
   - Active selection banner: shows targeted Shot, project, tab, and Cancel action.
   - Candidate display: shows image thumbnail, card attributes (`flow-image-tile`, dimensions, genuine provider asset ID if present).
-  - Explicit honest candidate status: *"Candidate selected — image capture and saving are not implemented in this phase."*
+  - Explicit honest candidate status: _"Candidate selected — image capture and saving are not implemented in this phase."_
   - Re-select and Clear candidate actions.
-  - Disabled "Confirm references" action with explanation: *"Unavailable: reference image capture and saving are not implemented in this phase."*
+  - Disabled "Confirm references" action with explanation: _"Unavailable: reference image capture and saving are not implemented in this phase."_
   - Automatically updates via `FLOW_REFERENCE_EVENT_MESSAGE` broadcasts without manual refresh.
 - **Worker Reference Handlers & State Management** (`src/background/handlers/references.ts` and `src/background/handlers/connections.ts`):
   - Validates Flow project connection, verification status, and top-frame document binding before starting selection.
@@ -979,6 +986,7 @@ P07.1 is **OFFLINE_VERIFIED** for manual Flow reference selection sessions, stri
   - Verified fixture clock update in `tests/unit/flowTimedInspection.test.ts`: `createTestQueueFixture` returns `advanceClock(ms)` and `get clock()` / `set clock()`, and both dispatcher and repositories read the same updated clock.
 
 ### 2. Validation & Quality Checks
+
 - Focused reference selection tests (`tests/unit/referenceSelection.test.ts`): **21/21 PASS**.
 - Focused fake-clock timed inspection tests (`tests/unit/flowTimedInspection.test.ts`): **9/9 PASS**.
 - Full test suite: **34 files / 385 tests PASS**.
@@ -989,6 +997,7 @@ P07.1 is **OFFLINE_VERIFIED** for manual Flow reference selection sessions, stri
 - Diff check (`git diff --check`): **PASS**.
 
 ### 3. Explicit Boundaries & Preservation
+
 - Zero changes to P06 production queue, timed dispatch, scheduler, or observation producer behavior.
 - Selection and identity binding only: no reference image bytes captured, decoded, or durably saved.
 - No durable-save claim or automatic next-Shot advancement.
@@ -1026,6 +1035,7 @@ Added the alternative `Use as reference for Shot <ID>` action using the single n
 Accepted menu events pass through the existing candidate validator and transient state/broadcast path. A per-session claim prevents concurrent duplicate menu submissions from both accepting. On worker startup, a persisted active session restores its menu only after rechecking the verified project, document, and unique saved Shot binding. The content-script banner receives a matching session/Shot acknowledgement from the worker when that document is available. Technical selection diagnostics include the producer build ID and session ID. The Flow click-listener screenshots remain inconsistent; no cause is attributed to Flow propagation, and this alternate path does not establish that the live gallery click issue is fixed.
 
 Focused synthetic reference-selection suite: **34/34 PASS**, including active-session menu restoration, image-only Flow menu properties, valid context-menu candidate acceptance, wrong tab/frame rejection, cancellation rejection, duplicate-event single acceptance, and matching content-script acknowledgement. Typecheck, lint, Prettier check, `git diff --check`, and production build: **PASS**. Validated package ID: **`automat-faceless-0.1.0-mvxd4tdu`** (4 JavaScript bundles). This is source/test/build verification only; the package was not installed and no live Flow acceptance was performed. Candidate acceptance does not mean image bytes were captured or durably saved. P06 was not changed; P07.2 has not started.
+
 ### P07.1 extension-owned Flow image picker - 1 November 2026
 
 The user-supplied live screenshot shows Flow opening its own custom context menu, so Chrome's native `contextMenus` action is not reachable through that observed right-click. This confirms menu unavailability for that interaction; it does not establish a click-propagation cause. The new picker does not depend on the context menu. Implemented `Browse Flow images` in References for the selected Shot. The active selection session injects a document-scoped responder that reuses the existing Flow project boundary, excluded-region checks, eligible-card resolver, and unique visible-image ownership rules. It returns only HTTPS sources of at most 4096 characters from eligible cards that resolve to one image. It omits cards with multiple owned images, unsupported sources, and duplicate candidate identities; it does not inspect unrelated page images or private application state. Candidate IDs are random session-local tokens, never DOM positions.
@@ -1033,11 +1043,13 @@ The user-supplied live screenshot shows Flow opening its own custom context menu
 The worker routes list and resolve requests only to the verified tab/document. Before listing and again before acceptance it checks the current session, verified project/document binding, actual top-frame document identity, current page route, batch, and unique saved Shot binding. Choosing a thumbnail triggers a fresh scan in that same document; missing, changed, or ambiguous candidate evidence is rejected. Accepted candidates use the existing transient candidate path and content-script acknowledgement. The References grid displays thumbnails, explicit `Choose for Shot <ID>` controls, and a visible thumbnail-load failure message without substituting another image. Prompt origin is not inferred. No image bytes are captured or durably saved, and the workflow does not advance to another Shot.
 
 Focused reference and message regressions: **51/51 PASS**, covering eligible versus unrelated images, ambiguous cards and duplicate identity, changed/missing image rejection, wrong document, worker acceptance, duplicate choices, and acknowledgement. Typecheck, lint, Prettier, `git diff --check`, and production build: **PASS**. Package ID: **`automat-faceless-0.1.0-mvxdjmic`** (4 JavaScript bundles). Verification is synthetic source/test/build evidence only; no package installation or live Flow picker acceptance was performed. P06 is unchanged; P07.2 has not started.
+
 ### P07.1 picker update patch integration - 1 November 2026
 
 Merged `picker-update.patch` from the extracted P071 review into this project after `git apply --check` confirmed compatibility. Existing selection and picker implementation was retained. The merge makes native context-menu setup failure non-blocking for the References picker, verifies the resolver returns the exact requested opaque candidate token, excludes display-size-only changes from identity comparison, caps returned candidates/tokens at 300, ignores obsolete refresh results after cancellation/replacement/unmount, keeps candidate acceptance visible after the picker closes, lazily loads thumbnails, reports and disables choices for failed thumbnails, and explains that only images currently available in the document are listed. Added the patch's React DOM picker regressions and test-only `jsdom` dev dependency. P06 queue/scheduler source was not modified.
 
 Focused reference/picker/message suite: **56/56 PASS**. Full Vitest: **35 files / 408 tests PASS** with `AUTOMAT_BUILD_ID=automat-faceless-0.1.0-review-check`. Typecheck, lint, Prettier, and `git diff --check`: **PASS**. Production build: **PASS**, package ID **`automat-faceless-0.1.0-mvxebdm4`**, 4 JavaScript bundles. Actual extension output folder: `dist/` at the project root. This is build and synthetic test evidence only; no installation or live Flow picker acceptance was performed. Thumbnail cross-origin loading and live gallery candidate eligibility remain NOT_RUN. Candidates remain transient; no image bytes are captured/saved, no prompt origin is inferred, no next Shot is selected, and P07.2 is not started.
+
 ### P07.1 thumbnail failure investigation - 1 November 2026
 
 Live Network/Console inspection was unavailable: the read-only computer-use browser inventory returned `apps: []` and `browsers: []`. Therefore no failed request was traced, no redirect/status/content type was observed, and no Flow-loaded resource was compared with a thumbnail request. The extension manifest currently specifies `script-src 'self'; object-src 'self';` and has no explicit `img-src`; that source review does not establish a CSP cause. `referrerPolicy="no-referrer"` remains in place; its contribution is unknown and was not changed. No selector, permission, CSP, thumbnail transport, or candidate acceptance behavior was changed.
@@ -1045,6 +1057,7 @@ Live Network/Console inspection was unavailable: the read-only computer-use brow
 Added bounded per-thumbnail diagnostics for the next available run: source protocol and origin, whether the preview used the same candidate URL string (without the final redirect target), image completion/dimensions, Resource Timing HTTP status when exposed, transfer/redirect timing with cross-origin redaction caveats, the applied referrer policy, and a matching `img-src` SecurityPolicyViolation event when observed. The diagnostic omits URL paths and query strings; it states that content type is not exposed to an HTML image element. Thumbnail failure remains explicit and continues to disable Choose. Added a regression for status/referrer/CSP summarization and signed-URL redaction.
 
 Focused picker/reference regressions: **45/45 PASS**. Typecheck, lint, Prettier, diff check, and production build: **PASS**. Final package ID: **`automat-faceless-0.1.0-mvxek29y`** (4 JavaScript bundles). Output folder: `dist/` at the project root. No live failure cause or fix is claimed. P06 remains unchanged; candidate evidence remains transient and P07.2 has not started.
+
 ### P07.1 bounded transient preview transport — 1 November 2026
 
 Replaced the References picker’s direct remote image embedding with an explicit on-demand preview request bound to `sessionId + candidateId`. The worker resolves the opaque candidate in the isolated, verified Flow document, checks the active session, saved batch/Shot, selected verified project, document/frame and candidate identity, and only then injects a self-contained fetch into that exact document’s MAIN world. The page fetch uses `mode: same-origin` and `credentials: same-origin`; it rejects other origins and cross-origin redirects without changing extension permissions, CSP, browser protections, headers, or URLs.
@@ -1084,3 +1097,23 @@ Checks for this review: `tests/unit/referencePickerPresentation.test.tsx` **12/1
 The shared image/video importer and import UI already met P08.1; only focused video-specific regressions were missing. Reused `VideoImportPanel` -> shared `ImportPanel`, `ImportPreviewSession`, source-span `importPromptBatch`, `savePromptBatch`, exact saved-source load/export. Added tests for inert arbitrary video JSON (including duration and Generate/download-like text), exact preview/source/body readback, prompt hash and exported source SHA-256, one explicit promptBatch.put on save, no provider action during preview, and malformed/oversized replacement preservation. No production code or feature behavior changed. The existing tests also cover numbered/envelope/array formats, identity validation, size limits, mixed newlines/Unicode/escapes/decimal arrays, large video fixture persistence, and stale preview invalidation for both kinds.
 
 Focused Vitest: **3 files / 52 tests PASS** (`tests/integration/promptPreservation.test.ts`, `tests/integration/importPreview.test.ts`, `tests/unit/importBatch.test.ts`). Typecheck, full ESLint, Prettier check on the two changed test files, `git diff --check`, and `npm run build`: **PASS**. Package ID **`automat-faceless-0.1.0-mvxho67e`**; output folder `dist/` at the project root (4 JavaScript bundles). No live provider actions were authorized or performed. The task-named `tests/integration/videoJsonImport.test.ts` was absent, so coverage was added to existing shared integration suites. Provider acceptance and production input limits are unverified. P08.2 pairing and P08.3 destination/settings confirmation remain NOT_STARTED; Phase 08 remains incomplete. No P06/P07 behavior changed.
+
+## P08.2 stable Shot-ID pairing and video review — 1 November 2026
+
+P08.2 is **OFFLINE_VERIFIED**. Implemented the pure deterministic pairing validator `validateAndPairVideoShots` in `src/domain/batches/pairShots.ts` joining on `(workspaceId, selectedImageSourceBatchId, canonicalShotId)`. Structured validation reports missing video Shot identities, duplicate canonical Shot identities, missing saved references, duplicate/conflicting applicable reference assignments, wrong workspace/source bindings, invalid media metadata, and stale saved-source/assignment state. Unused references in the selected image source remain informational and nonblocking.
+
+Integrated `PairingTable` in `src/app/features/video-batch/PairingTable.tsx` within the Videos workspace. The component presents an explicit image-source selection requirement, summary bar (Video batch ID, imported shot count, image source ID, matched pairs, invalid pairs, unused references), table rows in original execution order with Shot ID badges, saved reference thumbnails loaded through P07's existing local media path with revocable object URLs, user-readable status/error messages, and an expandable/scrollable disclosure for raw exact video JSON prompts. Navigating to References is provided through an explicit control without embedding a reference picker in Videos. Invalidation and readiness checks ensure editing the video draft never presents pairing for an older source as describing the current draft.
+
+Checks:
+
+- `tests/unit/pairShots.test.ts`: **13/13 PASS**.
+- `tests/integration/videoPairing.test.ts`: **5/5 PASS** using real production `ExtensionRepositories` and Dexie database.
+- `tests/unit/pairingTablePresentation.test.tsx`: **5/5 PASS** using React DOM / jsdom.
+- Full Vitest suite: **40 files / 454 tests PASS**.
+- Typecheck: **PASS**.
+- ESLint: **PASS**.
+- Prettier check: **PASS**.
+- `git diff --check`: **PASS**.
+- Production build: **PASS**, package ID **`automat-faceless-0.1.0-mvxir9bo`**, output folder `dist/` (4 JavaScript bundles).
+
+This is synthetic offline verification; live actions remain **NOT_RUN**. P08.3 provider routing and manual settings confirmation remain NOT_STARTED. Phase 08 remains incomplete.

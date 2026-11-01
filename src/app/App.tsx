@@ -16,8 +16,10 @@ import { registerDashboardFocusResponder } from "./dashboardFocus";
 import { ImageImportPanel } from "./features/image-batch/ImportPanel";
 import { ImageQueueProgress } from "./features/image-batch/Progress";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
+import { PairingTable } from "./features/video-batch/PairingTable";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import { ReferenceSelection } from "./features/references/ReferenceSelection";
+import type { PromptBatchSnapshot } from "../storage/repositories";
 import styles from "./Dashboard.module.css";
 
 function Dashboard() {
@@ -269,6 +271,7 @@ function Dashboard() {
               setDestination={setDestination}
               confirmed={videoConfirmed}
               setConfirmed={setVideoConfirmed}
+              onNavigateToReferences={() => setWorkspace("References")}
             />
           </div>
           {workspace === "Downloads" ? <DownloadsView /> : null}
@@ -559,6 +562,7 @@ export function VideosView({
   setDestination,
   confirmed,
   setConfirmed,
+  onNavigateToReferences,
 }: {
   session: ImportPreviewSession;
   persistenceClient: ReturnType<typeof createFoundationClient>;
@@ -570,7 +574,33 @@ export function VideosView({
   setDestination: (value: "Flow" | "Vids") => void;
   confirmed: boolean;
   setConfirmed: (value: boolean) => void;
+  onNavigateToReferences?: () => void;
 }) {
+  const [videoSourceReady, setVideoSourceReady] = useState(false);
+  const [videoBatch, setVideoBatch] = useState<PromptBatchSnapshot | null>(
+    null,
+  );
+
+  const handleSourceReadiness = useCallback(
+    async (ready: boolean, savedSource?: string) => {
+      setVideoSourceReady(ready);
+      if (ready && savedSource) {
+        try {
+          const snapshot = (await persistenceClient.request("promptBatch.get", {
+            workspaceId: "default",
+            kind: "video",
+          })) as PromptBatchSnapshot;
+          setVideoBatch(snapshot);
+        } catch {
+          setVideoBatch(null);
+        }
+      } else {
+        setVideoBatch(null);
+      }
+    },
+    [persistenceClient],
+  );
+
   return (
     <div className={styles.workspaceGrid}>
       <section
@@ -590,11 +620,15 @@ export function VideosView({
           setWrapLines={setWrapLines}
           editorExpanded={editorExpanded}
           setEditorExpanded={setEditorExpanded}
+          onSourceReadinessChange={handleSourceReadiness}
         />
-        <p className={styles.sourceEmpty}>
-          No saved image/video pairing is available. Shot matching uses stable
-          IDs from validated sources; no gallery-position matching is shown.
-        </p>
+        <PairingTable
+          workspaceId="default"
+          persistenceClient={persistenceClient}
+          videoBatch={videoBatch}
+          videoSourceReady={videoSourceReady}
+          onNavigateToReferences={onNavigateToReferences ?? (() => {})}
+        />
         <fieldset className={styles.destinationGroup}>
           <legend>Video destination</legend>
           <div className={styles.destinationOptions}>
@@ -630,8 +664,8 @@ export function VideosView({
             Start video batch
           </Button>
           <p id="video-disabled-reason" className={styles.disabledReason}>
-            Unavailable: video pairing and provider workflows are not
-            implemented.
+            Unavailable: video pairing review only (P08.2). Video provider
+            execution is not implemented.
           </p>
         </div>
       </section>

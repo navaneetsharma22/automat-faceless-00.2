@@ -105,6 +105,11 @@ export type ImportPanelProps = {
     savedSource?: string,
     shotIds?: string[],
   ) => void;
+  onVideoSourceReadinessChange?: (
+    ready: boolean,
+    savedSource?: string,
+    shotIds?: string[],
+  ) => void;
 };
 
 export function ImportPanel({
@@ -119,6 +124,7 @@ export function ImportPanel({
   flowSettingsConfirmed = false,
   flowSettingsConfirmation,
   onImageSourceReadinessChange,
+  onVideoSourceReadinessChange,
 }: ImportPanelProps) {
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -263,6 +269,9 @@ export function ImportPanel({
     if (kind === "image") {
       onImageSourceReadinessChange?.(false, undefined, []);
     }
+    if (kind === "video") {
+      onVideoSourceReadinessChange?.(false, undefined, []);
+    }
 
     if (editorRef.current) {
       editorRef.current.focus();
@@ -367,9 +376,16 @@ export function ImportPanel({
         imageSourceReady ? savedSource : undefined,
         imageSourceShotIds,
       );
+    if (kind === "video")
+      onVideoSourceReadinessChange?.(
+        imageSourceReady,
+        imageSourceReady ? savedSource : undefined,
+        imageSourceShotIds,
+      );
   }, [
     kind,
     onImageSourceReadinessChange,
+    onVideoSourceReadinessChange,
     imageSourceReady,
     savedSource,
     snapshot.source,
