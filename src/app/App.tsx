@@ -17,6 +17,7 @@ import { ImageImportPanel } from "./features/image-batch/ImportPanel";
 import { ImageQueueProgress } from "./features/image-batch/Progress";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
+import { ReferenceSelection } from "./features/references/ReferenceSelection";
 import styles from "./Dashboard.module.css";
 
 function Dashboard() {
@@ -253,7 +254,9 @@ function Dashboard() {
               onSourceReadinessChange={updateImageSourceReadiness}
             />
           </div>
-          {workspace === "References" ? <ReferencesView /> : null}
+          {workspace === "References" ? (
+            <ReferenceSelection persistenceClient={batchClient} />
+          ) : null}
           <div hidden={workspace !== "Videos"}>
             <VideosView
               session={videoImportSession}
@@ -543,32 +546,6 @@ function sourceItemStatus(
   if (item.itemState === "pending" && queueState === "stopped")
     return "Stopped";
   return item.itemState[0]!.toUpperCase() + item.itemState.slice(1);
-}
-
-function ReferencesView() {
-  return (
-    <div className={styles.workspaceGrid}>
-      <section className={styles.panel} aria-labelledby="references-title">
-        <PanelHeader
-          kicker="REFERENCES"
-          title="Shot references"
-          id="references-title"
-        />
-        <p className={styles.sourceEmpty}>
-          No captured references are available. Reference capture and assignment
-          are not implemented yet.
-        </p>
-        <div className={styles.actionRow}>
-          <Button disabled aria-describedby="reference-disabled-reason">
-            Confirm references
-          </Button>
-          <p id="reference-disabled-reason" className={styles.disabledReason}>
-            Unavailable: reference capture and assignment are not implemented.
-          </p>
-        </div>
-      </section>
-    </div>
-  );
 }
 
 export function VideosView({

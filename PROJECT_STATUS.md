@@ -19,6 +19,7 @@ Baseline: 28 October 2026.
 | New packaging/release                  | OFFLINE_PACKAGE_BUILT; live installation not confirmed                              |
 | Timed queue presentation               | LOCAL_BROWSER_FIXTURE_VERIFIED; no provider action performed                        |
 | Timed queue live and offline evidence   | Shots 15–19 historical live storage audit; Amazon Shots 34–43 USER_REPORTED_GENERATED (build/queue/receipts/timing unverified); P06.1–P06.3 OFFLINE_VERIFIED including installed-MV3 synthetic restart tests |
+| Manual Flow reference selection (P07.1) | OFFLINE_VERIFIED; synthetic Flow DOM fixture verified; live Flow selection NOT_RUN; no durable-save or byte-capture claim |
 
 The application includes the dashboard, bounded read-only provider connections, exact JSON import/preservation, P04.1/P04.2 offline/local-fixture scope, and the P04.3 evidence-backed discovery/fill-only compatibility implementation recorded below. **USER_REPORTED_PASS:** Flow and Vids now connect after the shared route-parser correction, including the account-prefixed Flow context. The user-supplied diagnostic exposed a visible contenteditable candidate and the local implementation now supports that exact observed host structure. The new package has not been confirmed in the user's loaded browser. Live fill/readback and generation remain unverified. Vids preservation evidence remains limited to the shown empty-document test.
 
@@ -939,3 +940,72 @@ The user supplied a Flow results screenshot and confirmed that all images in the
 This user-reported outcome is separate from the installed-MV3 synthetic verification for package `automat-faceless-0.1.0-mvx7eheq` and from the earlier live Shots 15–19 audit. P06.1–P06.3 remain OFFLINE_VERIFIED. P06.4 live acceptance is PARTIAL_USER_REPORTED but NOT_PASSED because its per-item dispatch/deadline evidence is unavailable. G-IMAGE-ONE/TWO/SCALE and P05 counting, attribution, and provider-result gates remain NOT_PASSED or deferred as previously recorded.
 
 Detailed procedure and boundaries: [readiness wait restart recovery evidence](docs/evidence/timed-image-queue.md#p063-readiness-wait-restart-recovery-and-startup-responsiveness--1-november-2026).
+
+## P07.1 manual Flow reference selection sessions — 1 November 2026
+
+P07.1 is **OFFLINE_VERIFIED** for manual Flow reference selection sessions, strict target and unambiguous Shot ID binding, isolated content-script selection injection, and honest candidate-only reporting.
+
+### 1. Implemented Features
+- **References Workspace UI** (`src/app/features/references/ReferenceSelection.tsx` and `src/app/App.tsx`):
+  - Directly embedded within the existing References navigation workspace (no modal replacement).
+  - Inspects saved image batch: refuses selection and explains ambiguous identity if items lack Shot IDs or contain duplicate Shot IDs.
+  - Lists each unambiguous Shot ID, prompt excerpt, and current candidate state.
+  - Target selection: Start selection explicitly targets a single Shot ID.
+  - Active selection banner: shows targeted Shot, project, tab, and Cancel action.
+  - Candidate display: shows image thumbnail, card attributes (`flow-image-tile`, dimensions, genuine provider asset ID if present).
+  - Explicit honest candidate status: *"Candidate selected — image capture and saving are not implemented in this phase."*
+  - Re-select and Clear candidate actions.
+  - Disabled "Confirm references" action with explanation: *"Unavailable: reference image capture and saving are not implemented in this phase."*
+  - Automatically updates via `FLOW_REFERENCE_EVENT_MESSAGE` broadcasts without manual refresh.
+- **Worker Reference Handlers & State Management** (`src/background/handlers/references.ts` and `src/background/handlers/connections.ts`):
+  - Validates Flow project connection, verification status, and top-frame document binding before starting selection.
+  - Manages active session in `chrome.storage.session`. Starting a new session cancels any active session.
+  - Invalidates active selection session on Flow tab reload, navigation, replacement, or removal (`browser_tab_removed`, `browser_tab_replaced`, `tab_reloaded_or_navigated`).
+  - Revalidates sender tab, top frame (`frameId: 0`), document ID, current verified target project, and saved source/Shot identity on candidate selection.
+  - Rejects late or duplicate candidate events after session completion or cancellation.
+  - Candidate is saved strictly in transient session storage (`storage.session`), never in durable repository database tables or prompt batches.
+  - Broadcasts `FLOW_REFERENCE_EVENT_MESSAGE` with `retained: false`.
+  - No automatic advancement to the next Shot.
+- **Isolated Content Script Injection & Flow DOM Selectors** (`src/platforms/flow/references.ts`):
+  - Injected with `world: "ISOLATED"` into the target Flow document. Acquires zero debugger leases (`chrome.debugger`).
+  - Injects accessible banner (`#automat-faceless-selection-banner`) with Cancel button.
+  - Detects eligible cards (`flow-image-tile` and semantic cards inside `flow-project-page`).
+  - Excludes composer prompt box (`flow-base-prompt-box`), navigation, dialogs, accounts, and avatars.
+  - Attaches keyboard affordance button (`[data-af-reference-select]`).
+  - Capturing click interception suppresses native viewer action only for handled reference card clicks; passes through unhandled interactions.
+  - Complete DOM cleanup on completion, cancellation, or Esc key.
+- **Fake Clock Mutation Verification**:
+  - Verified fixture clock update in `tests/unit/flowTimedInspection.test.ts`: `createTestQueueFixture` returns `advanceClock(ms)` and `get clock()` / `set clock()`, and both dispatcher and repositories read the same updated clock.
+
+### 2. Validation & Quality Checks
+- Focused reference selection tests (`tests/unit/referenceSelection.test.ts`): **21/21 PASS**.
+- Focused fake-clock timed inspection tests (`tests/unit/flowTimedInspection.test.ts`): **9/9 PASS**.
+- Full test suite: **34 files / 385 tests PASS**.
+- Typecheck (`npm run typecheck`): **PASS**.
+- Lint (`npm run lint`): **PASS**.
+- Prettier check: **PASS**.
+- Production package build: **PASS**. Validated package ID: **`automat-faceless-0.1.0-mvxau9h4`** (4 JavaScript bundles).
+- Diff check (`git diff --check`): **PASS**.
+
+### 3. Explicit Boundaries & Preservation
+- Zero changes to P06 production queue, timed dispatch, scheduler, or observation producer behavior.
+- Selection and identity binding only: no reference image bytes captured, decoded, or durably saved.
+- No durable-save claim or automatic next-Shot advancement.
+- Gallery selectors are backed by inspected Flow DOM structures and clearly labelled synthetic fixtures; no live Flow compatibility from invented selectors is claimed.
+- Live Flow reference selection remains **NOT_RUN**. P07.2 has NOT been started.
+
+### P07.1 acknowledgement and diagnostics follow-up — 1 November 2026
+
+The source-confirmed acknowledgement defects are fixed in `src/platforms/flow/references.ts`: selection mode stays active while the candidate request is pending; duplicate submissions are guarded; the banner announces submission, accepts success only from a validated worker response or a matching transient candidate returned by `flow.reference.getState`, and retains a bounded error after rejection. Unknown delivery locks further submissions until state reconciliation confirms acceptance or confirms that the same session remains active. Cancellation or session replacement makes late responses inert. On acceptance, the banner shows “✓ Candidate selected for Shot <ID>. Return to References.”, removes interaction affordances, and remains briefly visible before cleanup.
+
+The banner now reports the eligible card count, whether the click listener ran, whether the existing resolver found a card, and the submission/worker outcome. A zero-card result is explicit. These diagnostics omit image URLs and prompt bodies. Gallery selectors and card resolution were not changed; live Flow DOM access was unavailable, so the originally reported gallery click failure remains **UNRESOLVED / NOT_LIVE_VERIFIED**.
+
+Focused synthetic regression suite `tests/unit/referenceSelection.test.ts`: **25/25 PASS**, covering worker acceptance, rejection, duplicate-submit prevention, cancellation and replacement with late responses, uncertain delivery reconciled through `getState`, and zero-card/listener diagnostics. `npm run typecheck`, `npm run lint`, Prettier check on changed source/tests, `git diff --check`, and `npm run build`: **PASS**. Validated package ID: **`automat-faceless-0.1.0-mvxbcdms`**. The package was built but not installed or exercised against live Flow. Candidate acceptance remains transient and does not claim image bytes were captured or durably saved. P06 was not changed; P07.2 has not started.
+
+### P07.1 click-path diagnostic follow-up — 1 November 2026
+
+Source review found the click listener was registered only on `document` in capture phase. A prior `window` capture listener can stop propagation before the event reaches `document`, leaving the old “listener not reached” diagnostic even though the user clicked a gallery card. The listener now runs at `window` capture and resolves the nearest eligible card along `event.composedPath()`, which also handles nested overlay targets. A synthetic regression models Flow stopping propagation at `window`; the extension listener still receives the event. The live Flow propagation behavior remains unverified.
+
+The prior diagnostic count included all elements matching the broad eligibility predicate, so nested eligible boundaries and elements without visible images could inflate it. The count now includes only distinct eligible boundaries that own a visible image as its nearest eligible boundary. The reported live count of 115 has not been independently checked against the live DOM. Native controls with heart/like/favorite, menu/more, download, share, delete, or remove labels remain native; unlabeled native controls depend on actual DOM semantics and remain unverified live.
+
+Focused synthetic regressions: **26/26 PASS**, including window propagation stop, nested overlay target resolution, native menu passthrough, deduplicated eligible image-card count, response acknowledgement/reconciliation, cancellation, and session replacement. Typecheck, lint, source/test Prettier check, diff check, and production build: **PASS**. Validated package ID: **`automat-faceless-0.1.0-mvxbm4cr`**. This remains synthetic evidence; no live Flow selection was performed. P06 remains unchanged and P07.2 remains not started.

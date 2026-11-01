@@ -112,6 +112,14 @@ export type RequestPayloads = {
   };
   "preferences.getTheme": Record<string, never>;
   "preferences.setTheme": { theme: "light" | "dark" };
+  "flow.reference.startSelection": {
+    workspaceId: string;
+    batchId: string;
+    shotId: string;
+  };
+  "flow.reference.cancelSelection": { sessionId: string };
+  "flow.reference.getState": { workspaceId: string };
+  "flow.reference.clearCandidate": { workspaceId: string; shotId: string };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -154,6 +162,10 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.image.rebaselineForNewPrompt": 20_000,
   "preferences.getTheme": 3000,
   "preferences.setTheme": 3000,
+  "flow.reference.startSelection": 15_000,
+  "flow.reference.cancelSelection": 5000,
+  "flow.reference.getState": 5000,
+  "flow.reference.clearCandidate": 5000,
 };
 
 export function makeRequest<T extends RequestTypes>(

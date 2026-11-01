@@ -9,6 +9,7 @@ import {
   createSavedFlowPromptEntry,
 } from "./handlers/flow";
 import { createFlowImageObservationHandler } from "./handlers/observations";
+import { createFlowReferenceHandler } from "./handlers/references";
 import { registerDashboardAction } from "./openDashboard";
 import {
   createConnectionLifecycleService,
@@ -73,6 +74,10 @@ const flowImageObservation = createFlowImageObservationHandler({
   extensionId: chrome.runtime.id,
   repositories,
   port: flowPort,
+});
+const flowReferenceHandler = createFlowReferenceHandler({
+  extensionId: chrome.runtime.id,
+  repositories,
 });
 const timedQueueScheduler = createTimedImageQueueScheduler({
   repositories,
@@ -230,6 +235,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
               reason,
             })
             .catch(() => undefined);
+          if (provider === "Flow") {
+            void flowReferenceHandler.invalidateActiveSession(reason);
+          }
         }
       } else if (changeInfo.url) {
         await repositories.recordConnectionLifecycleDiagnostic(
@@ -281,6 +289,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
           reason: "browser_tab_removed",
         })
         .catch(() => undefined);
+      if (provider === "Flow") {
+        void flowReferenceHandler.invalidateActiveSession(
+          "browser_tab_removed",
+        );
+      }
     }
   })().catch(() => undefined);
 });
@@ -315,6 +328,11 @@ chrome.tabs.onReplaced.addListener((_addedTabId, removedTabId) => {
           reason: "browser_tab_replaced",
         })
         .catch(() => undefined);
+      if (provider === "Flow") {
+        void flowReferenceHandler.invalidateActiveSession(
+          "browser_tab_replaced",
+        );
+      }
     }
   })().catch(() => undefined);
 });
@@ -341,6 +359,7 @@ chrome.runtime.onMessage.addListener(
     flowCountBlockerInspection,
     flowCountRebaseline,
     flowImageObservation: flowImageObservation.handle,
+    flowReferenceHandler,
     startTimedImageQueue: timedQueueScheduler.start,
     commandTimedImageQueue: (command, queueId, expectedRevision) =>
       timedQueueScheduler[command](queueId, expectedRevision),

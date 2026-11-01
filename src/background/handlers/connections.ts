@@ -16,6 +16,8 @@ import {
   PromptBatchValidationError,
 } from "../../storage/repositories";
 import { ImageQueueInspectionError } from "../generationQueue";
+import { FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE } from "../../shared/schemas";
+import { ReferenceSelectionError } from "./references";
 
 export type ExtensionMessageSender = {
   id?: string;
@@ -74,6 +76,21 @@ export type FoundationDependencies = {
     expectedRevision: number,
     order: number,
   ) => Promise<unknown>;
+  flowReferenceHandler?: {
+    startSelection: (input: {
+      workspaceId: string;
+      batchId: string;
+      shotId: string;
+    }) => Promise<unknown>;
+    cancelSelection: (sessionId: string, reason?: string) => Promise<unknown>;
+    getState: (workspaceId: string) => Promise<unknown>;
+    clearCandidate: (workspaceId: string, shotId: string) => Promise<unknown>;
+    handleCandidateSelected: (
+      message: unknown,
+      sender: ExtensionMessageSender,
+    ) => Promise<{ accepted: boolean; code?: string }>;
+    invalidateActiveSession: (reason: string) => Promise<void>;
+  };
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -473,6 +490,62 @@ async function dispatch(
     case "preferences.setTheme":
       await dependencies.preferences.setTheme(request.payload.theme);
       return { theme: request.payload.theme };
+    case "flow.reference.startSelection":
+      if (!dependencies.flowReferenceHandler) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference selection is unavailable in this worker context.",
+        );
+      }
+      try {
+        return await dependencies.flowReferenceHandler.startSelection(
+          request.payload,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError) {
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
+        }
+        throw err;
+      }
+    case "flow.reference.cancelSelection":
+      if (!dependencies.flowReferenceHandler) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference selection is unavailable in this worker context.",
+        );
+      }
+      return await dependencies.flowReferenceHandler.cancelSelection(
+        request.payload.sessionId,
+      );
+    case "flow.reference.getState":
+      if (!dependencies.flowReferenceHandler) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference selection is unavailable in this worker context.",
+        );
+      }
+      return await dependencies.flowReferenceHandler.getState(
+        request.payload.workspaceId,
+      );
+    case "flow.reference.clearCandidate":
+      if (!dependencies.flowReferenceHandler) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference selection is unavailable in this worker context.",
+        );
+      }
+      return await dependencies.flowReferenceHandler.clearCandidate(
+        request.payload.workspaceId,
+        request.payload.shotId,
+      );
   }
 }
 
@@ -538,6 +611,82 @@ export function createConnectionMessageListener(
             ),
           );
         });
+      return true;
+    }
+    if (
+      rawRequest !== null &&
+      typeof rawRequest === "object" &&
+      "type" in rawRequest &&
+      rawRequest.type === FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE
+    ) {
+      if (!dependencies.flowReferenceHandler) {
+        sendResponse(
+          failure(
+            "flow-reference-candidate",
+            "unauthorized_sender",
+            "reference_selection_unavailable",
+            "Reference selection is unavailable in this worker context.",
+          ),
+        );
+        return true;
+      }
+      void dependencies.flowReferenceHandler
+        .handleCandidateSelected(rawRequest, sender)
+        .then((result) => {
+          if (result.accepted) {
+            sendResponse({
+              protocolVersion: PROTOCOL_VERSION,
+              buildId: BUILD_ID,
+              requestId: "flow-reference-candidate",
+              ok: true,
+              data: result,
+            });
+          } else {
+            sendResponse(
+              failure(
+                "flow-reference-candidate",
+                "invalid_request",
+                result.code ?? "candidate_rejected",
+                "Reference candidate selection was not accepted.",
+              ),
+            );
+          }
+        })
+        .catch(() => {
+          sendResponse(
+            failure(
+              "flow-reference-candidate",
+              "storage_failure",
+              "reference_selection_failed",
+              "The reference candidate could not be safely recorded.",
+            ),
+          );
+        });
+      return true;
+    }
+    if (
+      rawRequest !== null &&
+      typeof rawRequest === "object" &&
+      "type" in rawRequest &&
+      rawRequest.type === "AUTOMAT_FLOW_REFERENCE_SESSION_CANCELLED"
+    ) {
+      if (
+        dependencies.flowReferenceHandler &&
+        "sessionId" in rawRequest &&
+        typeof rawRequest.sessionId === "string"
+      ) {
+        void dependencies.flowReferenceHandler.cancelSelection(
+          rawRequest.sessionId,
+          "content_banner_cancelled",
+        );
+      }
+      sendResponse({
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: BUILD_ID,
+        requestId: "flow-reference-cancel",
+        ok: true,
+        data: { cancelled: true },
+      });
       return true;
     }
     const parsed = parseRequest(rawRequest);

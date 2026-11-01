@@ -517,6 +517,110 @@ export type FlowSettingsConfirmation = z.infer<
   typeof FlowSettingsConfirmationSchema
 >;
 
+export const ReferenceCandidateSchema = z
+  .object({
+    sourceUrl: z.string().min(1).max(4096),
+    naturalWidth: z.number().int().nonnegative(),
+    naturalHeight: z.number().int().nonnegative(),
+    displayWidth: z.number().nonnegative(),
+    displayHeight: z.number().nonnegative(),
+    providerAssetId: z.string().min(1).max(256).optional(),
+    cardTag: z.string().min(1).max(64),
+    selectedAt: z.number().finite().nonnegative(),
+  })
+  .strict();
+export type ReferenceCandidate = z.infer<typeof ReferenceCandidateSchema>;
+
+export const ActiveReferenceSelectionSessionSchema = z
+  .object({
+    sessionId: z.string().min(1).max(128),
+    workspaceId: workspaceIdSchema,
+    batchId: z.string().min(1).max(256),
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    shotId: z.string().regex(/^[1-9][0-9]*$/),
+    tabId: z.number().int().nonnegative(),
+    projectId: z.string().min(1).max(512),
+    canonicalTarget: z.string().min(1).max(2048),
+    documentId: z.string().min(1).max(256),
+    frameId: z.number().int().nonnegative(),
+    startedAt: z.number().finite().nonnegative(),
+    status: z.enum(["active", "cancelled", "completed"]),
+  })
+  .strict();
+export type ActiveReferenceSelectionSession = z.infer<
+  typeof ActiveReferenceSelectionSessionSchema
+>;
+
+export const FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE =
+  "AUTOMAT_FLOW_REFERENCE_CANDIDATE_SELECTED" as const;
+
+export const FlowReferenceCandidateSelectedMessageSchema = z
+  .object({
+    type: z.literal(FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE),
+    protocolVersion: z.number().int().positive(),
+    buildId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    workspaceId: workspaceIdSchema,
+    batchId: z.string().min(1).max(256),
+    shotId: z.string().regex(/^[1-9][0-9]*$/),
+    candidate: ReferenceCandidateSchema,
+  })
+  .strict();
+export type FlowReferenceCandidateSelectedMessage = z.infer<
+  typeof FlowReferenceCandidateSelectedMessageSchema
+>;
+
+export const FLOW_REFERENCE_EVENT_MESSAGE =
+  "AUTOMAT_FLOW_REFERENCE_EVENT" as const;
+
+export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
+  z
+    .object({
+      type: z.literal(FLOW_REFERENCE_EVENT_MESSAGE),
+      event: z.literal("candidate_selected"),
+      sessionId: z.string().min(1).max(128),
+      workspaceId: workspaceIdSchema,
+      batchId: z.string().min(1).max(256),
+      shotId: z.string().regex(/^[1-9][0-9]*$/),
+      candidate: ReferenceCandidateSchema,
+      retained: z.literal(false),
+      message: z.literal(
+        "Candidate selected — image capture and saving are not implemented in this phase.",
+      ),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal(FLOW_REFERENCE_EVENT_MESSAGE),
+      event: z.literal("session_cancelled"),
+      sessionId: z.string().min(1).max(128),
+      workspaceId: workspaceIdSchema,
+      shotId: z.string().regex(/^[1-9][0-9]*$/),
+      reason: z.string().min(1).max(128),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal(FLOW_REFERENCE_EVENT_MESSAGE),
+      event: z.literal("session_started"),
+      sessionId: z.string().min(1).max(128),
+      workspaceId: workspaceIdSchema,
+      shotId: z.string().regex(/^[1-9][0-9]*$/),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal(FLOW_REFERENCE_EVENT_MESSAGE),
+      event: z.literal("candidate_cleared"),
+      workspaceId: workspaceIdSchema,
+      shotId: z.string().regex(/^[1-9][0-9]*$/),
+    })
+    .strict(),
+]);
+export type FlowReferenceEventMessage = z.infer<
+  typeof FlowReferenceEventMessageSchema
+>;
+
 const requestBase = z
   .object({
     protocolVersion: z.number().int().positive(),
@@ -685,6 +789,41 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   requestBase.extend({
     type: z.literal("preferences.setTheme"),
     payload: z.object({ theme: z.enum(["light", "dark"]) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.startSelection"),
+    payload: z
+      .object({
+        workspaceId: workspaceIdSchema,
+        batchId: z.string().min(1).max(256),
+        shotId: z.string().regex(/^[1-9][0-9]*$/),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.cancelSelection"),
+    payload: z
+      .object({
+        sessionId: z.string().min(1).max(128),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.getState"),
+    payload: z
+      .object({
+        workspaceId: workspaceIdSchema,
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.clearCandidate"),
+    payload: z
+      .object({
+        workspaceId: workspaceIdSchema,
+        shotId: z.string().regex(/^[1-9][0-9]*$/),
+      })
+      .strict(),
   }),
 ]);
 

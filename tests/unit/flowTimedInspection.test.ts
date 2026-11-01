@@ -179,7 +179,7 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
   describe("dispatcher integration regressions", () => {
     async function createTestQueueFixture() {
       const database = createMemoryRepositoryDatabase();
-      const clock = 1_000;
+      let clock = 1_000;
       const repositories = new ExtensionRepositories(database, () => clock);
       const promptHash = await sha256Hex(promptShot13);
       const source = `13: ${promptShot13}`;
@@ -241,7 +241,21 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
         at: clock,
       });
 
-      return { database, repositories, queue: claimedQueue, clock, promptHash };
+      return {
+        database,
+        repositories,
+        queue: claimedQueue,
+        get clock() {
+          return clock;
+        },
+        set clock(val: number) {
+          clock = val;
+        },
+        advanceClock: (ms: number) => {
+          clock += ms;
+        },
+        promptHash,
+      };
     }
 
     function createMockEnvironment(options: {
@@ -619,7 +633,7 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
     });
 
     it("disabled button with matching text enters readiness wait and pauses on timeout without falsely claiming readback mismatch", async () => {
-      const { repositories, queue, clock } = await createTestQueueFixture();
+      const fixture = await createTestQueueFixture();
       const { environment, mouseEventsSent } = createMockEnvironment({
         inDispatchSampleText: promptShot13,
         generateState: "disabled",
@@ -631,13 +645,29 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
 
       let authorizationCalled = false;
       const dispatcher = createFlowTimedQueueDispatcher(
-        repositories,
-        () => clock,
+        fixture.repositories,
+        () => fixture.clock,
         environment,
       );
 
+      const firstResult = await dispatcher({
+        queue: fixture.queue,
+        order: 0,
+        attemptId: "attempt-shot-13",
+        authorizeActivation: async () => {
+          authorizationCalled = true;
+        },
+      });
+      expect(firstResult.status).toBe("waiting");
+
+      const waitingQueue =
+        (await fixture.repositories.getTimedImageSubmissionQueue(
+          fixture.queue.queueId,
+        ))!;
+      fixture.advanceClock(20);
+
       const result = await dispatcher({
-        queue,
+        queue: waitingQueue,
         order: 0,
         attemptId: "attempt-shot-13",
         authorizeActivation: async () => {

@@ -1,0 +1,148 @@
+.referencesContainer {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.noticeBox {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+
+.noticeWarning {
+  border-color: #d29922;
+  background: rgba(210, 153, 34, 0.1);
+  color: #d29922;
+}
+
+.noticeActive {
+  border-color: #1f6feb;
+  background: rgba(31, 111, 235, 0.12);
+  color: var(--color-text);
+}
+
+.activeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.activeHeader strong {
+  color: #58a6ff;
+  font-size: var(--font-size-md);
+}
+
+.shotList {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.shotCard {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.shotCardSelected {
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 1px #1f6feb;
+}
+
+.shotHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.shotBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  font-weight: 700;
+  font-size: var(--font-size-sm);
+}
+
+.promptExcerpt {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  line-height: var(--line-height-relaxed);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.candidateDisplay {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+}
+
+.candidateThumbnail {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: #000;
+  flex-shrink: 0;
+}
+
+.candidateDetails {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  min-width: 0;
+}
+
+.candidateHonestStatus {
+  color: #3fb950;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.candidateMeta {
+  color: var(--color-text-muted);
+}
+
+.cardActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.actionRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.disabledReason {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
