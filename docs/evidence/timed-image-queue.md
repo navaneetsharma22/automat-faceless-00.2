@@ -551,10 +551,22 @@ The 31 October installed-MV3 Scenario 2 failure was specifically a forced servic
 
 ### Verification
 
-Build `automat-faceless-0.1.0-mvx7eheq` was installed into an isolated Playwright Chromium profile with a synthetic local Flow page. Forced worker termination was performed between readiness checks. Repeated restarts preserved identical readiness start/deadline values; enabling the button produced one activation with the exact saved prompt body. The fixture also passed Pause/Resume during readiness, dashboard queue readback, restart after activation authorization with no replay, paused/stopped queue inactivity, and an expired-deadline restart that paused with zero activation. Scenario 1 (the normal 40-second dispatch interval restart) was not run in this targeted invocation.
+Build `automat-faceless-0.1.0-mvx7eheq` was installed into an isolated Playwright Chromium profile with a synthetic local Flow page. Forced worker termination was performed between readiness checks. Repeated restarts preserved identical readiness start/deadline values; enabling the button produced one activation with the exact saved prompt body. The fixture also passed Pause/Resume during readiness, dashboard queue readback, restart after activation authorization with no replay, paused/stopped queue inactivity, and an expired-deadline restart that paused with zero activation. The normal 40-second interval scenario was run once in a follow-up recorded below.
 
 Focused offline regressions passed: `flowReadinessWait.test.ts`, `imageQueueRestart.test.ts`, and `imageQueueSequence.test.ts` — **3 files / 20 tests**. Typecheck, ESLint, diff check and production build passed. Unit coverage confirms attach refusal pauses with `flow_debugger_attach_refused` and never releases an unverified debugger owner.
 
 ### Remaining limit
 
 A worker can still be killed during the short interval after acquiring a debugger lease. The replacement worker will not borrow or detach a debugger owner it cannot verify. If Chrome retains the terminated worker's attachment, the attempted check pauses with `flow_debugger_attach_refused`; the user must wait for Chrome to clear that stale owner before resuming. The installed-MV3 fixture run did not force termination during that narrow active-lease window. Live Flow acceptance and Generate were not run.
+
+### Follow-up: normal 40-second receipt-deadline restart smoke — 1 November 2026
+
+The existing installed-MV3 synthetic fixture was run once against package `automat-faceless-0.1.0-mvx7eheq`, scenario 1. A two-item queue dispatched item 1, then the service worker was forcibly terminated during the persisted wait. After restart, the original `nextEligibleDispatchAt` matched `dispatchReceipt.storedAt + 40,000 ms` exactly. The fixture observed no early or duplicate activation and confirmed item 2 dispatched once only after its saved deadline. **PASS; OFFLINE_VERIFIED synthetic evidence.**
+
+The harness also ran its built-in scenarios 3–5 in this invocation; each passed. Scenario 1 was executed only once. Earlier user-confirmed live queue runs and timing audits remain historical live evidence, separately recorded in `PROJECT_STATUS.md`; they were not repeated and do not convert this synthetic package check into live acceptance. P06.1–P06.3 remain OFFLINE_VERIFIED; P06.4 has a separate user-reported Amazon outcome but remains NOT_PASSED, and no G-IMAGE live gate is passed. P05 counting/attribution and provider-result gates remain deferred and unchanged.
+
+### User-confirmed live Amazon batch — Shots 34–43 — 1 November 2026
+
+The user supplied a Flow results screenshot and confirmed that all images in the Amazon batch for Shots 34–43 generated. This is recorded as **USER_REPORTED_LIVE_OUTCOME**. The exact installed build ID and queue ID are **UNVERIFIED**. The screenshot and confirmation do not establish ten durable dispatch receipts or measured receipt/activation timings; neither is inferred.
+
+This report is separate from the earlier user-confirmed live Shots 15–19 audit and from package `automat-faceless-0.1.0-mvx7eheq` synthetic installed-MV3 evidence. P06.4 acceptance remains incomplete and NOT_PASSED pending its specific per-item dispatch/deadline evidence. G-IMAGE-ONE/TWO/SCALE and P05 counting, attribution, and provider-result gates remain NOT_PASSED or deferred as previously recorded.

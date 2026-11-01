@@ -1,6 +1,6 @@
 # P06 — Timed sequential image submission
 
-Status: P06.1, P06.2, and P06.3 are OFFLINE_VERIFIED within the bounds recorded below. P06.4 is NOT_STARTED; live provider acceptance is NOT_RUN. This revised mode is independent of P05 count-mode observation and rebaseline. P05 remains INCOMPLETE; automatic provider attribution and terminal acceptance are deferred and NOT_PASSED.
+Status: P06.1, P06.2, and P06.3 are OFFLINE_VERIFIED within the bounds recorded below. P06.4 has a user-reported live Amazon outcome for Shots 34-43, but its controlled live acceptance remains NOT_PASSED; exact build/queue IDs, per-item receipts, and measured timing are UNVERIFIED. This revised mode is independent of P05 count-mode observation and rebaseline. P05 remains INCOMPLETE; automatic provider attribution and terminal acceptance are deferred and NOT_PASSED.
 
 **Outcome:** Persist an ordered batch and manually confirmed Flow project/settings declaration, then (in later subphases) dispatch one prompt at a time using a fixed 40,000 ms minimum interval measured from the preceding durable dispatch receipt. Generation completion is not observed by this mode. A sent dispatch is evidence of input delivery only; provider outcome remains unknown.
 
