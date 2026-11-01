@@ -63,3 +63,74 @@ export type BatchBudgetAssessment = {
   prompts: PromptMeasurement[];
   issues: BatchBudgetIssue[];
 };
+
+export type VideoDestination = "Flow" | "Vids";
+
+export type VideoBatchManualSettingsDeclaration = {
+  readonly confirmationId: string;
+  readonly confirmedAt: number;
+  readonly destination: VideoDestination;
+  readonly declaredDurationSeconds: number;
+  readonly tabId: number;
+  readonly canonicalTarget: string;
+  readonly projectId?: string;
+  readonly documentId?: string;
+  readonly userAttested: true;
+};
+
+export type PreparedVideoBatchItem = {
+  readonly itemId: string;
+  readonly order: number;
+  readonly shotId?: string;
+  readonly canonicalShotId: string;
+  readonly rawJsonBody: string;
+  readonly contentHash: string;
+  readonly sourceSpan: { readonly start: number; readonly end: number };
+  readonly reference: {
+    readonly referenceId: string;
+    readonly assignmentVersion: number;
+    readonly sha256: string;
+    readonly mimeType: string;
+    readonly byteSize: number;
+    readonly width: number;
+    readonly height: number;
+    readonly capturedAt: number;
+  };
+};
+
+export type PreparedVideoBatchRecord = {
+  readonly id: string;
+  readonly requestId: string;
+  readonly workspaceId: string;
+  readonly preparedAt: number;
+  readonly videoBatchId: string;
+  readonly videoSourceHash: string;
+  readonly videoSourceText: string;
+  readonly imageSourceBatchId: string;
+  readonly imageSourceBatchHash: string;
+  readonly destination: VideoDestination;
+  readonly target: {
+    readonly provider: VideoDestination;
+    readonly tabId: number;
+    readonly canonicalTarget: string;
+    readonly projectId?: string;
+    readonly documentId?: string;
+    readonly verification: "verified";
+    readonly verifiedAt: number;
+  };
+  readonly manualSettingsDeclaration: {
+    readonly confirmationId: string;
+    readonly confirmedAt: number;
+    readonly destination: VideoDestination;
+    readonly declaredDurationSeconds: number;
+    readonly tabId: number;
+    readonly canonicalTarget: string;
+    readonly projectId?: string;
+    readonly documentId?: string;
+  };
+  readonly status: "prepared";
+  readonly itemCount: number;
+  readonly items: readonly PreparedVideoBatchItem[];
+  readonly createdAt: number;
+  readonly updatedAt: number;
+};

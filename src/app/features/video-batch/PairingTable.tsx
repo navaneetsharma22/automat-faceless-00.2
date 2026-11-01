@@ -18,6 +18,11 @@ export type PairingTableProps = {
   videoBatch: PromptBatchSnapshot | null;
   videoSourceReady: boolean;
   onNavigateToReferences: () => void;
+  onPairingResultChange?: (
+    result: BatchPairingResult | null,
+    imageSourceBatchId: string | undefined,
+    imageSourceHash: string | undefined,
+  ) => void;
 };
 
 export function PairingTable({
@@ -26,6 +31,7 @@ export function PairingTable({
   videoBatch,
   videoSourceReady,
   onNavigateToReferences,
+  onPairingResultChange,
 }: PairingTableProps) {
   const [imageBatch, setImageBatch] = useState<PromptBatchSnapshot | null>(
     null,
@@ -192,13 +198,16 @@ export function PairingTable({
           referenceAssignments: refs,
         });
         setPairingResult(result);
+        onPairingResultChange?.(result, selectedImageSourceId, imgHash);
         void loadThumbnails(result.pairs);
       } else {
         setPairingResult(null);
+        onPairingResultChange?.(null, selectedImageSourceId ?? undefined, imgHash);
         revokeAllThumbnails();
       }
     } catch (err) {
       if (fetchId !== dataFetchGen.current) return;
+      onPairingResultChange?.(null, undefined, undefined);
       setError(
         err instanceof Error
           ? err.message
@@ -217,6 +226,7 @@ export function PairingTable({
     videoSourceReady,
     loadThumbnails,
     revokeAllThumbnails,
+    onPairingResultChange,
   ]);
 
   useEffect(() => {

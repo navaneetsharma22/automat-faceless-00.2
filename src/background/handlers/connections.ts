@@ -14,6 +14,7 @@ import {
   DuplicateTimedImageQueueSourceError,
   ImageQueueEligibilityError,
   PromptBatchValidationError,
+  VideoBatchPreparationError,
 } from "../../storage/repositories";
 import { ImageQueueInspectionError } from "../generationQueue";
 import { FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE } from "../../shared/schemas";
@@ -728,6 +729,29 @@ async function dispatch(
         request.payload.workspaceId,
         request.payload.shotId,
       );
+    case "videoBatch.prepare": {
+      try {
+        return await dependencies.repositories.prepareVideoBatch(request.payload);
+      } catch (error) {
+        if (error instanceof VideoBatchPreparationError) {
+          throw new FoundationOperationError(
+            error.code === "reference_media_corrupt" ||
+              error.code === "reference_media_missing"
+              ? "storage_failure"
+              : "invalid_request",
+            error.code,
+            error.message,
+          );
+        }
+        throw error;
+      }
+    }
+    case "videoBatch.getPrepared": {
+      const record = await dependencies.repositories.getPreparedVideoBatch(
+        request.payload.workspaceId,
+      );
+      return record ?? null;
+    }
   }
 }
 

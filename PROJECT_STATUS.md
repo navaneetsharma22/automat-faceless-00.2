@@ -22,6 +22,7 @@ Baseline: 28 October 2026.
 | Manual Flow reference selection (P07.1)                       | OFFLINE_VERIFIED; extension-owned picker is the supported path; user-reported live selection/save evidence for Shots 34/35; direct Flow click/right-click alternatives unverified                            |
 | Durable reference capture and assignment review (P07.2/P07.3) | OFFLINE_VERIFIED; real IndexedDB capture/replacement/reopen/reorder regression; user-reported live saved-image persistence for Shots 34/35; G-REFERENCE COMPLETE for Phase 07 scope                          |
 | Stable Shot-ID pairing and video review (P08.2)               | OFFLINE_VERIFIED; pure deterministic validator joins explicit canonical Shot IDs; UI displays exact video JSON, thumbnails, matched/invalid counts, and unused references                                    |
+| Video preparation & settings confirmation (P08.3)           | OFFLINE_VERIFIED; AC14–AC17 pass offline; exclusive Flow/Vids destination, manual tracking duration, durable immutable prepared snapshot with pinned media, zero execution queues |
 
 The application includes the dashboard, bounded read-only provider connections, exact JSON import/preservation, P04.1/P04.2 offline/local-fixture scope, and the P04.3 evidence-backed discovery/fill-only compatibility implementation recorded below. **USER_REPORTED_PASS:** Flow and Vids now connect after the shared route-parser correction, including the account-prefixed Flow context. The user-supplied diagnostic exposed a visible contenteditable candidate and the local implementation now supports that exact observed host structure. The new package has not been confirmed in the user's loaded browser. Live fill/readback and generation remain unverified. Vids preservation evidence remains limited to the shown empty-document test.
 
@@ -1116,4 +1117,45 @@ Checks:
 - `git diff --check`: **PASS**.
 - Production build: **PASS**, package ID **`automat-faceless-0.1.0-mvxir9bo`**, output folder `dist/` (4 JavaScript bundles).
 
-This is synthetic offline verification; live actions remain **NOT_RUN**. P08.3 provider routing and manual settings confirmation remain NOT_STARTED. Phase 08 remains incomplete.
+This is synthetic offline verification; live actions remain **NOT_RUN**. P08.3 provider routing and manual settings confirmation are implemented below.
+
+## P08.3 exclusive destination, manual settings confirmation, and durable preparation snapshot — 1 November 2026
+
+P08.3 is **OFFLINE_VERIFIED**. Phase 08 local preparation scope is **COMPLETE**.
+
+Implemented local preparation and persistence of reviewed video batches with exactly one destination (Flow or Vids) and manual settings confirmation:
+
+1. **Exclusive Destination & Target Binding**:
+   - `Destination` component (`src/app/features/video-batch/Destination.tsx`) provides exclusive radio controls for Flow or Vids. No third destination, combined routing, or fallback.
+   - Requires verified connected target (`verification === "verified"` and `connectionState === "verified"`).
+   - User-declared duration (whole seconds) recorded as tracking metadata only; no JSON duration inference, offset calculation, or comparison.
+   - Provider-specific confirmation wording: *"I manually selected and checked the settings in Flow/Vids for this batch."*
+   - Confirmation resets automatically on destination change, target change, declared duration change, video draft/source change, selected image source change, or reference assignment version change.
+
+2. **Durable Immutable Prepared Video-Batch Snapshot**:
+   - Independent reload of authoritative records via `prepareVideoBatch` in `src/storage/repositories.ts`.
+   - Reuses pure `validateAndPairVideoShots`. Rejects invalid pairings, stale source hashes, changed target bindings, unverified connections, or mismatched confirmation bindings.
+   - Outside transaction: computes hashes and verifies reference bytes.
+   - Inside atomic Dexie transaction: checks concurrency, pins reference media dependencies to `pinnedReferenceMedia`, and commits the complete `PreparedVideoBatchRecord` with distinct `status: "prepared"`.
+   - Retains exact raw video JSON string, exact source span, and content hash verbatim without re-serialization.
+   - Retains reference media bytes in `pinnedReferenceMedia`; subsequent P07 reference replacements never break the prepared snapshot's byte or thumbnail retrieval.
+   - Idempotent request handling: duplicate requests with the same `requestId` return the existing snapshot.
+   - Zero execution queue items, alarms, uploads, prompt injections, or Generate actions.
+
+3. **Honest Preparation Review & Reload**:
+   - `PreparedBatchReview` (`src/app/features/video-batch/PreparedBatchReview.tsx`) renders prominent banner: *"Prepared — not submitted to Flow/Vids."*
+   - Explicit disclaimer: *"Provider Execution Unavailable: This video batch is prepared and persisted locally. No provider requests, scheduler alarms, prompt insertions, or generate actions were executed. Provider execution is not implemented in this phase (P08.3)."*
+   - Displays Prepared Batch ID, Destination, Target, Declared Duration (`{duration}s User-declared whole-batch metadata`), paired shot count, saved thumbnails via existing local media path, and expandable raw video JSON.
+   - Restores automatically on dashboard reload from `preparedVideoBatches`.
+
+Checks:
+- `tests/integration/videoBatchPreparation.test.ts`: **13/13 PASS**.
+- `tests/unit/destinationPresentation.test.tsx`: **7/7 PASS**.
+- Full test suite: **42 test files / 474 tests PASS**.
+- Typecheck: **PASS** (`tsc --noEmit`).
+- ESLint: **PASS** (`eslint .`).
+- `git diff --check`: **PASS**.
+- Production build: **PASS**, package ID **`automat-faceless-0.1.0-mvxkmklh`**, output folder `dist/` (4 JavaScript bundles).
+
+AC14–AC17 status: **PASSED (OFFLINE_VERIFIED)**.
+Live gate: Provider execution (P09/P10) remains **NOT_RUN** and **NOT_STARTED**. Phase 08 local preparation is complete; stopped after P08.3.

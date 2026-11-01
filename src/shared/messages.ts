@@ -142,6 +142,32 @@ export type RequestPayloads = {
   "flow.reference.cancelCapture": { captureOperationId: string };
   "flow.reference.getCaptureStatus": { captureOperationId: string };
   "flow.reference.getSavedReference": { referenceId: string };
+  "videoBatch.prepare": {
+    workspaceId: string;
+    requestId: string;
+    destination: "Flow" | "Vids";
+    imageSourceBatchId: string;
+    manualSettingsDeclaration: {
+      confirmationId: string;
+      confirmedAt: number;
+      destination: "Flow" | "Vids";
+      declaredDurationSeconds: number;
+      tabId: number;
+      canonicalTarget: string;
+      projectId?: string;
+      documentId?: string;
+    };
+    expectedVideoSourceHash?: string;
+    expectedImageSourceHash?: string;
+    expectedReferenceVersions?: Array<{
+      canonicalShotId: string;
+      referenceId: string;
+      assignmentVersion: number;
+    }>;
+  };
+  "videoBatch.getPrepared": {
+    workspaceId: string;
+  };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -196,6 +222,8 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.reference.cancelCapture": 5000,
   "flow.reference.getCaptureStatus": 5000,
   "flow.reference.getSavedReference": 15_000,
+  "videoBatch.prepare": 30_000,
+  "videoBatch.getPrepared": 10_000,
 };
 
 export function makeRequest<T extends RequestTypes>(

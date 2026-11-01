@@ -14,6 +14,7 @@ import type {
   ReferenceAssignmentRecord,
   ReferenceCaptureOperationRecord,
 } from "../../src/domain/media/references";
+import type { PreparedVideoBatchRecord } from "../../src/domain/batches/types";
 
 export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const drafts = new Map<string, PromptDraftRecord>();
@@ -33,6 +34,8 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
     string,
     ReferenceCaptureOperationRecord
   >();
+  const preparedVideoBatches = new Map<string, PreparedVideoBatchRecord>();
+  const pinnedReferenceMedia = new Map<string, ReferenceAssignmentRecord>();
   let transactionTail = Promise.resolve();
 
   const table = <T extends object>(
@@ -102,6 +105,14 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
       referenceCaptureOperations,
       (item) => item.captureOperationId,
     ),
+    preparedVideoBatches: table(
+      preparedVideoBatches,
+      (item) => item.id,
+    ),
+    pinnedReferenceMedia: table(
+      pinnedReferenceMedia,
+      (item) => item.referenceId,
+    ),
     transaction: async (_tableNames, operation) => {
       let release!: () => void;
       const previous = transactionTail;
@@ -121,6 +132,8 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
         imageSubmissionQueues,
         referenceAssignments,
         referenceCaptureOperations,
+        preparedVideoBatches,
+        pinnedReferenceMedia,
       ].map((values) => new Map(values));
       try {
         return await operation();
@@ -137,6 +150,8 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
           imageSubmissionQueues,
           referenceAssignments,
           referenceCaptureOperations,
+          preparedVideoBatches,
+          pinnedReferenceMedia,
         ].forEach((values, index) => {
           values.clear();
           for (const [key, value] of snapshots[index]!) {

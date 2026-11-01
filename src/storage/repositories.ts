@@ -24,17 +24,26 @@ import {
   FlowImagePromptSnapshotRecordSchema,
   FlowCountRecoveryRecordSchema,
   PromptItemRecordSchema,
+  PreparedVideoBatchRecordSchema,
+  type VideoSettingsConfirmation,
 } from "../shared/schemas";
 import { importPromptBatch } from "../domain/batches/importBatch";
-import type { PromptKind } from "../domain/batches/types";
+import type {
+  PromptKind,
+  PreparedVideoBatchRecord,
+  PreparedVideoBatchItem,
+  VideoDestination,
+} from "../domain/batches/types";
 import { sha256Hex } from "../domain/batches/hashPrompt";
 import {
   ReferenceAssignmentRecordSchema,
   ReferenceCaptureOperationRecordSchema,
   referenceAssignmentId,
+  sha256Bytes,
   type ReferenceAssignmentRecord,
   type ReferenceCaptureOperationRecord,
 } from "../domain/media/references";
+import { validateAndPairVideoShots } from "../domain/batches/pairShots";
 export { sha256Hex } from "../domain/batches/hashPrompt";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
@@ -291,6 +300,14 @@ export type RepositoryDatabase = {
     Table<ReferenceCaptureOperationRecord, string>,
     "get" | "put" | "toArray"
   >;
+  preparedVideoBatches: Pick<
+    Table<PreparedVideoBatchRecord, string>,
+    "put" | "get" | "toArray"
+  >;
+  pinnedReferenceMedia: Pick<
+    Table<ReferenceAssignmentRecord, string>,
+    "put" | "get" | "toArray"
+  >;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -312,6 +329,8 @@ export function createDexieRepositoryDatabase(
     imageSubmissionQueues: database.imageSubmissionQueues,
     referenceAssignments: database.referenceAssignments,
     referenceCaptureOperations: database.referenceCaptureOperations,
+    preparedVideoBatches: database.preparedVideoBatches,
+    pinnedReferenceMedia: database.pinnedReferenceMedia,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -433,6 +452,22 @@ export function createDexieRepositoryDatabase(
             database.flowCountRecoveries,
             operation,
           );
+        case "preparedVideoBatches+pinnedReferenceMedia+batches+referenceAssignments+selectedTargets":
+          return database.transaction(
+            "rw",
+            database.preparedVideoBatches,
+            database.pinnedReferenceMedia,
+            database.batches,
+            database.referenceAssignments,
+            database.selectedTargets,
+            operation,
+          );
+        case "preparedVideoBatches":
+          return database.transaction(
+            "rw",
+            database.preparedVideoBatches,
+            operation,
+          );
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -495,9 +530,11 @@ export class ExtensionRepositories {
   async getReferenceById(
     referenceId: string,
   ): Promise<ReferenceAssignmentRecord | undefined> {
-    return (await this.tables.referenceAssignments.toArray()).find(
-      (record) => record.referenceId === referenceId,
-    );
+    const fromAssignments = (
+      await this.tables.referenceAssignments.toArray()
+    ).find((record) => record.referenceId === referenceId);
+    if (fromAssignments) return fromAssignments;
+    return await this.tables.pinnedReferenceMedia.get(referenceId);
   }
 
   async getReferenceCaptureOperation(
@@ -2744,6 +2781,397 @@ export class ExtensionRepositories {
       }
       return { failedBeforeDispatch, uncertain };
     });
+  }
+
+  async prepareVideoBatch(
+    input: VideoBatchPrepareInput,
+  ): Promise<PreparedVideoBatchRecord> {
+    const {
+      workspaceId,
+      requestId,
+      destination,
+      imageSourceBatchId,
+      manualSettingsDeclaration,
+      expectedVideoSourceHash,
+      expectedImageSourceHash,
+      expectedReferenceVersions,
+    } = input;
+
+    // 1. Idempotency check: duplicate request returns the existing prepared result
+    const existing = (await this.tables.preparedVideoBatches.toArray()).find(
+      (b) => b.requestId === requestId,
+    );
+    if (existing) {
+      return existing;
+    }
+
+    // 2. Destination validation: exactly one Flow or Vids destination
+    if (destination !== "Flow" && destination !== "Vids") {
+      throw new VideoBatchPreparationError(
+        "destination_invalid",
+        "Exactly one destination (Flow or Vids) must be selected.",
+      );
+    }
+
+    // 3. Manual settings declaration validation
+    if (
+      manualSettingsDeclaration.destination !== destination ||
+      !Number.isInteger(manualSettingsDeclaration.declaredDurationSeconds) ||
+      manualSettingsDeclaration.declaredDurationSeconds <= 0
+    ) {
+      throw new VideoBatchPreparationError(
+        "settings_confirmation_invalid",
+        "Manual settings confirmation must declare a valid positive batch duration.",
+      );
+    }
+
+    // 4. Authoritative video batch validation
+    const videoBatch = await this.getPromptBatch(workspaceId, "video");
+    if (!videoBatch || !videoBatch.batch || videoBatch.items.length === 0) {
+      throw new VideoBatchPreparationError(
+        "video_source_missing",
+        "No saved video prompt batch found for this workspace.",
+      );
+    }
+    const videoSourceHash = await sha256Hex(videoBatch.batch.sourceText);
+    if (
+      expectedVideoSourceHash &&
+      expectedVideoSourceHash !== videoSourceHash
+    ) {
+      throw new VideoBatchPreparationError(
+        "video_source_changed",
+        "The saved video prompt source was modified since review.",
+      );
+    }
+
+    // 5. Authoritative image batch validation
+    const imageBatch = await this.getPromptBatch(workspaceId, "image");
+    if (!imageBatch || !imageBatch.batch) {
+      throw new VideoBatchPreparationError(
+        "image_source_missing",
+        "No saved image prompt batch found for this workspace.",
+      );
+    }
+    if (imageBatch.batch.id !== imageSourceBatchId) {
+      throw new VideoBatchPreparationError(
+        "image_source_changed",
+        "The selected image source batch no longer matches the saved image batch.",
+      );
+    }
+    const imageSourceBatchHash = await sha256Hex(imageBatch.batch.sourceText);
+    if (
+      expectedImageSourceHash &&
+      expectedImageSourceHash !== imageSourceBatchHash
+    ) {
+      throw new VideoBatchPreparationError(
+        "image_source_changed",
+        "The saved image batch source was modified since review.",
+      );
+    }
+
+    // 6. Connected target verification
+    const selectedTarget = await this.getSelectedTarget(destination);
+    if (
+      !selectedTarget ||
+      selectedTarget.verification !== "verified" ||
+      selectedTarget.connectionState !== "verified"
+    ) {
+      throw new VideoBatchPreparationError(
+        "target_unverified",
+        `The selected ${destination} target is not connected or verified. Connect it in Connections first.`,
+      );
+    }
+    if (
+      selectedTarget.tabId !== manualSettingsDeclaration.tabId ||
+      selectedTarget.canonicalTarget !== manualSettingsDeclaration.canonicalTarget
+    ) {
+      throw new VideoBatchPreparationError(
+        "target_mismatch",
+        `The verified ${destination} target changed since confirmation. Review settings and confirm again.`,
+      );
+    }
+    if (
+      destination === "Flow" &&
+      manualSettingsDeclaration.projectId &&
+      selectedTarget.verificationBinding?.projectId !==
+        manualSettingsDeclaration.projectId
+    ) {
+      throw new VideoBatchPreparationError(
+        "target_mismatch",
+        "The confirmed Flow project ID does not match the active verified project.",
+      );
+    }
+
+    // 7. Re-run pure deterministic pairing validator
+    const referenceAssignments = await this.listReferenceAssignments(
+      workspaceId,
+      imageSourceBatchId,
+    );
+    const pairingResult = validateAndPairVideoShots({
+      workspaceId,
+      videoBatch,
+      imageSourceBatchId,
+      imageSourceBatchHash,
+      referenceAssignments,
+    });
+
+    if (!pairingResult.batchValid || pairingResult.totalVideoShots === 0) {
+      throw new VideoBatchPreparationError(
+        "pairing_invalid",
+        `Video pairing is invalid: ${pairingResult.invalidPairCount} invalid pairs out of ${pairingResult.totalVideoShots} shots.`,
+      );
+    }
+
+    // Check review reference versions if provided
+    if (expectedReferenceVersions) {
+      const versionMap = new Map(
+        expectedReferenceVersions.map((v) => [v.canonicalShotId, v]),
+      );
+      for (const pair of pairingResult.pairs) {
+        if (!pair.canonicalShotId || !pair.reference) continue;
+        const expected = versionMap.get(pair.canonicalShotId);
+        if (
+          !expected ||
+          expected.referenceId !== pair.reference.referenceId ||
+          expected.assignmentVersion !== pair.reference.assignmentVersion
+        ) {
+          throw new VideoBatchPreparationError(
+            "reference_assignment_version_changed",
+            `Reference for Shot ${pair.canonicalShotId} changed since review. Review pairs and confirm again.`,
+          );
+        }
+      }
+    }
+
+    // 8. Verify all matched reference bytes outside transaction
+    const verifiedMediaRecords: ReferenceAssignmentRecord[] = [];
+    const preparedItems: PreparedVideoBatchItem[] = [];
+
+    for (const pair of pairingResult.pairs) {
+      if (!pair.canonicalShotId || !pair.reference) {
+        throw new VideoBatchPreparationError(
+          "pairing_invalid",
+          `Video shot at order ${pair.order} is not paired with a verified reference.`,
+        );
+      }
+      const assignment = await this.tables.referenceAssignments.get(
+        referenceAssignmentId(workspaceId, imageSourceBatchId, pair.canonicalShotId),
+      );
+      if (!assignment || !assignment.bytes || !(assignment.bytes instanceof Blob)) {
+        throw new VideoBatchPreparationError(
+          "reference_media_missing",
+          `Saved reference bytes missing for Shot ${pair.canonicalShotId}.`,
+        );
+      }
+      if (assignment.bytes.size !== pair.reference.byteSize) {
+        throw new VideoBatchPreparationError(
+          "reference_media_corrupt",
+          `Saved reference size mismatch for Shot ${pair.canonicalShotId}.`,
+        );
+      }
+      const actualHash = await sha256Bytes(await assignment.bytes.arrayBuffer());
+      if (actualHash !== pair.reference.sha256) {
+        throw new VideoBatchPreparationError(
+          "reference_media_corrupt",
+          `Saved reference hash mismatch for Shot ${pair.canonicalShotId}.`,
+        );
+      }
+      verifiedMediaRecords.push(assignment);
+
+      // Locate promptItem to obtain sourceSpan
+      const itemRecord = videoBatch.items.find((it) => it.id === pair.itemId);
+      const sourceSpan = itemRecord
+        ? itemRecord.sourceSpan
+        : { start: 0, end: pair.rawJsonBody.length };
+
+      preparedItems.push({
+        itemId: pair.itemId,
+        order: pair.order,
+        shotId: pair.declaredShotId,
+        canonicalShotId: pair.canonicalShotId,
+        rawJsonBody: pair.rawJsonBody,
+        contentHash: pair.contentHash,
+        sourceSpan,
+        reference: {
+          referenceId: pair.reference.referenceId,
+          assignmentVersion: pair.reference.assignmentVersion,
+          sha256: pair.reference.sha256,
+          mimeType: pair.reference.mimeType,
+          byteSize: pair.reference.byteSize,
+          width: pair.reference.width,
+          height: pair.reference.height,
+          capturedAt: pair.reference.capturedAt,
+        },
+      });
+    }
+
+    const preparedRecord: PreparedVideoBatchRecord = {
+      id: `prepared:${workspaceId}:${requestId}`,
+      requestId,
+      workspaceId,
+      preparedAt: this.now(),
+      videoBatchId: videoBatch.batch.id,
+      videoSourceHash,
+      videoSourceText: videoBatch.batch.sourceText,
+      imageSourceBatchId,
+      imageSourceBatchHash,
+      destination,
+      target: {
+        provider: destination,
+        tabId: selectedTarget.tabId,
+        canonicalTarget: selectedTarget.canonicalTarget,
+        projectId: selectedTarget.verificationBinding?.projectId,
+        documentId: selectedTarget.verificationBinding?.documentId,
+        verification: "verified",
+        verifiedAt:
+          selectedTarget.verificationBinding?.verifiedAt ?? selectedTarget.updatedAt,
+      },
+      manualSettingsDeclaration: {
+        confirmationId: manualSettingsDeclaration.confirmationId,
+        confirmedAt: manualSettingsDeclaration.confirmedAt,
+        destination,
+        declaredDurationSeconds: manualSettingsDeclaration.declaredDurationSeconds,
+        tabId: manualSettingsDeclaration.tabId,
+        canonicalTarget: manualSettingsDeclaration.canonicalTarget,
+        projectId: manualSettingsDeclaration.projectId,
+        documentId: manualSettingsDeclaration.documentId,
+      },
+      status: "prepared",
+      itemCount: preparedItems.length,
+      items: preparedItems,
+      createdAt: this.now(),
+      updatedAt: this.now(),
+    };
+
+    if (!PreparedVideoBatchRecordSchema.safeParse(preparedRecord).success) {
+      throw new VideoBatchPreparationError(
+        "pairing_invalid",
+        "Constructed prepared video batch record failed schema validation.",
+      );
+    }
+
+    // 9. Atomic transaction commit
+    return await this.tables.transaction(
+      [
+        "preparedVideoBatches+pinnedReferenceMedia+batches+referenceAssignments+selectedTargets",
+      ],
+      async () => {
+        // Re-check batches
+        const liveVideoBatch = await this.tables.batches.get(videoBatch.batch.id);
+        if (
+          !liveVideoBatch ||
+          liveVideoBatch.sourceText !== videoBatch.batch.sourceText
+        ) {
+          throw new VideoBatchPreparationError(
+            "video_source_changed",
+            "The saved video source changed concurrently.",
+          );
+        }
+        // Re-check target
+        const liveTarget = await this.tables.selectedTargets.get(destination);
+        if (
+          !liveTarget ||
+          liveTarget.verification !== "verified" ||
+          liveTarget.tabId !== selectedTarget.tabId
+        ) {
+          throw new VideoBatchPreparationError(
+            "target_unverified",
+            "The provider connection target changed concurrently.",
+          );
+        }
+        // Re-check reference assignments
+        for (const item of preparedItems) {
+          const liveAssignment = await this.tables.referenceAssignments.get(
+            referenceAssignmentId(
+              workspaceId,
+              imageSourceBatchId,
+              item.canonicalShotId,
+            ),
+          );
+          if (
+            !liveAssignment ||
+            liveAssignment.referenceId !== item.reference.referenceId ||
+            liveAssignment.assignmentVersion !== item.reference.assignmentVersion
+          ) {
+            throw new VideoBatchPreparationError(
+              "reference_assignment_version_changed",
+              "A reference assignment was modified concurrently. Refresh pairing review before preparing.",
+            );
+          }
+        }
+        // Retain / pin media dependencies
+        for (const media of verifiedMediaRecords) {
+          await this.tables.pinnedReferenceMedia.put(media);
+        }
+        // Persist the complete snapshot
+        await this.tables.preparedVideoBatches.put(preparedRecord);
+        return preparedRecord;
+      },
+    );
+  }
+
+  async getPreparedVideoBatch(
+    workspaceId: string,
+  ): Promise<PreparedVideoBatchRecord | undefined> {
+    const records = (await this.tables.preparedVideoBatches.toArray()).filter(
+      (b) => b.workspaceId === workspaceId,
+    );
+    if (records.length === 0) return undefined;
+    records.sort((a, b) => b.createdAt - a.createdAt);
+    return records[0];
+  }
+
+  async getPreparedVideoBatchById(
+    id: string,
+  ): Promise<PreparedVideoBatchRecord | undefined> {
+    return await this.tables.preparedVideoBatches.get(id);
+  }
+
+  async listPreparedVideoBatches(
+    workspaceId: string,
+  ): Promise<PreparedVideoBatchRecord[]> {
+    const records = (await this.tables.preparedVideoBatches.toArray()).filter(
+      (b) => b.workspaceId === workspaceId,
+    );
+    records.sort((a, b) => b.createdAt - a.createdAt);
+    return records;
+  }
+}
+
+export type VideoBatchPrepareInput = {
+  workspaceId: string;
+  requestId: string;
+  destination: VideoDestination;
+  imageSourceBatchId: string;
+  manualSettingsDeclaration: VideoSettingsConfirmation;
+  expectedVideoSourceHash?: string;
+  expectedImageSourceHash?: string;
+  expectedReferenceVersions?: Array<{
+    canonicalShotId: string;
+    referenceId: string;
+    assignmentVersion: number;
+  }>;
+};
+
+export class VideoBatchPreparationError extends Error {
+  constructor(
+    public readonly code:
+      | "video_source_missing"
+      | "video_source_changed"
+      | "image_source_missing"
+      | "image_source_changed"
+      | "destination_invalid"
+      | "target_unverified"
+      | "target_mismatch"
+      | "settings_confirmation_invalid"
+      | "pairing_invalid"
+      | "reference_assignment_version_changed"
+      | "reference_media_missing"
+      | "reference_media_corrupt",
+    message: string,
+  ) {
+    super(message);
+    this.name = "VideoBatchPreparationError";
   }
 }
 

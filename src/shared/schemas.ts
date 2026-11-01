@@ -517,6 +517,88 @@ export type FlowSettingsConfirmation = z.infer<
   typeof FlowSettingsConfirmationSchema
 >;
 
+export const VideoDestinationSchema = z.enum(["Flow", "Vids"]);
+export type VideoDestination = z.infer<typeof VideoDestinationSchema>;
+
+export const VideoSettingsConfirmationSchema = z
+  .object({
+    confirmationId: z.string().min(1).max(128),
+    confirmedAt: z.number().finite().nonnegative(),
+    destination: VideoDestinationSchema,
+    declaredDurationSeconds: z.number().int().positive().max(3600),
+    tabId: z.number().int().nonnegative(),
+    canonicalTarget: z.string().min(1).max(2048),
+    projectId: z.string().min(1).max(512).optional(),
+    documentId: z.string().min(1).max(256).optional(),
+  })
+  .strict();
+export type VideoSettingsConfirmation = z.infer<
+  typeof VideoSettingsConfirmationSchema
+>;
+
+export const PreparedVideoBatchItemSchema = z
+  .object({
+    itemId: z.string().min(1).max(256),
+    order: z.number().int().nonnegative(),
+    shotId: z.string().regex(/^[1-9][0-9]*$/).optional(),
+    canonicalShotId: z.string().regex(/^[1-9][0-9]*$/),
+    rawJsonBody: z.string().min(2),
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sourceSpan: sourceSpanSchema,
+    reference: z
+      .object({
+        referenceId: z.string().uuid(),
+        assignmentVersion: z.number().int().positive(),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        mimeType: z.string().min(1),
+        byteSize: z.number().int().positive(),
+        width: z.number().int().positive(),
+        height: z.number().int().positive(),
+        capturedAt: z.number().finite().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+export type PreparedVideoBatchItem = z.infer<
+  typeof PreparedVideoBatchItemSchema
+>;
+
+export const PreparedVideoBatchRecordSchema = z
+  .object({
+    id: z.string().min(1).max(512),
+    requestId: z.string().uuid(),
+    workspaceId: workspaceIdSchema,
+    preparedAt: z.number().finite().nonnegative(),
+    videoBatchId: z.string().min(1).max(256),
+    videoSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    videoSourceText: promptSourceSchema,
+    imageSourceBatchId: z.string().min(1).max(256),
+    imageSourceBatchHash: z.string().regex(/^[0-9a-f]{64}$/),
+    destination: VideoDestinationSchema,
+    target: z
+      .object({
+        provider: VideoDestinationSchema,
+        tabId: z.number().int().nonnegative(),
+        canonicalTarget: z.string().min(1).max(2048),
+        projectId: z.string().min(1).max(512).optional(),
+        documentId: z.string().min(1).max(256).optional(),
+        verification: z.literal("verified"),
+        verifiedAt: z.number().finite().nonnegative(),
+      })
+      .strict(),
+    manualSettingsDeclaration: VideoSettingsConfirmationSchema,
+    status: z.literal("prepared"),
+    itemCount: z.number().int().positive(),
+    items: z.array(PreparedVideoBatchItemSchema).nonempty(),
+    createdAt: z.number().finite().nonnegative(),
+    updatedAt: z.number().finite().nonnegative(),
+  })
+  .strict();
+export type PreparedVideoBatchRecord = z.infer<
+  typeof PreparedVideoBatchRecordSchema
+>;
+
+
 export const ReferenceCandidateSchema = z
   .object({
     sourceUrl: z.string().min(1).max(4096),
@@ -936,6 +1018,35 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   requestBase.extend({
     type: z.literal("flow.reference.getSavedReference"),
     payload: z.object({ referenceId: z.string().uuid() }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("videoBatch.prepare"),
+    payload: z
+      .object({
+        workspaceId: workspaceIdSchema,
+        requestId: z.string().uuid(),
+        destination: VideoDestinationSchema,
+        imageSourceBatchId: z.string().min(1).max(256),
+        manualSettingsDeclaration: VideoSettingsConfirmationSchema,
+        expectedVideoSourceHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+        expectedImageSourceHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+        expectedReferenceVersions: z
+          .array(
+            z
+              .object({
+                canonicalShotId: z.string().regex(/^[1-9][0-9]*$/),
+                referenceId: z.string().uuid(),
+                assignmentVersion: z.number().int().positive(),
+              })
+              .strict(),
+          )
+          .optional(),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("videoBatch.getPrepared"),
+    payload: z.object({ workspaceId: workspaceIdSchema }).strict(),
   }),
 ]);
 

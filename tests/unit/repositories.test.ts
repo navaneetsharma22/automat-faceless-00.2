@@ -17,6 +17,8 @@ describe("extension repository boundaries", () => {
       "flowImageAttempts",
       "flowImagePromptSnapshots",
       "imageSubmissionQueues",
+      "pinnedReferenceMedia",
+      "preparedVideoBatches",
       "promptDrafts",
       "promptItems",
       "referenceAssignments",

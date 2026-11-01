@@ -17,9 +17,18 @@ import { ImageImportPanel } from "./features/image-batch/ImportPanel";
 import { ImageQueueProgress } from "./features/image-batch/Progress";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
 import { PairingTable } from "./features/video-batch/PairingTable";
+import { Destination } from "./features/video-batch/Destination";
+import { PreparedBatchReview } from "./features/video-batch/PreparedBatchReview";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import { ReferenceSelection } from "./features/references/ReferenceSelection";
 import type { PromptBatchSnapshot } from "../storage/repositories";
+import type { SelectedTargetRecord } from "../storage/db";
+import type {
+  PreparedVideoBatchRecord,
+  VideoDestination,
+} from "../domain/batches/types";
+import type { BatchPairingResult } from "../domain/batches/pairShots";
+import { sha256Hex } from "../domain/batches/hashPrompt";
 import styles from "./Dashboard.module.css";
 
 function Dashboard() {
@@ -570,8 +579,8 @@ export function VideosView({
   setWrapLines: (wrap: boolean) => void;
   editorExpanded: boolean;
   setEditorExpanded: (expanded: boolean) => void;
-  destination: "Flow" | "Vids";
-  setDestination: (value: "Flow" | "Vids") => void;
+  destination: VideoDestination;
+  setDestination: (value: VideoDestination) => void;
   confirmed: boolean;
   setConfirmed: (value: boolean) => void;
   onNavigateToReferences?: () => void;
@@ -580,10 +589,64 @@ export function VideosView({
   const [videoBatch, setVideoBatch] = useState<PromptBatchSnapshot | null>(
     null,
   );
+  const [videoBatchHash, setVideoBatchHash] = useState<string | undefined>();
+  const [declaredDuration, setDeclaredDuration] = useState("6");
+  const [connectedTarget, setConnectedTarget] = useState<
+    SelectedTargetRecord | undefined
+  >();
+  const [targetLoading, setTargetLoading] = useState(false);
+  const [pairingResult, setPairingResult] =
+    useState<BatchPairingResult | null>(null);
+  const [imageSourceBatchId, setImageSourceBatchId] = useState<
+    string | undefined
+  >();
+  const [imageSourceHash, setImageSourceHash] = useState<
+    string | undefined
+  >();
+  const [preparedBatch, setPreparedBatch] =
+    useState<PreparedVideoBatchRecord | null>(null);
+  const [preparePending, setPreparePending] = useState(false);
+  const [prepareError, setPrepareError] = useState<string | null>(null);
+
+  const loadTarget = useCallback(async () => {
+    setTargetLoading(true);
+    try {
+      const selected = (await persistenceClient.request(
+        "connections.getSelection",
+        { provider: destination },
+      )) as SelectedTargetRecord | undefined;
+      setConnectedTarget(selected);
+    } catch {
+      setConnectedTarget(undefined);
+    } finally {
+      setTargetLoading(false);
+    }
+  }, [destination, persistenceClient]);
+
+  useEffect(() => {
+    void loadTarget();
+  }, [loadTarget]);
+
+  const loadPreparedBatch = useCallback(async () => {
+    try {
+      const result = (await persistenceClient.request(
+        "videoBatch.getPrepared",
+        { workspaceId: "default" },
+      )) as PreparedVideoBatchRecord | null;
+      setPreparedBatch(result);
+    } catch {
+      setPreparedBatch(null);
+    }
+  }, [persistenceClient]);
+
+  useEffect(() => {
+    void loadPreparedBatch();
+  }, [loadPreparedBatch]);
 
   const handleSourceReadiness = useCallback(
     async (ready: boolean, savedSource?: string) => {
       setVideoSourceReady(ready);
+      setConfirmed(false);
       if (ready && savedSource) {
         try {
           const snapshot = (await persistenceClient.request("promptBatch.get", {
@@ -591,15 +654,147 @@ export function VideosView({
             kind: "video",
           })) as PromptBatchSnapshot;
           setVideoBatch(snapshot);
+          if (snapshot?.batch?.sourceText) {
+            setVideoBatchHash(await sha256Hex(snapshot.batch.sourceText));
+          } else {
+            setVideoBatchHash(undefined);
+          }
         } catch {
           setVideoBatch(null);
+          setVideoBatchHash(undefined);
         }
       } else {
         setVideoBatch(null);
+        setVideoBatchHash(undefined);
       }
     },
-    [persistenceClient],
+    [persistenceClient, setConfirmed],
   );
+
+  const handleSelectDestination = (dest: VideoDestination) => {
+    setDestination(dest);
+    setConfirmed(false);
+  };
+
+  const handleDeclaredDurationChange = (value: string) => {
+    setDeclaredDuration(value);
+    setConfirmed(false);
+  };
+
+  const handlePairingResultChange = useCallback(
+    (
+      result: BatchPairingResult | null,
+      sourceId: string | undefined,
+      sourceHash: string | undefined,
+    ) => {
+      setPairingResult((prevResult) => {
+        if (
+          prevResult?.matchedPairCount !== result?.matchedPairCount ||
+          prevResult?.batchValid !== result?.batchValid ||
+          prevResult?.pairs.some((p, i) => {
+            const nextP = result?.pairs[i];
+            return (
+              nextP?.reference?.assignmentVersion !==
+                p.reference?.assignmentVersion ||
+              nextP?.reference?.referenceId !== p.reference?.referenceId
+            );
+          })
+        ) {
+          setConfirmed(false);
+        }
+        return result;
+      });
+      setImageSourceBatchId((prev) => {
+        if (prev !== sourceId) setConfirmed(false);
+        return sourceId;
+      });
+      setImageSourceHash((prev) => {
+        if (prev !== sourceHash) setConfirmed(false);
+        return sourceHash;
+      });
+    },
+    [setConfirmed],
+  );
+
+  const isTargetVerified =
+    connectedTarget?.verification === "verified" &&
+    connectedTarget?.connectionState === "verified";
+
+  const parsedDuration = Number(declaredDuration);
+  const isDurationValid =
+    declaredDuration.trim() !== "" &&
+    Number.isInteger(parsedDuration) &&
+    parsedDuration > 0 &&
+    parsedDuration <= 3600;
+
+  const canPrepare =
+    videoSourceReady &&
+    videoBatch !== null &&
+    imageSourceBatchId !== undefined &&
+    pairingResult?.batchValid === true &&
+    isTargetVerified &&
+    isDurationValid &&
+    confirmed &&
+    !preparePending;
+
+  let disabledReason =
+    "Local preparation only. Provider execution is unavailable in this phase (P08.3).";
+  if (!videoSourceReady) {
+    disabledReason = "Save and validate a video prompt batch first.";
+  } else if (!imageSourceBatchId) {
+    disabledReason = "Select an image source batch to pair references.";
+  } else if (!pairingResult?.batchValid) {
+    disabledReason = `Cannot prepare: ${pairingResult?.invalidPairCount ?? 0} invalid pairs in batch.`;
+  } else if (!isTargetVerified) {
+    disabledReason = `Connect and verify ${destination} in Connections before preparing.`;
+  } else if (!isDurationValid) {
+    disabledReason =
+      "Enter a valid duration (e.g. 6 or 8 seconds) before preparing.";
+  } else if (!confirmed) {
+    disabledReason = `Confirm manual ${destination} settings before preparing.`;
+  }
+
+  const handlePrepareBatch = async () => {
+    if (!canPrepare || !connectedTarget || !pairingResult) return;
+    setPreparePending(true);
+    setPrepareError(null);
+    try {
+      const requestId = crypto.randomUUID();
+      const result = (await persistenceClient.request("videoBatch.prepare", {
+        workspaceId: "default",
+        requestId,
+        destination,
+        imageSourceBatchId,
+        manualSettingsDeclaration: {
+          confirmationId: crypto.randomUUID(),
+          confirmedAt: Date.now(),
+          destination,
+          declaredDurationSeconds: parsedDuration,
+          tabId: connectedTarget.tabId,
+          canonicalTarget: connectedTarget.canonicalTarget,
+          projectId: connectedTarget.verificationBinding?.projectId,
+          documentId: connectedTarget.verificationBinding?.documentId,
+        },
+        expectedVideoSourceHash: videoBatchHash,
+        expectedImageSourceHash: imageSourceHash,
+        expectedReferenceVersions: pairingResult.pairs.map((p) => ({
+          canonicalShotId: p.canonicalShotId!,
+          referenceId: p.reference!.referenceId,
+          assignmentVersion: p.reference!.assignmentVersion,
+        })),
+      })) as PreparedVideoBatchRecord;
+
+      setPreparedBatch(result);
+    } catch (err) {
+      setPrepareError(
+        err instanceof Error
+          ? err.message
+          : "Failed to prepare video batch snapshot.",
+      );
+    } finally {
+      setPreparePending(false);
+    }
+  };
 
   return (
     <div className={styles.workspaceGrid}>
@@ -628,46 +823,44 @@ export function VideosView({
           videoBatch={videoBatch}
           videoSourceReady={videoSourceReady}
           onNavigateToReferences={onNavigateToReferences ?? (() => {})}
+          onPairingResultChange={handlePairingResultChange}
         />
-        <fieldset className={styles.destinationGroup}>
-          <legend>Video destination</legend>
-          <div className={styles.destinationOptions}>
-            {(["Flow", "Vids"] as const).map((item) => (
-              <label
-                className={`${styles.destinationOption} ${destination === item ? styles.destinationSelected : ""} motion-card`}
-                key={item}
-              >
-                <input
-                  type="radio"
-                  name="video-destination"
-                  value={item}
-                  checked={destination === item}
-                  onChange={() => setDestination(item)}
-                />
-                <span>
-                  <strong>{item}</strong>
-                  <small>See Connections for current project status.</small>
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <SettingsConfirmation
-          id="video-settings-confirm"
-          provider={destination}
-          contextLabel="current video source"
-          checked={confirmed}
-          onChange={setConfirmed}
+        <Destination
+          destination={destination}
+          onSelectDestination={handleSelectDestination}
+          connectedTarget={connectedTarget}
+          targetLoading={targetLoading}
+          declaredDuration={declaredDuration}
+          onDeclaredDurationChange={handleDeclaredDurationChange}
+          confirmed={confirmed}
+          onConfirmationChange={setConfirmed}
         />
         <div className={styles.actionRow}>
-          <Button disabled aria-describedby="video-disabled-reason">
-            Start video batch
+          <Button
+            disabled={!canPrepare}
+            onClick={handlePrepareBatch}
+            aria-describedby="video-disabled-reason"
+          >
+            {preparePending ? "Preparing batch..." : "Prepare video batch"}
           </Button>
           <p id="video-disabled-reason" className={styles.disabledReason}>
-            Unavailable: video pairing review only (P08.2). Video provider
-            execution is not implemented.
+            {disabledReason}
           </p>
         </div>
+        {prepareError ? (
+          <p className={styles.fieldError} role="alert">
+            {prepareError}
+          </p>
+        ) : null}
+
+        {preparedBatch ? (
+          <PreparedBatchReview
+            preparedBatch={preparedBatch}
+            persistenceClient={persistenceClient}
+            currentVideoSourceHash={videoBatchHash}
+            currentImageSourceBatchId={imageSourceBatchId}
+          />
+        ) : null}
       </section>
     </div>
   );
