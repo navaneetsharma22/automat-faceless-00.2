@@ -10,6 +10,11 @@ import {
 } from "./handlers/flow";
 import { createFlowImageObservationHandler } from "./handlers/observations";
 import { createFlowReferenceHandler } from "./handlers/references";
+import {
+  FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+  createFlowReferenceContextMenuProperties,
+  flowReferenceContextMenuId,
+} from "../platforms/flow/references";
 import { registerDashboardAction } from "./openDashboard";
 import {
   createConnectionLifecycleService,
@@ -75,10 +80,68 @@ const flowImageObservation = createFlowImageObservationHandler({
   repositories,
   port: flowPort,
 });
+const contextMenuReady = new Promise<void>((resolve) => {
+  chrome.contextMenus.removeAll(() => {
+    void chrome.runtime.lastError;
+    resolve();
+  });
+});
 const flowReferenceHandler = createFlowReferenceHandler({
   extensionId: chrome.runtime.id,
   repositories,
+  contextMenu: {
+    ready: contextMenuReady,
+    create: async (session) => {
+      await contextMenuReady;
+      await new Promise<void>((resolve, reject) => {
+        chrome.contextMenus.create(
+          createFlowReferenceContextMenuProperties(session),
+          () => {
+            if (chrome.runtime.lastError) {
+              reject(
+                new Error("Flow reference context menu could not be created."),
+              );
+              return;
+            }
+            resolve();
+          },
+        );
+      });
+    },
+    remove: async (sessionId) => {
+      await contextMenuReady;
+      await new Promise<void>((resolve) => {
+        chrome.contextMenus.remove(
+          flowReferenceContextMenuId(sessionId),
+          () => {
+            void chrome.runtime.lastError;
+            resolve();
+          },
+        );
+      });
+    },
+  },
+  sendToDocument: (tabId, documentId, message) =>
+    chrome.tabs.sendMessage(tabId, message, { documentId }),
 });
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  void (async () => {
+    const result = await flowReferenceHandler.handleContextMenu(info, tab);
+    if (!result.accepted || !result.session) return;
+    void chrome.tabs
+      .sendMessage(
+        result.session.tabId,
+        {
+          type: FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+          sessionId: result.session.sessionId,
+          shotId: result.session.shotId,
+        },
+        { documentId: result.session.documentId },
+      )
+      .catch(() => undefined);
+  })().catch(() => undefined);
+});
+void flowReferenceHandler.restoreActiveContextMenu().catch(() => undefined);
 const timedQueueScheduler = createTimedImageQueueScheduler({
   repositories,
   dispatch: createFlowTimedQueueDispatcher(repositories),

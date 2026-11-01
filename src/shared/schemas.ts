@@ -531,6 +531,14 @@ export const ReferenceCandidateSchema = z
   .strict();
 export type ReferenceCandidate = z.infer<typeof ReferenceCandidateSchema>;
 
+export const FlowReferencePickerCandidateSchema =
+  ReferenceCandidateSchema.extend({
+    candidateId: z.string().uuid(),
+  });
+export type FlowReferencePickerCandidate = z.infer<
+  typeof FlowReferencePickerCandidateSchema
+>;
+
 export const ActiveReferenceSelectionSessionSchema = z
   .object({
     sessionId: z.string().min(1).max(128),
@@ -822,6 +830,19 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
       .object({
         workspaceId: workspaceIdSchema,
         shotId: z.string().regex(/^[1-9][0-9]*$/),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.listCandidates"),
+    payload: z.object({ sessionId: z.string().min(1).max(128) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.chooseCandidate"),
+    payload: z
+      .object({
+        sessionId: z.string().min(1).max(128),
+        candidateId: z.string().uuid(),
       })
       .strict(),
   }),

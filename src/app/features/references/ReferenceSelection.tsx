@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../components/Button";
 import type { FoundationClient } from "../../../shared/messageClient";
 import type {
   ActiveReferenceSelectionSession,
   FlowReferenceEventMessage,
+  FlowReferencePickerCandidate,
   ReferenceCandidate,
 } from "../../../shared/schemas";
 import { FLOW_REFERENCE_EVENT_MESSAGE } from "../../../shared/schemas";
@@ -49,6 +50,18 @@ export function ReferenceSelection({
   const [flowVerified, setFlowVerified] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
+  const pickerReadGeneration = useRef(0);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const [pickerCandidates, setPickerCandidates] = useState<
+    FlowReferencePickerCandidate[]
+  >([]);
+  const [pickerSessionId, setPickerSessionId] = useState<string | null>(null);
+  const [pickerStatus, setPickerStatus] = useState<string | null>(null);
+  const [pickerAmbiguousCount, setPickerAmbiguousCount] = useState(0);
+  const [pickerUnsupportedCount, setPickerUnsupportedCount] = useState(0);
+  const [thumbnailFailures, setThumbnailFailures] = useState<
+    Record<string, boolean>
+  >({});
 
   const checkFlowConnection = useCallback(async () => {
     try {
@@ -146,6 +159,13 @@ export function ReferenceSelection({
         if (eventMsg.workspaceId !== workspaceId) return;
 
         if (eventMsg.event === "candidate_selected") {
+          if (eventMsg.batchId !== batch?.batch.id) return;
+          pickerReadGeneration.current += 1;
+          setPickerCandidates([]);
+          setSelectionNotice(
+            `Candidate selected for Shot ${eventMsg.shotId}. Image capture and saving are not implemented in this phase.`,
+          );
+          setActionPending(false);
           setActiveSession(null);
           setCandidates((prev) => ({
             ...prev,
@@ -153,8 +173,17 @@ export function ReferenceSelection({
           }));
           setActionError(null);
         } else if (eventMsg.event === "session_cancelled") {
+          if (eventMsg.sessionId !== activeSession?.sessionId) return;
+          pickerReadGeneration.current += 1;
+          setPickerCandidates([]);
+          setActionPending(false);
           setActiveSession(null);
         } else if (eventMsg.event === "session_started") {
+          pickerReadGeneration.current += 1;
+          setPickerCandidates([]);
+          setPickerSessionId(null);
+          setPickerStatus(null);
+          setActionPending(false);
           void loadBatchAndState();
         } else if (eventMsg.event === "candidate_cleared") {
           setCandidates((prev) => {
@@ -170,10 +199,71 @@ export function ReferenceSelection({
     return () => {
       chrome.runtime.onMessage.removeListener(messageListener);
     };
-  }, [workspaceId, checkFlowConnection, loadBatchAndState]);
+  }, [
+    workspaceId,
+    batch?.batch.id,
+    activeSession?.sessionId,
+    checkFlowConnection,
+    loadBatchAndState,
+  ]);
 
-  const handleStartSelection = async (shotId: string) => {
+  useEffect(
+    () => () => {
+      pickerReadGeneration.current += 1;
+    },
+    [workspaceId, persistenceClient],
+  );
+
+  const loadFlowImageCandidates = async (sessionId: string) => {
+    const generation = ++pickerReadGeneration.current;
+    setActionPending(true);
+    setPickerAmbiguousCount(0);
+    setPickerUnsupportedCount(0);
+    setPickerStatus("Reading eligible images from the verified Flow document…");
+    setPickerCandidates([]);
+    setThumbnailFailures({});
+    setPickerSessionId(sessionId);
+    try {
+      const result = (await persistenceClient.request(
+        "flow.reference.listCandidates",
+        { sessionId },
+      )) as {
+        sessionId: string;
+        candidates: FlowReferencePickerCandidate[];
+        ambiguousCount: number;
+        unsupportedCount: number;
+      };
+      if (generation !== pickerReadGeneration.current) return;
+      if (result.sessionId !== sessionId) {
+        setPickerStatus(
+          "The Flow selection session changed. Reopen the picker.",
+        );
+        return;
+      }
+      setPickerCandidates(result.candidates);
+      setPickerAmbiguousCount(result.ambiguousCount);
+      setPickerUnsupportedCount(result.unsupportedCount);
+      setPickerStatus(
+        result.candidates.length === 0
+          ? "No unambiguous eligible Flow images are available in this document."
+          : `Showing ${result.candidates.length} eligible Flow image${result.candidates.length === 1 ? "" : "s"}. Choose one for this Shot.`,
+      );
+    } catch (err) {
+      if (generation !== pickerReadGeneration.current) return;
+      setPickerStatus(
+        err instanceof Error
+          ? err.message
+          : "Flow images could not be read. Keep the verified project open and retry.",
+      );
+    } finally {
+      if (generation === pickerReadGeneration.current) setActionPending(false);
+    }
+  };
+
+  const handleStartSelection = async (shotId: string, browse = false) => {
     if (!batch) return;
+    pickerReadGeneration.current += 1;
+    setSelectionNotice(null);
     setActionPending(true);
     setActionError(null);
     try {
@@ -207,6 +297,10 @@ export function ReferenceSelection({
         startedAt: Date.now(),
         status: "active",
       });
+      setPickerCandidates([]);
+      setPickerSessionId(null);
+      setPickerStatus(null);
+      if (browse) await loadFlowImageCandidates(res.sessionId);
     } catch (err) {
       setActionError(
         err instanceof Error
@@ -218,8 +312,45 @@ export function ReferenceSelection({
     }
   };
 
+  const handleChooseFlowCandidate = async (candidateId: string) => {
+    if (!activeSession || pickerSessionId !== activeSession.sessionId) return;
+    const generation = ++pickerReadGeneration.current;
+    setActionPending(true);
+    setPickerStatus("Rechecking this image in the verified Flow document…");
+    try {
+      const response = (await persistenceClient.request(
+        "flow.reference.chooseCandidate",
+        {
+          sessionId: activeSession.sessionId,
+          candidateId,
+        },
+      )) as { accepted?: boolean };
+      if (generation !== pickerReadGeneration.current) return;
+      if (response.accepted !== true)
+        throw new Error(
+          "The candidate was not accepted. Refresh images and retry.",
+        );
+      setSelectionNotice(
+        `Candidate selected for Shot ${activeSession.shotId}. Image capture and saving are not implemented in this phase.`,
+      );
+      setPickerCandidates([]);
+      await loadBatchAndState();
+    } catch (err) {
+      if (generation !== pickerReadGeneration.current) return;
+      setPickerStatus(
+        err instanceof Error
+          ? err.message
+          : "This image was not accepted. Refresh the picker and choose again.",
+      );
+    } finally {
+      if (generation === pickerReadGeneration.current) setActionPending(false);
+    }
+  };
+
   const handleCancelSelection = async () => {
     if (!activeSession) return;
+    pickerReadGeneration.current += 1;
+    setPickerCandidates([]);
     setActionPending(true);
     setActionError(null);
     try {
@@ -333,22 +464,135 @@ export function ReferenceSelection({
                   <strong>
                     Selecting reference for Shot {activeSession.shotId} in Flow
                   </strong>
-                  <Button
-                    onClick={handleCancelSelection}
-                    disabled={actionPending}
-                  >
-                    Cancel selection
-                  </Button>
+                  <div className={refStyles.cardActions}>
+                    <Button
+                      onClick={() =>
+                        void loadFlowImageCandidates(activeSession.sessionId)
+                      }
+                      disabled={!flowVerified || actionPending}
+                    >
+                      Browse Flow images
+                    </Button>
+                    <Button
+                      onClick={handleCancelSelection}
+                      disabled={actionPending}
+                    >
+                      Cancel selection
+                    </Button>
+                  </div>
                 </div>
                 <p className={refStyles.candidateMeta}>
                   Target Flow project: {activeSession.projectId} (Tab{" "}
-                  {activeSession.tabId}). Click an eligible gallery image in
-                  Flow to choose that card as the candidate for Shot{" "}
+                  {activeSession.tabId}). Choose an eligible gallery image in
+                  Flow or browse verified Flow images below for Shot{" "}
                   {activeSession.shotId}.
                 </p>
               </div>
             ) : null}
 
+            {activeSession && pickerSessionId === activeSession.sessionId ? (
+              <section
+                className={refStyles.pickerPanel}
+                aria-labelledby="flow-image-picker-title"
+                aria-live="polite"
+              >
+                <div className={refStyles.pickerHeader}>
+                  <div>
+                    <strong id="flow-image-picker-title">
+                      Flow images for Shot {activeSession.shotId}
+                    </strong>
+                    <p className={refStyles.candidateMeta}>
+                      Candidates come from this verified Flow document. Their
+                      prompt origin is unknown. Only images currently available
+                      in the Flow document can be listed. Scroll Flow manually
+                      to load other images, then refresh this list.
+                    </p>
+                  </div>
+                  <Button
+                    onClick={() =>
+                      void loadFlowImageCandidates(activeSession.sessionId)
+                    }
+                    disabled={actionPending}
+                  >
+                    Refresh images
+                  </Button>
+                </div>
+                {pickerStatus ? (
+                  <p className={refStyles.pickerStatus} role="status">
+                    {pickerStatus}
+                  </p>
+                ) : null}
+                {pickerAmbiguousCount > 0 ? (
+                  <p className={refStyles.pickerWarning}>
+                    {pickerAmbiguousCount} Flow card
+                    {pickerAmbiguousCount === 1 ? " was" : "s were"} omitted
+                    because its image identity was ambiguous.
+                  </p>
+                ) : null}
+                {pickerUnsupportedCount > 0 ? (
+                  <p className={refStyles.pickerWarning}>
+                    {pickerUnsupportedCount} image source
+                    {pickerUnsupportedCount === 1 ? " was" : "s were"} omitted
+                    because the source was unavailable or unsupported.
+                  </p>
+                ) : null}
+                {pickerCandidates.length > 0 ? (
+                  <div className={refStyles.pickerGrid}>
+                    {pickerCandidates.map((candidate) => (
+                      <article
+                        key={candidate.candidateId}
+                        className={refStyles.pickerCard}
+                      >
+                        <img
+                          src={candidate.sourceUrl}
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          alt={`Flow image candidate for Shot ${activeSession.shotId}`}
+                          className={refStyles.pickerThumbnail}
+                          onError={() =>
+                            setThumbnailFailures((previous) => ({
+                              ...previous,
+                              [candidate.candidateId]: true,
+                            }))
+                          }
+                        />
+                        {thumbnailFailures[candidate.candidateId] ? (
+                          <p className={refStyles.pickerWarning} role="status">
+                            Thumbnail could not load. No substitute image was
+                            used; refresh the picker or choose another image.
+                          </p>
+                        ) : null}
+                        <span className={refStyles.candidateMeta}>
+                          {candidate.providerAssetId
+                            ? `Flow asset ${candidate.providerAssetId}`
+                            : "Image source observed in Flow"}
+                        </span>
+                        <Button
+                          onClick={() =>
+                            void handleChooseFlowCandidate(
+                              candidate.candidateId,
+                            )
+                          }
+                          disabled={
+                            actionPending ||
+                            !flowVerified ||
+                            !!thumbnailFailures[candidate.candidateId]
+                          }
+                        >
+                          Choose for Shot {activeSession.shotId}
+                        </Button>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {selectionNotice ? (
+              <p className={refStyles.pickerStatus} role="status">
+                {selectionNotice}
+              </p>
+            ) : null}
             {actionError ? (
               <p className={refStyles.noticeWarning}>{actionError}</p>
             ) : null}
@@ -380,6 +624,8 @@ export function ReferenceSelection({
                       <div className={refStyles.candidateDisplay}>
                         <img
                           src={candidate.sourceUrl}
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
                           alt={`Reference candidate for Shot ${shotId}`}
                           className={refStyles.candidateThumbnail}
                           onError={(e) => {
@@ -417,6 +663,14 @@ export function ReferenceSelection({
                               Re-select candidate
                             </Button>
                             <Button
+                              onClick={() =>
+                                void handleStartSelection(shotId, true)
+                              }
+                              disabled={!flowVerified || actionPending}
+                            >
+                              Browse Flow images
+                            </Button>
+                            <Button
                               onClick={() => handleClearCandidate(shotId)}
                               disabled={actionPending}
                             >
@@ -433,12 +687,22 @@ export function ReferenceSelection({
                             : "No reference candidate selected."}
                         </span>
                         {!isTargetOfActiveSession ? (
-                          <Button
-                            onClick={() => handleStartSelection(shotId)}
-                            disabled={!flowVerified || actionPending}
-                          >
-                            Start selection
-                          </Button>
+                          <>
+                            <Button
+                              onClick={() => handleStartSelection(shotId)}
+                              disabled={!flowVerified || actionPending}
+                            >
+                              Start selection
+                            </Button>
+                            <Button
+                              onClick={() =>
+                                void handleStartSelection(shotId, true)
+                              }
+                              disabled={!flowVerified || actionPending}
+                            >
+                              Browse Flow images
+                            </Button>
+                          </>
                         ) : null}
                       </div>
                     )}

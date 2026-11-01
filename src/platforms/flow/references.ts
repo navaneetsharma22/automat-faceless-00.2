@@ -1,9 +1,34 @@
 import type {
   ActiveReferenceSelectionSession,
   FlowReferenceCandidateSelectedMessage,
+  FlowReferencePickerCandidate,
 } from "../../shared/schemas";
 import { FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE } from "../../shared/schemas";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
+
+export const FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE =
+  "AUTOMAT_FLOW_REFERENCE_CONTEXT_MENU_ACK" as const;
+export const FLOW_REFERENCE_CONTEXT_MENU_PREFIX =
+  "automat-flow-reference-session-";
+
+export function flowReferenceContextMenuId(sessionId: string): string {
+  return `${FLOW_REFERENCE_CONTEXT_MENU_PREFIX}${sessionId}`;
+}
+
+export function createFlowReferenceContextMenuProperties(
+  session: ActiveReferenceSelectionSession,
+) {
+  return {
+    id: flowReferenceContextMenuId(session.sessionId),
+    title: `Use as reference for Shot ${session.shotId}`,
+    contexts: ["image"] as ["image"],
+    documentUrlPatterns: [
+      "https://flow.google.com/project/*",
+      "https://flow.google.com/u/*/project/*",
+      "https://labs.google/fx/tools/flow/*",
+    ],
+  };
+}
 
 export const FLOW_REFERENCE_SELECTION_KEY =
   "__AUTOMAT_FLOW_REFERENCE_SELECTION_V1__";
@@ -19,11 +44,18 @@ export function createFlowReferenceSelectionInjection(
     },
     world: "ISOLATED" as const,
     func: flowReferenceSelectionProducer,
-    args: [session, command, BUILD_ID, PROTOCOL_VERSION] as [
+    args: [
+      session,
+      command,
+      BUILD_ID,
+      PROTOCOL_VERSION,
+      FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+    ] as [
       ActiveReferenceSelectionSession,
       typeof command,
       string,
       number,
+      typeof FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
     ],
   };
 }
@@ -37,12 +69,29 @@ export async function flowReferenceSelectionProducer(
   command: "start" | "cancel",
   buildId = session.sessionId,
   protocolVersion = 1,
+  contextMenuAckType = "AUTOMAT_FLOW_REFERENCE_CONTEXT_MENU_ACK",
 ): Promise<{ status: string; reason?: string }> {
   const stateKey = "__AUTOMAT_FLOW_REFERENCE_SELECTION_V1__";
   const globalScope = globalThis as typeof globalThis & {
     chrome?: {
       runtime?: {
         sendMessage?: (message: unknown) => Promise<unknown>;
+        onMessage?: {
+          addListener: (
+            listener: (
+              message: unknown,
+              sender: unknown,
+              sendResponse: (response: unknown) => void,
+            ) => void,
+          ) => void;
+          removeListener: (
+            listener: (
+              message: unknown,
+              sender: unknown,
+              sendResponse: (response: unknown) => void,
+            ) => void,
+          ) => void;
+        };
       };
     };
     [stateKey]?: {
@@ -194,7 +243,10 @@ export async function flowReferenceSelectionProducer(
     card: HTMLElement,
   ):
     | { image: HTMLImageElement; reason?: never }
-    | { image?: never; reason: "image_missing_or_ambiguous" | "image_not_visible" } => {
+    | {
+        image?: never;
+        reason: "image_missing_or_ambiguous" | "image_not_visible";
+      } => {
     const cardIndex = elements.indexOf(card);
     const pathImages = elements
       .slice(0, Math.max(0, cardIndex))
@@ -207,9 +259,7 @@ export async function flowReferenceSelectionProducer(
     }
     if (pathImages.length === 1) {
       const image = pathImages[0]!;
-      return isVisible(image)
-        ? { image }
-        : { reason: "image_not_visible" };
+      return isVisible(image) ? { image } : { reason: "image_not_visible" };
     }
 
     const ownedImages = Array.from(card.querySelectorAll("img")).filter(
@@ -398,7 +448,7 @@ export async function flowReferenceSelectionProducer(
     ).length;
   };
   const updateDiagnostics = () => {
-    diagnosticStatus.textContent = `Diagnostics: eligible cards ${countEligibleCards()}; click listener ${clickReached ? "reached" : "not reached"}; card ${cardResolved ? "resolved" : "not resolved"}; submission ${submissionStage}.`;
+    diagnosticStatus.textContent = `Diagnostics: build ${buildId}; session ${session.sessionId}; eligible cards ${countEligibleCards()}; click listener ${clickReached ? "reached" : "not reached"}; card ${cardResolved ? "resolved" : "not resolved"}; submission ${submissionStage}.`;
   };
   const setDiagnosticReason = (reason: string) => {
     submissionStage = reason.slice(0, 64);
@@ -415,11 +465,179 @@ export async function flowReferenceSelectionProducer(
     !globalScope[stateKey]?.cancelled &&
     globalScope[stateKey]?.session.sessionId === session.sessionId;
 
+  const candidateTokens = new Map<string, FlowReferencePickerCandidate>();
+  const collectPickerCandidates = () => {
+    const discovered: Array<Omit<FlowReferencePickerCandidate, "candidateId">> =
+      [];
+    let ambiguousCount = 0;
+    let unsupportedCount = 0;
+    const cards = Array.from(project.querySelectorAll("*")).filter(
+      isEligibleCard,
+    );
+    for (const card of cards) {
+      const ownedImages = Array.from(card.querySelectorAll("img")).filter(
+        (img) => !isExcluded(img) && findEligibleCard(img) === card,
+      );
+      if (ownedImages.length !== 1) {
+        if (ownedImages.length > 1) ambiguousCount += 1;
+        continue;
+      }
+      const img = ownedImages[0]!;
+      if (!isVisible(img)) continue;
+      const sourceUrl = img.currentSrc || img.src;
+      let source: URL;
+      try {
+        source = new URL(sourceUrl);
+      } catch {
+        unsupportedCount += 1;
+        continue;
+      }
+      if (source.protocol !== "https:" || sourceUrl.length > 4096) {
+        unsupportedCount += 1;
+        continue;
+      }
+      const providerAssetId =
+        img.getAttribute("data-media-id")?.trim() ||
+        card.getAttribute("data-asset-id")?.trim() ||
+        img.getAttribute("data-asset-id")?.trim() ||
+        undefined;
+      discovered.push({
+        sourceUrl,
+        naturalWidth: img.naturalWidth || 0,
+        naturalHeight: img.naturalHeight || 0,
+        displayWidth: Math.round(img.clientWidth || 0),
+        displayHeight: Math.round(img.clientHeight || 0),
+        ...(providerAssetId ? { providerAssetId } : {}),
+        cardTag: tag(card),
+        selectedAt: Date.now(),
+      });
+    }
+
+    const identityKey = (
+      candidate: Omit<FlowReferencePickerCandidate, "candidateId">,
+    ) =>
+      JSON.stringify([candidate.sourceUrl, candidate.providerAssetId ?? null]);
+    const signature = (
+      candidate: Omit<FlowReferencePickerCandidate, "candidateId">,
+    ) =>
+      JSON.stringify([
+        candidate.sourceUrl,
+        candidate.providerAssetId ?? null,
+        candidate.cardTag,
+        candidate.naturalWidth,
+        candidate.naturalHeight,
+      ]);
+    const counts = new Map<string, number>();
+    for (const candidate of discovered) {
+      const key = identityKey(candidate);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const ambiguousIdentities = new Set(
+      Array.from(counts.entries())
+        .filter(([, count]) => count > 1)
+        .map(([key]) => key),
+    );
+    const unique = discovered.filter(
+      (candidate) => counts.get(identityKey(candidate)) === 1,
+    );
+    ambiguousCount += discovered.length - unique.length;
+    return {
+      // Bound message size and per-document token storage. DOM order is display
+      // order only; opaque tokens and the observed source establish identity.
+      candidates: unique.slice(0, 300).map((candidate) => ({
+        ...candidate,
+        candidateId: crypto.randomUUID(),
+      })),
+      ambiguousCount,
+      unsupportedCount,
+      signature,
+      ambiguousIdentities,
+      identityKey,
+    };
+  };
+
+  const onRuntimeMessage = (
+    message: unknown,
+    _sender: unknown,
+    sendResponse: (response: unknown) => void,
+  ) => {
+    if (
+      message !== null &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "AUTOMAT_FLOW_REFERENCE_PICKER_REQUEST" &&
+      "buildId" in message &&
+      message.buildId === buildId &&
+      "sessionId" in message &&
+      message.sessionId === session.sessionId &&
+      "action" in message &&
+      isCurrentSession()
+    ) {
+      if (message.action === "list") {
+        candidateTokens.clear();
+        const result = collectPickerCandidates();
+        for (const candidate of result.candidates) {
+          candidateTokens.set(candidate.candidateId, candidate);
+        }
+        sendResponse({
+          ok: true,
+          buildId,
+          sessionId: session.sessionId,
+          candidates: result.candidates,
+          ambiguousCount: result.ambiguousCount,
+          unsupportedCount: result.unsupportedCount,
+        });
+      } else if (
+        message.action === "resolve" &&
+        "candidateId" in message &&
+        typeof message.candidateId === "string"
+      ) {
+        const observed = candidateTokens.get(message.candidateId);
+        if (!observed) {
+          sendResponse({
+            ok: false,
+            code: "candidate_missing_or_changed",
+            buildId,
+            sessionId: session.sessionId,
+          });
+          return;
+        }
+        const fresh = collectPickerCandidates();
+        const observedSignature = fresh.signature(observed);
+        const observedIdentity = fresh.identityKey(observed);
+        const matches = fresh.candidates.filter(
+          (candidate) => fresh.signature(candidate) === observedSignature,
+        );
+        if (matches.length !== 1) {
+          sendResponse({
+            ok: false,
+            code:
+              matches.length > 1 ||
+              fresh.ambiguousIdentities.has(observedIdentity)
+                ? "candidate_ambiguous"
+                : "candidate_missing_or_changed",
+            buildId,
+            sessionId: session.sessionId,
+          });
+          return;
+        }
+        sendResponse({
+          ok: true,
+          buildId,
+          sessionId: session.sessionId,
+          candidate: matches[0],
+        });
+      }
+    }
+  };
+
   const stopInteraction = () => {
     if (!interactionActive) return;
     interactionActive = false;
     window.removeEventListener("click", onSelectionClick, { capture: true });
     window.removeEventListener("keydown", onKeyDown, { capture: true });
+    runtime?.onMessage?.removeListener(onRuntimeMessage);
+    runtime?.onMessage?.removeListener(onRuntimeAcknowledgement as never);
     observer.disconnect();
     if (observerAnimationFrame !== null) {
       cancelAnimationFrame(observerAnimationFrame);
@@ -521,6 +739,22 @@ export async function flowReferenceSelectionProducer(
     }, 2500);
   };
 
+  const onRuntimeAcknowledgement = (message: unknown) => {
+    if (
+      message !== null &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === contextMenuAckType &&
+      "sessionId" in message &&
+      message.sessionId === session.sessionId &&
+      "shotId" in message &&
+      message.shotId === session.shotId &&
+      isCurrentSession()
+    ) {
+      showAccepted();
+    }
+  };
+
   const submitCandidate = async (
     message: FlowReferenceCandidateSelectedMessage,
   ) => {
@@ -588,13 +822,34 @@ export async function flowReferenceSelectionProducer(
   };
 
   const performSelection = (card: HTMLElement, img: HTMLImageElement) => {
-    if (submissionPending || !isCurrentSession()) return;
+    if (submissionPending) {
+      setDiagnosticReason("selection_already_pending");
+      return;
+    }
+    if (!isCurrentSession()) {
+      setDiagnosticReason("session_inactive");
+      return;
+    }
+    if (!isVisible(img)) {
+      setDiagnosticReason("image_not_visible");
+      return;
+    }
 
     const sourceUrl = img.currentSrc || img.src;
-    if (!sourceUrl || sourceUrl.startsWith("data:,")) {
+    let source: URL;
+    try {
+      source = new URL(sourceUrl);
+    } catch {
       setFailure(
-        "This card has no usable image URL. Choose another gallery image.",
-        "candidate unavailable",
+        "The selected image source is unavailable. Choose another image in this Shot.",
+        "source_unavailable_or_unsupported",
+      );
+      return;
+    }
+    if (source.protocol !== "https:") {
+      setFailure(
+        "This image source type is unsupported. Choose another image in this Shot.",
+        "source_unavailable_or_unsupported",
       );
       return;
     }
@@ -635,10 +890,14 @@ export async function flowReferenceSelectionProducer(
       event.target instanceof Element
         ? event.target
         : (pathElements[0] ?? null);
-    if (!target) return;
+    if (!target) {
+      setDiagnosticReason("click_target_missing");
+      return;
+    }
 
     // Banner cancel button
     if (target === bannerCancelBtn || bannerCancelBtn.contains(target)) {
+      setDiagnosticReason("selection_cancelled");
       event.preventDefault();
       event.stopPropagation();
       cleanup();
@@ -654,10 +913,12 @@ export async function flowReferenceSelectionProducer(
 
     // Click inside banner: ignore
     if (banner.contains(target)) {
+      setDiagnosticReason("banner_interaction_ignored");
       return;
     }
 
     if (submissionPending) {
+      setDiagnosticReason("selection_already_pending");
       const pendingCard = findEligibleCardFromPath(pathElements, target);
       if (pendingCard) {
         event.preventDefault();
@@ -679,12 +940,20 @@ export async function flowReferenceSelectionProducer(
       const card = findEligibleCardFromPath(pathElements, target);
       cardResolved = card !== null;
       updateDiagnostics();
-      if (card) {
-        const img = findImageFromPath(pathElements, card);
-        if (img) {
-          performSelection(card, img);
-        }
+      if (!card) {
+        setDiagnosticReason("card_unresolved");
+        return;
       }
+      if (isKnownNativeAction(pathElements, card)) {
+        setDiagnosticReason("native_action_ignored");
+        return;
+      }
+      const resolved = resolveImageForCard(pathElements, card);
+      if (!resolved.image) {
+        setDiagnosticReason(resolved.reason);
+        return;
+      }
+      performSelection(card, resolved.image);
       return;
     }
 
@@ -692,18 +961,24 @@ export async function flowReferenceSelectionProducer(
     const card = findEligibleCardFromPath(pathElements, target);
     cardResolved = card !== null;
     updateDiagnostics();
-    if (card) {
-      if (isKnownNativeAction(pathElements, card)) return;
-      const img = findImageFromPath(pathElements, card);
-      if (img) {
-        // Suppress native action only for a selection interaction handled by this mode
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        performSelection(card, img);
-        return;
-      }
+    if (!card) {
+      setDiagnosticReason("card_unresolved");
+      return;
     }
+    if (isKnownNativeAction(pathElements, card)) {
+      setDiagnosticReason("native_action_ignored");
+      return;
+    }
+    const resolved = resolveImageForCard(pathElements, card);
+    if (!resolved.image) {
+      setDiagnosticReason(resolved.reason);
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    performSelection(card, resolved.image);
 
     // Outside eligible cards: normal Flow interactions preserved
   };
@@ -725,6 +1000,8 @@ export async function flowReferenceSelectionProducer(
   // Run before document capture so window-level stopPropagation cannot hide the click.
   window.addEventListener("click", onSelectionClick, { capture: true });
   window.addEventListener("keydown", onKeyDown, { capture: true });
+  runtime.onMessage?.addListener(onRuntimeMessage);
+  runtime.onMessage?.addListener(onRuntimeAcknowledgement as never);
 
   globalScope[stateKey] = {
     session,

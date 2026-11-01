@@ -120,6 +120,11 @@ export type RequestPayloads = {
   "flow.reference.cancelSelection": { sessionId: string };
   "flow.reference.getState": { workspaceId: string };
   "flow.reference.clearCandidate": { workspaceId: string; shotId: string };
+  "flow.reference.listCandidates": { sessionId: string };
+  "flow.reference.chooseCandidate": {
+    sessionId: string;
+    candidateId: string;
+  };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -166,6 +171,8 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.reference.cancelSelection": 5000,
   "flow.reference.getState": 5000,
   "flow.reference.clearCandidate": 5000,
+  "flow.reference.listCandidates": 10_000,
+  "flow.reference.chooseCandidate": 10_000,
 };
 
 export function makeRequest<T extends RequestTypes>(

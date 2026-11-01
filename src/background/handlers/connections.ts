@@ -84,6 +84,11 @@ export type FoundationDependencies = {
     }) => Promise<unknown>;
     cancelSelection: (sessionId: string, reason?: string) => Promise<unknown>;
     getState: (workspaceId: string) => Promise<unknown>;
+    listCandidates?: (sessionId: string) => Promise<unknown>;
+    chooseCandidate?: (
+      sessionId: string,
+      candidateId: string,
+    ) => Promise<unknown>;
     clearCandidate: (workspaceId: string, shotId: string) => Promise<unknown>;
     handleCandidateSelected: (
       message: unknown,
@@ -534,6 +539,51 @@ async function dispatch(
       return await dependencies.flowReferenceHandler.getState(
         request.payload.workspaceId,
       );
+    case "flow.reference.listCandidates":
+      if (!dependencies.flowReferenceHandler?.listCandidates) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference selection is unavailable in this worker context.",
+        );
+      }
+      try {
+        return await dependencies.flowReferenceHandler.listCandidates(
+          request.payload.sessionId,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError) {
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
+        }
+        throw err;
+      }
+    case "flow.reference.chooseCandidate":
+      if (!dependencies.flowReferenceHandler?.chooseCandidate) {
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_selection_unavailable",
+          "Reference selection is unavailable in this worker context.",
+        );
+      }
+      try {
+        return await dependencies.flowReferenceHandler.chooseCandidate(
+          request.payload.sessionId,
+          request.payload.candidateId,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError) {
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
+        }
+        throw err;
+      }
     case "flow.reference.clearCandidate":
       if (!dependencies.flowReferenceHandler) {
         throw new FoundationOperationError(

@@ -4,7 +4,10 @@ import {
   ReferenceSelectionError,
 } from "../../src/background/handlers/references";
 import {
+  FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+  createFlowReferenceContextMenuProperties,
   createFlowReferenceSelectionInjection,
+  flowReferenceContextMenuId,
   flowReferenceSelectionProducer,
 } from "../../src/platforms/flow/references";
 import {
@@ -24,6 +27,16 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
     const repositories = new ExtensionRepositories(database, () => clock);
     const broadcastEvents: unknown[] = [];
     const scriptInjections: unknown[] = [];
+    const contextMenuSessions: ActiveReferenceSelectionSession[] = [];
+    const removedContextMenuSessions: string[] = [];
+    const documentMessages: Array<{
+      tabId: number;
+      documentId: string;
+      message: unknown;
+    }> = [];
+    let documentReply: unknown;
+    let currentDocumentId = "doc-flow-1";
+    let failContextMenu = false;
 
     const storageMap = new Map<string, unknown>();
     const storageSession = {
@@ -51,12 +64,26 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       broadcastMessage: async (msg) => {
         broadcastEvents.push(msg);
       },
+      contextMenu: {
+        ready: Promise.resolve(),
+        create: async (session) => {
+          if (failContextMenu) throw new Error("Context menu unavailable");
+          contextMenuSessions.push(session);
+        },
+        remove: async (sessionId) => {
+          removedContextMenuSessions.push(sessionId);
+        },
+      },
+      sendToDocument: async (tabId, documentId, message) => {
+        documentMessages.push({ tabId, documentId, message });
+        return documentReply;
+      },
       scripting: {
         executeScript: async (injection) => {
           scriptInjections.push(injection);
           return [
             {
-              documentId: "doc-flow-1",
+              documentId: currentDocumentId,
               frameId: 0,
               result: "https://flow.google.com/project/proj-1",
             },
@@ -73,6 +100,18 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       storageSession,
       broadcastEvents,
       scriptInjections,
+      contextMenuSessions,
+      removedContextMenuSessions,
+      documentMessages,
+      failContextMenu: () => {
+        failContextMenu = true;
+      },
+      setDocumentReply: (reply: unknown) => {
+        documentReply = reply;
+      },
+      setCurrentDocumentId: (documentId: string) => {
+        currentDocumentId = documentId;
+      },
       clock: (ms?: number) => (ms !== undefined ? (clock = ms) : clock),
     };
   }
@@ -405,8 +444,8 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
 
       const candidatePayload: FlowReferenceCandidateSelectedMessage = {
         type: FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE,
-        protocolVersion: 1,
-        buildId: session.sessionId,
+        protocolVersion: PROTOCOL_VERSION,
+        buildId: BUILD_ID,
         sessionId: session.sessionId,
         workspaceId: "ws-1",
         batchId: batch.batch.id,
@@ -432,6 +471,332 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
 
       return { ...fixture, session, batch, candidatePayload, validSender };
     }
+
+    function contextMenuEvent(sessionId: string) {
+      return {
+        info: {
+          menuItemId: flowReferenceContextMenuId(sessionId),
+          mediaType: "image",
+          srcUrl: "https://lh3.googleusercontent.com/flow-result-token",
+          pageUrl: "https://flow.google.com/project/proj-1",
+          frameUrl: "https://flow.google.com/project/proj-1",
+          frameId: 0,
+        },
+        tab: {
+          id: 101,
+          url: "https://flow.google.com/project/proj-1",
+        },
+      };
+    }
+
+    it("lists and revalidates one candidate in the bound Flow document before accepting it", async () => {
+      const { handler, documentMessages, setDocumentReply, broadcastEvents } =
+        await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      const candidateId = "00000000-0000-4000-8000-000000000001";
+      const candidate = {
+        candidateId,
+        sourceUrl: "https://lh3.googleusercontent.com/flow-image-token",
+        naturalWidth: 1024,
+        naturalHeight: 768,
+        displayWidth: 256,
+        displayHeight: 192,
+        providerAssetId: "stable-flow-asset-40",
+        cardTag: "flow-image-tile",
+        selectedAt: 10_000,
+      };
+      setDocumentReply({
+        ok: true,
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidates: [candidate],
+        ambiguousCount: 0,
+        unsupportedCount: 0,
+      });
+
+      const list = await handler.listCandidates(active.sessionId);
+      expect(list.candidates).toEqual([candidate]);
+      expect(documentMessages[0]).toMatchObject({
+        tabId: active.tabId,
+        documentId: active.documentId,
+        message: { action: "list", sessionId: active.sessionId },
+      });
+
+      setDocumentReply({
+        ok: true,
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidate,
+      });
+      const result = await handler.chooseCandidate(
+        active.sessionId,
+        candidateId,
+      );
+      expect(result.accepted).toBe(true);
+      expect(documentMessages[1]).toMatchObject({
+        tabId: active.tabId,
+        documentId: active.documentId,
+        message: { action: "resolve", candidateId },
+      });
+      expect(broadcastEvents).toContainEqual(
+        expect.objectContaining({
+          event: "candidate_selected",
+          retained: false,
+          candidate: expect.objectContaining({
+            sourceUrl: candidate.sourceUrl,
+            providerAssetId: candidate.providerAssetId,
+          }),
+        }),
+      );
+      expect(documentMessages[2].message).toMatchObject({
+        type: FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+        sessionId: active.sessionId,
+        shotId: active.shotId,
+      });
+    });
+
+    it("rejects a resolver response for a different opaque token", async () => {
+      const { handler, setDocumentReply, broadcastEvents } =
+        await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      setDocumentReply({
+        ok: true,
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidate: {
+          candidateId: "00000000-0000-4000-8000-000000000009",
+          sourceUrl: "https://lh3.googleusercontent.com/other-image",
+          naturalWidth: 1024,
+          naturalHeight: 768,
+          displayWidth: 256,
+          displayHeight: 192,
+          cardTag: "flow-image-tile",
+          selectedAt: 10000,
+        },
+      });
+      await expect(
+        handler.chooseCandidate(
+          active.sessionId,
+          "00000000-0000-4000-8000-000000000008",
+        ),
+      ).rejects.toMatchObject({ code: "candidate_missing_or_changed" });
+      expect(await handler.getActiveSession()).not.toBeNull();
+      expect(broadcastEvents).not.toContainEqual(
+        expect.objectContaining({ event: "candidate_selected" }),
+      );
+    });
+
+    it("starts the independent picker even when native context-menu setup fails", async () => {
+      const fixture = await setupActiveSession();
+      const original = (await fixture.handler.getActiveSession())!;
+      fixture.failContextMenu();
+      const result = await fixture.handler.startSelection({
+        workspaceId: original.workspaceId,
+        batchId: original.batchId,
+        shotId: original.shotId,
+      });
+      expect(result.status).toBe("started");
+      expect((await fixture.handler.getActiveSession())?.sessionId).toBe(
+        result.sessionId,
+      );
+    });
+
+    it("rejects a missing or changed picker candidate without accepting a substitute", async () => {
+      const { handler, setDocumentReply, broadcastEvents } =
+        await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      setDocumentReply({
+        ok: false,
+        code: "candidate_missing_or_changed",
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+      });
+
+      await expect(
+        handler.chooseCandidate(
+          active.sessionId,
+          "00000000-0000-4000-8000-000000000002",
+        ),
+      ).rejects.toMatchObject({ code: "candidate_missing_or_changed" });
+      expect(broadcastEvents).not.toContainEqual(
+        expect.objectContaining({ event: "candidate_selected" }),
+      );
+    });
+
+    it("refuses to list candidates after the verified document identity changes", async () => {
+      const { handler, setCurrentDocumentId, documentMessages } =
+        await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      setCurrentDocumentId("replacement-document");
+
+      await expect(
+        handler.listCandidates(active.sessionId),
+      ).rejects.toMatchObject({ code: "wrong_document" });
+      expect(documentMessages).toHaveLength(0);
+    });
+
+    it("allows only one concurrent picker choice for an active session", async () => {
+      const { handler, setDocumentReply, broadcastEvents } =
+        await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      const candidateId = "00000000-0000-4000-8000-000000000003";
+      setDocumentReply({
+        ok: true,
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidate: {
+          candidateId,
+          sourceUrl: "https://lh3.googleusercontent.com/unique-image",
+          naturalWidth: 1280,
+          naturalHeight: 720,
+          displayWidth: 256,
+          displayHeight: 144,
+          cardTag: "flow-image-tile",
+          selectedAt: 10_000,
+        },
+      });
+
+      const results = await Promise.allSettled([
+        handler.chooseCandidate(active.sessionId, candidateId),
+        handler.chooseCandidate(active.sessionId, candidateId),
+      ]);
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === "rejected"),
+      ).toHaveLength(1);
+      expect(
+        broadcastEvents.filter(
+          (event) =>
+            event !== null &&
+            typeof event === "object" &&
+            "event" in event &&
+            event.event === "candidate_selected",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("restores the menu only for the still-verified active session", async () => {
+      const { handler, contextMenuSessions } = await setupActiveSession();
+      contextMenuSessions.length = 0;
+
+      await expect(handler.restoreActiveContextMenu()).resolves.toBe(true);
+      expect(contextMenuSessions).toHaveLength(1);
+      expect(contextMenuSessions[0]).toMatchObject({
+        status: "active",
+        shotId: "40",
+      });
+    });
+
+    it("limits the menu to image contexts on supported Flow routes", () => {
+      const session: ActiveReferenceSelectionSession = {
+        sessionId: "selection-session-1",
+        workspaceId: "ws-1",
+        batchId: "batch-1",
+        sourceHash: "batch-1",
+        shotId: "40",
+        tabId: 101,
+        projectId: "proj-1",
+        canonicalTarget: "https://flow.google.com/project/proj-1",
+        documentId: "doc-flow-1",
+        frameId: 0,
+        startedAt: 10_000,
+        status: "active",
+      };
+
+      expect(createFlowReferenceContextMenuProperties(session)).toEqual({
+        id: flowReferenceContextMenuId(session.sessionId),
+        title: "Use as reference for Shot 40",
+        contexts: ["image"],
+        documentUrlPatterns: [
+          "https://flow.google.com/project/*",
+          "https://flow.google.com/u/*/project/*",
+          "https://labs.google/fx/tools/flow/*",
+        ],
+      });
+    });
+
+    it("accepts an image context-menu event through the existing transient candidate path", async () => {
+      const { handler, broadcastEvents, removedContextMenuSessions } =
+        await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      const { info, tab } = contextMenuEvent(active.sessionId);
+
+      const result = await handler.handleContextMenu(info, tab);
+
+      expect(result).toEqual({ accepted: true, session: active });
+      const state = await handler.getState(active.workspaceId);
+      expect(state.candidates[active.shotId]).toMatchObject({
+        sourceUrl: info.srcUrl,
+        naturalWidth: 0,
+        naturalHeight: 0,
+        cardTag: "context-menu-image",
+      });
+      expect(broadcastEvents).toContainEqual(
+        expect.objectContaining({
+          type: FLOW_REFERENCE_EVENT_MESSAGE,
+          event: "candidate_selected",
+          sessionId: active.sessionId,
+          shotId: active.shotId,
+          retained: false,
+          message: expect.stringContaining(
+            "image capture and saving are not implemented in this phase.",
+          ),
+        }),
+      );
+      expect(removedContextMenuSessions).toContain(active.sessionId);
+    });
+
+    it("rejects context-menu events from the wrong target and frame", async () => {
+      const { handler } = await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      const event = contextMenuEvent(active.sessionId);
+
+      const wrongTab = await handler.handleContextMenu(event.info, {
+        ...event.tab,
+        id: 999,
+      });
+      const wrongFrame = await handler.handleContextMenu(
+        { ...event.info, frameId: 2 },
+        event.tab,
+      );
+
+      expect(wrongTab).toEqual({ accepted: false, code: "wrong_tab" });
+      expect(wrongFrame).toEqual({ accepted: false, code: "wrong_frame" });
+      expect(await handler.getActiveSession()).toMatchObject({
+        sessionId: active.sessionId,
+      });
+    });
+
+    it("rejects a context-menu event after cancellation", async () => {
+      const { handler } = await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      await handler.cancelSelection(active.sessionId);
+
+      const event = contextMenuEvent(active.sessionId);
+      const result = await handler.handleContextMenu(event.info, event.tab);
+
+      expect(result).toEqual({ accepted: false, code: "stale_session" });
+    });
+
+    it("allows only one of two duplicate context-menu events to claim the session", async () => {
+      const { handler } = await setupActiveSession();
+      const active = (await handler.getActiveSession())!;
+      const event = contextMenuEvent(active.sessionId);
+
+      const results = await Promise.all([
+        handler.handleContextMenu(event.info, event.tab),
+        handler.handleContextMenu(event.info, event.tab),
+      ]);
+
+      expect(results.filter((result) => result.accepted)).toHaveLength(1);
+      expect(results.filter((result) => !result.accepted)).toHaveLength(1);
+      const state = await handler.getState(active.workspaceId);
+      expect(state.candidates[active.shotId]?.sourceUrl).toBe(
+        event.info.srcUrl,
+      );
+    });
 
     it("rejects unauthorized sender extension ID", async () => {
       const { handler, candidatePayload, validSender } =
@@ -592,8 +957,9 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         shotId: "40",
         candidate: candidatePayload.candidate,
         retained: false,
-        message:
-          "Candidate selected — image capture and saving are not implemented in this phase.",
+        message: expect.stringContaining(
+          "image capture and saving are not implemented in this phase.",
+        ),
       });
 
       // No durable database changes or prompt batch modifications occurred
@@ -642,6 +1008,7 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         "start",
         BUILD_ID,
         PROTOCOL_VERSION,
+        FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
       ]);
     });
 
@@ -1061,6 +1428,231 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       vi.useRealTimers();
     });
 
+    it("shows the context-menu acknowledgement only for its matching active session", async () => {
+      vi.useFakeTimers();
+      const { mockDoc, mockBody } = setupSyntheticFlowDom();
+      const project = new SyntheticElement("flow-project-page");
+      const card = new SyntheticElement("flow-image-tile");
+      const image = new SyntheticElement("img");
+      image.currentSrc = "https://flow.google.com/media/selected";
+      card.appendChild(image);
+      project.appendChild(card);
+      mockBody.appendChild(project);
+      const session: ActiveReferenceSelectionSession = {
+        sessionId: "sess-context-menu-ack",
+        workspaceId: "ws-1",
+        batchId: "batch-1",
+        sourceHash: "3".repeat(64),
+        shotId: "63",
+        tabId: 101,
+        projectId: "proj-1",
+        canonicalTarget: "https://flow.google.com/project/proj-1",
+        documentId: "doc-1",
+        frameId: 0,
+        startedAt: 10_000,
+        status: "active",
+      };
+      const runtimeListeners: Array<(message: unknown) => void> = [];
+      (globalThis as unknown as { chrome: unknown }).chrome = {
+        runtime: {
+          sendMessage: async () => undefined,
+          onMessage: {
+            addListener: (listener: (message: unknown) => void) => {
+              runtimeListeners.push(listener);
+            },
+            removeListener: (listener: (message: unknown) => void) => {
+              const index = runtimeListeners.indexOf(listener);
+              if (index >= 0) runtimeListeners.splice(index, 1);
+            },
+          },
+        },
+      };
+      await flowReferenceSelectionProducer(
+        session,
+        "start",
+        BUILD_ID,
+        PROTOCOL_VERSION,
+        FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+      );
+      const status = mockDoc
+        .getElementById("automat-faceless-selection-banner")
+        ?.querySelector("[role='status']");
+
+      runtimeListeners[1]?.({
+        type: FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+        sessionId: "old-session",
+        shotId: "63",
+      });
+      expect(status?.textContent).toBe("");
+
+      runtimeListeners[1]?.({
+        type: FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+        sessionId: session.sessionId,
+        shotId: session.shotId,
+      });
+      expect(status?.textContent).toBe(
+        "✓ Candidate selected for Shot 63. Return to References.",
+      );
+      expect(runtimeListeners).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2500);
+      vi.useRealTimers();
+    });
+
+    it("lists only unique eligible images and refuses a changed candidate token", async () => {
+      const { mockBody } = setupSyntheticFlowDom();
+      const project = new SyntheticElement("flow-project-page");
+      const eligibleCard = new SyntheticElement("flow-image-tile");
+      const eligibleImage = new SyntheticElement("img");
+      eligibleImage.currentSrc = "https://flow.google.com/media/owned-image";
+      eligibleCard.setAttribute("data-asset-id", "asset-one");
+      eligibleCard.appendChild(eligibleImage);
+      project.appendChild(eligibleCard);
+
+      const ambiguousCard = new SyntheticElement("flow-image-tile");
+      const first = new SyntheticElement("img");
+      first.currentSrc = "https://flow.google.com/media/ambiguous-one";
+      const second = new SyntheticElement("img");
+      second.currentSrc = "https://flow.google.com/media/ambiguous-two";
+      ambiguousCard.appendChild(first);
+      ambiguousCard.appendChild(second);
+      project.appendChild(ambiguousCard);
+
+      const unrelatedImage = new SyntheticElement("img");
+      unrelatedImage.currentSrc = "https://flow.google.com/media/unrelated";
+      mockBody.appendChild(project);
+      mockBody.appendChild(unrelatedImage);
+
+      const session: ActiveReferenceSelectionSession = {
+        sessionId: "sess-picker-discovery",
+        workspaceId: "ws-1",
+        batchId: "batch-1",
+        sourceHash: "4".repeat(64),
+        shotId: "64",
+        tabId: 101,
+        projectId: "proj-1",
+        canonicalTarget: "https://flow.google.com/project/proj-1",
+        documentId: "doc-1",
+        frameId: 0,
+        startedAt: 10_000,
+        status: "active",
+      };
+      const listeners: Array<
+        (
+          message: unknown,
+          sender: unknown,
+          sendResponse: (response: unknown) => void,
+        ) => void
+      > = [];
+      (globalThis as unknown as { chrome: unknown }).chrome = {
+        runtime: {
+          sendMessage: async () => undefined,
+          onMessage: {
+            addListener: (listener: (message: unknown) => void) => {
+              listeners.push(listener as (typeof listeners)[number]);
+            },
+            removeListener: (listener: (message: unknown) => void) => {
+              const index = listeners.indexOf(
+                listener as (typeof listeners)[number],
+              );
+              if (index >= 0) listeners.splice(index, 1);
+            },
+          },
+        },
+      };
+      await flowReferenceSelectionProducer(session, "start", BUILD_ID);
+
+      let listResponse: unknown;
+      listeners[0]?.(
+        {
+          type: "AUTOMAT_FLOW_REFERENCE_PICKER_REQUEST",
+          action: "list",
+          buildId: BUILD_ID,
+          sessionId: session.sessionId,
+        },
+        {},
+        (response) => (listResponse = response),
+      );
+      expect(listResponse).toMatchObject({
+        ok: true,
+        sessionId: session.sessionId,
+        candidates: [
+          {
+            sourceUrl: eligibleImage.currentSrc,
+            providerAssetId: "asset-one",
+          },
+        ],
+        ambiguousCount: 1,
+      });
+      expect(JSON.stringify(listResponse)).not.toContain("unrelated");
+
+      const candidateId = (
+        listResponse as { candidates: Array<{ candidateId: string }> }
+      ).candidates[0]!.candidateId;
+      eligibleImage.clientWidth = 400;
+      eligibleImage.clientHeight = 300;
+      let resizedResponse: unknown;
+      listeners[0]?.(
+        {
+          type: "AUTOMAT_FLOW_REFERENCE_PICKER_REQUEST",
+          action: "resolve",
+          buildId: BUILD_ID,
+          sessionId: session.sessionId,
+          candidateId,
+        },
+        {},
+        (response) => (resizedResponse = response),
+      );
+      expect(resizedResponse).toMatchObject({
+        ok: true,
+        candidate: {
+          sourceUrl: eligibleImage.currentSrc,
+          displayWidth: 400,
+          displayHeight: 300,
+        },
+      });
+      eligibleImage.currentSrc = "https://flow.google.com/media/replaced";
+      let resolveResponse: unknown;
+      listeners[0]?.(
+        {
+          type: "AUTOMAT_FLOW_REFERENCE_PICKER_REQUEST",
+          action: "resolve",
+          buildId: BUILD_ID,
+          sessionId: session.sessionId,
+          candidateId,
+        },
+        {},
+        (response) => (resolveResponse = response),
+      );
+      expect(resolveResponse).toMatchObject({
+        ok: false,
+        code: "candidate_missing_or_changed",
+      });
+
+      eligibleImage.currentSrc = "https://flow.google.com/media/owned-image";
+      const duplicateCard = new SyntheticElement("flow-image-tile");
+      const duplicateImage = new SyntheticElement("img");
+      duplicateImage.currentSrc = eligibleImage.currentSrc;
+      duplicateCard.setAttribute("data-asset-id", "asset-one");
+      duplicateCard.appendChild(duplicateImage);
+      project.appendChild(duplicateCard);
+      let ambiguousResponse: unknown;
+      listeners[0]?.(
+        {
+          type: "AUTOMAT_FLOW_REFERENCE_PICKER_REQUEST",
+          action: "resolve",
+          buildId: BUILD_ID,
+          sessionId: session.sessionId,
+          candidateId,
+        },
+        {},
+        (response) => (ambiguousResponse = response),
+      );
+      expect(ambiguousResponse).toMatchObject({
+        ok: false,
+        code: "candidate_ambiguous",
+      });
+    });
+
     it("shows worker rejection, blocks duplicate submits, and ignores a late response after cancel", async () => {
       const { mockDoc, mockBody } = setupSyntheticFlowDom();
       const project = new SyntheticElement("flow-project-page");
@@ -1142,6 +1734,9 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       tile.click();
       expect(candidateSends).toBe(2);
       expect(status?.textContent).toBe("Selecting candidate for Shot 56…");
+      expect(
+        banner?.querySelector("[data-af-diagnostic]")?.textContent,
+      ).toContain("submission selection_already_pending");
 
       const cancel = banner?.querySelector("button") as SyntheticElement;
       cancel.click();
@@ -1447,6 +2042,9 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       expect(
         banner?.querySelector("[data-af-diagnostic]")?.textContent,
       ).toContain("eligible cards 1");
+      expect(
+        banner?.querySelector("[data-af-diagnostic]")?.textContent,
+      ).toContain("submission native_action_ignored");
 
       nestedLabel.click();
       await Promise.resolve();
@@ -1455,6 +2053,91 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       expect(
         sentMessages[0] as FlowReferenceCandidateSelectedMessage,
       ).toMatchObject({ shotId: "61", candidate: { cardTag: "div" } });
+    });
+
+    it("selects an image inside an interactive wrapper and reports ambiguous card images", async () => {
+      const { mockDoc, mockBody } = setupSyntheticFlowDom();
+      const project = new SyntheticElement("flow-project-page");
+      const ambiguousCard = new SyntheticElement("div");
+      ambiguousCard.setAttribute("role", "listitem");
+      const firstImage = new SyntheticElement("img");
+      firstImage.currentSrc = "https://flow.google.com/media/one";
+      const secondImage = new SyntheticElement("img");
+      secondImage.currentSrc = "https://flow.google.com/media/two";
+      const overlay = new SyntheticElement("div");
+      const overlayTarget = new SyntheticElement("span");
+      overlay.appendChild(overlayTarget);
+      ambiguousCard.appendChild(firstImage);
+      ambiguousCard.appendChild(secondImage);
+      ambiguousCard.appendChild(overlay);
+
+      const imageCard = new SyntheticElement("flow-image-tile");
+      const imageButton = new SyntheticElement("button");
+      imageButton.setAttribute("role", "button");
+      imageButton.setAttribute("aria-label", "View image");
+      const ownedImage = new SyntheticElement("img");
+      ownedImage.currentSrc = "https://flow.google.com/media/owned";
+      imageButton.appendChild(ownedImage);
+      imageCard.appendChild(imageButton);
+      project.appendChild(ambiguousCard);
+      project.appendChild(imageCard);
+      mockBody.appendChild(project);
+
+      const session: ActiveReferenceSelectionSession = {
+        sessionId: "sess-image-ownership",
+        workspaceId: "ws-1",
+        batchId: "batch-1",
+        sourceHash: "2".repeat(64),
+        shotId: "62",
+        tabId: 101,
+        projectId: "proj-1",
+        canonicalTarget: "https://flow.google.com/project/proj-1",
+        documentId: "doc-1",
+        frameId: 0,
+        startedAt: 10_000,
+        status: "active",
+      };
+      const sentMessages: unknown[] = [];
+      (globalThis as unknown as { chrome: unknown }).chrome = {
+        runtime: {
+          sendMessage: async (message: unknown) => {
+            sentMessages.push(message);
+            return {
+              protocolVersion: PROTOCOL_VERSION,
+              buildId: BUILD_ID,
+              requestId: "flow-reference-candidate",
+              ok: true,
+              data: { accepted: true },
+            };
+          },
+        },
+      };
+      await flowReferenceSelectionProducer(
+        session,
+        "start",
+        BUILD_ID,
+        PROTOCOL_VERSION,
+      );
+
+      overlayTarget.click();
+      const banner = mockDoc.getElementById(
+        "automat-faceless-selection-banner",
+      );
+      expect(
+        banner?.querySelector("[data-af-diagnostic]")?.textContent,
+      ).toContain("submission image_missing_or_ambiguous");
+      expect(sentMessages).toHaveLength(0);
+
+      imageButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(sentMessages).toHaveLength(1);
+      expect(
+        sentMessages[0] as FlowReferenceCandidateSelectedMessage,
+      ).toMatchObject({
+        shotId: "62",
+        candidate: { sourceUrl: "https://flow.google.com/media/owned" },
+      });
     });
 
     it("banner cancel button cleans up and sends cancellation message", async () => {
