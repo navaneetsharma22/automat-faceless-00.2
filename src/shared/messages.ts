@@ -131,6 +131,17 @@ export type RequestPayloads = {
     previewId: string;
   };
   "flow.reference.cancelPreview": { sessionId: string; previewId: string };
+  "flow.reference.capture": {
+    workspaceId: string;
+    batchId: string;
+    shotId: string;
+    selectionVersion: string;
+    expectedAssignmentVersion: number;
+    captureOperationId: string;
+  };
+  "flow.reference.cancelCapture": { captureOperationId: string };
+  "flow.reference.getCaptureStatus": { captureOperationId: string };
+  "flow.reference.getSavedReference": { referenceId: string };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -181,6 +192,10 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.reference.chooseCandidate": 10_000,
   "flow.reference.getPreview": 15_000,
   "flow.reference.cancelPreview": 5000,
+  "flow.reference.capture": 45_000,
+  "flow.reference.cancelCapture": 5000,
+  "flow.reference.getCaptureStatus": 5000,
+  "flow.reference.getSavedReference": 15_000,
 };
 
 export function makeRequest<T extends RequestTypes>(

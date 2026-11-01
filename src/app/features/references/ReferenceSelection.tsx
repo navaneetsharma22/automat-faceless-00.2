@@ -8,6 +8,7 @@ import type {
   ReferenceCandidate,
 } from "../../../shared/schemas";
 import { FLOW_REFERENCE_EVENT_MESSAGE } from "../../../shared/schemas";
+import type { ReferenceAssignmentRecord } from "../../../domain/media/references";
 import { CONNECTION_STATE_CHANGED_MESSAGE } from "../../../shared/messages";
 import type { PromptBatchSnapshot } from "../../../storage/repositories";
 import styles from "../../Dashboard.module.css";
@@ -113,6 +114,20 @@ export function ReferenceSelection({
   const [candidates, setCandidates] = useState<
     Record<string, ReferenceCandidate>
   >({});
+  const [savedReferences, setSavedReferences] = useState<
+    Record<string, Omit<ReferenceAssignmentRecord, "bytes">>
+  >({});
+  const [savedReferenceUrls, setSavedReferenceUrls] = useState<
+    Record<string, string>
+  >({});
+  const savedReferenceUrlsRef = useRef(new Map<string, string>());
+  const savedReferenceReadGeneration = useRef(0);
+  const [captureStatus, setCaptureStatus] = useState<Record<string, string>>(
+    {},
+  );
+  const [captureOperationIds, setCaptureOperationIds] = useState<
+    Record<string, string>
+  >({});
   const [flowVerified, setFlowVerified] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
@@ -161,6 +176,65 @@ export function ReferenceSelection({
     setPreviewLoaded({});
     setPreviewLoading({});
   }, [persistenceClient]);
+
+  const loadSavedReferenceImages = useCallback(
+    async (records: Omit<ReferenceAssignmentRecord, "bytes">[]) => {
+      const generation = ++savedReferenceReadGeneration.current;
+      for (const url of savedReferenceUrlsRef.current.values())
+        URL.revokeObjectURL(url);
+      savedReferenceUrlsRef.current.clear();
+      setSavedReferenceUrls({});
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < records.length) {
+          const record = records[cursor++];
+          if (!record) return;
+          try {
+            const response = (await persistenceClient.request(
+              "flow.reference.getSavedReference",
+              { referenceId: record.referenceId },
+            )) as {
+              reference: Omit<ReferenceAssignmentRecord, "bytes">;
+              data: string;
+            };
+            if (
+              generation !== savedReferenceReadGeneration.current ||
+              response.reference.referenceId !== record.referenceId ||
+              response.reference.sha256 !== record.sha256 ||
+              response.data.length > Math.ceil((12 * 1024 * 1024) / 3) * 4
+            )
+              continue;
+            const binary = atob(response.data);
+            if (binary.length !== record.byteSize) continue;
+            const bytes = new Uint8Array(binary.length);
+            for (let index = 0; index < binary.length; index += 1)
+              bytes[index] = binary.charCodeAt(index);
+            const url = URL.createObjectURL(
+              new Blob([bytes], { type: record.mimeType }),
+            );
+            if (generation !== savedReferenceReadGeneration.current) {
+              URL.revokeObjectURL(url);
+              continue;
+            }
+            savedReferenceUrlsRef.current.set(record.shotId, url);
+            setSavedReferenceUrls((current) => ({
+              ...current,
+              [record.shotId]: url,
+            }));
+          } catch {
+            if (generation === savedReferenceReadGeneration.current)
+              setCaptureStatus((current) => ({
+                ...current,
+                [record.shotId]:
+                  "Saved bytes could not be read. Refresh References to retry.",
+              }));
+          }
+        }
+      };
+      await Promise.all([worker(), worker()]);
+    },
+    [persistenceClient],
+  );
   const cspDiagnostics = useRef<
     Record<string, { directive: string; disposition: string }>
   >({});
@@ -265,15 +339,43 @@ export function ReferenceSelection({
       )) as {
         activeSession: ActiveReferenceSelectionSession | null;
         candidates: Record<string, ReferenceCandidate>;
+        savedReferences?: Omit<ReferenceAssignmentRecord, "bytes">[];
+        captureOperations?: Array<{
+          captureOperationId: string;
+          shotId: string;
+          status: "acquiring";
+          reason?: string;
+        }>;
       };
       if (stateData) {
         setActiveSession(stateData.activeSession ?? null);
         setCandidates(stateData.candidates ?? {});
+        const saved = stateData.savedReferences ?? [];
+        setSavedReferences(
+          Object.fromEntries(saved.map((record) => [record.shotId, record])),
+        );
+        const unfinishedCaptures = stateData.captureOperations ?? [];
+        setCaptureOperationIds(
+          Object.fromEntries(
+            unfinishedCaptures.map((operation) => [
+              operation.shotId,
+              operation.captureOperationId,
+            ]),
+          ),
+        );
+        setCaptureStatus((current) => {
+          const next = { ...current };
+          for (const operation of unfinishedCaptures)
+            next[operation.shotId] =
+              "Capture is active or its outcome is uncertain. Check status or cancel this operation before another save.";
+          return next;
+        });
+        void loadSavedReferenceImages(saved);
       }
     } catch {
       // Ignored if worker reference handler not available yet
     }
-  }, [persistenceClient, workspaceId]);
+  }, [persistenceClient, workspaceId, loadSavedReferenceImages]);
 
   useEffect(() => {
     void checkFlowConnection();
@@ -301,7 +403,7 @@ export function ReferenceSelection({
           clearPreviews();
           setPickerCandidates([]);
           setSelectionNotice(
-            `Candidate selected for Shot ${eventMsg.shotId}. Image capture and saving are not implemented in this phase.`,
+            `Candidate selected for Shot ${eventMsg.shotId}. Save reference to capture and keep its image bytes.`,
           );
           setActionPending(false);
           setActiveSession(null);
@@ -331,6 +433,29 @@ export function ReferenceSelection({
             delete next[eventMsg.shotId];
             return next;
           });
+        } else if (eventMsg.event === "capture_progress") {
+          setCaptureOperationIds((current) => ({
+            ...current,
+            [eventMsg.shotId]: eventMsg.captureOperationId,
+          }));
+          setCaptureStatus((current) => ({
+            ...current,
+            [eventMsg.shotId]:
+              eventMsg.stage === "capturing"
+                ? "Capturing reference…"
+                : "Saving reference…",
+          }));
+        } else if (eventMsg.event === "reference_saved") {
+          setCaptureStatus((current) => ({
+            ...current,
+            [eventMsg.shotId]: "Reference saved",
+          }));
+          setCaptureOperationIds((current) => {
+            const next = { ...current };
+            delete next[eventMsg.shotId];
+            return next;
+          });
+          void loadBatchAndState();
         }
       }
     };
@@ -346,11 +471,13 @@ export function ReferenceSelection({
     checkFlowConnection,
     loadBatchAndState,
     clearPreviews,
+    loadSavedReferenceImages,
   ]);
 
   useEffect(
     () => () => {
       pickerReadGeneration.current += 1;
+      savedReferenceReadGeneration.current += 1;
       for (const request of previewRequests.current.values()) {
         void persistenceClient
           .request("flow.reference.cancelPreview", {
@@ -362,6 +489,9 @@ export function ReferenceSelection({
       for (const url of previewObjectUrls.current.values())
         URL.revokeObjectURL(url);
       previewObjectUrls.current.clear();
+      for (const url of savedReferenceUrlsRef.current.values())
+        URL.revokeObjectURL(url);
+      savedReferenceUrlsRef.current.clear();
       previewRequests.current.clear();
     },
     [workspaceId, persistenceClient],
@@ -596,7 +726,7 @@ export function ReferenceSelection({
           "The candidate was not accepted. Refresh images and retry.",
         );
       setSelectionNotice(
-        `Candidate selected for Shot ${activeSession.shotId}. Image capture and saving are not implemented in this phase.`,
+        `Candidate selected for Shot ${activeSession.shotId}. Save reference to capture and keep image bytes.`,
       );
       setPickerCandidates([]);
       await loadBatchAndState();
@@ -609,6 +739,148 @@ export function ReferenceSelection({
       );
     } finally {
       if (generation === pickerReadGeneration.current) setActionPending(false);
+    }
+  };
+
+  const handleSaveReference = async (shotId: string) => {
+    if (!batch) return;
+    const candidate = candidates[shotId];
+    if (
+      !candidate?.selectionVersion ||
+      candidate.workspaceId !== workspaceId ||
+      candidate.batchId !== batch.batch.id ||
+      candidate.shotId !== shotId
+    ) {
+      setCaptureStatus((current) => ({
+        ...current,
+        [shotId]:
+          "Capture failed (candidate_binding_missing). Re-select this Shot, then try Save reference again.",
+      }));
+      return;
+    }
+    const captureOperationId = crypto.randomUUID();
+    setCaptureOperationIds((current) => ({
+      ...current,
+      [shotId]: captureOperationId,
+    }));
+    setCaptureStatus((current) => ({
+      ...current,
+      [shotId]: "Capturing reference…",
+    }));
+    try {
+      const result = (await persistenceClient.request(
+        "flow.reference.capture",
+        {
+          workspaceId,
+          batchId: batch.batch.id,
+          shotId,
+          selectionVersion: candidate.selectionVersion,
+          expectedAssignmentVersion:
+            savedReferences[shotId]?.assignmentVersion ?? 0,
+          captureOperationId,
+        },
+      )) as { saved?: boolean };
+      if (!result?.saved) throw new Error("capture_acknowledgement_missing");
+      setCaptureStatus((current) => ({
+        ...current,
+        [shotId]: "Reference saved",
+      }));
+      setCaptureOperationIds((current) => {
+        const next = { ...current };
+        delete next[shotId];
+        return next;
+      });
+      await loadBatchAndState();
+    } catch (error) {
+      try {
+        const status = (await persistenceClient.request(
+          "flow.reference.getCaptureStatus",
+          { captureOperationId },
+        )) as { status: string; reason?: string };
+        if (status.status === "saved") {
+          setCaptureStatus((current) => ({
+            ...current,
+            [shotId]: "Reference saved",
+          }));
+          setCaptureOperationIds((current) => {
+            const next = { ...current };
+            delete next[shotId];
+            return next;
+          });
+          await loadBatchAndState();
+          return;
+        }
+        if (status.status === "acquiring") {
+          setCaptureStatus((current) => ({
+            ...current,
+            [shotId]:
+              "Capture outcome uncertain. Check status or cancel this operation before starting another save.",
+          }));
+          return;
+        }
+        if (status.status === "cancelled" || status.status === "failed") {
+          setCaptureOperationIds((current) => {
+            const next = { ...current };
+            delete next[shotId];
+            return next;
+          });
+          setCaptureStatus((current) => ({
+            ...current,
+            [shotId]: `Capture failed (${(status.reason ?? (error instanceof Error ? error.message : "capture_failed")).slice(0, 100)}). Review the Flow document and try again.`,
+          }));
+          return;
+        }
+      } catch {
+        setCaptureStatus((current) => ({
+          ...current,
+          [shotId]:
+            "Capture outcome uncertain. Refresh References and check saved state before another save.",
+        }));
+        return;
+      }
+      setCaptureOperationIds((current) => {
+        const next = { ...current };
+        delete next[shotId];
+        return next;
+      });
+      const reason =
+        error instanceof Error ? error.message.slice(0, 100) : "capture_failed";
+      setCaptureStatus((current) => ({
+        ...current,
+        [shotId]: `Capture failed (${reason}). The previous saved reference was kept.`,
+      }));
+    }
+  };
+
+  const handleCancelReferenceCapture = async (shotId: string) => {
+    const captureOperationId = captureOperationIds[shotId];
+    if (!captureOperationId) return;
+    try {
+      const result = (await persistenceClient.request(
+        "flow.reference.cancelCapture",
+        { captureOperationId },
+      )) as { cancelled: boolean; status: string };
+      setCaptureStatus((current) => ({
+        ...current,
+        [shotId]:
+          result.status === "saved"
+            ? "Reference saved"
+            : result.cancelled
+              ? "Capture cancelled. The previous saved reference was kept."
+              : "Capture status is being reconciled. Check saved state before retrying.",
+      }));
+      if (result.status !== "acquiring")
+        setCaptureOperationIds((current) => {
+          const next = { ...current };
+          delete next[shotId];
+          return next;
+        });
+    } catch {
+      setCaptureStatus((current) => ({
+        ...current,
+        [shotId]:
+          "Capture cancellation could not be confirmed. Check status before starting another save.",
+      }));
     }
   };
 
@@ -666,8 +938,8 @@ export function ReferenceSelection({
 
         {!batch ? (
           <p className={styles.sourceEmpty}>
-            No captured references are available. Reference capture and
-            assignment are not implemented yet.
+            No saved references are available. Save an accepted Flow candidate
+            to capture image bytes for its Shot.
           </p>
         ) : missingShotIds || duplicateShotIds.length > 0 ? (
           <div className={refStyles.referencesContainer}>
@@ -920,6 +1192,11 @@ export function ReferenceSelection({
               {batch.items.map((item) => {
                 const shotId = item.shotId!;
                 const candidate = candidates[shotId];
+                const savedReference = savedReferences[shotId];
+                const candidateIsSaved =
+                  !!candidate?.selectionVersion &&
+                  candidate.selectionVersion ===
+                    savedReference?.selectionVersion;
                 const isTargetOfActiveSession =
                   activeSession?.shotId === shotId;
 
@@ -939,17 +1216,51 @@ export function ReferenceSelection({
                       {item.rawJsonBody}
                     </p>
 
+                    {savedReference ? (
+                      <div className={refStyles.candidateDisplay}>
+                        {savedReferenceUrls[shotId] ? (
+                          <img
+                            src={savedReferenceUrls[shotId]}
+                            alt={`Saved reference for Shot ${shotId}`}
+                            className={refStyles.candidateThumbnail}
+                          />
+                        ) : (
+                          <p className={refStyles.candidateMeta}>
+                            Loading saved image bytes…
+                          </p>
+                        )}
+                        <div className={refStyles.candidateDetails}>
+                          <span className={refStyles.candidateHonestStatus}>
+                            Saved reference
+                          </span>
+                          <span className={refStyles.candidateMeta}>
+                            Verified {savedReference.width} ×{" "}
+                            {savedReference.height} {savedReference.mimeType},{" "}
+                            {savedReference.byteSize} bytes
+                          </span>
+                          <span className={refStyles.candidateMeta}>
+                            SHA-256 {savedReference.sha256}
+                          </span>
+                          {savedReference.providerAssetId ? (
+                            <span className={refStyles.candidateMeta}>
+                              Flow asset {savedReference.providerAssetId}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+
                     {candidate ? (
                       <div className={refStyles.candidateDisplay}>
                         <div className={refStyles.candidateDetails}>
                           <span className={refStyles.candidateHonestStatus}>
-                            Candidate selected — image capture and saving are
-                            not implemented in this phase.
+                            {candidateIsSaved
+                              ? "This selection is saved."
+                              : "Candidate selected — not saved yet."}
                           </span>
                           <span className={refStyles.candidateMeta}>
-                            Preview bytes are temporary and cleared when the
-                            picker closes. Reopen Browse Flow images to preview
-                            this candidate again.
+                            Candidate selection is transient. Saving below
+                            captures and retains the original image bytes.
                           </span>
                           <span className={refStyles.candidateMeta}>
                             Dimensions:{" "}
@@ -968,8 +1279,21 @@ export function ReferenceSelection({
                             className={refStyles.cardActions}
                             style={{ marginTop: "6px" }}
                           >
+                            {!candidateIsSaved ? (
+                              <Button
+                                onClick={() => void handleSaveReference(shotId)}
+                                disabled={
+                                  !candidate.selectionVersion ||
+                                  !!captureOperationIds[shotId]
+                                }
+                              >
+                                Save reference
+                              </Button>
+                            ) : null}
                             <Button
-                              onClick={() => handleStartSelection(shotId)}
+                              onClick={() =>
+                                void handleStartSelection(shotId, true)
+                              }
                               disabled={!flowVerified || actionPending}
                             >
                               Re-select candidate
@@ -989,13 +1313,27 @@ export function ReferenceSelection({
                               Clear candidate
                             </Button>
                           </div>
+                          {captureStatus[shotId] ? (
+                            <p className={refStyles.pickerStatus} role="status">
+                              {captureStatus[shotId]}
+                            </p>
+                          ) : null}
+                          {captureOperationIds[shotId] ? (
+                            <Button
+                              onClick={() =>
+                                void handleCancelReferenceCapture(shotId)
+                              }
+                            >
+                              Cancel capture
+                            </Button>
+                          ) : null}
                         </div>
                       </div>
                     ) : (
                       <div className={refStyles.cardActions}>
                         <span className={refStyles.candidateMeta}>
                           {isTargetOfActiveSession
-                            ? "Awaiting card click in Flow..."
+                            ? "Selection is active. Choose an image from the picker above."
                             : "No reference candidate selected."}
                         </span>
                         {!isTargetOfActiveSession ? (
@@ -1030,8 +1368,8 @@ export function ReferenceSelection({
             Confirm references
           </Button>
           <p id="reference-disabled-reason" className={styles.disabledReason}>
-            Unavailable: reference image capture and saving are not implemented
-            in this phase.
+            Unavailable: saved references are not yet connected to video
+            handoff.
           </p>
         </div>
       </section>

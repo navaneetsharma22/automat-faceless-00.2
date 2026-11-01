@@ -28,6 +28,13 @@ import {
 import { importPromptBatch } from "../domain/batches/importBatch";
 import type { PromptKind } from "../domain/batches/types";
 import { sha256Hex } from "../domain/batches/hashPrompt";
+import {
+  ReferenceAssignmentRecordSchema,
+  ReferenceCaptureOperationRecordSchema,
+  referenceAssignmentId,
+  type ReferenceAssignmentRecord,
+  type ReferenceCaptureOperationRecord,
+} from "../domain/media/references";
 export { sha256Hex } from "../domain/batches/hashPrompt";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
@@ -276,6 +283,14 @@ export type RepositoryDatabase = {
     Table<QueueRecord, string>,
     "add" | "get" | "put" | "toArray"
   >;
+  referenceAssignments: Pick<
+    Table<ReferenceAssignmentRecord, string>,
+    "get" | "put" | "toArray"
+  >;
+  referenceCaptureOperations: Pick<
+    Table<ReferenceCaptureOperationRecord, string>,
+    "get" | "put" | "toArray"
+  >;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -295,6 +310,8 @@ export function createDexieRepositoryDatabase(
     flowImagePromptSnapshots: database.flowImagePromptSnapshots,
     flowCountRecoveries: database.flowCountRecoveries,
     imageSubmissionQueues: database.imageSubmissionQueues,
+    referenceAssignments: database.referenceAssignments,
+    referenceCaptureOperations: database.referenceCaptureOperations,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -371,6 +388,44 @@ export function createDexieRepositoryDatabase(
             database.flowImageAttempts,
             operation,
           );
+        case "referenceAssignments+referenceCaptureOperations":
+          return database.transaction(
+            "rw",
+            database.referenceAssignments,
+            database.referenceCaptureOperations,
+            operation,
+          );
+        case "referenceAssignments+referenceCaptureOperations+batches+promptItems":
+          return database.transaction(
+            "rw",
+            database.referenceAssignments,
+            database.referenceCaptureOperations,
+            database.batches,
+            database.promptItems,
+            operation,
+          );
+        case "referenceAssignments+referenceCaptureOperations+batches+promptItems+selectedTargets":
+          return database.transaction(
+            "rw",
+            database.referenceAssignments,
+            database.referenceCaptureOperations,
+            database.batches,
+            database.promptItems,
+            database.selectedTargets,
+            operation,
+          );
+        case "referenceAssignments":
+          return database.transaction(
+            "rw",
+            database.referenceAssignments,
+            operation,
+          );
+        case "referenceCaptureOperations":
+          return database.transaction(
+            "rw",
+            database.referenceCaptureOperations,
+            operation,
+          );
         case "flowImageAttempts+flowCountRecoveries":
           return database.transaction(
             "rw",
@@ -405,6 +460,239 @@ export class ExtensionRepositories {
     private readonly tables: RepositoryDatabase = createDexieRepositoryDatabase(),
     private readonly now = () => Date.now(),
   ) {}
+
+  async listReferenceAssignments(
+    workspaceId: string,
+    batchId: string,
+  ): Promise<ReferenceAssignmentRecord[]> {
+    return (await this.tables.referenceAssignments.toArray()).filter(
+      (record) =>
+        record.workspaceId === workspaceId && record.batchId === batchId,
+    );
+  }
+
+  async getReferenceAssignment(
+    workspaceId: string,
+    batchId: string,
+    shotId: string,
+  ): Promise<ReferenceAssignmentRecord | undefined> {
+    const record = await this.tables.referenceAssignments.get(
+      referenceAssignmentId(workspaceId, batchId, shotId),
+    );
+    return record && ReferenceAssignmentRecordSchema.safeParse(record).success
+      ? record
+      : undefined;
+  }
+
+  async getReferenceByOperation(
+    captureOperationId: string,
+  ): Promise<ReferenceAssignmentRecord | undefined> {
+    return (await this.tables.referenceAssignments.toArray()).find(
+      (record) => record.captureOperationId === captureOperationId,
+    );
+  }
+
+  async getReferenceById(
+    referenceId: string,
+  ): Promise<ReferenceAssignmentRecord | undefined> {
+    return (await this.tables.referenceAssignments.toArray()).find(
+      (record) => record.referenceId === referenceId,
+    );
+  }
+
+  async getReferenceCaptureOperation(
+    captureOperationId: string,
+  ): Promise<ReferenceCaptureOperationRecord | undefined> {
+    const record =
+      await this.tables.referenceCaptureOperations.get(captureOperationId);
+    return record &&
+      ReferenceCaptureOperationRecordSchema.safeParse(record).success
+      ? record
+      : undefined;
+  }
+
+  async listReferenceCaptureOperations(
+    workspaceId: string,
+    batchId: string,
+  ): Promise<ReferenceCaptureOperationRecord[]> {
+    return (await this.tables.referenceCaptureOperations.toArray()).filter(
+      (record) =>
+        record.workspaceId === workspaceId &&
+        record.batchId === batchId &&
+        ReferenceCaptureOperationRecordSchema.safeParse(record).success,
+    );
+  }
+
+  async cancelReferenceCapturesForShot(
+    workspaceId: string,
+    batchId: string,
+    shotId: string,
+    completedAt: number,
+  ): Promise<string[]> {
+    return this.tables.transaction(["referenceCaptureOperations"], async () => {
+      const operations = (
+        await this.tables.referenceCaptureOperations.toArray()
+      ).filter(
+        (item) =>
+          item.workspaceId === workspaceId &&
+          item.batchId === batchId &&
+          item.shotId === shotId &&
+          item.status === "acquiring",
+      );
+      for (const operation of operations)
+        await this.tables.referenceCaptureOperations.put({
+          ...operation,
+          status: "cancelled",
+          reason: "candidate_replaced_or_cleared",
+          completedAt,
+        });
+      return operations.map((operation) => operation.captureOperationId);
+    });
+  }
+
+  async beginReferenceCapture(
+    operation: ReferenceCaptureOperationRecord,
+  ): Promise<void> {
+    if (
+      !ReferenceCaptureOperationRecordSchema.safeParse(operation).success ||
+      operation.status !== "acquiring"
+    )
+      throw new Error("reference_capture_operation_invalid");
+    await this.tables.transaction(
+      ["referenceAssignments+referenceCaptureOperations"],
+      async () => {
+        if (
+          await this.tables.referenceCaptureOperations.get(
+            operation.captureOperationId,
+          )
+        )
+          throw new Error("reference_capture_operation_exists");
+        const anotherActiveOperation = (
+          await this.tables.referenceCaptureOperations.toArray()
+        ).some(
+          (current) =>
+            current.workspaceId === operation.workspaceId &&
+            current.batchId === operation.batchId &&
+            current.shotId === operation.shotId &&
+            current.status === "acquiring",
+        );
+        if (anotherActiveOperation)
+          throw new Error("reference_capture_already_active_for_shot");
+        const current = await this.tables.referenceAssignments.get(
+          referenceAssignmentId(
+            operation.workspaceId,
+            operation.batchId,
+            operation.shotId,
+          ),
+        );
+        if (
+          (current?.assignmentVersion ?? 0) !==
+          operation.expectedAssignmentVersion
+        )
+          throw new Error("reference_assignment_replaced");
+        await this.tables.referenceCaptureOperations.put(operation);
+      },
+    );
+  }
+
+  async updateReferenceCaptureOperation(
+    captureOperationId: string,
+    status: "cancelled" | "failed",
+    reason: string,
+    completedAt: number,
+  ): Promise<ReferenceCaptureOperationRecord | undefined> {
+    return this.tables.transaction(["referenceCaptureOperations"], async () => {
+      const current =
+        await this.tables.referenceCaptureOperations.get(captureOperationId);
+      if (!current || current.status !== "acquiring") return current;
+      const next = {
+        ...current,
+        status,
+        reason: reason.slice(0, 64),
+        completedAt,
+      };
+      await this.tables.referenceCaptureOperations.put(next);
+      return next;
+    });
+  }
+
+  async commitReferenceCapture(input: {
+    assignment: ReferenceAssignmentRecord;
+    expectedSourceText: string;
+    expectedPromptBody: string;
+  }): Promise<ReferenceAssignmentRecord> {
+    const { assignment } = input;
+    if (!ReferenceAssignmentRecordSchema.safeParse(assignment).success)
+      throw new Error("reference_assignment_invalid");
+    return this.tables.transaction(
+      [
+        "referenceAssignments+referenceCaptureOperations+batches+promptItems+selectedTargets",
+      ],
+      async () => {
+        const operation = await this.tables.referenceCaptureOperations.get(
+          assignment.captureOperationId,
+        );
+        if (!operation || operation.status !== "acquiring")
+          throw new Error(
+            operation?.status === "cancelled"
+              ? "reference_capture_cancelled"
+              : "reference_capture_operation_changed",
+          );
+        const batch = await this.tables.batches.get(assignment.batchId);
+        const items = (await this.tables.promptItems.toArray()).filter(
+          (item) =>
+            item.batchId === assignment.batchId &&
+            item.shotId === assignment.shotId,
+        );
+        const current = await this.tables.referenceAssignments.get(
+          assignment.assignmentId,
+        );
+        const selected = await this.tables.selectedTargets.get("Flow");
+        if (
+          !batch ||
+          batch.workspaceId !== assignment.workspaceId ||
+          batch.kind !== "image" ||
+          batch.sourceText !== input.expectedSourceText ||
+          items.length !== 1 ||
+          items[0]!.rawJsonBody !== input.expectedPromptBody ||
+          items[0]!.contentHash !== assignment.promptHash ||
+          selected?.verification !== "verified" ||
+          selected.connectionState !== "verified" ||
+          selected.tabId !== assignment.tabId ||
+          selected.canonicalTarget !== assignment.canonicalTarget ||
+          selected.verificationBinding?.projectId !==
+            assignment.flowProjectId ||
+          selected.verificationBinding?.documentId !== assignment.documentId ||
+          selected.verificationBinding.frameId !== 0 ||
+          (current?.assignmentVersion ?? 0) + 1 !==
+            assignment.assignmentVersion ||
+          (current?.assignmentVersion ?? 0) !==
+            operation.expectedAssignmentVersion ||
+          operation.workspaceId !== assignment.workspaceId ||
+          operation.batchId !== assignment.batchId ||
+          operation.batchSourceHash !== assignment.batchSourceHash ||
+          operation.shotId !== assignment.shotId ||
+          operation.promptHash !== assignment.promptHash ||
+          operation.selectionVersion !== assignment.selectionVersion ||
+          operation.flowProjectId !== assignment.flowProjectId ||
+          operation.tabId !== assignment.tabId ||
+          operation.canonicalTarget !== assignment.canonicalTarget ||
+          operation.documentId !== assignment.documentId ||
+          operation.observedSourceSha256 !== assignment.observedSourceSha256
+        )
+          throw new Error("reference_capture_binding_changed");
+        const saved = {
+          ...operation,
+          status: "saved" as const,
+          completedAt: assignment.capturedAt,
+          referenceId: assignment.referenceId,
+        };
+        await this.tables.referenceAssignments.put(assignment);
+        await this.tables.referenceCaptureOperations.put(saved);
+        return assignment;
+      },
+    );
+  }
 
   async savePromptDraft(input: PromptDraftInput): Promise<PromptDraftRecord> {
     const record: PromptDraftRecord = { ...input, updatedAt: this.now() };
@@ -883,8 +1171,12 @@ export class ExtensionRepositories {
                             entry.dispatchIntent.readinessDeadlineAt,
                           readinessStartedAt:
                             entry.dispatchIntent.readinessStartedAt,
-                          ...(entry.dispatchIntent.readinessCheckAt !== undefined
-                            ? { readinessCheckAt: entry.dispatchIntent.readinessCheckAt }
+                          ...(entry.dispatchIntent.readinessCheckAt !==
+                          undefined
+                            ? {
+                                readinessCheckAt:
+                                  entry.dispatchIntent.readinessCheckAt,
+                              }
                             : {}),
                         }
                       : {}),
@@ -1082,7 +1374,8 @@ export class ExtensionRepositories {
                 dispatchIntent: {
                   ...entry.dispatchIntent!,
                   readinessDeadlineAt:
-                    entry.dispatchIntent?.readinessDeadlineAt ?? input.deadlineAt,
+                    entry.dispatchIntent?.readinessDeadlineAt ??
+                    input.deadlineAt,
                   readinessStartedAt:
                     entry.dispatchIntent?.readinessStartedAt ?? input.startedAt,
                   readinessCheckAt: input.checkAt,
@@ -1151,7 +1444,9 @@ export class ExtensionRepositories {
                         readinessDeadlineAt: dispatchIntent.readinessDeadlineAt,
                         readinessStartedAt: dispatchIntent.readinessStartedAt,
                         ...(dispatchIntent.readinessCheckAt !== undefined
-                          ? { readinessCheckAt: dispatchIntent.readinessCheckAt }
+                          ? {
+                              readinessCheckAt: dispatchIntent.readinessCheckAt,
+                            }
                           : {}),
                       },
                     }

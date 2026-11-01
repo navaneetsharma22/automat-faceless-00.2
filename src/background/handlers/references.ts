@@ -14,8 +14,19 @@ import {
   ReferenceCandidateSchema,
 } from "../../shared/schemas";
 import type { ExtensionRepositories } from "../../storage/repositories";
+import { sha256Hex } from "../../domain/batches/hashPrompt";
+import {
+  MAX_REFERENCE_CAPTURE_BYTES,
+  MAX_REFERENCE_CAPTURE_PIXELS,
+  ReferenceAssignmentRecordSchema,
+  referenceAssignmentId,
+  sha256Bytes,
+  type ReferenceAssignmentRecord,
+} from "../../domain/media/references";
 import {
   createFlowReferenceSelectionInjection,
+  createFlowReferenceCaptureResolverInjection,
+  flowReferenceCaptureInPage,
   flowReferencePreviewInPage,
   FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
   flowReferenceContextMenuId,
@@ -143,6 +154,28 @@ export function createFlowReferenceHandler(
     }
   };
   const candidateClaims = new Set<string>();
+  const captureClaims = new Set<string>();
+  const activeCaptures = new Map<string, ActiveReferenceSelectionSession>();
+  const shotLocks = new Map<string, Promise<void>>();
+
+  const withShotLock = async <T>(
+    key: string,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    const previous = shotLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    shotLocks.set(key, current);
+    await previous.catch(() => undefined);
+    try {
+      return await action();
+    } finally {
+      release();
+      if (shotLocks.get(key) === current) shotLocks.delete(key);
+    }
+  };
   const previewClaims = new Map<
     string,
     {
@@ -384,6 +417,560 @@ export function createFlowReferenceHandler(
       );
     }
     return active;
+  };
+
+  const captureShotKey = (
+    workspaceId: string,
+    batchId: string,
+    shotId: string,
+  ) => `${workspaceId}:${batchId}:${shotId}`;
+  const referenceMetadata = (record: ReferenceAssignmentRecord) => {
+    return Object.fromEntries(
+      Object.entries(record).filter(([key]) => key !== "bytes"),
+    ) as Omit<ReferenceAssignmentRecord, "bytes">;
+  };
+  const validateCaptureContext = async (input: {
+    workspaceId: string;
+    batchId: string;
+    shotId: string;
+    selectionVersion: string;
+  }) => {
+    const candidates = await getTransientCandidatesMap(
+      input.workspaceId,
+      input.batchId,
+    );
+    const candidate = candidates[input.shotId];
+    if (
+      !candidate ||
+      candidate.selectionVersion !== input.selectionVersion ||
+      candidate.workspaceId !== input.workspaceId ||
+      candidate.batchId !== input.batchId ||
+      candidate.shotId !== input.shotId ||
+      !candidate.promptHash ||
+      !candidate.batchSourceHash ||
+      !candidate.flowProjectId ||
+      !candidate.canonicalTarget ||
+      !candidate.documentId ||
+      !candidate.observedSourceSha256
+    ) {
+      throw new ReferenceSelectionError(
+        "candidate_replaced_or_missing",
+        "The accepted candidate changed or was cleared. Select the intended Flow image again before saving.",
+      );
+    }
+    const savedBatch = await dependencies.repositories.getPromptBatch(
+      input.workspaceId,
+      "image",
+    );
+    const matchingItems =
+      savedBatch?.items.filter((item) => item.shotId === input.shotId) ?? [];
+    if (
+      !savedBatch ||
+      savedBatch.batch.id !== input.batchId ||
+      matchingItems.length !== 1 ||
+      (await sha256Hex(savedBatch.batch.sourceText)) !==
+        candidate.batchSourceHash ||
+      (await sha256Hex(matchingItems[0]!.rawJsonBody)) !== candidate.promptHash
+    ) {
+      throw new ReferenceSelectionError(
+        "capture_source_changed",
+        "The saved image source or Shot prompt changed after selection. Reload References and select again.",
+      );
+    }
+    const selected = await dependencies.repositories.getSelectedTarget("Flow");
+    const binding = selected?.verificationBinding;
+    if (
+      !selected ||
+      selected.verification !== "verified" ||
+      selected.connectionState !== "verified" ||
+      selected.tabId !== candidate.tabId ||
+      selected.canonicalTarget !== candidate.canonicalTarget ||
+      binding?.projectId !== candidate.flowProjectId ||
+      binding.documentId !== candidate.documentId ||
+      binding.frameId !== 0 ||
+      binding.extensionBuildId !== BUILD_ID ||
+      binding.connectorBuildId !== BUILD_ID ||
+      binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+      binding.connectorProtocolVersion !== 1
+    ) {
+      throw new ReferenceSelectionError(
+        "capture_project_or_document_changed",
+        "Reconnect the same verified Flow project and document before saving this reference.",
+      );
+    }
+    try {
+      const [document] = await scripting!.executeScript({
+        target: { tabId: selected.tabId, frameIds: [0] },
+        func: () => location.href,
+      });
+      const route = flowTabFromUrl(
+        selected.tabId,
+        "",
+        document?.result as string,
+      );
+      if (
+        document?.documentId !== candidate.documentId ||
+        document.frameId !== 0 ||
+        !route ||
+        route.canonicalTarget !== candidate.canonicalTarget
+      )
+        throw new Error("document_changed");
+    } catch {
+      throw new ReferenceSelectionError(
+        "capture_document_changed",
+        "The verified Flow project document changed or is unavailable. Reconnect before saving.",
+        "context_invalidated",
+      );
+    }
+    return { candidate, savedBatch, item: matchingItems[0]!, selected };
+  };
+  const resolveCaptureCandidateInDocument = async (
+    session: ActiveReferenceSelectionSession,
+    candidate: ReferenceCandidate,
+  ) => {
+    const [result] = await scripting!.executeScript(
+      createFlowReferenceCaptureResolverInjection({
+        tabId: session.tabId,
+        documentId: session.documentId,
+        expected: {
+          sourceUrl: candidate.sourceUrl,
+          ...(candidate.providerAssetId
+            ? { providerAssetId: candidate.providerAssetId }
+            : {}),
+          cardTag: candidate.cardTag,
+          naturalWidth: candidate.naturalWidth,
+          naturalHeight: candidate.naturalHeight,
+        },
+      }),
+    );
+    if (
+      result?.documentId !== session.documentId ||
+      result.frameId !== 0 ||
+      !result.result ||
+      typeof result.result !== "object" ||
+      !("ok" in result.result) ||
+      result.result.ok !== true ||
+      !("candidate" in result.result) ||
+      !result.result.candidate ||
+      typeof result.result.candidate !== "object"
+    ) {
+      const code =
+        result?.result &&
+        typeof result.result === "object" &&
+        "code" in result.result &&
+        typeof result.result.code === "string"
+          ? result.result.code.slice(0, 64)
+          : "capture_candidate_unverified";
+      throw new ReferenceSelectionError(
+        code,
+        "The exact accepted image is missing, changed, or ambiguous in the verified Flow document. Refresh Flow images and select it again.",
+      );
+    }
+    return result.result.candidate as Record<string, unknown>;
+  };
+  const cancelCaptureInPage = async (captureOperationId: string) => {
+    const session = activeCaptures.get(captureOperationId);
+    if (!session) return;
+    try {
+      await scripting?.executeScript({
+        target: { tabId: session.tabId, documentIds: [session.documentId] },
+        world: "MAIN",
+        func: flowReferenceCaptureInPage,
+        args: [
+          {
+            action: "cancel",
+            captureOperationId,
+            expectedOrigin: new URL(session.canonicalTarget).origin,
+          },
+        ],
+      });
+    } catch {
+      /* durable cancellation is checked again before commit */
+    }
+  };
+  const cancelCapturesForShot = async (
+    workspaceId: string,
+    batchId: string,
+    shotId: string,
+  ) => {
+    const operationIds =
+      await dependencies.repositories.cancelReferenceCapturesForShot(
+        workspaceId,
+        batchId,
+        shotId,
+        now(),
+      );
+    await Promise.all(operationIds.map(cancelCaptureInPage));
+  };
+
+  const captureReference = async (input: {
+    workspaceId: string;
+    batchId: string;
+    shotId: string;
+    selectionVersion: string;
+    expectedAssignmentVersion: number;
+    captureOperationId: string;
+  }): Promise<{
+    saved: true;
+    reference: Omit<ReferenceAssignmentRecord, "bytes">;
+  }> => {
+    const existingAssignment =
+      await dependencies.repositories.getReferenceByOperation(
+        input.captureOperationId,
+      );
+    if (existingAssignment) {
+      if (
+        existingAssignment.workspaceId !== input.workspaceId ||
+        existingAssignment.batchId !== input.batchId ||
+        existingAssignment.shotId !== input.shotId ||
+        existingAssignment.selectionVersion !== input.selectionVersion
+      )
+        throw new ReferenceSelectionError(
+          "capture_operation_id_conflict",
+          "This operation ID belongs to another saved reference.",
+        );
+      return { saved: true, reference: referenceMetadata(existingAssignment) };
+    }
+    const existingOperation =
+      await dependencies.repositories.getReferenceCaptureOperation(
+        input.captureOperationId,
+      );
+    if (existingOperation)
+      throw new ReferenceSelectionError(
+        existingOperation.status === "acquiring"
+          ? "capture_outcome_uncertain"
+          : (existingOperation.reason ?? "capture_operation_closed"),
+        existingOperation.status === "acquiring"
+          ? "This capture operation has already started. Check its status; it will not be repeated automatically."
+          : "This capture operation is closed. Review the current selection before starting a new save.",
+      );
+    if (captureClaims.has(input.captureOperationId))
+      throw new ReferenceSelectionError(
+        "capture_already_running",
+        "This reference capture is already running.",
+      );
+    if (captureClaims.size >= 2)
+      throw new ReferenceSelectionError(
+        "capture_concurrency_limit",
+        "Two reference captures are already running. Wait for one to finish before saving another.",
+      );
+    captureClaims.add(input.captureOperationId);
+    let operationStarted = false;
+    let flowSession: ActiveReferenceSelectionSession | undefined;
+    try {
+      const context = await validateCaptureContext(input);
+      const { candidate, savedBatch, item, selected } = context;
+      if (
+        !candidate.selectionSessionId ||
+        !candidate.selectionVersion ||
+        !candidate.acceptedAt ||
+        !candidate.tabId
+      )
+        throw new ReferenceSelectionError(
+          "candidate_binding_missing",
+          "This candidate lacks a complete accepted-selection binding. Select it again.",
+        );
+      const assignmentId = referenceAssignmentId(
+        input.workspaceId,
+        input.batchId,
+        input.shotId,
+      );
+      const currentAssignment =
+        await dependencies.repositories.getReferenceAssignment(
+          input.workspaceId,
+          input.batchId,
+          input.shotId,
+        );
+      if (
+        (currentAssignment?.assignmentVersion ?? 0) !==
+        input.expectedAssignmentVersion
+      )
+        throw new ReferenceSelectionError(
+          "reference_assignment_replaced",
+          "The saved reference changed. Review it before replacing it.",
+        );
+      flowSession = {
+        sessionId: candidate.selectionSessionId,
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        sourceHash: candidate.batchSourceHash!,
+        shotId: input.shotId,
+        tabId: selected.tabId,
+        projectId: candidate.flowProjectId!,
+        canonicalTarget: candidate.canonicalTarget!,
+        documentId: candidate.documentId!,
+        frameId: 0,
+        startedAt: candidate.acceptedAt,
+        status: "completed",
+      };
+      await dependencies.repositories.beginReferenceCapture({
+        captureOperationId: input.captureOperationId,
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        batchSourceHash: candidate.batchSourceHash!,
+        shotId: input.shotId,
+        promptHash: candidate.promptHash!,
+        selectionVersion: input.selectionVersion,
+        expectedAssignmentVersion: input.expectedAssignmentVersion,
+        flowProjectId: candidate.flowProjectId!,
+        tabId: selected.tabId,
+        canonicalTarget: candidate.canonicalTarget!,
+        documentId: candidate.documentId!,
+        observedSourceSha256: candidate.observedSourceSha256!,
+        status: "acquiring",
+        startedAt: now(),
+      });
+      operationStarted = true;
+      activeCaptures.set(input.captureOperationId, flowSession);
+      await broadcast({
+        type: FLOW_REFERENCE_EVENT_MESSAGE,
+        event: "capture_progress",
+        captureOperationId: input.captureOperationId,
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        shotId: input.shotId,
+        stage: "capturing",
+      });
+      const resolved = await resolveCaptureCandidateInDocument(
+        flowSession,
+        candidate,
+      );
+      if (
+        resolved.sourceUrl !== candidate.sourceUrl ||
+        (candidate.cardTag !== "context-menu-image" &&
+          resolved.providerAssetId !== candidate.providerAssetId) ||
+        (candidate.cardTag !== "context-menu-image" &&
+          resolved.cardTag !== candidate.cardTag) ||
+        (candidate.naturalWidth > 0 &&
+          resolved.naturalWidth !== candidate.naturalWidth) ||
+        (candidate.naturalHeight > 0 &&
+          resolved.naturalHeight !== candidate.naturalHeight)
+      )
+        throw new ReferenceSelectionError(
+          "capture_candidate_changed",
+          "The accepted image no longer matches the selected Flow card. Select it again.",
+        );
+      const origin = new URL(candidate.canonicalTarget!).origin;
+      const [captured] = await scripting!.executeScript({
+        target: { tabId: selected.tabId, documentIds: [candidate.documentId!] },
+        world: "MAIN",
+        func: flowReferenceCaptureInPage,
+        args: [
+          {
+            action: "fetch",
+            captureOperationId: input.captureOperationId,
+            sourceUrl: candidate.sourceUrl,
+            expectedOrigin: origin,
+          },
+        ],
+      });
+      if (
+        captured?.documentId !== candidate.documentId ||
+        captured.frameId !== 0 ||
+        !captured.result ||
+        typeof captured.result !== "object"
+      )
+        throw new ReferenceSelectionError(
+          "capture_document_changed",
+          "The image response came from a different Flow document.",
+          "context_invalidated",
+        );
+      const result = captured.result;
+      if (!("ok" in result) || result.ok !== true) {
+        const code =
+          "code" in result && typeof result.code === "string"
+            ? result.code.slice(0, 64)
+            : "capture_failed";
+        throw new ReferenceSelectionError(
+          code,
+          `Capture failed (${code}). Keep this verified Flow project open and retry after resolving the issue.`,
+        );
+      }
+      if (
+        !("captureOperationId" in result) ||
+        result.captureOperationId !== input.captureOperationId ||
+        !("data" in result) ||
+        typeof result.data !== "string" ||
+        result.data.length > Math.ceil(MAX_REFERENCE_CAPTURE_BYTES / 3) * 4 ||
+        !/^[A-Za-z0-9+/]+={0,2}$/.test(result.data) ||
+        !("mimeType" in result) ||
+        typeof result.mimeType !== "string" ||
+        !("byteLength" in result) ||
+        typeof result.byteLength !== "number" ||
+        result.byteLength < 1 ||
+        result.byteLength > MAX_REFERENCE_CAPTURE_BYTES ||
+        result.data.length !== Math.ceil(result.byteLength / 3) * 4 ||
+        !("width" in result) ||
+        typeof result.width !== "number" ||
+        result.width < 1 ||
+        !("height" in result) ||
+        typeof result.height !== "number" ||
+        result.height < 1 ||
+        result.width * result.height > MAX_REFERENCE_CAPTURE_PIXELS
+      )
+        throw new ReferenceSelectionError(
+          "capture_response_invalid",
+          "The Flow document returned invalid or oversized image data.",
+        );
+      const binary = atob(result.data);
+      if (binary.length !== result.byteLength)
+        throw new ReferenceSelectionError(
+          "capture_truncated",
+          "The image response was truncated. Nothing was saved.",
+        );
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1)
+        bytes[index] = binary.charCodeAt(index);
+      const mimeType = result.mimeType;
+      const signatureValid =
+        mimeType === "image/jpeg"
+          ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+          : mimeType === "image/png"
+            ? bytes[0] === 0x89 &&
+              bytes[1] === 0x50 &&
+              bytes[2] === 0x4e &&
+              bytes[3] === 0x47
+            : mimeType === "image/webp"
+              ? String.fromCharCode(...bytes.subarray(0, 4)) === "RIFF" &&
+                String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP"
+              : mimeType === "image/gif"
+                ? ["GIF87a", "GIF89a"].includes(
+                    String.fromCharCode(...bytes.subarray(0, 6)),
+                  )
+                : mimeType === "image/avif"
+                  ? String.fromCharCode(...bytes.subarray(4, 12)).includes(
+                      "ftyp",
+                    ) &&
+                    String.fromCharCode(...bytes.subarray(8, 16)).includes(
+                      "avif",
+                    )
+                  : false;
+      if (!signatureValid)
+        throw new ReferenceSelectionError(
+          "capture_signature_mismatch",
+          "The image bytes do not match the reported file format. Nothing was saved.",
+        );
+      const capturedAt = now();
+      const assignment: ReferenceAssignmentRecord = {
+        assignmentId,
+        referenceId: crypto.randomUUID(),
+        captureOperationId: input.captureOperationId,
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        batchSourceHash: candidate.batchSourceHash!,
+        shotId: input.shotId,
+        promptHash: item.contentHash,
+        selectionVersion: input.selectionVersion,
+        assignmentVersion: input.expectedAssignmentVersion + 1,
+        flowProjectId: candidate.flowProjectId!,
+        tabId: selected.tabId,
+        canonicalTarget: candidate.canonicalTarget!,
+        documentId: candidate.documentId!,
+        ...(candidate.providerAssetId
+          ? { providerAssetId: candidate.providerAssetId }
+          : {}),
+        observedSourceSha256: candidate.observedSourceSha256!,
+        bytes: new Blob([bytes], { type: mimeType }),
+        mimeType: mimeType as ReferenceAssignmentRecord["mimeType"],
+        byteSize: bytes.byteLength,
+        sha256: await sha256Bytes(bytes),
+        width: result.width,
+        height: result.height,
+        capturedAt,
+        acquisitionProvenance: "verified_flow_document_same_origin_fetch",
+        qualityProvenance: "observed_resource_original_bytes_no_upscale",
+      };
+      if (!ReferenceAssignmentRecordSchema.safeParse(assignment).success)
+        throw new ReferenceSelectionError(
+          "capture_metadata_invalid",
+          "The image metadata failed validation. Nothing was saved.",
+        );
+      await broadcast({
+        type: FLOW_REFERENCE_EVENT_MESSAGE,
+        event: "capture_progress",
+        captureOperationId: input.captureOperationId,
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        shotId: input.shotId,
+        stage: "saving",
+      });
+      const saved = await withShotLock(
+        captureShotKey(input.workspaceId, input.batchId, input.shotId),
+        async () => {
+          const latest = await validateCaptureContext(input);
+          const current = await resolveCaptureCandidateInDocument(
+            flowSession!,
+            latest.candidate,
+          );
+          if (
+            latest.candidate.selectionVersion !== input.selectionVersion ||
+            current.sourceUrl !== candidate.sourceUrl ||
+            (candidate.cardTag !== "context-menu-image" &&
+              current.providerAssetId !== candidate.providerAssetId) ||
+            (candidate.cardTag !== "context-menu-image" &&
+              current.cardTag !== candidate.cardTag)
+          )
+            throw new ReferenceSelectionError(
+              "candidate_replaced_or_missing",
+              "The selected image changed during capture; the previous saved reference was kept.",
+            );
+          return dependencies.repositories.commitReferenceCapture({
+            assignment,
+            expectedSourceText: savedBatch.batch.sourceText,
+            expectedPromptBody: item.rawJsonBody,
+          });
+        },
+      );
+      await broadcast({
+        type: FLOW_REFERENCE_EVENT_MESSAGE,
+        event: "reference_saved",
+        captureOperationId: input.captureOperationId,
+        workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        shotId: input.shotId,
+        referenceId: saved.referenceId,
+      });
+      return { saved: true, reference: referenceMetadata(saved) };
+    } catch (error) {
+      if (operationStarted) {
+        const reason =
+          error instanceof ReferenceSelectionError
+            ? error.code
+            : "capture_storage_or_transport_failed";
+        await dependencies.repositories
+          .updateReferenceCaptureOperation(
+            input.captureOperationId,
+            "failed",
+            reason,
+            now(),
+          )
+          .catch(() => undefined);
+      }
+      if (error instanceof ReferenceSelectionError) throw error;
+      throw new ReferenceSelectionError(
+        "reference_capture_failed",
+        "Capture or save failed. Any prior saved reference remains unchanged; check the Flow document and available storage before retrying.",
+        "context_invalidated",
+      );
+    } finally {
+      activeCaptures.delete(input.captureOperationId);
+      captureClaims.delete(input.captureOperationId);
+    }
+  };
+
+  const getCaptureStatus = async (captureOperationId: string) => {
+    const saved =
+      await dependencies.repositories.getReferenceByOperation(
+        captureOperationId,
+      );
+    if (saved) return { status: "saved", reference: referenceMetadata(saved) };
+    const operation =
+      await dependencies.repositories.getReferenceCaptureOperation(
+        captureOperationId,
+      );
+    return operation
+      ? { status: operation.status, reason: operation.reason }
+      : { status: "not_found" };
   };
 
   return {
@@ -712,6 +1299,20 @@ export function createFlowReferenceHandler(
       const candidates = savedBatch
         ? await getTransientCandidatesMap(workspaceId, savedBatch.batch.id)
         : {};
+      const savedReferences = savedBatch
+        ? (
+            await dependencies.repositories.listReferenceAssignments(
+              workspaceId,
+              savedBatch.batch.id,
+            )
+          ).map(referenceMetadata)
+        : [];
+      const captureOperations = savedBatch
+        ? await dependencies.repositories.listReferenceCaptureOperations(
+            workspaceId,
+            savedBatch.batch.id,
+          )
+        : [];
 
       return {
         activeSession:
@@ -719,6 +1320,15 @@ export function createFlowReferenceHandler(
             ? activeSession
             : null,
         candidates,
+        savedReferences,
+        captureOperations: captureOperations
+          .filter((operation) => operation.status === "acquiring")
+          .map((operation) => ({
+            captureOperationId: operation.captureOperationId,
+            shotId: operation.shotId,
+            status: operation.status,
+            reason: operation.reason,
+          })),
       };
     },
 
@@ -785,6 +1395,50 @@ export function createFlowReferenceHandler(
             ? Math.max(0, Math.min(1000, Math.trunc(raw.unsupportedCount)))
             : 0,
       };
+    },
+
+    captureReference,
+
+    async cancelCapture(captureOperationId: string) {
+      const operation =
+        await dependencies.repositories.updateReferenceCaptureOperation(
+          captureOperationId,
+          "cancelled",
+          "user_cancelled",
+          now(),
+        );
+      if (operation?.status === "cancelled")
+        await cancelCaptureInPage(captureOperationId);
+      return {
+        cancelled: operation?.status === "cancelled",
+        status: operation?.status ?? "not_found",
+      };
+    },
+
+    getCaptureStatus,
+
+    async getSavedReference(referenceId: string) {
+      const saved =
+        await dependencies.repositories.getReferenceById(referenceId);
+      if (!saved || saved.byteSize > MAX_REFERENCE_CAPTURE_BYTES)
+        throw new ReferenceSelectionError(
+          "saved_reference_missing",
+          "This saved reference is unavailable. Refresh References and try again.",
+          "not_found",
+        );
+      const bytes = new Uint8Array(await saved.bytes.arrayBuffer());
+      if (
+        bytes.byteLength !== saved.byteSize ||
+        (await sha256Bytes(bytes)) !== saved.sha256
+      )
+        throw new ReferenceSelectionError(
+          "saved_reference_corrupt",
+          "Stored image bytes failed integrity validation. The reference was not displayed.",
+        );
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += 0x8000)
+        binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+      return { reference: referenceMetadata(saved), data: btoa(binary) };
     },
 
     async getPreview(
@@ -1068,7 +1722,21 @@ export function createFlowReferenceHandler(
         "image",
       );
       if (savedBatch) {
-        await clearTransientCandidate(workspaceId, savedBatch.batch.id, shotId);
+        await withShotLock(
+          captureShotKey(workspaceId, savedBatch.batch.id, shotId),
+          async () => {
+            await cancelCapturesForShot(
+              workspaceId,
+              savedBatch.batch.id,
+              shotId,
+            );
+            await clearTransientCandidate(
+              workspaceId,
+              savedBatch.batch.id,
+              shotId,
+            );
+          },
+        );
       }
       await broadcast({
         type: FLOW_REFERENCE_EVENT_MESSAGE,
@@ -1299,6 +1967,9 @@ export function createFlowReferenceHandler(
       ) {
         return { accepted: false, code: "batch_or_shot_changed" };
       }
+      const promptItem = savedBatch.items.find(
+        (item) => item.shotId === active.shotId,
+      )!;
 
       // 4. Validate payload
       const parsedMessage =
@@ -1336,16 +2007,39 @@ export function createFlowReferenceHandler(
       if (!claimAlreadyHeld) candidateClaims.add(active.sessionId);
 
       try {
-        // 5. Mark session complete and clear active session
-        await setActiveSession(null);
-        await removeContextMenu(active.sessionId);
-
-        // 6. Store candidate in transient session state
-        await setTransientCandidate(
-          active.workspaceId,
-          active.batchId,
-          active.shotId,
-          parsedCandidate.data,
+        const acceptedCandidate = ReferenceCandidateSchema.parse({
+          ...parsedCandidate.data,
+          selectionVersion: crypto.randomUUID(),
+          workspaceId: active.workspaceId,
+          batchId: active.batchId,
+          shotId: active.shotId,
+          batchSourceHash: await sha256Hex(savedBatch.batch.sourceText),
+          promptHash: promptItem.contentHash,
+          flowProjectId: active.projectId,
+          tabId: active.tabId,
+          canonicalTarget: active.canonicalTarget,
+          documentId: active.documentId,
+          selectionSessionId: active.sessionId,
+          acceptedAt: now(),
+          observedSourceSha256: await sha256Hex(parsedCandidate.data.sourceUrl),
+        });
+        await withShotLock(
+          captureShotKey(active.workspaceId, active.batchId, active.shotId),
+          async () => {
+            await cancelCapturesForShot(
+              active.workspaceId,
+              active.batchId,
+              active.shotId,
+            );
+            await setActiveSession(null);
+            await removeContextMenu(active.sessionId);
+            await setTransientCandidate(
+              active.workspaceId,
+              active.batchId,
+              active.shotId,
+              acceptedCandidate,
+            );
+          },
         );
 
         // 7. Broadcast candidate_selected event to dashboard (honest candidate-only state)
@@ -1356,10 +2050,10 @@ export function createFlowReferenceHandler(
           workspaceId: active.workspaceId,
           batchId: active.batchId,
           shotId: active.shotId,
-          candidate: parsedCandidate.data,
+          candidate: acceptedCandidate,
           retained: false,
           message:
-            "Candidate selected — image capture and saving are not implemented in this phase.",
+            "Candidate selected — not saved. Save reference to capture and keep image bytes.",
         });
 
         return { accepted: true };

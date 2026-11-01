@@ -38,6 +38,7 @@ export default defineConfig({
     "imageQueueSequence.spec.ts",
     "imageQueuePresentation.spec.ts",
     "imageQueueCreateTransition.spec.ts",
+    "referenceCaptureStorage.spec.ts",
   ],
   reporter: "list",
   use: {

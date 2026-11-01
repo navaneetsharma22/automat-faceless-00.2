@@ -95,6 +95,17 @@ export type FoundationDependencies = {
       previewId: string,
     ) => Promise<unknown>;
     cancelPreview?: (sessionId: string, previewId: string) => Promise<unknown>;
+    captureReference?: (input: {
+      workspaceId: string;
+      batchId: string;
+      shotId: string;
+      selectionVersion: string;
+      expectedAssignmentVersion: number;
+      captureOperationId: string;
+    }) => Promise<unknown>;
+    cancelCapture?: (captureOperationId: string) => Promise<unknown>;
+    getCaptureStatus?: (captureOperationId: string) => Promise<unknown>;
+    getSavedReference?: (referenceId: string) => Promise<unknown>;
     clearCandidate: (workspaceId: string, shotId: string) => Promise<unknown>;
     handleCandidateSelected: (
       message: unknown,
@@ -625,6 +636,76 @@ async function dispatch(
         return await dependencies.flowReferenceHandler.cancelPreview(
           request.payload.sessionId,
           request.payload.previewId,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError)
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
+        throw err;
+      }
+    case "flow.reference.capture":
+      if (!dependencies.flowReferenceHandler?.captureReference)
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_capture_unavailable",
+          "Reference capture is unavailable in this worker context.",
+        );
+      try {
+        return await dependencies.flowReferenceHandler.captureReference(
+          request.payload,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError)
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
+        throw err;
+      }
+    case "flow.reference.cancelCapture":
+      if (!dependencies.flowReferenceHandler?.cancelCapture)
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_capture_unavailable",
+          "Reference capture is unavailable in this worker context.",
+        );
+      try {
+        return await dependencies.flowReferenceHandler.cancelCapture(
+          request.payload.captureOperationId,
+        );
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError)
+          throw new FoundationOperationError(
+            err.category,
+            err.code,
+            err.message,
+          );
+        throw err;
+      }
+    case "flow.reference.getCaptureStatus":
+      if (!dependencies.flowReferenceHandler?.getCaptureStatus)
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_capture_unavailable",
+          "Reference capture status is unavailable.",
+        );
+      return await dependencies.flowReferenceHandler.getCaptureStatus(
+        request.payload.captureOperationId,
+      );
+    case "flow.reference.getSavedReference":
+      if (!dependencies.flowReferenceHandler?.getSavedReference)
+        throw new FoundationOperationError(
+          "worker_error",
+          "reference_capture_unavailable",
+          "Saved references are unavailable in this worker context.",
+        );
+      try {
+        return await dependencies.flowReferenceHandler.getSavedReference(
+          request.payload.referenceId,
         );
       } catch (err) {
         if (err instanceof ReferenceSelectionError)

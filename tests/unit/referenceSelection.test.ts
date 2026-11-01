@@ -368,14 +368,16 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       const active = await handler.getActiveSession();
       expect(active).toBeNull();
 
-      expect(broadcastEvents).toContainEqual({
-        type: FLOW_REFERENCE_EVENT_MESSAGE,
-        event: "session_cancelled",
-        sessionId: session.sessionId,
-        workspaceId: "ws-1",
-        shotId: "25",
-        reason: "user_cancelled",
-      });
+      expect(broadcastEvents).toContainEqual(
+        expect.objectContaining({
+          type: FLOW_REFERENCE_EVENT_MESSAGE,
+          event: "session_cancelled",
+          sessionId: session.sessionId,
+          workspaceId: "ws-1",
+          shotId: "25",
+          reason: "user_cancelled",
+        }),
+      );
     });
 
     it("starting a new session replaces and cancels the prior session", async () => {
@@ -843,7 +845,7 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
           shotId: active.shotId,
           retained: false,
           message: expect.stringContaining(
-            "image capture and saving are not implemented in this phase.",
+            "Save reference to capture and keep image bytes.",
           ),
         }),
       );
@@ -1047,22 +1049,36 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
 
       // Candidate is stored only in transient session state
       const state = await handler.getState("ws-1");
-      expect(state.candidates["40"]).toEqual(candidatePayload.candidate);
-
-      // Broadcast confirms honest candidate-only state (retained: false)
-      expect(broadcastEvents).toContainEqual({
-        type: FLOW_REFERENCE_EVENT_MESSAGE,
-        event: "candidate_selected",
-        sessionId: session.sessionId,
+      expect(state.candidates["40"]).toMatchObject({
+        sourceUrl: candidatePayload.candidate.sourceUrl,
+        providerAssetId: candidatePayload.candidate.providerAssetId,
+        selectionVersion: expect.any(String),
         workspaceId: "ws-1",
         batchId: candidatePayload.batchId,
         shotId: "40",
-        candidate: candidatePayload.candidate,
-        retained: false,
-        message: expect.stringContaining(
-          "image capture and saving are not implemented in this phase.",
-        ),
+        documentId: "doc-flow-1",
       });
+
+      // Broadcast confirms honest candidate-only state (retained: false)
+      expect(broadcastEvents).toContainEqual(
+        expect.objectContaining({
+          type: FLOW_REFERENCE_EVENT_MESSAGE,
+          event: "candidate_selected",
+          sessionId: session.sessionId,
+          workspaceId: "ws-1",
+          batchId: candidatePayload.batchId,
+          shotId: "40",
+          candidate: expect.objectContaining({
+            sourceUrl: candidatePayload.candidate.sourceUrl,
+            selectionVersion: expect.any(String),
+            documentId: "doc-flow-1",
+          }),
+          retained: false,
+          message: expect.stringContaining(
+            "Save reference to capture and keep image bytes.",
+          ),
+        }),
+      );
 
       // No durable database changes or prompt batch modifications occurred
       const batchAfter = (await repositories.getPromptBatch("ws-1", "image"))!;
@@ -1070,6 +1086,12 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       // No reference tables created in repository database
       const allBatches = await database.batches.toArray();
       expect(allBatches).toHaveLength(1);
+      expect(
+        await repositories.listReferenceAssignments(
+          "ws-1",
+          candidatePayload.batchId,
+        ),
+      ).toEqual([]);
 
       // Clear candidate works
       await handler.clearCandidate("ws-1", "40");

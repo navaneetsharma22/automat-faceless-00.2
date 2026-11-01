@@ -19,6 +19,8 @@ describe("extension repository boundaries", () => {
       "imageSubmissionQueues",
       "promptDrafts",
       "promptItems",
+      "referenceAssignments",
+      "referenceCaptureOperations",
       "selectedTargets",
       "workflows",
     ]);

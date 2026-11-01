@@ -33,6 +33,305 @@ export function createFlowReferenceContextMenuProperties(
 export const FLOW_REFERENCE_SELECTION_KEY =
   "__AUTOMAT_FLOW_REFERENCE_SELECTION_V1__";
 
+/** Re-resolves only the accepted image identity inside the same Flow project-card scope. */
+export function flowReferenceCaptureResolver(expected: {
+  sourceUrl: string;
+  providerAssetId?: string;
+  cardTag: string;
+  naturalWidth: number;
+  naturalHeight: number;
+}): Record<string, unknown> {
+  if (window.top !== window || !document.body)
+    return { ok: false, code: "capture_wrong_frame" };
+  const projects = Array.from(document.querySelectorAll("flow-project-page"));
+  if (projects.length !== 1)
+    return {
+      ok: false,
+      code: projects.length
+        ? "capture_project_ambiguous"
+        : "capture_project_missing",
+    };
+  const project = projects[0]!;
+  const tag = (element: Element) => element.localName.toLowerCase();
+  const excluded = (element: Element) =>
+    element.closest(
+      "flow-base-prompt-box, nav, header, [role='navigation'], [role='dialog'], dialog, [aria-modal='true'], [class*='avatar' i], [class*='profile' i], [class*='account' i]",
+    ) !== null;
+  const visible = (element: Element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return (
+      element.isConnected &&
+      style.display !== "none" &&
+      !["hidden", "collapse"].includes(style.visibility) &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  };
+  const eligible = (element: Element) => {
+    if (!element.isConnected || !project.contains(element) || excluded(element))
+      return false;
+    const name = tag(element);
+    return (
+      name === "flow-image-tile" ||
+      ["listitem", "gridcell"].includes(element.getAttribute("role") ?? "") ||
+      element.hasAttribute("data-result") ||
+      element.hasAttribute("data-result-card") ||
+      (name.startsWith("flow-") && /result|tile|gallery|media/i.test(name))
+    );
+  };
+  const nearestEligibleCard = (image: Element) => {
+    let current: Element | null = image;
+    while (current && current !== project) {
+      if (eligible(current)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  };
+  const cards = Array.from(project.querySelectorAll("*")).filter(eligible);
+  const matches: Array<Record<string, unknown>> = [];
+  let ambiguous = false;
+  for (const card of cards) {
+    const images = Array.from(card.querySelectorAll("img")).filter(
+      (image) => !excluded(image) && nearestEligibleCard(image) === card,
+    );
+    if (images.length !== 1) {
+      if (
+        images.some(
+          (image) => (image.currentSrc || image.src) === expected.sourceUrl,
+        )
+      )
+        ambiguous = true;
+      continue;
+    }
+    const image = images[0]!;
+    if (!visible(image)) continue;
+    const sourceUrl = image.currentSrc || image.src;
+    const providerAssetId =
+      image.getAttribute("data-media-id")?.trim() ||
+      card.getAttribute("data-asset-id")?.trim() ||
+      image.getAttribute("data-asset-id")?.trim() ||
+      undefined;
+    const candidate = {
+      sourceUrl,
+      ...(providerAssetId ? { providerAssetId } : {}),
+      cardTag: tag(card),
+      naturalWidth: image.naturalWidth || 0,
+      naturalHeight: image.naturalHeight || 0,
+    };
+    const contextMenuIdentity = expected.cardTag === "context-menu-image";
+    if (
+      candidate.sourceUrl === expected.sourceUrl &&
+      (contextMenuIdentity ||
+        candidate.providerAssetId === expected.providerAssetId) &&
+      (contextMenuIdentity || candidate.cardTag === expected.cardTag) &&
+      (contextMenuIdentity ||
+        candidate.naturalWidth === expected.naturalWidth) &&
+      (contextMenuIdentity ||
+        candidate.naturalHeight === expected.naturalHeight)
+    )
+      matches.push(candidate);
+  }
+  if (ambiguous || matches.length > 1)
+    return { ok: false, code: "capture_candidate_ambiguous" };
+  if (matches.length !== 1)
+    return { ok: false, code: "capture_candidate_missing_or_changed" };
+  return { ok: true, candidate: matches[0] };
+}
+
+/** Reads exact observed image bytes in the verified Flow document for durable capture. */
+export async function flowReferenceCaptureInPage(input: {
+  action: "fetch" | "cancel";
+  captureOperationId: string;
+  sourceUrl?: string;
+  expectedOrigin: string;
+}): Promise<Record<string, unknown>> {
+  const key = "__AUTOMAT_FLOW_REFERENCE_CAPTURE_V1__";
+  const scope = globalThis as typeof globalThis & {
+    [key]?: Map<
+      string,
+      { controller: AbortController; timedOut: boolean; cancelled: boolean }
+    >;
+  };
+  const pending = (scope[key] ??= new Map());
+  if (input.action === "cancel") {
+    const active = pending.get(input.captureOperationId);
+    if (!active) return { ok: false, code: "capture_not_active" };
+    active.cancelled = true;
+    active.controller.abort();
+    return { ok: true, cancelled: true };
+  }
+  if (pending.size >= 2)
+    return { ok: false, code: "capture_concurrency_limit" };
+  if (
+    location.origin !== input.expectedOrigin ||
+    !input.sourceUrl ||
+    input.sourceUrl.length > 4096
+  )
+    return { ok: false, code: "capture_wrong_origin" };
+  let source: URL;
+  try {
+    source = new URL(input.sourceUrl);
+  } catch {
+    return { ok: false, code: "capture_source_invalid" };
+  }
+  if (
+    source.protocol !== "https:" ||
+    source.origin !== location.origin ||
+    source.origin !== input.expectedOrigin
+  )
+    return { ok: false, code: "capture_wrong_origin" };
+  const controller = new AbortController();
+  const entry = { controller, timedOut: false, cancelled: false };
+  pending.set(input.captureOperationId, entry);
+  let rejectAbort!: (error: Error) => void;
+  const aborted = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+  controller.signal.addEventListener(
+    "abort",
+    () => rejectAbort(new Error("capture_aborted")),
+    { once: true },
+  );
+  const timer = setTimeout(() => {
+    entry.timedOut = true;
+    controller.abort();
+  }, 20_000);
+  try {
+    const response = await Promise.race([
+      fetch(source.href, {
+        mode: "same-origin",
+        credentials: "same-origin",
+        redirect: "follow",
+        signal: controller.signal,
+      }),
+      aborted,
+    ]);
+    if (!response.ok)
+      return { ok: false, code: `capture_http_${response.status}` };
+    if (new URL(response.url).origin !== location.origin)
+      return { ok: false, code: "capture_redirect_origin" };
+    const mimeType = (response.headers.get("content-type") ?? "")
+      .split(";", 1)[0]!
+      .trim()
+      .toLowerCase();
+    const supported = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/avif",
+      "image/gif",
+    ];
+    if (!supported.includes(mimeType))
+      return { ok: false, code: "capture_format_unsupported" };
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > 12 * 1024 * 1024) {
+      await response.body?.cancel().catch(() => undefined);
+      return { ok: false, code: "capture_oversize" };
+    }
+    if (!response.body) return { ok: false, code: "capture_body_missing" };
+    const reader = response.body.getReader();
+    const chunks: ArrayBuffer[] = [];
+    let size = 0;
+    while (true) {
+      const part = await Promise.race([reader.read(), aborted]);
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > 12 * 1024 * 1024) {
+        await reader.cancel();
+        return { ok: false, code: "capture_oversize" };
+      }
+      chunks.push(part.value.slice().buffer as ArrayBuffer);
+    }
+    if (size === 0) return { ok: false, code: "capture_empty" };
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(new Uint8Array(chunk), offset);
+      offset += chunk.byteLength;
+    }
+    const signatureValid =
+      mimeType === "image/jpeg"
+        ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+        : mimeType === "image/png"
+          ? bytes[0] === 0x89 &&
+            bytes[1] === 0x50 &&
+            bytes[2] === 0x4e &&
+            bytes[3] === 0x47
+          : mimeType === "image/webp"
+            ? String.fromCharCode(...bytes.subarray(0, 4)) === "RIFF" &&
+              String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP"
+            : mimeType === "image/gif"
+              ? ["GIF87a", "GIF89a"].includes(
+                  String.fromCharCode(...bytes.subarray(0, 6)),
+                )
+              : mimeType === "image/avif"
+                ? String.fromCharCode(...bytes.subarray(4, 12)).includes(
+                    "ftyp",
+                  ) &&
+                  String.fromCharCode(...bytes.subarray(8, 16)).includes("avif")
+                : false;
+    if (!signatureValid)
+      return { ok: false, code: "capture_signature_mismatch" };
+    let bitmap: ImageBitmap;
+    try {
+      bitmap = await Promise.race([
+        createImageBitmap(
+          new Blob([bytes.buffer as ArrayBuffer], { type: mimeType }),
+        ).then((decoded) => {
+          if (entry.cancelled || entry.timedOut) decoded.close();
+          return decoded;
+        }),
+        aborted,
+      ]);
+    } catch {
+      return {
+        ok: false,
+        code: entry.cancelled
+          ? "capture_cancelled"
+          : entry.timedOut
+            ? "capture_timeout"
+            : "capture_decode_failed",
+      };
+    }
+    try {
+      if (
+        !bitmap.width ||
+        !bitmap.height ||
+        bitmap.width * bitmap.height > 40_000_000
+      )
+        return { ok: false, code: "capture_pixel_limit" };
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += 0x8000)
+        binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+      return {
+        ok: true,
+        captureOperationId: input.captureOperationId,
+        mimeType,
+        width: bitmap.width,
+        height: bitmap.height,
+        byteLength: bytes.length,
+        data: btoa(binary),
+      };
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return {
+      ok: false,
+      code: entry.cancelled
+        ? "capture_cancelled"
+        : entry.timedOut
+          ? "capture_timeout"
+          : "capture_fetch_failed",
+    };
+  } finally {
+    clearTimeout(timer);
+    if (pending.get(input.captureOperationId) === entry)
+      pending.delete(input.captureOperationId);
+  }
+}
+
 /** Fetches and downsizes one already-resolved candidate in its verified Flow document. */
 export async function flowReferencePreviewInPage(input: {
   action: "fetch" | "cancel";
@@ -278,6 +577,21 @@ export function createFlowReferenceSelectionInjection(
       string,
       number,
       typeof FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+    ],
+  };
+}
+
+export function createFlowReferenceCaptureResolverInjection(input: {
+  tabId: number;
+  documentId: string;
+  expected: Parameters<typeof flowReferenceCaptureResolver>[0];
+}) {
+  return {
+    target: { tabId: input.tabId, documentIds: [input.documentId] },
+    world: "ISOLATED" as const,
+    func: flowReferenceCaptureResolver,
+    args: [input.expected] as [
+      Parameters<typeof flowReferenceCaptureResolver>[0],
     ],
   };
 }

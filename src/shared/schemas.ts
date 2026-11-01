@@ -527,6 +527,31 @@ export const ReferenceCandidateSchema = z
     providerAssetId: z.string().min(1).max(256).optional(),
     cardTag: z.string().min(1).max(64),
     selectedAt: z.number().finite().nonnegative(),
+    selectionVersion: z.string().uuid().optional(),
+    workspaceId: workspaceIdSchema.optional(),
+    batchId: z.string().min(1).max(256).optional(),
+    shotId: z
+      .string()
+      .regex(/^[1-9][0-9]*$/)
+      .optional(),
+    batchSourceHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    promptHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    flowProjectId: z.string().min(1).max(512).optional(),
+    tabId: z.number().int().nonnegative().optional(),
+    canonicalTarget: z.string().min(1).max(2048).optional(),
+    documentId: z.string().min(1).max(256).optional(),
+    selectionSessionId: z.string().min(1).max(128).optional(),
+    acceptedAt: z.number().finite().nonnegative().optional(),
+    observedSourceSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
   })
   .strict();
 export type ReferenceCandidate = z.infer<typeof ReferenceCandidateSchema>;
@@ -593,7 +618,7 @@ export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
       candidate: ReferenceCandidateSchema,
       retained: z.literal(false),
       message: z.literal(
-        "Candidate selected — image capture and saving are not implemented in this phase.",
+        "Candidate selected — not saved. Save reference to capture and keep image bytes.",
       ),
     })
     .strict(),
@@ -622,6 +647,28 @@ export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
       event: z.literal("candidate_cleared"),
       workspaceId: workspaceIdSchema,
       shotId: z.string().regex(/^[1-9][0-9]*$/),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal(FLOW_REFERENCE_EVENT_MESSAGE),
+      event: z.literal("capture_progress"),
+      captureOperationId: z.string().uuid(),
+      workspaceId: workspaceIdSchema,
+      batchId: z.string().min(1).max(256),
+      shotId: z.string().regex(/^[1-9][0-9]*$/),
+      stage: z.enum(["capturing", "saving"]),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal(FLOW_REFERENCE_EVENT_MESSAGE),
+      event: z.literal("reference_saved"),
+      captureOperationId: z.string().uuid(),
+      workspaceId: workspaceIdSchema,
+      batchId: z.string().min(1).max(256),
+      shotId: z.string().regex(/^[1-9][0-9]*$/),
+      referenceId: z.string().uuid(),
     })
     .strict(),
 ]);
@@ -864,6 +911,31 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
         previewId: z.string().uuid(),
       })
       .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.capture"),
+    payload: z
+      .object({
+        workspaceId: workspaceIdSchema,
+        batchId: z.string().min(1).max(256),
+        shotId: z.string().regex(/^[1-9][0-9]*$/),
+        selectionVersion: z.string().uuid(),
+        expectedAssignmentVersion: z.number().int().nonnegative(),
+        captureOperationId: z.string().uuid(),
+      })
+      .strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.cancelCapture"),
+    payload: z.object({ captureOperationId: z.string().uuid() }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.getCaptureStatus"),
+    payload: z.object({ captureOperationId: z.string().uuid() }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.reference.getSavedReference"),
+    payload: z.object({ referenceId: z.string().uuid() }).strict(),
   }),
 ]);
 
