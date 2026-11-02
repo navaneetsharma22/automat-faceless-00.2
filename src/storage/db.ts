@@ -13,6 +13,7 @@ import type {
   ReferenceAssignmentRecord,
   ReferenceCaptureOperationRecord,
 } from "../domain/media/references";
+import type { ConnectionFailureDiagnostic } from "../platforms/shared/contracts";
 
 export type PromptDraftRecord = {
   id: string;
@@ -56,9 +57,11 @@ export type SelectedTargetRecord = {
     | "checking"
     | "verified"
     | "temporarily-unreachable"
+    | "permission-needed"
     | "stale-document"
     | "stale-build"
     | "disconnected";
+  connectionFailure?: ConnectionFailureDiagnostic;
   /** Monotonic per-provider write token used to reject late handshake results. */
   revision?: number;
   lifecycleDiagnostics?: Array<{
@@ -74,6 +77,7 @@ export type SelectedTargetRecord = {
       | "tab_replaced"
       | "revalidation_refused";
     reason?: string;
+    failureStage?: ConnectionFailureDiagnostic["stage"];
     bindingComparison?: VerificationBindingComparison;
     at: number;
   }>;

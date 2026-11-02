@@ -109,6 +109,7 @@ export type ConnectionStateName =
   | "failed";
 
 export type ConnectionFailureStage =
+  | "connection_setup"
   | "permission_check"
   | "permission_request"
   | "target_validation"
@@ -118,6 +119,24 @@ export type ConnectionFailureStage =
   | "handshake"
   | "handshake_validation"
   | "extension_context";
+
+export type ConnectionFailureReason =
+  | "permission_missing"
+  | "permission_inspection_failed"
+  | "extension_context_invalidated"
+  | "connection_api_unavailable"
+  | "revalidation_deadline_exceeded"
+  | "stale_connector_live"
+  | "stale_connector_active_observation"
+  | "stale_connector_state_unavailable"
+  | "saved_document_changed_before_replacement"
+  | "stale_connector_replacement_document_changed";
+
+export type ConnectionFailureDiagnostic = {
+  stage: ConnectionFailureStage;
+  reason: ConnectionFailureReason | ConnectionFailureStage;
+  permissionRequest?: ProviderAccessRequest;
+};
 
 export type ConnectionResult =
   | {
@@ -136,12 +155,7 @@ export type ConnectionResult =
       >;
       stage: ConnectionFailureStage;
       error: string;
-      reasonCode?:
-        | "stale_connector_live"
-        | "stale_connector_active_observation"
-        | "stale_connector_state_unavailable"
-        | "saved_document_changed_before_replacement"
-        | "stale_connector_replacement_document_changed";
+      reasonCode?: ConnectionFailureReason;
       handshakeDiagnostics?: ConnectionHandshakeDiagnostics;
       permissionRequest?: ProviderAccessRequest;
     };

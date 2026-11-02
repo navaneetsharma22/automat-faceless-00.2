@@ -1,6 +1,7 @@
 import { verifyPersistedTarget } from "../platforms/shared/connection";
 import { createChromeConnectionPort } from "../platforms/shared/chromeConnectionPort";
 import type {
+  ConnectionFailureStage,
   ConnectionPort,
   ProviderName,
   ProviderTab,
@@ -24,11 +25,12 @@ export type ConnectionRevalidationResult = {
     | "verified"
     | "disconnected"
     | "temporarily-unreachable"
+    | "permission-needed"
     | "stale-document"
     | "stale-build"
-    | "wrong-target"
-    | "permission-needed";
+    | "wrong-target";
   reason: string;
+  failureStage?: ConnectionFailureStage;
   tab?: ProviderTab;
   documentId?: string;
   documentToken?: string;
@@ -50,6 +52,7 @@ export function createConnectionLifecycleService(
     provider: ProviderName,
     state: NonNullable<SelectedTargetRecord["connectionState"]>,
     reason: string,
+    failureStage?: ConnectionFailureStage,
   ) => void = () => undefined,
 ) {
   const inFlight = new Map<
@@ -88,6 +91,17 @@ export function createConnectionLifecycleService(
           reason: "manual_disconnect",
         };
 
+      if (target.connectionState === "permission-needed") {
+        return {
+          ok: false,
+          state: "permission-needed",
+          reason: target.connectionFailure?.reason ?? "permission_missing",
+          failureStage:
+            target.connectionFailure?.stage ?? "permission_check",
+          permissionRequest: target.connectionFailure?.permissionRequest,
+        };
+      }
+
       const expectedRevision = target.revision ?? 0;
       const previousBinding = target.verificationBinding;
       const selectedRoute = providerTabFromUrl(
@@ -123,12 +137,15 @@ export function createConnectionLifecycleService(
           provider,
           "temporarily-unreachable",
           expectedRevision,
+          false,
+          { stage: "connection_setup", reason: "connection_api_unavailable" },
         );
         await repositories.recordConnectionLifecycleDiagnostic(
           provider,
           {
             kind: "transport_unavailable",
             reason: "connection_api_unavailable",
+            failureStage: "connection_setup",
             at: Date.now(),
           },
           target,
@@ -137,11 +154,13 @@ export function createConnectionLifecycleService(
           provider,
           "temporarily-unreachable",
           "connection_api_unavailable",
+          "connection_setup",
         );
         return {
           ok: false,
           state: "temporarily-unreachable",
           reason: "connection_api_unavailable",
+          failureStage: "connection_setup",
         };
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -198,12 +217,14 @@ export function createConnectionLifecycleService(
           "temporarily-unreachable",
           expectedRevision,
           true,
+          { stage: "handshake", reason: "revalidation_deadline_exceeded" },
         );
         await repositories.recordConnectionLifecycleDiagnostic(
           provider,
           {
             kind: "transport_unavailable",
             reason: "revalidation_deadline_exceeded",
+            failureStage: "handshake",
             at: Date.now(),
           },
           target,
@@ -212,11 +233,13 @@ export function createConnectionLifecycleService(
           provider,
           "temporarily-unreachable",
           "revalidation_deadline_exceeded",
+          "handshake",
         );
         return {
           ok: false,
           state: "temporarily-unreachable",
           reason: "revalidation_deadline_exceeded",
+          failureStage: "handshake",
         };
       }
       if (!result.ok) {
@@ -226,20 +249,33 @@ export function createConnectionLifecycleService(
         const connectionState =
           result.state === "stale-build"
             ? "stale-build"
-            : documentChanged
-              ? "stale-document"
-              : "temporarily-unreachable";
+            : result.state === "permission-needed"
+              ? "permission-needed"
+              : documentChanged
+                ? "stale-document"
+                : "temporarily-unreachable";
+        const reason = result.reasonCode ?? result.stage;
         await repositories.setTargetConnectionState(
           provider,
           connectionState,
           expectedRevision,
-          documentChanged || result.state === "stale-build",
+          documentChanged ||
+            result.state === "stale-build" ||
+            result.state === "permission-needed",
+          {
+            stage: result.stage,
+            reason,
+            ...(result.permissionRequest
+              ? { permissionRequest: result.permissionRequest }
+              : {}),
+          },
         );
         await repositories.recordConnectionLifecycleDiagnostic(
           provider,
           {
             kind: documentChanged ? "document_changed" : "revalidation_refused",
-            reason: result.reasonCode ?? result.stage,
+            reason,
+            failureStage: result.stage,
             at: Date.now(),
           },
           target,
@@ -247,7 +283,8 @@ export function createConnectionLifecycleService(
         onStateChanged(
           provider,
           connectionState,
-          result.reasonCode ?? result.stage,
+          reason,
+          result.stage,
         );
         return {
           ok: false,
@@ -259,7 +296,8 @@ export function createConnectionLifecycleService(
                 : documentChanged
                   ? "stale-document"
                   : "temporarily-unreachable",
-          reason: result.reasonCode ?? result.stage,
+          reason,
+          failureStage: result.stage,
           permissionRequest: result.permissionRequest,
         };
       }

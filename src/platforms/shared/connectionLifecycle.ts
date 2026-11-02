@@ -17,11 +17,13 @@ export type ConnectionStateChangedEvent = {
   state:
     | "checking"
     | "verified"
+    | "permission-needed"
     | "temporarily-unreachable"
     | "stale-document"
     | "stale-build"
     | "disconnected";
   reason: string;
+  failureStage?: import("./contracts").ConnectionFailureStage;
 };
 
 export function readConnectionStateChangedEvent(
@@ -37,19 +39,38 @@ export function readConnectionStateChangedEvent(
     ![
       "checking",
       "verified",
+      "permission-needed",
       "temporarily-unreachable",
       "stale-document",
       "stale-build",
       "disconnected",
     ].includes(String(event.state)) ||
     typeof event.reason !== "string" ||
-    !/^[a-z0-9_]{1,64}$/.test(event.reason)
+    !/^[a-z0-9_]{1,64}$/.test(event.reason) ||
+    (event.failureStage !== undefined &&
+      ![
+        "connection_setup",
+        "permission_check",
+        "permission_request",
+        "target_validation",
+        "connector_ping",
+        "connector_injection",
+        "document_validation",
+        "handshake",
+        "handshake_validation",
+        "extension_context",
+      ].includes(String(event.failureStage)))
   )
     return undefined;
   return {
     provider: event.provider,
     state: event.state as ConnectionStateChangedEvent["state"],
     reason: event.reason,
+    ...(event.failureStage
+      ? {
+          failureStage: event.failureStage as ConnectionStateChangedEvent["failureStage"],
+        }
+      : {}),
   };
 }
 

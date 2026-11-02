@@ -60,6 +60,13 @@ export function requestProviderAccess(
   return chrome.permissions.request(request as chrome.permissions.Permissions);
 }
 
+class PermissionInspectionError extends Error {
+  constructor() {
+    super("permission_inspection_failed");
+    this.name = "PermissionInspectionError";
+  }
+}
+
 export function createChromeConnectionPort(): ConnectionPort | undefined {
   if (!hasConnectionSetupApis()) return undefined;
 
@@ -69,12 +76,24 @@ export function createChromeConnectionPort(): ConnectionPort | undefined {
       if (!origin || selected.provider !== provider) {
         throw new Error("Selected provider origin is unsupported");
       }
-      const hasScripting = await chrome.permissions.contains({
-        permissions: ["scripting"],
-      });
-      const hasOrigin = await chrome.permissions.contains({
-        origins: [origin],
-      });
+      let hasScripting: boolean;
+      let hasOrigin: boolean;
+      try {
+        hasScripting = await chrome.permissions.contains({
+          permissions: ["scripting"],
+        });
+        hasOrigin = await chrome.permissions.contains({
+          origins: [origin],
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          /extension context invalidated/i.test(error.message)
+        ) {
+          throw error;
+        }
+        throw new PermissionInspectionError();
+      }
 
       const request: ProviderAccessRequest = {};
       if (!hasScripting) request.permissions = ["scripting"];

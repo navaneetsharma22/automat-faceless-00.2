@@ -775,6 +775,7 @@ describe("explicit read-only Flow/Vids attachment", () => {
       ok: false,
       state: "failed",
       stage: "permission_check",
+      reasonCode: "permission_inspection_failed",
     });
     if (!permissionResult.ok) {
       expect(permissionResult.error).not.toContain("private-id");
@@ -809,6 +810,34 @@ describe("explicit read-only Flow/Vids attachment", () => {
       state: "failed",
       stage: "handshake",
     });
+  });
+
+  it("distinguishes a rejected permissions.contains inspection from missing access", async () => {
+    const executeScript = vi.fn();
+    const sendMessage = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: { id: "offline-extension" },
+      permissions: {
+        contains: vi.fn().mockRejectedValue(new Error("browser API rejected")),
+        request: vi.fn(),
+      },
+      tabs: { get: vi.fn(), query: vi.fn(), sendMessage },
+      scripting: { executeScript },
+    });
+    const selected = makeTab();
+    const port = createChromeConnectionPort()!;
+    await expect(port.getMissingAccess("Flow", selected)).rejects.toMatchObject(
+      { name: "PermissionInspectionError" },
+    );
+    const result = await attachToSelectedTab("Flow", selected, port);
+    expect(result).toMatchObject({
+      ok: false,
+      state: "failed",
+      stage: "permission_check",
+      reasonCode: "permission_inspection_failed",
+    });
+    expect(executeScript).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("blocks stale connector builds without reinjection or page replacement", async () => {

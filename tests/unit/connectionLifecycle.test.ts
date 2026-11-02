@@ -5,6 +5,7 @@ import {
 } from "../../src/background/connectionLifecycle";
 import { createFlowImageReadinessCheck } from "../../src/background/handlers/flow";
 import { providerTabFromUrl } from "../../src/platforms/shared/connection";
+import { readConnectionStateChangedEvent } from "../../src/platforms/shared/connectionLifecycle";
 import {
   CONNECTION_CAPABILITY,
   CONNECTOR_PROTOCOL_VERSION,
@@ -13,6 +14,8 @@ import {
   type ProviderName,
 } from "../../src/platforms/shared/contracts";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
+import { CONNECTION_STATE_CHANGED_MESSAGE } from "../../src/shared/messages";
+import { connectionStatusFromLifecycleState } from "../../src/app/connectionAttempt";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
 
@@ -118,6 +121,175 @@ async function persistSelection(
 }
 
 describe("worker-owned connection lifecycle", () => {
+  it.each([
+    ["Flow", flowUrl, 9],
+    ["Vids", vidsUrl, 19],
+  ] as const)("preserves permission-needed state and scoped request for %s", async (provider, url, tabId) => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const fixture = connectionPort(provider, url, { tabId });
+    const lifecycleEvents: Array<{
+      provider: ProviderName;
+      state: string;
+      reason: string;
+      failureStage?: string;
+    }> = [];
+    vi.mocked(fixture.port.getMissingAccess).mockResolvedValueOnce({
+      permissions: ["scripting"],
+      origins: [`${new URL(url).origin}/*`],
+    });
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+      (eventProvider, state, reason, failureStage) =>
+        lifecycleEvents.push({
+          provider: eventProvider,
+          state,
+          reason,
+          failureStage,
+        }),
+    );
+    await persistSelection(repositories, provider, tabId, url);
+
+    const result = await service.revalidate(provider, true);
+    expect(result).toMatchObject({
+      ok: false,
+      state: "permission-needed",
+      reason: "permission_missing",
+      failureStage: "permission_check",
+      permissionRequest: {
+        permissions: ["scripting"],
+        origins: [`${new URL(url).origin}/*`],
+      },
+    });
+    expect(await repositories.getSelectedTarget(provider)).toMatchObject({
+      connectionState: "permission-needed",
+      verification: "unverified",
+      connectionFailure: {
+        stage: "permission_check",
+        reason: "permission_missing",
+        permissionRequest: {
+          permissions: ["scripting"],
+          origins: [`${new URL(url).origin}/*`],
+        },
+      },
+    });
+    expect(
+      (await repositories.getSelectedTarget(provider))?.lifecycleDiagnostics,
+    ).toContainEqual(
+      expect.objectContaining({
+        reason: "permission_missing",
+        failureStage: "permission_check",
+      }),
+    );
+    expect(lifecycleEvents.at(-1)).toEqual({
+      provider,
+      state: "permission-needed",
+      reason: "permission_missing",
+      failureStage: "permission_check",
+    });
+
+    const event = readConnectionStateChangedEvent({
+      type: CONNECTION_STATE_CHANGED_MESSAGE,
+      buildId: BUILD_ID,
+      protocolVersion: PROTOCOL_VERSION,
+      provider,
+      state: "permission-needed",
+      reason: "permission_missing",
+      failureStage: "permission_check",
+    });
+    expect(event).toMatchObject({
+      state: "permission-needed",
+      reason: "permission_missing",
+      failureStage: "permission_check",
+    });
+    expect(connectionStatusFromLifecycleState(event!.state)).toBe(
+      "permission-needed",
+    );
+
+    // Later generic browser lifecycle writes must not hide the actionable state.
+    const saved = await repositories.getSelectedTarget(provider);
+    expect(
+      await repositories.setTargetConnectionState(
+        provider,
+        "temporarily-unreachable",
+        saved?.revision,
+        true,
+      ),
+    ).toBe(false);
+    expect(await service.revalidate(provider)).toMatchObject({
+      state: "permission-needed",
+      reason: "permission_missing",
+      failureStage: "permission_check",
+    });
+    expect(await repositories.getSelectedTarget(provider)).toMatchObject({
+      connectionState: "permission-needed",
+    });
+  });
+
+  it.each([
+    ["Flow", flowUrl, 9],
+    ["Vids", vidsUrl, 19],
+  ] as const)("completes normal verified handshake for %s", async (provider, url, tabId) => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const fixture = connectionPort(provider, url, { tabId });
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+    );
+    await persistSelection(repositories, provider, tabId, url);
+    expect(await service.revalidate(provider, true)).toMatchObject({
+      ok: true,
+      state: "verified",
+      tab: { provider },
+    });
+    expect(await repositories.getSelectedTarget(provider)).toMatchObject({
+      verification: "verified",
+      connectionState: "verified",
+    });
+  });
+
+  it("retains rejected permission inspection stage and reason in response, storage, and event", async () => {
+    const repositories = new ExtensionRepositories(
+      createMemoryRepositoryDatabase(),
+    );
+    const fixture = connectionPort("Flow", flowUrl);
+    vi.mocked(fixture.port.getMissingAccess).mockRejectedValueOnce(
+      new Error("permission API failed"),
+    );
+    const lifecycleEvents: Array<Record<string, unknown>> = [];
+    const service = createConnectionLifecycleService(
+      repositories,
+      () => fixture.port,
+      (provider, state, reason, failureStage) =>
+        lifecycleEvents.push({ provider, state, reason, failureStage }),
+    );
+    await persistSelection(repositories, "Flow", 9, flowUrl);
+
+    expect(await service.revalidate("Flow", true)).toMatchObject({
+      ok: false,
+      state: "temporarily-unreachable",
+      reason: "permission_inspection_failed",
+      failureStage: "permission_check",
+    });
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      connectionState: "temporarily-unreachable",
+      connectionFailure: {
+        stage: "permission_check",
+        reason: "permission_inspection_failed",
+      },
+    });
+    expect(lifecycleEvents.at(-1)).toMatchObject({
+      provider: "Flow",
+      state: "temporarily-unreachable",
+      reason: "permission_inspection_failed",
+      failureStage: "permission_check",
+    });
+  });
+
   it("preserves Flow verification across repeated readiness checks and deduplicates concurrent checks", async () => {
     const repositories = new ExtensionRepositories(
       createMemoryRepositoryDatabase(),

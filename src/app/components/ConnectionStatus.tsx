@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { connectionWorkerFailureDetail } from "../connectionAttempt";
+import {
+  connectionStatusFromLifecycleState,
+  connectionWorkerFailureDetail,
+} from "../connectionAttempt";
 import { ConnectionError } from "./ConnectionError";
 import { Button } from "./Button";
 import { Field } from "./Field";
@@ -218,6 +221,7 @@ export function ConnectionStatus() {
           ok: boolean;
           state: string;
           reason: string;
+          failureStage?: string;
           tab?: ProviderTab;
           documentId?: string;
           documentToken?: string;
@@ -236,16 +240,7 @@ export function ConnectionStatus() {
           return;
         if (!result.ok) {
           const status: ConnectionStateName =
-            result.state === "permission-needed"
-              ? "permission-needed"
-              : result.state === "stale-build"
-                ? "stale-build"
-                : result.state === "stale-document" ||
-                    result.state === "wrong-target"
-                  ? "wrong-target"
-                  : result.state === "disconnected"
-                    ? "disconnected"
-                    : "failed";
+            connectionStatusFromLifecycleState(result.state);
           setStates((current) => ({
             ...current,
             [provider]: {
@@ -254,7 +249,7 @@ export function ConnectionStatus() {
                 status === "failed"
                   ? "Temporarily unreachable"
                   : connectionStatusLabel(status),
-              detail: `revalidation_${result.reason}: ${
+              detail: `${result.failureStage ?? "revalidation"}_${result.reason}: ${
                 status === "wrong-target"
                   ? "The selected project or document changed. Select the same intended project and verify it again."
                   : status === "stale-build"
@@ -264,7 +259,15 @@ export function ConnectionStatus() {
                         ? "The connector is outdated, but durable observation state could not be checked. Retry Connect when storage is available."
                         : "A live connector version mismatch was detected. The worker attempted only the guarded same-document replacement; verify again after the current package handshake completes."
                     : status === "permission-needed"
-                      ? "Grant the requested provider access, then retry verification."
+                      ? result.reason === "permission_missing"
+                        ? "Chrome reported missing scripting or selected-site access. Use Allow requested access below, then retry verification."
+                        : "Chrome permission inspection failed. No connector was injected and no access was requested; retry Connect or reopen the dashboard if its extension context was replaced."
+                    : result.reason === "extension_context_invalidated"
+                      ? "The extension context was invalidated. Reopen the packaged dashboard, then retry Connect; no provider page action was taken."
+                      : result.reason === "connection_api_unavailable"
+                        ? "Required Chrome connection APIs are unavailable in this extension context. Reopen the packaged dashboard and check the extension package."
+                        : result.reason === "revalidation_deadline_exceeded"
+                          ? "The bounded connection transport timed out. The project was not verified; retry Connect when the selected page is responsive."
                       : status === "disconnected"
                         ? "This target is manually disconnected. Choose Connect to verify it again."
                         : "The selected document could not be reached. Retry the bounded check without refreshing the provider tab."
@@ -442,6 +445,14 @@ export function ConnectionStatus() {
                 documentId: string;
                 documentToken: string;
               };
+              connectionFailure?: {
+                stage: string;
+                reason: string;
+                permissionRequest?: Extract<
+                  ConnectionResult,
+                  { ok: false }
+                >["permissionRequest"];
+              };
             } | null;
             const intended = savedRef.current[provider];
             if (
@@ -490,17 +501,9 @@ export function ConnectionStatus() {
                 return;
               }
             }
-            const state = current.connectionState ?? "disconnected";
+            const state = current.connectionState ?? stateChange.state;
             const status: ConnectionStateName =
-              state === "checking"
-                ? "pending"
-                : state === "stale-build"
-                  ? "stale-build"
-                  : state === "stale-document"
-                    ? "wrong-target"
-                    : state === "temporarily-unreachable"
-                      ? "failed"
-                      : "disconnected";
+              connectionStatusFromLifecycleState(state);
             setStates((statesNow) => ({
               ...statesNow,
               [provider]: {
@@ -509,17 +512,28 @@ export function ConnectionStatus() {
                   status === "failed"
                     ? "Temporarily unreachable"
                     : connectionStatusLabel(status),
-                detail: `connection_${stateChange.reason}: ${
+                detail: `${current.connectionFailure?.stage ?? stateChange.failureStage ?? "connection"}_${current.connectionFailure?.reason ?? stateChange.reason}: ${
                   state === "stale-document"
                     ? "The saved document binding no longer matches the selected tab. Verify the same intended project explicitly."
                     : state === "stale-build"
                       ? "The saved connector build is stale. Select the intended project and reconnect with the current package."
-                      : state === "temporarily-unreachable"
+                    : state === "permission-needed"
+                      ? current.connectionFailure?.reason === "permission_missing"
+                        ? "Chrome reported missing scripting or selected-site access. Use Allow requested access below, then retry verification."
+                        : "Chrome permission inspection failed. No connector was injected and no access was requested; retry Connect or reopen the dashboard if its extension context was replaced."
+                    : current.connectionFailure?.reason === "extension_context_invalidated"
+                      ? "The extension context was invalidated. Reopen the packaged dashboard, then retry Connect; no provider page action was taken."
+                      : current.connectionFailure?.reason === "connection_api_unavailable"
+                        ? "Required Chrome connection APIs are unavailable in this extension context. Reopen the packaged dashboard and check the extension package."
+                        : current.connectionFailure?.reason === "revalidation_deadline_exceeded"
+                          ? "The bounded connection transport timed out. The project was not verified; retry Connect when the selected page is responsive."
+                    : state === "temporarily-unreachable"
                         ? "The selected project could not be reached by a bounded check. Retry when it is available."
                         : state === "checking"
                           ? "A bounded read-only verification is in progress."
                           : "This target is manually disconnected. Choose Connect to verify it again."
                 }`,
+                permissionRequest: current.connectionFailure?.permissionRequest,
               },
             }));
           })
@@ -828,11 +842,18 @@ export function ConnectionStatus() {
         if (connectionRevision.current[provider] !== permissionRevision) return;
         const savedTarget = savedRef.current[provider];
         if (granted && savedTarget && reconnectEnabledRef.current[provider]) {
-          void verifySavedRef.current(
-            provider,
-            savedTarget,
-            `permission-granted-${permissionRevision}`,
-          );
+          void createChromeFoundationClient()
+            .request("connections.setReconnectIntent", {
+              provider,
+              enabled: true,
+            })
+            .then(() =>
+              verifySavedRef.current(
+                provider,
+                savedTarget,
+                `permission-granted-${permissionRevision}`,
+              ),
+            );
           return;
         }
         setStates((current) => ({

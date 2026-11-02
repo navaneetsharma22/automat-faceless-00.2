@@ -1,5 +1,28 @@
 import { FoundationClientError } from "../shared/messageClient";
 import type { ProviderName } from "../platforms/shared/contracts";
+import type { ConnectionStateName } from "../platforms/shared/contracts";
+
+export function connectionStatusFromLifecycleState(
+  state: string,
+): ConnectionStateName {
+  switch (state) {
+    case "checking":
+      return "pending";
+    case "verified":
+      return "connected";
+    case "permission-needed":
+      return "permission-needed";
+    case "stale-document":
+    case "wrong-target":
+      return "wrong-target";
+    case "stale-build":
+      return "stale-build";
+    case "temporarily-unreachable":
+      return "failed";
+    default:
+      return "disconnected";
+  }
+}
 
 export function hasVerifiedBindingForSelectedTarget(
   current: {

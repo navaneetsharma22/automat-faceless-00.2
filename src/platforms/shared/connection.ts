@@ -131,6 +131,8 @@ async function attach(
         `Chrome access for ${provider} is missing. Use the provider access button below, then retry Connect.`,
         "permission_check",
         permissionRequest,
+        undefined,
+        "permission_missing",
       );
     }
 
@@ -367,7 +369,17 @@ async function attach(
     };
   } catch (error) {
     if (error instanceof ConnectionApiUnavailableError) {
-      return failed("failed", error.diagnostic, error.stage);
+      const invalidated = error.diagnostic.includes(
+        "extension_context_invalidated",
+      );
+      return failed(
+        "failed",
+        error.diagnostic,
+        error.stage,
+        undefined,
+        undefined,
+        invalidated ? "extension_context_invalidated" : undefined,
+      );
     }
     if (
       error instanceof Error &&
@@ -377,6 +389,19 @@ async function attach(
         "failed",
         `extension_context_invalidated; stage=${stage}; runtime.id=${typeof chrome !== "undefined" && chrome.runtime?.id ? "present" : "absent"}. Reopen the extension dashboard and retry; the provider page was not changed.`,
         "extension_context",
+        undefined,
+        undefined,
+        "extension_context_invalidated",
+      );
+    }
+    if (stage === "permission_check") {
+      return failed(
+        "failed",
+        "Chrome permission inspection failed. No connector was injected and no provider access was requested. Retry Connect or reopen the extension dashboard if its context was replaced.",
+        stage,
+        undefined,
+        undefined,
+        "permission_inspection_failed",
       );
     }
     return failed("failed", errorMessageForStage(provider, stage), stage);
@@ -388,6 +413,8 @@ function errorMessageForStage(
   stage: ConnectionFailureStage,
 ): string {
   switch (stage) {
+    case "connection_setup":
+      return `Required Chrome connection APIs are unavailable for ${provider}. Reopen the packaged dashboard and check the extension package; no provider page action was taken.`;
     case "permission_check":
       return `Could not inspect Chrome access for ${provider}. No connector was injected. Retry Connect or check this extension's permission status.`;
     case "permission_request":

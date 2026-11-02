@@ -53,7 +53,7 @@ const flowImageGenerateOnce = createFlowImageGenerateOnceForWorker(
 const connectionLifecycle = createConnectionLifecycleService(
   repositories,
   undefined,
-  (provider, state, reason) => {
+  (provider, state, reason, failureStage) => {
     void chrome.runtime
       .sendMessage({
         type: CONNECTION_STATE_CHANGED_MESSAGE,
@@ -62,6 +62,7 @@ const connectionLifecycle = createConnectionLifecycleService(
         provider,
         state,
         reason,
+        ...(failureStage ? { failureStage } : {}),
       })
       .catch(() => undefined);
   },

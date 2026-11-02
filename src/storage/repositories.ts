@@ -793,6 +793,7 @@ export class ExtensionRepositories {
         reconnectEnabled: enabled,
         verification: enabled ? current.verification : "unverified",
         connectionState: enabled ? "checking" : "disconnected",
+        connectionFailure: undefined,
         revision: (current.revision ?? 0) + 1,
         updatedAt: this.now(),
       });
@@ -880,18 +881,23 @@ export class ExtensionRepositories {
     state: NonNullable<SelectedTargetRecord["connectionState"]>,
     expectedRevision?: number,
     invalidateVerification = false,
+    failure?: SelectedTargetRecord["connectionFailure"],
   ): Promise<boolean> {
     return this.tables.transaction(["selectedTargets"], async () => {
       const current = await this.tables.selectedTargets.get(provider);
       if (
         !current ||
         (expectedRevision !== undefined &&
-          (current.revision ?? 0) !== expectedRevision)
+          (current.revision ?? 0) !== expectedRevision) ||
+        (current.connectionState === "permission-needed" &&
+          state === "temporarily-unreachable")
       )
         return false;
       await this.tables.selectedTargets.put({
         ...current,
         connectionState: state,
+        connectionFailure: failure ??
+          (state === "permission-needed" ? current.connectionFailure : undefined),
         verification: invalidateVerification
           ? "unverified"
           : current.verification,
