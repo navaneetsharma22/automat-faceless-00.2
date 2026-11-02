@@ -1159,3 +1159,16 @@ Checks:
 
 AC14–AC17 status: **PASSED (OFFLINE_VERIFIED)**.
 Live gate: Provider execution (P09/P10) remains **NOT_RUN** and **NOT_STARTED**. Phase 08 local preparation is complete; stopped after P08.3.
+
+### P08.3 destination connection-state refresh follow-up - 1 November 2026
+
+Fixed the Videos destination panel staying stale after a successful reconnect. The sidebar reread the worker's selected-target record after validated connection-state events, while Videos previously read it only on mount or provider change. Videos now uses a worker-backed selected-target store for initial/provider reads and lifecycle refreshes, rejects late responses after provider changes or newer reads, and clears old verification while a refresh is pending. The UI requires verified provider route/project, top-frame document binding, current extension/connector build and protocol, required capability, and verified lifecycle state. Worker preparation validation is unchanged and remains authoritative.
+
+Focused regressions: `tests/unit/selectedTargetConnectionStore.test.ts`, `tests/unit/destinationPresentation.test.tsx`, and `tests/integration/videoBatchPreparation.test.ts` passed (**25/25 tests**). Typecheck, ESLint, Prettier for changed source/tests/evidence, `git diff --check`, and production build passed. Package ID: **`automat-faceless-0.1.0-mvxkytjz`**; output: `dist/` (4 JavaScript bundles). Live reconnect remains **NOT_RUN**; verification is synthetic/offline.
+
+
+## P09.1 Flow video reference attachment investigation - 1 November 2026
+
+P09.1 implementation remains **NOT_STARTED**. The requested starter files src/platforms/flow/video.ts and tests/unit/flowVideoReference.test.ts are absent. Existing P07 reference records provide pinned bytes, SHA-256, MIME type, dimensions, capture provenance, project/tab/document binding and providerAssetId when observed. Existing P08 prepared items pin referenceId, assignmentVersion, SHA-256, MIME type and dimensions. However, repository evidence contains no inspected Flow video composer DOM or asset-picker/gallery identity/version contract, and no inspectable Flow browser tab was available during this task.
+
+Exact attachment therefore cannot be implemented or reported as verified without inventing selectors or treating provider asset ID/thumbnail equality as proof of byte identity. No provider action, DOM mutation, prompt entry, Generate action, setting change, or queue operation was performed. P09.1 remains incomplete; the specific next evidence needed is a read-only inspection of the current Flow Video + Ingredients composer and evidenced picker/gallery DOM, including a reliable asset identity/version or byte relationship for the already-captured reference. G-FLOW-VIDEO remains **NOT_PASSED**. No focused tests or build were run because no safe implementation path could be established.

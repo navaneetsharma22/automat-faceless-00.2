@@ -17,12 +17,15 @@ import { ImageImportPanel } from "./features/image-batch/ImportPanel";
 import { ImageQueueProgress } from "./features/image-batch/Progress";
 import { VideoImportPanel } from "./features/video-batch/ImportPanel";
 import { PairingTable } from "./features/video-batch/PairingTable";
-import { Destination } from "./features/video-batch/Destination";
+import {
+  Destination,
+  isCurrentVerifiedVideoTarget,
+} from "./features/video-batch/Destination";
+import { SelectedTargetConnectionStore } from "./features/video-batch/selectedTargetConnectionStore";
 import { PreparedBatchReview } from "./features/video-batch/PreparedBatchReview";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import { ReferenceSelection } from "./features/references/ReferenceSelection";
 import type { PromptBatchSnapshot } from "../storage/repositories";
-import type { SelectedTargetRecord } from "../storage/db";
 import type {
   PreparedVideoBatchRecord,
   VideoDestination,
@@ -591,41 +594,44 @@ export function VideosView({
   );
   const [videoBatchHash, setVideoBatchHash] = useState<string | undefined>();
   const [declaredDuration, setDeclaredDuration] = useState("6");
-  const [connectedTarget, setConnectedTarget] = useState<
-    SelectedTargetRecord | undefined
-  >();
-  const [targetLoading, setTargetLoading] = useState(false);
-  const [pairingResult, setPairingResult] =
-    useState<BatchPairingResult | null>(null);
+  const [targetConnectionStore] = useState(
+    () =>
+      new SelectedTargetConnectionStore((provider) =>
+        persistenceClient.request("connections.getSelection", { provider }),
+      ),
+  );
+  const targetConnection = useSyncExternalStore(
+    targetConnectionStore.subscribe,
+    targetConnectionStore.getSnapshot,
+    targetConnectionStore.getSnapshot,
+  );
+  const connectedTarget = targetConnection.target;
+  const targetLoading = targetConnection.loading;
+  const [pairingResult, setPairingResult] = useState<BatchPairingResult | null>(
+    null,
+  );
   const [imageSourceBatchId, setImageSourceBatchId] = useState<
     string | undefined
   >();
-  const [imageSourceHash, setImageSourceHash] = useState<
-    string | undefined
-  >();
+  const [imageSourceHash, setImageSourceHash] = useState<string | undefined>();
   const [preparedBatch, setPreparedBatch] =
     useState<PreparedVideoBatchRecord | null>(null);
   const [preparePending, setPreparePending] = useState(false);
   const [prepareError, setPrepareError] = useState<string | null>(null);
 
-  const loadTarget = useCallback(async () => {
-    setTargetLoading(true);
-    try {
-      const selected = (await persistenceClient.request(
-        "connections.getSelection",
-        { provider: destination },
-      )) as SelectedTargetRecord | undefined;
-      setConnectedTarget(selected);
-    } catch {
-      setConnectedTarget(undefined);
-    } finally {
-      setTargetLoading(false);
-    }
-  }, [destination, persistenceClient]);
-
   useEffect(() => {
-    void loadTarget();
-  }, [loadTarget]);
+    const onRuntimeMessage = (message: unknown) => {
+      targetConnectionStore.handleRuntimeMessage(message);
+    };
+    if (typeof chrome !== "undefined" && chrome.runtime?.onMessage)
+      chrome.runtime.onMessage.addListener(onRuntimeMessage);
+    void targetConnectionStore.selectProvider(destination);
+    return () => {
+      if (typeof chrome !== "undefined" && chrome.runtime?.onMessage)
+        chrome.runtime.onMessage.removeListener(onRuntimeMessage);
+      targetConnectionStore.cancelPendingRequests();
+    };
+  }, [destination, targetConnectionStore]);
 
   const loadPreparedBatch = useCallback(async () => {
     try {
@@ -716,9 +722,10 @@ export function VideosView({
     [setConfirmed],
   );
 
-  const isTargetVerified =
-    connectedTarget?.verification === "verified" &&
-    connectedTarget?.connectionState === "verified";
+  const isTargetVerified = isCurrentVerifiedVideoTarget(
+    connectedTarget,
+    destination,
+  );
 
   const parsedDuration = Number(declaredDuration);
   const isDurationValid =

@@ -1,7 +1,45 @@
 import type { SelectedTargetRecord } from "../../../storage/db";
 import type { VideoDestination } from "../../../domain/batches/types";
+import { BUILD_ID, PROTOCOL_VERSION } from "../../../shared/buildInfo";
+import {
+  CONNECTION_CAPABILITY,
+  CONNECTOR_PROTOCOL_VERSION,
+} from "../../../platforms/shared/contracts";
+import { parseProviderRoute } from "../../../platforms/shared/providerRoute";
 import { SettingsConfirmation } from "../../components/SettingsConfirmation";
 import styles from "./Destination.module.css";
+
+export function isCurrentVerifiedVideoTarget(
+  target: SelectedTargetRecord | undefined,
+  provider: VideoDestination,
+): boolean {
+  const binding = target?.verificationBinding;
+  const route = target ? parseProviderRoute(target.canonicalTarget) : undefined;
+  return Boolean(
+    target &&
+    binding &&
+    route &&
+    route.provider === provider &&
+    route.canonicalTarget === target.canonicalTarget &&
+    route.projectId === binding.projectId &&
+    target.provider === provider &&
+    target.verification === "verified" &&
+    target.connectionState === "verified" &&
+    target.tabId === binding.tabId &&
+    target.canonicalTarget === binding.canonicalTarget &&
+    binding.provider === provider &&
+    binding.frameId === 0 &&
+    binding.documentId.length > 0 &&
+    binding.documentToken.length > 0 &&
+    binding.extensionBuildId === BUILD_ID &&
+    binding.extensionProtocolVersion === PROTOCOL_VERSION &&
+    binding.connectorBuildId === BUILD_ID &&
+    binding.connectorProtocolVersion === CONNECTOR_PROTOCOL_VERSION &&
+    binding.capability === CONNECTION_CAPABILITY &&
+    Number.isFinite(binding.verifiedAt) &&
+    binding.verifiedAt >= 0,
+  );
+}
 
 export type DestinationProps = {
   destination: VideoDestination;
@@ -26,9 +64,10 @@ export function Destination({
   onConfirmationChange,
   disabled = false,
 }: DestinationProps) {
-  const isTargetVerified =
-    connectedTarget?.verification === "verified" &&
-    connectedTarget?.connectionState === "verified";
+  const isTargetVerified = isCurrentVerifiedVideoTarget(
+    connectedTarget,
+    destination,
+  );
 
   const safeDuration = declaredDuration ?? "";
   const parsedDuration = Number(safeDuration);
@@ -40,8 +79,8 @@ export function Destination({
 
   const targetProject =
     destination === "Flow"
-      ? connectedTarget?.verificationBinding?.projectId ?? "Unbound project"
-      : connectedTarget?.canonicalTarget ?? "Unbound document";
+      ? (connectedTarget?.verificationBinding?.projectId ?? "Unbound project")
+      : (connectedTarget?.canonicalTarget ?? "Unbound document");
 
   return (
     <div className={styles.destinationSection}>

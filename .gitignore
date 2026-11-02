@@ -26,3 +26,4 @@ node_modules/
 !docs/evidence/flow-completion.md
 !docs/evidence/timed-image-queue.md
 config.bat
+!docs/evidence/flow-video-attachment.md
