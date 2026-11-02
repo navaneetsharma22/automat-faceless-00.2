@@ -101,6 +101,7 @@ export type SelectedTargetRecord = {
       | "worker_started"
       | "revalidation_started"
       | "revalidation_verified"
+      | "same_project_route_changed"
       | "transport_unavailable"
       | "document_changed"
       | "tab_reload_signal"

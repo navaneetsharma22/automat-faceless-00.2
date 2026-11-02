@@ -3,6 +3,26 @@ import { z } from "zod";
 export const MAX_REFERENCE_CAPTURE_BYTES = 12 * 1024 * 1024;
 export const MAX_REFERENCE_CAPTURE_PIXELS = 40_000_000;
 
+/** Safe bounded evidence for an original-byte mismatch; contains no resource URL. */
+export const ReferenceByteComparisonDiagnosticSchema = z.object({
+  stage: z.enum(["candidate_byte_verification", "read_only_reference_inspection"]),
+  acquisitionRoute: z.enum(["verified_document_same_origin", "scoped_extension_fetch", "verified_detail_original_extension_fetch"]),
+  preparedSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  metadataSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  savedBytesSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  candidateBytesSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  candidateMediaId: z.string().uuid(),
+  mimeType: z.enum(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]),
+  preparedByteSize: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_BYTES),
+  savedByteSize: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_BYTES),
+  candidateByteSize: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_BYTES),
+  preparedWidth: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS),
+  preparedHeight: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS),
+  candidateWidth: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS).optional(),
+  candidateHeight: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS).optional(),
+}).strict();
+export type ReferenceByteComparisonDiagnostic = z.infer<typeof ReferenceByteComparisonDiagnosticSchema>;
+
 export const ReferenceAssignmentRecordSchema = z
   .object({
     assignmentId: z.string().min(1).max(512),

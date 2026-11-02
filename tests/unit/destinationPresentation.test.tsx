@@ -302,6 +302,42 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     expect(buttonTexts).not.toContain("Submit");
   });
 
+  it("offers read-only inspection and the explicit server-side recheck action for a blocked mismatch", async () => {
+    const queue = {
+      queueId: "flow-video:prepared:default:req-12345", preparedBatchId: "prepared:default:req-12345", state: "paused",
+      pauseReason: "candidate_bytes_mismatch", nextActionAt: null, revision: 4,
+      items: [{ itemId: "import:default:video:item:0", order: 0, shotId: "1", referenceId: "00000000-0000-4000-8000-000000000001", promptHash: "x".repeat(64), state: "failed", reason: "candidate_bytes_mismatch" }],
+    };
+    const inspected = {
+      status: "inspected", matches: false,
+      diagnostic: {
+        stage: "read_only_reference_inspection", acquisitionRoute: "verified_document_same_origin",
+        preparedSha256: "a".repeat(64), metadataSha256: "a".repeat(64), savedBytesSha256: "a".repeat(64),
+        candidateBytesSha256: "b".repeat(64), candidateMediaId: "67b8fc4f-e688-4a9b-8cc1-472ff37738d8",
+        mimeType: "image/png", preparedByteSize: 4, savedByteSize: 4, candidateByteSize: 3,
+        preparedWidth: 1, preparedHeight: 1, candidateWidth: 1, candidateHeight: 1,
+      },
+    };
+    const request = vi.fn(async (type: string) => type === "flow.videoQueue.get" ? queue : type === "flow.video.inspectReferenceBytes" ? inspected : type === "flow.videoQueue.recheckAndResume" ? queue : null);
+    const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
+    await act(async () => {
+      root?.render(createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client }));
+      await Promise.resolve();
+    });
+    const inspectButton = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent?.includes("Inspect reference bytes"));
+    expect(inspectButton).toBeDefined();
+    const recheckButton = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent?.includes("Recheck & Resume"));
+    expect(recheckButton).toBeDefined();
+    expect(Array.from(container?.querySelectorAll("button") ?? []).some((button) => button.textContent?.trim() === "Resume")).toBe(false);
+    await act(async () => { inspectButton?.click(); await Promise.resolve(); });
+    expect(container?.textContent).toContain("Fetched bytes differ from the prepared reference");
+    expect(request).toHaveBeenCalledWith("flow.video.inspectReferenceBytes", { preparedBatchId: "prepared:default:req-12345", itemId: "import:default:video:item:0" });
+    expect(request.mock.calls.some(([type]) => type === "flow.videoQueue.resume" || type === "flow.videoQueue.start" || type === "flow.video.attachReference" || type === "flow.video.generateOnce")).toBe(false);
+    expect(request.mock.calls.some(([type]) => type === "flow.videoQueue.recheckAndResume")).toBe(false);
+    await act(async () => { recheckButton?.click(); await Promise.resolve(); });
+    expect(request).toHaveBeenCalledWith("flow.videoQueue.recheckAndResume", { preparedBatchId: "prepared:default:req-12345", expectedRevision: 4 });
+  });
+
   it("displays metadata grid with destination, target, declared duration, and expandable JSON", () => {
     act(() => {
       root?.render(

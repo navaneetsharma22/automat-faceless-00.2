@@ -45,6 +45,8 @@ function connectionPort(
     "Selected project",
     url,
   )!;
+  let currentUrl = url;
+  const currentTab = () => providerTabFromUrl(tab.id, tab.title, currentUrl)!;
   let installed = false;
   let browserDocumentId = `document-${provider}`;
   let reachable = true;
@@ -70,7 +72,7 @@ function connectionPort(
   });
   const port: ConnectionPort = {
     getMissingAccess: vi.fn(async () => ({})),
-    getTab: vi.fn(async () => tab),
+    getTab: vi.fn(async () => currentTab()),
     pingTopFrame: vi.fn(async (_tabId, request) =>
       installed || options.buildId !== undefined
         ? response(request)
@@ -79,11 +81,11 @@ function connectionPort(
     identifyDocument: vi.fn(async () => ({
       documentId: browserDocumentId,
       frameId: 0,
-      url,
+      url: currentUrl,
     })),
     injectConnector: vi.fn(async () => {
       installed = true;
-      return { documentId: browserDocumentId, frameId: 0, url };
+      return { documentId: browserDocumentId, frameId: 0, url: currentUrl };
     }),
     probeTopFrame: vi.fn(async (_tabId, _documentId, request) => {
       await probeGate;
@@ -98,6 +100,9 @@ function connectionPort(
     releaseProbe: () => releaseProbe?.(),
     changeDocument: (documentId: string) => {
       browserDocumentId = documentId;
+    },
+    setUrl: (value: string) => {
+      currentUrl = value;
     },
     setReachable: (value: boolean) => {
       reachable = value;
@@ -121,6 +126,36 @@ async function persistSelection(
 }
 
 describe("worker-owned connection lifecycle", () => {
+  it("keeps the exact verified document bound across gallery → detail → gallery routes", async () => {
+    const repositories = new ExtensionRepositories(createMemoryRepositoryDatabase());
+    const galleryUrl = "https://flow.google.com/u/1/project/project-1";
+    const detailUrl = "https://flow.google.com/u/1/project/project-1/edit/268e65f5-7fd4-4918-9e9e-6744371d16a8";
+    const fixture = connectionPort("Flow", galleryUrl);
+    const service = createConnectionLifecycleService(repositories, () => fixture.port);
+    await persistSelection(repositories, "Flow", 9, galleryUrl);
+    expect(await service.revalidate("Flow", true)).toMatchObject({ ok: true, state: "verified" });
+    const before = (await repositories.getSelectedTarget("Flow"))?.verificationBinding;
+    expect(before).toBeDefined();
+
+    fixture.setUrl(detailUrl);
+    expect(await service.revalidate("Flow")).toMatchObject({ ok: true, state: "verified" });
+    expect(await repositories.getSelectedTarget("Flow")).toMatchObject({
+      connectionState: "verified",
+      verification: "verified",
+      verificationBinding: { documentId: before?.documentId, documentToken: before?.documentToken },
+    });
+
+    fixture.setUrl(galleryUrl);
+    expect(await service.revalidate("Flow")).toMatchObject({ ok: true, state: "verified" });
+    const restored = await repositories.getSelectedTarget("Flow");
+    expect(restored).toMatchObject({
+      connectionState: "verified",
+      verification: "verified",
+      verificationBinding: { documentId: before?.documentId, documentToken: before?.documentToken },
+    });
+    expect(restored?.lifecycleDiagnostics?.filter((entry) => entry.kind === "revalidation_verified")).toHaveLength(3);
+  });
+
   it.each([
     ["Flow", flowUrl, 9],
     ["Vids", vidsUrl, 19],

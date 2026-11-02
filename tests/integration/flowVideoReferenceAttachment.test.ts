@@ -7,9 +7,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
 import {
   createFlowVideoAttachmentHandler,
+  flowVideoAttachmentActionInPage,
   flowVideoAttachmentStructurePreflightInPage,
 } from "../../src/background/handlers/flowVideoAttachment";
-import { flowReferenceCaptureInPage } from "../../src/platforms/flow/references";
+import {
+  flowReferenceCaptureInPage,
+  flowResolveOriginalImageUrlInPage,
+  flowRestoreGalleryAfterOriginalResolutionInPage,
+} from "../../src/platforms/flow/references";
 import {
   createFoundationClient,
   FoundationClientError,
@@ -50,7 +55,13 @@ async function fixture(
   overrides: {
     destination?: "Flow" | "Vids";
     candidateBytes?: Uint8Array;
+    savedReferenceBytes?: Uint8Array;
     candidateSourceUrl?: string;
+    originalSourceUrl?: string;
+    detailResolutionDocumentId?: string;
+    detailRestoreDocumentId?: string;
+    detailResolveFailure?: boolean;
+    candidateMimeType?: string;
     permissionResult?: boolean;
     permissionError?: Error;
     selectedDocumentId?: string;
@@ -71,7 +82,8 @@ async function fixture(
 ) {
   const database = createMemoryRepositoryDatabase();
   const repositories = new ExtensionRepositories(database, () => 1000);
-  const sha256 = await sha256Bytes(bytes);
+  const savedReferenceBytes = overrides.savedReferenceBytes ?? bytes;
+  const sha256 = await sha256Bytes(savedReferenceBytes);
   const pin = {
     assignmentId: "workspace:batch:1",
     referenceId,
@@ -90,14 +102,14 @@ async function fixture(
     providerAssetId: mediaId,
     observedSourceSha256: "c".repeat(64),
     sha256,
-    mimeType: "image/png" as const,
-    byteSize: bytes.length,
+    mimeType: (overrides.candidateMimeType ?? "image/png") as "image/png",
+    byteSize: savedReferenceBytes.length,
     width: 1,
     height: 1,
     capturedAt: 1,
     acquisitionProvenance: "verified_flow_document_same_origin_fetch" as const,
     qualityProvenance: "observed_resource_original_bytes_no_upscale" as const,
-    bytes: new Blob([bytes], { type: "image/png" }),
+    bytes: new Blob([savedReferenceBytes], { type: overrides.candidateMimeType ?? "image/png" }),
   };
   const item = {
     itemId,
@@ -110,8 +122,8 @@ async function fixture(
       referenceId,
       assignmentVersion: 1,
       sha256,
-      mimeType: "image/png",
-      byteSize: bytes.length,
+      mimeType: overrides.candidateMimeType ?? "image/png",
+      byteSize: savedReferenceBytes.length,
       width: 1,
       height: 1,
       capturedAt: 1,
@@ -198,16 +210,17 @@ async function fixture(
   });
 
   const observedCandidateUrl = overrides.candidateSourceUrl ?? candidateUrl;
+  const observedOriginalUrl = overrides.originalSourceUrl ?? `https://flow-content.google/image/${mediaId}?signed=fresh-original`;
   const hasMediaHostPermission = vi.fn(async (permission: string) => {
     expect(permission).toBe("https://flow-content.google/*");
     if (overrides.permissionError) throw overrides.permissionError;
     return overrides.permissionResult ?? true;
   });
   const fetchResource = vi.fn(async (url: string) => {
-    expect(url).toBe(observedCandidateUrl);
+    expect(url).toBe(observedCandidateUrl === candidateUrl ? observedOriginalUrl : observedCandidateUrl);
     const response = new Response(overrides.candidateBytes ?? bytes, {
       status: 200,
-      headers: { "content-type": "image/png" },
+      headers: { "content-type": overrides.candidateMimeType ?? "image/png" },
     });
     Object.defineProperty(response, "url", { value: url });
     return response;
@@ -222,6 +235,21 @@ async function fixture(
   let verificationRevalidations = 0;
   const executeScript = vi.fn(async (input: unknown) => {
     const injection = input as MockInjection;
+    if (injection.func === flowResolveOriginalImageUrlInPage) {
+      expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
+      expect(injection.args?.[0]).toMatchObject({ mediaId, galleryUrl: observedCandidateUrl });
+      return [{ documentId: overrides.detailResolutionDocumentId ?? documentId, result: {
+        ok: !overrides.detailResolveFailure,
+        opened: true,
+        url: observedOriginalUrl,
+        href: `${canonicalTarget}/edit/268e65f5-7fd4-4918-9e9e-6744371d16a8`,
+        ...(overrides.detailResolveFailure ? { code: "reference_detail_unavailable" } : {}),
+      } }];
+    }
+    if (injection.func === flowRestoreGalleryAfterOriginalResolutionInPage) {
+      expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
+      return [{ documentId: overrides.detailRestoreDocumentId ?? documentId, result: { ok: true, href: canonicalTarget } }];
+    }
     if (injection.func === flowVideoAttachmentStructurePreflightInPage) {
       preflightOperationStates.push(
         (
@@ -249,7 +277,14 @@ async function fixture(
       return [
         {
           documentId,
-          result: { ok: true, data: base64(overrides.candidateBytes ?? bytes) },
+          result: {
+            ok: true,
+            data: base64(overrides.candidateBytes ?? bytes),
+            mimeType: "image/png",
+            width: 1,
+            height: 1,
+            byteLength: (overrides.candidateBytes ?? bytes).byteLength,
+          },
         },
       ];
     }
@@ -366,13 +401,11 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(result).toEqual({ status: "attached" });
     expect(f.preflightOperationStates[0]).toBeUndefined();
     expect(f.addActivation).toHaveBeenCalledTimes(1);
-    expect(f.executeScript.mock.calls.map(([call]) => call.target)).toEqual([
-      { tabId, documentIds: [documentId] },
-      { tabId, documentIds: [documentId] },
-      { tabId, documentIds: [documentId] },
-      { tabId, documentIds: [documentId] },
-      { tabId, documentIds: [documentId] },
-    ]);
+    expect(f.executeScript.mock.calls.every(([call]) =>
+      JSON.stringify((call as MockInjection).target) === JSON.stringify({ tabId, documentIds: [documentId] }),
+    )).toBe(true);
+    expect(f.executeScript.mock.calls.some(([call]) => (call as MockInjection).func === flowResolveOriginalImageUrlInPage)).toBe(true);
+    expect(f.executeScript.mock.calls.some(([call]) => (call as MockInjection).func === flowRestoreGalleryAfterOriginalResolutionInPage)).toBe(true);
     expect(await f.repositories.getReferenceById(referenceId)).toMatchObject({
       referenceId,
       sha256: f.item.reference.sha256,
@@ -448,6 +481,39 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(f.addActivation).not.toHaveBeenCalled();
     expect(vids.addActivation).not.toHaveBeenCalled();
     expect(f.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("inspects the blocked candidate bytes read-only without changing the queue or attachment operation", async () => {
+    const f = await fixture({ candidateSourceUrl: candidateUrl, candidateBytes: new Uint8Array([9, 8, 7]) });
+    const queueId = `flow-video:${batchId}`;
+    const queue = {
+      queueId, preparedBatchId: batchId, state: "paused" as const, pauseReason: "candidate_bytes_mismatch",
+      items: [{ itemId, order: 0, shotId: "1", referenceId, promptHash: f.item.contentHash, state: "failed" as const, reason: "candidate_bytes_mismatch" }],
+      lastDispatchAt: null, nextActionAt: null, revision: 4, createdAt: 1, updatedAt: 2,
+    };
+    await f.repositories.createFlowVideoQueue(queue);
+    const operation = {
+      id: `${batchId}:${itemId}`, preparedBatchId: batchId, itemId, referenceId,
+      status: "blocked" as const, reason: "candidate_bytes_mismatch", updatedAt: 5,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(operation);
+    const result = await f.client.request("flow.video.inspectReferenceBytes", { preparedBatchId: batchId, itemId });
+    expect(result).toMatchObject({
+      status: "inspected", matches: false,
+      diagnostic: {
+        stage: "read_only_reference_inspection",
+        acquisitionRoute: "verified_detail_original_extension_fetch",
+        preparedSha256: f.item.reference.sha256,
+        metadataSha256: f.pin.sha256,
+        savedBytesSha256: f.pin.sha256,
+        candidateBytesSha256: await sha256Bytes(new Uint8Array([9, 8, 7])),
+        candidateMediaId: mediaId, mimeType: "image/png",
+        preparedByteSize: 4, savedByteSize: 4, candidateByteSize: 3,
+      },
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoQueue(queueId)).toEqual(queue);
+    expect(await f.repositories.getFlowVideoAttachmentOperation(operation.id)).toEqual(operation);
   });
 
   it("blocks changed/unverified target, document mismatch, corrupt saved bytes, and candidate hash mismatch without page action", async () => {
@@ -771,18 +837,33 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(inspectionRejected.addActivation).not.toHaveBeenCalled();
 
     const mismatch = await fixture({
-      candidateSourceUrl: crossOriginUrl,
+      candidateSourceUrl: candidateUrl,
       candidateBytes: new Uint8Array([9, 8, 7]),
     });
-    await expect(
-      mismatch.client.request("flow.video.attachReference", {
+    const mismatchResult = await mismatch.client.request(
+      "flow.video.attachReference",
+      {
         preparedBatchId: batchId,
         itemId,
-      }),
-    ).resolves.toMatchObject({
+      },
+    );
+    expect(mismatchResult).toMatchObject({
       status: "blocked",
       stage: "candidate_byte_verification",
       reason: "candidate_bytes_mismatch",
+      diagnostic: {
+        stage: "candidate_byte_verification",
+        acquisitionRoute: "verified_detail_original_extension_fetch",
+        preparedSha256: mismatch.item.reference.sha256,
+        metadataSha256: mismatch.pin.sha256,
+        savedBytesSha256: mismatch.pin.sha256,
+        candidateBytesSha256: await sha256Bytes(new Uint8Array([9, 8, 7])),
+        candidateMediaId: mediaId,
+        mimeType: "image/png",
+        preparedByteSize: 4,
+        savedByteSize: 4,
+        candidateByteSize: 3,
+      },
     });
     expect(mismatch.addActivation).not.toHaveBeenCalled();
     expect(
@@ -790,6 +871,43 @@ describe("Flow video reference attachment request-to-handler integration (offlin
         `${batchId}:${itemId}`,
       ),
     ).toBeUndefined();
+  });
+
+  it("resolves the observed detail original for an /asb WebP and verifies unchanged original JPEG bytes before intent", async () => {
+    const originalJpeg = new Uint8Array([0xff, 0xd8, 0xff, 0x01]);
+    const originalUrl = `https://flow-content.google/image/${mediaId}?signed=observed-fresh`;
+    const f = await fixture({ candidateBytes: originalJpeg, savedReferenceBytes: originalJpeg, candidateMimeType: "image/jpeg", originalSourceUrl: originalUrl });
+    const result = await f.client.request("flow.video.attachReference", { preparedBatchId: batchId, itemId });
+    expect(result).toEqual({ status: "attached" });
+    expect(f.fetchResource).toHaveBeenCalledWith(originalUrl, expect.anything());
+    const calls = f.executeScript.mock.calls.map(([call]) => (call as MockInjection).func);
+    const pickerAction = f.executeScript.mock.calls.find(([call]) => (call as MockInjection).func === flowVideoAttachmentActionInPage)?.[0] as MockInjection | undefined;
+    expect(pickerAction?.args).toEqual([mediaId, candidateUrl]);
+    expect(pickerAction?.args?.[1]).not.toBe(originalUrl);
+    expect(calls.indexOf(flowResolveOriginalImageUrlInPage)).toBeLessThan(calls.indexOf(flowRestoreGalleryAfterOriginalResolutionInPage));
+    expect(calls.indexOf(flowRestoreGalleryAfterOriginalResolutionInPage)).toBeLessThan(calls.findIndex((func) => func !== flowResolveOriginalImageUrlInPage && func !== flowRestoreGalleryAfterOriginalResolutionInPage && func !== flowReferenceCaptureInPage && String(func).includes("flow-base-prompt-box")));
+    expect(f.addActivation).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a wrong observed original UUID and restores the detail view without claiming intent", async () => {
+    const wrongUrl = "https://flow-content.google/image/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?signed=fresh";
+    const f = await fixture({ originalSourceUrl: wrongUrl });
+    await expect(f.client.request("flow.video.attachReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({ status: "blocked", stage: "reference_byte_acquisition", reason: "reference_media_id_mismatch" });
+    expect(f.executeScript.mock.calls.some(([call]) => (call as MockInjection).func === flowRestoreGalleryAfterOriginalResolutionInPage)).toBe(true);
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
+  });
+
+  it("blocks a detail document change and an original byte SHA mismatch before action intent", async () => {
+    const changed = await fixture({ detailResolutionDocumentId: "changed-document" });
+    await expect(changed.client.request("flow.video.attachReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({ status: "blocked" });
+    expect(changed.addActivation).not.toHaveBeenCalled();
+    expect(await changed.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
+
+    const mismatch = await fixture({ candidateBytes: new Uint8Array([1, 2, 3, 5]) });
+    await expect(mismatch.client.request("flow.video.attachReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({ status: "blocked", reason: "candidate_bytes_mismatch" });
+    expect(mismatch.addActivation).not.toHaveBeenCalled();
+    expect(await mismatch.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
   });
 
   it("does not replay on concurrent requests, lost reply, or worker recreation after an injection error", async () => {

@@ -1,11 +1,13 @@
 import { z } from "zod";
+import { ReferenceByteComparisonDiagnosticSchema, type ReferenceByteComparisonDiagnostic } from "../media/references";
 
 export const VIDEO_QUEUE_DISPATCH_GAP_MS = 30_000 as const;
-export const VIDEO_QUEUE_COMPLETION_CHECK_MS = 60_000 as const;
+export const VIDEO_QUEUE_READINESS_TIMEOUT_MS = 60_000 as const;
 
 export const VIDEO_QUEUE_STATES = [
   "ready",
   "waiting",
+  "sent",
   "paused",
   "blocked",
   "stopped",
@@ -17,6 +19,9 @@ export const VIDEO_QUEUE_ITEM_STATES = [
   "pending",
   "attaching",
   "dispatching",
+  "waiting_for_generate",
+  "sent",
+  // Retained for validating persisted records created by the earlier P09.3 build.
   "awaiting_completion",
   "awaiting_verification",
   "completed",
@@ -34,10 +39,16 @@ export type FlowVideoQueueItem = {
   promptHash: string;
   state: VideoQueueItemState;
   attemptId?: string;
+  readinessStartedAt?: number;
+  readinessDeadlineAt?: number;
+  dispatchReceipt?: { attemptId: string; storedAt: number };
+  // Legacy P09.3 fields are retained for safe reads and evidence preservation.
   resultIdentity?: string;
   nextCheckAt?: number;
   completedAt?: number;
   reason?: string;
+  priorReason?: string;
+  byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic;
 };
 
 export type FlowVideoQueueRecord = {
@@ -61,10 +72,15 @@ const itemSchema = z.object({
   promptHash: z.string().regex(/^[0-9a-f]{64}$/),
   state: z.enum(VIDEO_QUEUE_ITEM_STATES),
   attemptId: z.string().min(1).max(128).optional(),
+  readinessStartedAt: z.number().finite().nonnegative().optional(),
+  readinessDeadlineAt: z.number().finite().nonnegative().optional(),
+  dispatchReceipt: z.object({ attemptId: z.string().min(1).max(128), storedAt: z.number().finite().nonnegative() }).strict().optional(),
   resultIdentity: z.string().min(1).max(512).optional(),
   nextCheckAt: z.number().finite().nonnegative().optional(),
   completedAt: z.number().finite().nonnegative().optional(),
   reason: z.string().min(1).max(64).optional(),
+  priorReason: z.string().min(1).max(64).optional(),
+  byteMismatchDiagnostic: ReferenceByteComparisonDiagnosticSchema.optional(),
 }).strict();
 
 export const FlowVideoQueueRecordSchema = z.object({
@@ -80,9 +96,9 @@ export const FlowVideoQueueRecordSchema = z.object({
   updatedAt: z.number().finite().nonnegative(),
 }).strict().refine((record) => record.items.every((item, index) => item.order === index));
 
-export function nextVideoCompletionCheck(at: number): number {
+export function nextVideoReadinessDeadline(at: number): number {
   if (!Number.isFinite(at) || at < 0) throw new RangeError("Invalid video queue time.");
-  return at + VIDEO_QUEUE_COMPLETION_CHECK_MS;
+  return at + VIDEO_QUEUE_READINESS_TIMEOUT_MS;
 }
 
 export function nextVideoDispatchAt(

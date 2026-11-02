@@ -20,6 +20,7 @@ import {
   createConnectionLifecycleService,
   createReadinessAfterConnectionRevalidation,
 } from "./connectionLifecycle";
+import { classifyProviderRouteUpdate } from "../platforms/shared/providerRoute";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import {
   CONNECTION_STATE_CHANGED_MESSAGE,
@@ -29,7 +30,6 @@ import {
   ChromePreferenceRepository,
   ExtensionRepositories,
 } from "../storage/repositories";
-import { providerTabFromUrl } from "../platforms/shared/connection";
 import { createTimedImageQueueScheduler } from "./scheduler";
 import {
   createFlowTimedQueueDispatcher,
@@ -152,6 +152,8 @@ const flowVideoQueue = createFlowVideoQueueHandler({
   alarms: chrome.alarms,
   attachReference: (preparedBatchId, itemId) => flowVideoAttachment.attach(preparedBatchId, itemId),
   generateOnce: (preparedBatchId, itemId) => flowVideoGenerate.generateOnce(preparedBatchId, itemId),
+  inspectReferenceBytes: (preparedBatchId, itemId) =>
+    flowVideoAttachment.inspectReferenceBytes(preparedBatchId, itemId),
   revalidate: async (preparedBatchId) => {
     await connectionLifecycle.revalidate("Flow", false);
     const batch = await repositories.getPreparedVideoBatchById(preparedBatchId);
@@ -322,13 +324,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
             .catch(() => undefined);
         }
       }
-      const observed = changeInfo.url
-        ? providerTabFromUrl(tabId, "", changeInfo.url)
+      const routeUpdate = changeInfo.url
+        ? classifyProviderRouteUpdate(selected.canonicalTarget, changeInfo.url)
         : undefined;
-      const routeMismatch = Boolean(
-        changeInfo.url &&
-        observed?.canonicalTarget !== selected.canonicalTarget,
-      );
+      const routeMismatch = routeUpdate === "project_route_changed";
       if (changeInfo.status === "loading" || routeMismatch) {
         const reason = routeMismatch
           ? "project_route_changed"
@@ -367,7 +366,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
         await repositories.recordConnectionLifecycleDiagnostic(
           provider,
           {
-            kind: "document_changed",
+            kind: "same_project_route_changed",
             reason: "url_changed_same_project",
             at: Date.now(),
           },

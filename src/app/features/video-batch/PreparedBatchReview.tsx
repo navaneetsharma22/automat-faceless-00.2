@@ -33,11 +33,26 @@ type AttachmentOperationSnapshot = {
 
 type VideoQueueSnapshot = {
   queueId: string;
-  state: "ready" | "waiting" | "paused" | "blocked" | "stopped" | "completed";
+  state: "ready" | "waiting" | "sent" | "paused" | "blocked" | "stopped" | "completed";
   pauseReason?: string;
   nextActionAt: number | null;
   revision: number;
-  items: Array<{ itemId: string; order: number; shotId: string; state: string; reason?: string; attemptId?: string }>;
+  items: Array<{
+    itemId: string; order: number; shotId: string; state: string; reason?: string; priorReason?: string; attemptId?: string;
+    byteMismatchDiagnostic?: {
+      stage: "candidate_byte_verification" | "read_only_reference_inspection"; acquisitionRoute: "verified_document_same_origin" | "scoped_extension_fetch" | "verified_detail_original_extension_fetch"; preparedSha256: string; metadataSha256: string; savedBytesSha256: string;
+      candidateBytesSha256: string; candidateMediaId: string; mimeType: string;
+      preparedByteSize: number; savedByteSize: number; candidateByteSize: number;
+      preparedWidth: number; preparedHeight: number; candidateWidth?: number; candidateHeight?: number;
+    };
+  }>;
+};
+
+type ReferenceByteInspection = {
+  status: string;
+  reason?: string;
+  matches?: boolean;
+  diagnostic?: NonNullable<VideoQueueSnapshot["items"][number]["byteMismatchDiagnostic"]>;
 };
 
 const RECONCILABLE_PRECLICK_RECORD = {
@@ -61,6 +76,8 @@ export function PreparedBatchReview({
   const [videoQueue, setVideoQueue] = useState<VideoQueueSnapshot | null>(null);
   const [videoQueueBusy, setVideoQueueBusy] = useState(false);
   const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
+  const [referenceInspection, setReferenceInspection] = useState<Record<string, ReferenceByteInspection>>({});
+  const [referenceInspectionBusy, setReferenceInspectionBusy] = useState<string | null>(null);
 
   useEffect(() => {
     if (preparedBatch.destination !== "Flow") return;
@@ -73,7 +90,7 @@ export function PreparedBatchReview({
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [preparedBatch.destination, preparedBatch.id, persistenceClient]);
 
-  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop") {
+  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume") {
     setVideoQueueBusy(true);
     setVideoQueueError(null);
     const type = `flow.videoQueue.${action}` as const;
@@ -90,6 +107,29 @@ export function PreparedBatchReview({
       setVideoQueueBusy(false);
     }
   }
+
+  async function inspectReferenceBytes(itemId: string) {
+    if (referenceInspectionBusy) return;
+    setReferenceInspectionBusy(itemId);
+    setReferenceInspection((current) => ({ ...current, [itemId]: { status: "inspecting" } }));
+    try {
+      const result = await persistenceClient.request("flow.video.inspectReferenceBytes", {
+        preparedBatchId: preparedBatch.id,
+        itemId,
+      }) as ReferenceByteInspection;
+      setReferenceInspection((current) => ({ ...current, [itemId]: result }));
+    } catch (error) {
+      const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "inspection_request_failed";
+      setReferenceInspection((current) => ({ ...current, [itemId]: { status: "blocked", reason: code } }));
+    } finally {
+      setReferenceInspectionBusy(null);
+    }
+  }
+
+  const failedQueueItems = videoQueue?.items.filter((item) => item.state === "failed") ?? [];
+  const recheckableFailure = failedQueueItems.length === 1 &&
+    failedQueueItems[0]?.reason === "candidate_bytes_mismatch" &&
+    !videoQueue?.items.some((item) => item.state === "uncertain");
 
   return (
     <section
@@ -155,7 +195,7 @@ export function PreparedBatchReview({
             <div className={styles.videoQueueHeader}>
               <div>
                 <h3>Flow video queue</h3>
-                <p>One start action processes paired references and prompts. Results advance only after attempt-bound verification.</p>
+                <p>One start action sends paired references and prompts in order. Sent means Generate was dispatched; provider completion is not verified here.</p>
               </div>
               {!videoQueue || videoQueue.state === "ready" ? (
                 <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("start")}>Start</button>
@@ -164,7 +204,9 @@ export function PreparedBatchReview({
                   <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("pause")}>Pause</button>
                   <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</button>
                 </div>
-              ) : videoQueue.state === "paused" && videoQueue.pauseReason !== "video_result_attribution_unavailable" ? (
+              ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && recheckableFailure ? (
+                <button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</button>
+              ) : videoQueue.state === "paused" && !videoQueue.items.some((item) => item.state === "uncertain" || item.state === "failed") ? (
                 <div className={styles.videoQueueActions}>
                   <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("resume")}>Resume</button>
                   <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</button>
@@ -174,12 +216,56 @@ export function PreparedBatchReview({
             {videoQueue ? (
               <>
                 <p role="status">{videoQueue.state === "waiting" && videoQueue.nextActionAt
-                  ? `Next dispatch/check: ${new Date(videoQueue.nextActionAt).toLocaleTimeString()}`
-                  : videoQueue.pauseReason ? `Paused: ${videoQueue.pauseReason}` : `Queue ${videoQueue.state}`}</p>
-                <p>{videoQueue.items.filter((item) => item.state === "completed").length}/{videoQueue.items.length} shots have attributable completion.</p>
+                  ? `${videoQueue.items.some((item) => item.state === "waiting_for_generate") ? "Waiting for Generate; next readiness check" : "Next dispatch"}: ${new Date(videoQueue.nextActionAt).toLocaleTimeString()}`
+                  : videoQueue.pauseReason ? `${videoQueue.state === "blocked" ? "Blocked" : videoQueue.state === "stopped" ? "Stopped" : "Paused"}: ${videoQueue.pauseReason}`
+                    : videoQueue.state === "sent" || videoQueue.state === "completed" ? "All sent; provider completion not verified" : `Queue ${videoQueue.state}`}</p>
+                <p>{videoQueue.items.filter((item) => item.state === "sent" || item.state === "awaiting_completion" || item.state === "awaiting_verification" || item.state === "completed").length}/{videoQueue.items.length} shots sent. “All sent” does not mean all videos completed.</p>
                 <ol aria-label="Flow video shot statuses">
                   {videoQueue.items.map((item) => (
-                    <li key={item.itemId}>Shot {item.shotId}: {item.state.replaceAll("_", " ")}{item.reason ? ` — ${item.reason}` : ""}</li>
+                    <li key={item.itemId}>
+                      Shot {item.shotId}: {item.state === "pending" ? "Pending" : item.state === "attaching" || item.state === "dispatching" ? "Sending" : item.state === "waiting_for_generate" ? "Waiting for Generate" : item.state === "sent" || item.state === "awaiting_completion" || item.state === "awaiting_verification" || item.state === "completed" ? "Sent" : item.state === "skipped" ? "Stopped" : item.state === "failed" || item.state === "uncertain" ? "Blocked" : item.state}{item.reason ? ` (${item.reason})` : ""}{item.priorReason ? ` — previously blocked: ${item.priorReason}` : ""}
+                      {item.byteMismatchDiagnostic ? (
+                        <details>
+                          <summary>Bounded candidate byte comparison</summary>
+                          <dl>
+                            <dt>Media ID</dt><dd>{item.byteMismatchDiagnostic.candidateMediaId}</dd>
+                            <dt>Acquisition route</dt><dd>{item.byteMismatchDiagnostic.acquisitionRoute}</dd>
+                            <dt>MIME</dt><dd>{item.byteMismatchDiagnostic.mimeType}</dd>
+                            <dt>Bytes: prepared / saved / candidate</dt><dd>{item.byteMismatchDiagnostic.preparedByteSize} / {item.byteMismatchDiagnostic.savedByteSize} / {item.byteMismatchDiagnostic.candidateByteSize}</dd>
+                            <dt>SHA-256: prepared</dt><dd>{item.byteMismatchDiagnostic.preparedSha256}</dd>
+                            <dt>SHA-256: saved metadata</dt><dd>{item.byteMismatchDiagnostic.metadataSha256}</dd>
+                            <dt>SHA-256: saved bytes</dt><dd>{item.byteMismatchDiagnostic.savedBytesSha256}</dd>
+                            <dt>SHA-256: fetched candidate</dt><dd>{item.byteMismatchDiagnostic.candidateBytesSha256}</dd>
+                            {item.byteMismatchDiagnostic.candidateWidth && item.byteMismatchDiagnostic.candidateHeight ? <><dt>Dimensions: prepared / candidate</dt><dd>{item.byteMismatchDiagnostic.preparedWidth}×{item.byteMismatchDiagnostic.preparedHeight} / {item.byteMismatchDiagnostic.candidateWidth}×{item.byteMismatchDiagnostic.candidateHeight}</dd></> : null}
+                          </dl>
+                        </details>
+                      ) : null}
+                      {item.state === "failed" && item.reason === "candidate_bytes_mismatch" ? (
+                        <div>
+                          <button type="button" disabled={referenceInspectionBusy !== null} onClick={() => void inspectReferenceBytes(item.itemId)}>
+                            {referenceInspectionBusy === item.itemId ? "Inspecting reference bytes…" : "Inspect reference bytes"}
+                          </button>
+                          {referenceInspection[item.itemId] ? (
+                            referenceInspection[item.itemId]!.diagnostic ? (
+                              <details open>
+                                <summary>{referenceInspection[item.itemId]!.matches ? "Fetched bytes match the prepared reference" : "Fetched bytes differ from the prepared reference"}</summary>
+                                <dl>
+                                  <dt>Acquisition route</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.acquisitionRoute}</dd>
+                                  <dt>Media ID</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.candidateMediaId}</dd>
+                                  <dt>MIME</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.mimeType}</dd>
+                                  <dt>Bytes: expected / saved / actual</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.preparedByteSize} / {referenceInspection[item.itemId]!.diagnostic!.savedByteSize} / {referenceInspection[item.itemId]!.diagnostic!.candidateByteSize}</dd>
+                                  <dt>SHA-256: expected</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.preparedSha256}</dd>
+                                  <dt>SHA-256: saved metadata</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.metadataSha256}</dd>
+                                  <dt>SHA-256: saved bytes</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.savedBytesSha256}</dd>
+                                  <dt>SHA-256: actual candidate</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.candidateBytesSha256}</dd>
+                                  {referenceInspection[item.itemId]!.diagnostic!.candidateWidth && referenceInspection[item.itemId]!.diagnostic!.candidateHeight ? <><dt>Dimensions: expected / actual</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.preparedWidth}×{referenceInspection[item.itemId]!.diagnostic!.preparedHeight} / {referenceInspection[item.itemId]!.diagnostic!.candidateWidth}×{referenceInspection[item.itemId]!.diagnostic!.candidateHeight}</dd></> : null}
+                                </dl>
+                              </details>
+                            ) : <p role="status">Reference inspection: {referenceInspection[item.itemId]!.reason ?? referenceInspection[item.itemId]!.status}. No attachment action was taken.</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </li>
                   ))}
                 </ol>
               </>

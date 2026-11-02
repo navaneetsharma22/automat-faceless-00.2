@@ -7,6 +7,21 @@ export type ProviderRoute = {
   origin: string;
 };
 
+export type ProviderRouteUpdate =
+  | "same_project_route_changed"
+  | "project_route_changed";
+
+/** Classify URL-only tab updates without treating a scoped Flow detail view as a new target. */
+export function classifyProviderRouteUpdate(
+  canonicalTarget: string,
+  rawUrl: string,
+): ProviderRouteUpdate {
+  const observed = parseProviderRoute(rawUrl);
+  return observed?.canonicalTarget === canonicalTarget
+    ? "same_project_route_changed"
+    : "project_route_changed";
+}
+
 /** Parse only documented Flow and Vids project/document routes. */
 export function parseProviderRoute(rawUrl: string): ProviderRoute | undefined {
   try {
@@ -20,7 +35,10 @@ export function parseProviderRoute(rawUrl: string): ProviderRoute | undefined {
     let canonicalPath: string;
 
     if (url.hostname === "flow.google.com") {
-      const match = /^\/(?:u\/([0-9]+)\/)?project\/([A-Za-z0-9_-]+)\/?$/.exec(
+      // Flow's read-only asset detail view uses one project-scoped UUID route
+      // segment. Keep the canonical target at the project level and reject
+      // every other nested route.
+      const match = /^\/(?:u\/([0-9]+)\/)?project\/([A-Za-z0-9_-]+)(?:\/edit\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\/?$/i.exec(
         url.pathname,
       );
       if (!match) return undefined;

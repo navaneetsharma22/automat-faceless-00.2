@@ -407,14 +407,18 @@ export function createFlowVideoGenerateHandler(deps: {
       const generate = await inspect(ref.selected.tabId, item.rawJsonBody, ref.mediaId);
       if (
         generate.composer !== "identified" ||
-        !generate.exactPrompt ||
-        generate.generate !== "identified" ||
-        !generate.buttonObjectId
+        !generate.exactPrompt
       )
         return {
           status: "blocked",
           reason: "generate_control_or_prompt_preflight_failed",
         };
+      // This is a read-only pre-intent result. The timed queue may wait and
+      // retry readiness without creating a generation intent or activating.
+      if (generate.generate === "disabled")
+        return { status: "blocked", reason: "generate_disabled" };
+      if (generate.generate !== "identified" || !generate.buttonObjectId)
+        return { status: "blocked", reason: "generate_control_or_prompt_preflight_failed" };
       const point = await position(ref.selected.tabId, generate.buttonObjectId, ref.mediaId);
       if (!point)
         return { status: "blocked", reason: "generate_control_changed" };

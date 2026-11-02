@@ -7,6 +7,7 @@ import {
   providerTabFromUrl,
   verifyPersistedTarget,
 } from "../../src/platforms/shared/connection";
+import { classifyProviderRouteUpdate } from "../../src/platforms/shared/providerRoute";
 import {
   createChromeConnectionPort,
   hasTabListingAccess,
@@ -163,6 +164,17 @@ describe("explicit read-only Flow/Vids attachment", () => {
       url: accountFlowUrl,
       canonicalTarget: "https://flow.google.com/u/1/project/AbC_9-xy",
     });
+    const detailUrl = "https://flow.google.com/u/1/project/AbC_9-xy/edit/268e65f5-7fd4-4918-9e9e-6744371d16a8";
+    expect(providerTabFromUrl(18, "Flow asset detail", detailUrl)).toMatchObject({
+      provider: "Flow",
+      projectId: "AbC_9-xy",
+      canonicalTarget: "https://flow.google.com/u/1/project/AbC_9-xy",
+    });
+    expect(classifyProviderRouteUpdate("https://flow.google.com/u/1/project/AbC_9-xy", detailUrl)).toBe("same_project_route_changed");
+    expect(classifyProviderRouteUpdate("https://flow.google.com/u/1/project/AbC_9-xy", accountFlowUrl)).toBe("same_project_route_changed");
+    expect(classifyProviderRouteUpdate("https://flow.google.com/u/1/project/AbC_9-xy", "https://flow.google.com/u/2/project/AbC_9-xy/edit/268e65f5-7fd4-4918-9e9e-6744371d16a8")).toBe("project_route_changed");
+    expect(classifyProviderRouteUpdate("https://flow.google.com/u/1/project/AbC_9-xy", "https://flow.google.com/u/1/project/Other/edit/268e65f5-7fd4-4918-9e9e-6744371d16a8")).toBe("project_route_changed");
+    expect(providerTabFromUrl(18, "Flow arbitrary nested route", "https://flow.google.com/u/1/project/AbC_9-xy/edit/extra/path")).toBeUndefined();
     expect(
       isSameProviderTargetUrl(
         providerTabFromUrl(18, "Account Flow project", accountFlowUrl)!,

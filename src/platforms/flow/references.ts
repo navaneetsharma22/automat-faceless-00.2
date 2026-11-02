@@ -345,6 +345,67 @@ export async function flowReferenceCaptureInPage(input: {
   }
 }
 
+/** Opens the uniquely pinned gallery tile and returns only its observed detail-image URL.
+ * The caller must close the detail view with flowRestoreGalleryAfterOriginalResolutionInPage. */
+export async function flowResolveOriginalImageUrlInPage(input: {
+  mediaId: string;
+  galleryUrl: string;
+}): Promise<{ ok: boolean; opened: boolean; url?: string; href: string; code?: string }> {
+  const visible = (element: Element) => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return element.isConnected && rect.width > 0 && rect.height > 0 &&
+      style.display !== "none" && style.visibility !== "hidden";
+  };
+  const detailImages = () => [...document.querySelectorAll<HTMLImageElement>('img[alt="Read-only image view"]')].filter(visible);
+  if (detailImages().length) return { ok: false, opened: false, href: location.href, code: "reference_detail_already_open" };
+  const matches = [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
+    .filter((image) => image.dataset.mediaId === input.mediaId && visible(image));
+  if (matches.length !== 1) return { ok: false, opened: false, href: location.href, code: matches.length ? "candidate_ambiguous" : "candidate_missing" };
+  const image = matches[0]!;
+  if ((image.currentSrc || image.src) !== input.galleryUrl)
+    return { ok: false, opened: false, href: location.href, code: "candidate_changed" };
+  const tile = image.closest<HTMLElement>("flow-image-tile");
+  if (!tile || !visible(tile)) return { ok: false, opened: false, href: location.href, code: "candidate_missing" };
+  tile.click();
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const detail = detailImages();
+    if (detail.length > 1) return { ok: false, opened: true, href: location.href, code: "reference_detail_ambiguous" };
+    const current = detail[0];
+    const url = current?.currentSrc || current?.src;
+    if (current && url && current.complete && current.naturalWidth > 0 && current.naturalHeight > 0)
+      return { ok: true, opened: true, url, href: location.href };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return { ok: false, opened: true, href: location.href, code: "reference_detail_unavailable" };
+}
+
+/** Closes only the detail overlay opened by the resolver and confirms the gallery tile is restored. */
+export async function flowRestoreGalleryAfterOriginalResolutionInPage(input: {
+  mediaId: string;
+}): Promise<{ ok: boolean; href: string; code?: string }> {
+  const visible = (element: Element) => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return element.isConnected && rect.width > 0 && rect.height > 0 &&
+      style.display !== "none" && style.visibility !== "hidden";
+  };
+  const dispatchEscape = (target: EventTarget) => target.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }),
+  );
+  dispatchEscape(document);
+  dispatchEscape(window);
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const details = [...document.querySelectorAll<HTMLImageElement>('img[alt="Read-only image view"]')].filter(visible);
+    const tiles = [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
+      .filter((image) => image.dataset.mediaId === input.mediaId && visible(image));
+    if (!details.length && tiles.length === 1) return { ok: true, href: location.href };
+    if (details.length > 1 || tiles.length > 1) return { ok: false, href: location.href, code: "reference_gallery_restore_ambiguous" };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return { ok: false, href: location.href, code: "reference_gallery_restore_failed" };
+}
+
 /** Fetches and downsizes one already-resolved candidate in its verified Flow document. */
 export async function flowReferencePreviewInPage(input: {
   action: "fetch" | "cancel";

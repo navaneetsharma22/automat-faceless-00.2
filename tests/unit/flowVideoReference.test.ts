@@ -6,6 +6,11 @@ import {
   flowVideoChipMediaIdFromImageUrl,
   resolveFlowPickerCandidate,
 } from "../../src/platforms/flow/video";
+import {
+  flowResolveOriginalImageUrlInPage,
+  flowRestoreGalleryAfterOriginalResolutionInPage,
+} from "../../src/platforms/flow/references";
+import { flowVideoAttachmentActionInPage } from "../../src/background/handlers/flowVideoAttachment";
 import type { PreparedVideoBatchItem } from "../../src/domain/batches/types";
 import type { ReferenceAssignmentRecord } from "../../src/domain/media/references";
 
@@ -168,6 +173,99 @@ function addChip(
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+describe("Flow original reference source resolution", () => {
+  it("opens only the uniquely pinned gallery tile and returns its observed detail URL without constructing it", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const observedOriginal = `https://flow-content.google/image/${id}?sig=fresh-signed-value`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
+    const tile = doc.querySelector("flow-image-tile")!;
+    tile.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = observedOriginal;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" });
+    expect(result).toMatchObject({ ok: true, opened: true, url: observedOriginal });
+    expect(result.url).toBe(observedOriginal);
+  });
+
+  it("restores the gallery with Escape and refuses an ambiguous pinned tile", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/a"></flow-image-tile>`);
+    const detail = doc.createElement("img");
+    detail.alt = "Read-only image view";
+    doc.body.append(detail);
+    sizeElements(doc);
+    const escape = (event: Event) => { if ((event as KeyboardEvent).key === "Escape") detail.remove(); };
+    doc.addEventListener("keydown", escape);
+    expect(await flowRestoreGalleryAfterOriginalResolutionInPage({ mediaId: id })).toMatchObject({ ok: true });
+    doc.removeEventListener("keydown", escape);
+    const duplicate = doc.createElement("flow-image-tile");
+    duplicate.innerHTML = `<img data-media-id="${id}" src="https://flow.google.com/asb/b">`;
+    doc.body.append(duplicate);
+    sizeElements(doc);
+    expect(await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/a" })).toMatchObject({ ok: false, code: "candidate_ambiguous" });
+  });
+});
+
+describe("production Flow video attachment picker action", () => {
+  it("selects the exact gallery thumbnail before waiting for its delayed detail preview and Add control", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/shot-two-gallery-representation";
+    const events: string[] = [];
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    const pickerOpen = doc.querySelector<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']")!;
+    pickerOpen.addEventListener("click", () => {
+      events.push("picker-open");
+      const section = doc.createElement("section");
+      section.dataset.pickerDetailScope = "";
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item" data-name="decoy"><img class="asset-thumbnail-image" src="https://flow.google.com/asb/decoy"></button><button role="option" class="asset-item" data-name="pinned"><img class="asset-thumbnail-image" src="${galleryUrl}"></button></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+      const row = section.querySelector<HTMLButtonElement>("[data-name=pinned]")!;
+      row.addEventListener("click", () => {
+        events.push("row-click");
+        expect(section.querySelector("img.detail-preview-image")).toBeNull();
+        expect(section.querySelector("button.add-to-prompt")).toBeNull();
+        setTimeout(() => {
+          const preview = doc.createElement("img");
+          preview.className = "detail-preview-image";
+          preview.alt = "Preview of selected asset";
+          preview.src = galleryUrl;
+          section.querySelector("aside")!.append(preview);
+          sizeElements(doc);
+          events.push("preview-settled");
+          setTimeout(() => {
+            const add = doc.createElement("button");
+            add.className = "add-to-prompt";
+            add.textContent = "Add to prompt";
+            add.addEventListener("click", () => {
+              events.push("add-click");
+              const chip = doc.createElement("button");
+              chip.setAttribute("aria-label", "Ingredient");
+              chip.setAttribute("aria-busy", "false");
+              chip.innerHTML = `<img alt="Ingredient image" src="https://flow-content.google/image/${id}?signed=ephemeral">`;
+              doc.querySelector("flow-base-prompt-box")!.append(chip);
+              sizeElements(doc);
+            });
+            section.querySelector("aside")!.append(add);
+            sizeElements(doc);
+          }, 30);
+        }, 30);
+      });
+    });
+    sizeElements(doc);
+
+    const result = await flowVideoAttachmentActionInPage(id, galleryUrl);
+    expect(result).toEqual({ ok: true, already: false });
+    expect(events).toEqual(["picker-open", "row-click", "preview-settled", "add-click"]);
+    expect(doc.querySelectorAll("flow-base-prompt-box button[aria-label='Ingredient']")).toHaveLength(1);
+  });
+});
 
 describe("Flow pinned video reference attachment (offline fixtures)", () => {
   it("reads only the supported Flow chip image UUID path and ignores signed query changes", () => {

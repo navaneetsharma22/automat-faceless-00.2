@@ -1,6 +1,7 @@
 import type { ExtensionRepositories } from "../../storage/repositories";
 import {
   ReferenceAssignmentRecordSchema,
+  ReferenceByteComparisonDiagnosticSchema,
   sha256Bytes,
 } from "../../domain/media/references";
 import {
@@ -10,13 +11,19 @@ import {
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import { CONNECTOR_PROTOCOL_VERSION } from "../../platforms/shared/contracts";
 import { flowTabFromUrl } from "../../platforms/flow/connection";
-import { flowReferenceCaptureInPage } from "../../platforms/flow/references";
+import {
+  flowReferenceCaptureInPage,
+  flowResolveOriginalImageUrlInPage,
+  flowRestoreGalleryAfterOriginalResolutionInPage,
+} from "../../platforms/flow/references";
 import {
   fetchFlowReferenceBytes,
+  FLOW_CONTENT_MEDIA_HOST,
   flowReferenceResource,
   resolveFlowReferenceFetcher,
 } from "../../platforms/flow/referenceResource";
 import { flowVideoChipMediaIdFromImageUrl } from "../../platforms/flow/video";
+import { FlowVideoQueueRecordSchema } from "../../domain/jobs/videoQueue";
 
 type Script = {
   executeScript: (
@@ -50,6 +57,19 @@ const ACQUISITION_REASONS = new Set([
   "reference_dimensions_invalid",
   "reference_resource_failed",
 ]);
+
+/** The read-only detail overlay uses a project-scoped /edit/<opaque-id> route. */
+function isBoundFlowProjectUrl(rawUrl: string | undefined, projectId: string): boolean {
+  if (!rawUrl) return false;
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "https:" || url.hostname !== "flow.google.com" || url.username || url.password) return false;
+    const escapedProjectId = projectId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`^/(?:u/[0-9]+/)?project/${escapedProjectId}(?:/edit/[A-Za-z0-9_-]+)?/?$`).test(url.pathname);
+  } catch {
+    return false;
+  }
+}
 
 /** Read only the attachment structure; provider settings are owned by the user. */
 export function flowVideoAttachmentStructurePreflightInPage(): {
@@ -88,6 +108,98 @@ export function flowVideoAttachmentStructurePreflightInPage(): {
   return { ok: true, href };
 }
 
+/** In-page picker action. The gallery URL is identity evidence, not the acquisition URL. */
+export async function flowVideoAttachmentActionInPage(
+  expectedId: string,
+  expectedGalleryUrl: string,
+): Promise<{ ok: boolean; already?: boolean; reason?: string }> {
+  const visible = (el: Element) => {
+    const r = el.getBoundingClientRect();
+    return el.isConnected && r.width > 0 && r.height > 0 &&
+      getComputedStyle(el).visibility !== "hidden";
+  };
+  const roots = [...document.querySelectorAll("flow-base-prompt-box")].filter(visible);
+  const chips = () => roots[0]
+    ? [...roots[0].querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")]
+    : [];
+  const idFromChip = (chip: HTMLButtonElement) => {
+    try {
+      const u = new URL(chip.querySelector("img[alt='Ingredient image']")?.getAttribute("src") ?? "");
+      return u.protocol === "https:" && u.hostname === "flow-content.google"
+        ? /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(u.pathname)?.[1]?.toLowerCase()
+        : undefined;
+    } catch { return undefined; }
+  };
+  const read = () => {
+    const list = document.querySelector("[role=listbox][aria-label='Asset list']");
+    const preview = document.querySelector<HTMLImageElement>("img.detail-preview-image[alt^='Preview of']");
+    const panel = preview?.parentElement?.closest("section,[data-picker-detail-scope]") ?? preview?.parentElement?.parentElement;
+    const row = [...(list?.querySelectorAll<HTMLButtonElement>("button[role=option].asset-item") ?? [])]
+      .find((r) => [...r.querySelectorAll<HTMLImageElement>("img.asset-thumbnail-image")]
+        .some((img) => (img.currentSrc || img.src) === expectedGalleryUrl));
+    const action = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+      .filter((b) => b.textContent?.trim().toLowerCase() === "add to prompt" && visible(b));
+    return { list, preview, row, action };
+  };
+
+  if (roots.length !== 1) return { ok: false, reason: "composer_unavailable_after_preflight" };
+  const attachmentControls = [...roots[0]!.querySelectorAll<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']")].filter(visible);
+  if (attachmentControls.length !== 1 || attachmentControls[0]!.disabled || attachmentControls[0]!.getAttribute("aria-disabled") === "true")
+    return { ok: false, reason: "attachment_control_unavailable" };
+  let existing = chips();
+  if (existing.some((chip) => !idFromChip(chip))) return { ok: false, reason: "existing_chip_identity_unreadable" };
+  if (existing.filter((chip) => idFromChip(chip) === expectedId).length > 1) return { ok: false, reason: "duplicate_matching_chips" };
+  if (existing.length && !(existing.length === 1 && idFromChip(existing[0]!) === expectedId && existing[0]!.getAttribute("aria-busy") === "false"))
+    return { ok: false, reason: "existing_chip_conflict" };
+  if (existing.length === 1) return { ok: true, already: true };
+
+  if (!document.querySelector("[role=listbox][aria-label='Asset list']")) {
+    const open = roots[0]!.querySelector<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']");
+    if (!open || !visible(open)) return { ok: false, reason: "picker_missing" };
+    open.click();
+  }
+
+  // First resolve only the exact thumbnail identity. Detail preview and Add
+  // are expected to appear after selecting the row, so they are not gates here.
+  let rowSelected = false;
+  for (let i = 0; i < 40; i++) {
+    const p = read();
+    if (p.row) {
+      p.row.click();
+      rowSelected = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!rowSelected) return { ok: false, reason: "candidate_missing_or_virtualized" };
+
+  // Wait for the selected gallery thumbnail's detail preview and its unique
+  // Add control to settle before any activation.
+  let selected = read();
+  for (let i = 0; i < 40; i++) {
+    selected = read();
+    if (selected.row && selected.preview &&
+        (selected.preview.currentSrc || selected.preview.src) === expectedGalleryUrl &&
+        selected.action.length === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!selected.row || !selected.preview ||
+      (selected.preview.currentSrc || selected.preview.src) !== expectedGalleryUrl ||
+      selected.action.length !== 1)
+    return { ok: false, reason: "candidate_missing_or_virtualized" };
+  existing = chips();
+  if (existing.length) return { ok: false, reason: "chip_conflict_before_add" };
+  selected.action[0]!.click();
+  for (let i = 0; i < 60; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    existing = chips();
+    if (existing.some((chip) => !idFromChip(chip))) return { ok: false, reason: "chip_identity_unreadable_after_add" };
+    if (existing.length === 1 && idFromChip(existing[0]!) === expectedId && existing[0]!.getAttribute("aria-busy") === "false")
+      return { ok: true, already: false };
+  }
+  return { ok: false, reason: "attachment_uncertain" };
+}
+
 /** Worker-owned attachment caller. The page DOM is accessed only through exact document-targeted script injections. */
 export function createFlowVideoAttachmentHandler(deps: {
   repositories: ExtensionRepositories;
@@ -98,6 +210,95 @@ export function createFlowVideoAttachmentHandler(deps: {
   fetchResource?: typeof fetch;
 }) {
   const fetcher = resolveFlowReferenceFetcher(deps.fetchResource);
+  type CandidateAcquisition = {
+    bytes: Uint8Array;
+    mimeType: string;
+    width?: number;
+    height?: number;
+    route: "verified_document_same_origin" | "scoped_extension_fetch" | "verified_detail_original_extension_fetch";
+  };
+  async function acquireCandidateBytes(input: {
+    tabId: number;
+    documentId: string;
+    projectId: string;
+    documentHref: string;
+    galleryUrl: string;
+    mediaId: string;
+  }): Promise<CandidateAcquisition> {
+    const target = { tabId: input.tabId, documentIds: [input.documentId] };
+    const documentOrigin = new URL(input.documentHref).origin;
+    const observed = new URL(input.galleryUrl);
+    const isAsbRepresentation = observed.protocol === "https:" && observed.hostname === "flow.google.com" && /^\/asb(?:\/|$)/.test(observed.pathname);
+    const extensionFetch = async (url: string, route: CandidateAcquisition["route"]): Promise<CandidateAcquisition> => {
+      const fetched = await fetchFlowReferenceBytes({
+        url, mediaId: input.mediaId, signal: new AbortController().signal,
+        hasPermission: deps.hasMediaHostPermission ?? (async (permission) => {
+          if (typeof chrome === "undefined" || !chrome.permissions?.contains) throw new Error("permission_api_unavailable");
+          return chrome.permissions.contains({ origins: [permission] });
+        }),
+        fetcher,
+      });
+      return { bytes: fetched.bytes, mimeType: fetched.mimeType, route };
+    };
+
+    if (isAsbRepresentation) {
+      let resolution: { ok?: boolean; opened?: boolean; url?: string; href?: string; code?: string } | undefined;
+      let acquired: CandidateAcquisition | undefined;
+      let failure: string | undefined;
+      try {
+        const result = await deps.scripting.executeScript({
+          target, world: "MAIN", func: flowResolveOriginalImageUrlInPage,
+          args: [{ mediaId: input.mediaId, galleryUrl: input.galleryUrl }],
+        });
+        if (result[0]?.documentId !== input.documentId) throw new Error("target_changed");
+        resolution = result[0]?.result as typeof resolution;
+        if (!resolution?.ok || !resolution.url || !resolution.href)
+          throw new Error(resolution?.code && /^[a-z0-9_]{1,64}$/.test(resolution.code) ? resolution.code : "reference_detail_unavailable");
+        if (!isBoundFlowProjectUrl(resolution.href, input.projectId))
+          throw new Error("target_changed");
+        const original = flowReferenceResource(resolution.url, input.mediaId);
+        if (new URL(resolution.url).hostname !== FLOW_CONTENT_MEDIA_HOST)
+          throw new Error("reference_origin_unsupported");
+        acquired = await extensionFetch(original.fetchUrl, "verified_detail_original_extension_fetch");
+      } catch (error) {
+        failure = error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "reference_resource_failed";
+      } finally {
+        if (resolution?.opened) {
+          try {
+            const restored = await deps.scripting.executeScript({
+              target, world: "MAIN", func: flowRestoreGalleryAfterOriginalResolutionInPage,
+              args: [{ mediaId: input.mediaId }],
+            });
+            const result = restored[0]?.result as { ok?: boolean; href?: string; code?: string } | undefined;
+            if (restored[0]?.documentId !== input.documentId || !result?.ok ||
+                !isBoundFlowProjectUrl(result.href, input.projectId))
+              failure = result?.code ?? "reference_gallery_restore_failed";
+          } catch {
+            failure = "reference_gallery_restore_failed";
+          }
+        }
+      }
+      if (failure) throw new Error(failure);
+      if (!acquired) throw new Error("reference_resource_failed");
+      return acquired;
+    }
+
+    if (observed.origin === documentOrigin) {
+      const captured = await deps.scripting.executeScript({
+        target, world: "MAIN", func: flowReferenceCaptureInPage,
+        args: [{ action: "fetch", captureOperationId: crypto.randomUUID(), sourceUrl: input.galleryUrl, expectedOrigin: documentOrigin }],
+      });
+      if (captured[0]?.documentId !== input.documentId) throw new Error("target_changed");
+      const payload = captured[0]?.result as { ok?: boolean; data?: string; code?: string; mimeType?: string; width?: number; height?: number } | undefined;
+      if (!payload?.ok || !payload.data || !payload.mimeType) throw new Error(payload?.code ?? "candidate_capture_failed");
+      const binary = atob(payload.data);
+      return {
+        bytes: Uint8Array.from(binary, (character) => character.charCodeAt(0)), mimeType: payload.mimeType,
+        width: payload.width, height: payload.height, route: "verified_document_same_origin",
+      };
+    }
+    return extensionFetch(input.galleryUrl, "scoped_extension_fetch");
+  }
   async function status(preparedBatchId: string, itemId: string) {
     const op = await deps.repositories.getFlowVideoAttachmentOperation(
       operationId(preparedBatchId, itemId),
@@ -324,6 +525,132 @@ export function createFlowVideoAttachmentHandler(deps: {
       ),
     };
   }
+
+  async function inspectReferenceBytes(preparedBatchId: string, itemId: string) {
+    const queueRaw = await deps.repositories.getFlowVideoQueue(`flow-video:${preparedBatchId}`);
+    const queue = FlowVideoQueueRecordSchema.safeParse(queueRaw);
+    const queueItem = queue.success ? queue.data.items.find((entry) => entry.itemId === itemId) : undefined;
+    if (
+      !queue.success || queue.data.preparedBatchId !== preparedBatchId ||
+      !queueItem || queueItem.state !== "failed" || queueItem.reason !== "candidate_bytes_mismatch"
+    ) return { status: "blocked", reason: "candidate_mismatch_queue_item_required" };
+
+    const batchResult = PreparedVideoBatchRecordSchema.safeParse(
+      await deps.repositories.getPreparedVideoBatchById(preparedBatchId),
+    );
+    if (!batchResult.success || batchResult.data.id !== preparedBatchId || batchResult.data.destination !== "Flow")
+      return { status: "blocked", reason: "prepared_flow_item_required" };
+    const batch = batchResult.data;
+    const item = batch.items.find((entry) => entry.itemId === itemId);
+    if (!item || item.reference.referenceId !== queueItem.referenceId || item.contentHash !== queueItem.promptHash)
+      return { status: "blocked", reason: "prepared_reference_binding_mismatch" };
+    const operation = await deps.repositories.getFlowVideoAttachmentOperation(operationId(preparedBatchId, itemId));
+    if (operation && (operation.referenceId !== item.reference.referenceId || operation.videoGeneration))
+      return { status: "blocked", reason: "attachment_operation_binding_mismatch" };
+
+    const pinned = await deps.repositories.getReferenceById(item.reference.referenceId);
+    if (
+      !pinned || !ReferenceAssignmentRecordSchema.safeParse(pinned).success ||
+      pinned.referenceId !== item.reference.referenceId || pinned.assignmentVersion !== item.reference.assignmentVersion ||
+      pinned.sha256 !== item.reference.sha256 || pinned.mimeType !== item.reference.mimeType ||
+      pinned.byteSize !== item.reference.byteSize || pinned.width !== item.reference.width ||
+      pinned.height !== item.reference.height ||
+      (queueItem.byteMismatchDiagnostic !== undefined && pinned.providerAssetId !== queueItem.byteMismatchDiagnostic.candidateMediaId)
+    ) return { status: "blocked", reason: "pinned_reference_mismatch" };
+    const savedBytes = new Uint8Array(await pinned.bytes.arrayBuffer());
+    const savedBytesSha256 = await sha256Bytes(savedBytes);
+    if (savedBytes.byteLength !== item.reference.byteSize || savedBytesSha256 !== item.reference.sha256)
+      return { status: "blocked", reason: "reference_bytes_corrupt" };
+
+    await deps.revalidate();
+    const selected = await deps.repositories.getSelectedTarget("Flow");
+    const binding = selected?.verificationBinding;
+    if (
+      !selected || selected.verification !== "verified" || !binding || selected.tabId !== batch.target.tabId ||
+      selected.canonicalTarget !== batch.target.canonicalTarget || binding.provider !== "Flow" ||
+      binding.tabId !== selected.tabId || binding.canonicalTarget !== selected.canonicalTarget ||
+      binding.projectId !== batch.target.projectId || binding.documentId !== batch.target.documentId ||
+      binding.extensionBuildId !== BUILD_ID || binding.connectorBuildId !== BUILD_ID ||
+      binding.extensionProtocolVersion !== PROTOCOL_VERSION || binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
+      pinned.tabId !== selected.tabId || pinned.flowProjectId !== binding.projectId || pinned.documentId !== binding.documentId
+    ) return { status: "blocked", reason: "target_changed" };
+    const tab = await deps.getTab(selected.tabId);
+    const route = flowTabFromUrl(selected.tabId, "Flow", tab.url);
+    if (!route || route.projectId !== binding.projectId || route.canonicalTarget !== selected.canonicalTarget)
+      return { status: "blocked", reason: "target_changed" };
+    const target = { tabId: selected.tabId, documentIds: [binding.documentId] };
+    const resolveCandidate = async () => {
+      const result = await deps.scripting.executeScript({
+        target, world: "ISOLATED",
+        func: () => ({
+          href: location.href,
+          candidates: [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
+            .map((image) => ({ id: image.dataset.mediaId, url: image.currentSrc || image.src })),
+        }),
+      });
+      const value = result[0]?.result as { href?: string; candidates?: Array<{ id?: string; url?: string }> } | undefined;
+      if (result[0]?.documentId !== binding.documentId || flowTabFromUrl(selected.tabId, "Flow", value?.href)?.projectId !== binding.projectId)
+        throw new Error("target_changed");
+      const matches = (value?.candidates ?? []).filter((candidate) => candidate.id === pinned.providerAssetId && candidate.url);
+      if (matches.length !== 1) throw new Error(matches.length ? "candidate_ambiguous" : "candidate_missing");
+      return { candidate: matches[0]!, href: value!.href! };
+    };
+
+    let resolved: Awaited<ReturnType<typeof resolveCandidate>>;
+    try { resolved = await resolveCandidate(); }
+    catch (error) { return { status: "blocked", reason: error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "candidate_resolution_failed" }; }
+    let acquired: CandidateAcquisition;
+    try {
+      acquired = await acquireCandidateBytes({
+        tabId: selected.tabId, documentId: binding.documentId, projectId: binding.projectId,
+        documentHref: resolved.href, galleryUrl: resolved.candidate.url!, mediaId: pinned.providerAssetId!,
+      });
+    } catch (error) {
+      const reason = error instanceof Error && ACQUISITION_REASONS.has(error.message)
+        ? error.message
+        : error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "reference_resource_failed";
+      return { status: "blocked", reason };
+    }
+    const bytes = acquired.bytes;
+    const mimeType = acquired.mimeType;
+    const width = acquired.width;
+    const height = acquired.height;
+    if (!/^(image\/(jpeg|png|webp|avif|gif))$/.test(mimeType))
+      return { status: "blocked", reason: "reference_format_unsupported" };
+    const actualSha256 = await sha256Bytes(bytes);
+    try { await resolveCandidate(); }
+    catch (error) { return { status: "blocked", reason: error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "candidate_revalidation_failed" }; }
+    await deps.revalidate();
+    const latestQueue = FlowVideoQueueRecordSchema.safeParse(await deps.repositories.getFlowVideoQueue(`flow-video:${preparedBatchId}`));
+    const latestItem = latestQueue.success ? latestQueue.data.items.find((entry) => entry.itemId === itemId) : undefined;
+    const latestTarget = await deps.repositories.getSelectedTarget("Flow");
+    const latestBinding = latestTarget?.verificationBinding;
+    const latestTab = await deps.getTab(selected.tabId);
+    const latestRoute = flowTabFromUrl(selected.tabId, "Flow", latestTab.url);
+    if (
+      !latestQueue.success || latestQueue.data.revision !== queue.data.revision || !latestItem ||
+      latestItem.state !== "failed" || latestItem.reason !== "candidate_bytes_mismatch" ||
+      latestItem.referenceId !== item.reference.referenceId || latestItem.promptHash !== item.contentHash ||
+      latestTarget?.verification !== "verified" || latestTarget.tabId !== selected.tabId ||
+      latestTarget.canonicalTarget !== selected.canonicalTarget || !latestBinding || latestBinding.provider !== "Flow" ||
+      latestBinding.tabId !== selected.tabId || latestBinding.canonicalTarget !== selected.canonicalTarget ||
+      latestBinding.projectId !== binding.projectId || latestBinding.documentId !== binding.documentId ||
+      latestBinding.extensionBuildId !== BUILD_ID || latestBinding.connectorBuildId !== BUILD_ID ||
+      latestBinding.extensionProtocolVersion !== PROTOCOL_VERSION || latestBinding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
+      !latestRoute || latestRoute.projectId !== binding.projectId || latestRoute.canonicalTarget !== selected.canonicalTarget
+    ) return { status: "blocked", reason: "inspection_binding_changed" };
+    const diagnostic = ReferenceByteComparisonDiagnosticSchema.safeParse({
+      stage: "read_only_reference_inspection", acquisitionRoute: acquired.route,
+      preparedSha256: item.reference.sha256, metadataSha256: pinned.sha256, savedBytesSha256,
+      candidateBytesSha256: actualSha256, candidateMediaId: resolved.candidate.id,
+      mimeType, preparedByteSize: item.reference.byteSize, savedByteSize: savedBytes.byteLength,
+      candidateByteSize: bytes.byteLength, preparedWidth: item.reference.width, preparedHeight: item.reference.height,
+      ...(width ? { candidateWidth: width } : {}), ...(height ? { candidateHeight: height } : {}),
+    });
+    if (!diagnostic.success) return { status: "blocked", reason: "inspection_diagnostic_invalid" };
+    return { status: "inspected", matches: item.reference.sha256 === actualSha256, diagnostic: diagnostic.data };
+  }
+
   async function attach(preparedBatchId: string, itemId: string) {
     const oid = operationId(preparedBatchId, itemId);
     let op = await deps.repositories.getFlowVideoAttachmentOperation(oid);
@@ -379,9 +706,10 @@ export function createFlowVideoAttachmentHandler(deps: {
     )
       return { status: "blocked", reason: "pinned_reference_mismatch" };
     const saved = new Uint8Array(await pinned.bytes.arrayBuffer());
+    const savedBytesSha256 = await sha256Bytes(saved);
     if (
       saved.byteLength !== item.reference.byteSize ||
-      (await sha256Bytes(saved)) !== item.reference.sha256
+      savedBytesSha256 !== item.reference.sha256
     )
       return { status: "blocked", reason: "reference_bytes_corrupt" };
     await deps.revalidate();
@@ -449,102 +777,44 @@ export function createFlowVideoAttachmentHandler(deps: {
         reason: candidates.length ? "candidate_ambiguous" : "candidate_missing",
       };
     const candidate = candidates[0]!;
-    let bytes: Uint8Array;
-    let observedDocumentOrigin: string;
+    let acquired: CandidateAcquisition;
     try {
-      observedDocumentOrigin = new URL(state.href!).origin;
-    } catch {
-      return {
-        status: "blocked",
-        stage: "candidate_resolution",
-        reason: "target_changed",
-      };
-    }
-    let candidateOrigin: string;
-    try {
-      candidateOrigin = new URL(candidate.url!).origin;
-    } catch {
-      return {
-        status: "blocked",
-        stage: "reference_byte_acquisition",
-        reason: "reference_source_invalid",
-      };
-    }
-    if (candidateOrigin === observedDocumentOrigin) {
-      const captured = await deps.scripting.executeScript({
-        target,
-        world: "MAIN",
-        func: flowReferenceCaptureInPage,
-        args: [
-          {
-            action: "fetch",
-            captureOperationId: crypto.randomUUID(),
-            sourceUrl: candidate.url,
-            expectedOrigin: observedDocumentOrigin,
-          },
-        ],
+      acquired = await acquireCandidateBytes({
+        tabId: selected.tabId, documentId: binding.documentId, projectId: binding.projectId,
+        documentHref: state.href!, galleryUrl: candidate.url!, mediaId: pinned.providerAssetId!,
       });
-      const payload = captured[0]?.result as
-        { ok?: boolean; data?: string; code?: string } | undefined;
-      if (captured[0]?.documentId !== binding.documentId)
-        return {
-          status: "blocked",
-          stage: "reference_byte_acquisition",
-          reason: "target_changed",
-        };
-      if (!payload?.ok || !payload.data) {
-        const code =
-          payload?.code && /^[a-z0-9_]{1,64}$/.test(payload.code)
-            ? payload.code
-            : "candidate_capture_failed";
-        return {
-          status: "blocked",
-          stage: "reference_byte_acquisition",
-          reason: code,
-        };
-      }
-      const binary = atob(payload.data);
-      bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    } else {
-      const controller = new AbortController();
-      try {
-        flowReferenceResource(candidate.url!, pinned.providerAssetId);
-        const fetched = await fetchFlowReferenceBytes({
-          url: candidate.url!,
-          mediaId: pinned.providerAssetId,
-          signal: controller.signal,
-          hasPermission:
-            deps.hasMediaHostPermission ??
-            (async (permission) => {
-              if (
-                typeof chrome === "undefined" ||
-                !chrome.permissions?.contains
-              )
-                throw new Error("permission_api_unavailable");
-              return chrome.permissions.contains({ origins: [permission] });
-            }),
-          fetcher,
-        });
-        bytes = fetched.bytes;
-      } catch (error) {
-        const raw =
-          error instanceof Error ? error.message : "reference_resource_failed";
-        const reason = ACQUISITION_REASONS.has(raw)
-          ? raw
-          : "reference_resource_failed";
-        return {
-          status: "blocked",
-          stage: "reference_byte_acquisition",
-          reason,
-        };
-      }
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : "reference_resource_failed";
+      const reason = ACQUISITION_REASONS.has(raw) || /^[a-z0-9_]{1,64}$/.test(raw) ? raw : "reference_resource_failed";
+      return { status: "blocked", stage: "reference_byte_acquisition", reason };
     }
-    if ((await sha256Bytes(bytes)) !== item.reference.sha256)
+    const bytes = acquired.bytes;
+    const candidateBytesSha256 = await sha256Bytes(bytes);
+    if (candidateBytesSha256 !== item.reference.sha256) {
+      const diagnostic = ReferenceByteComparisonDiagnosticSchema.safeParse({
+        stage: "candidate_byte_verification",
+        acquisitionRoute: acquired.route,
+        preparedSha256: item.reference.sha256,
+        metadataSha256: pinned.sha256,
+        savedBytesSha256,
+        candidateBytesSha256,
+        candidateMediaId: candidate.id,
+        mimeType: acquired.mimeType,
+        preparedByteSize: item.reference.byteSize,
+        savedByteSize: saved.byteLength,
+        candidateByteSize: bytes.byteLength,
+        preparedWidth: item.reference.width,
+        preparedHeight: item.reference.height,
+        ...(acquired.width ? { candidateWidth: acquired.width } : {}),
+        ...(acquired.height ? { candidateHeight: acquired.height } : {}),
+      });
       return {
         status: "blocked",
         stage: "candidate_byte_verification",
         reason: "candidate_bytes_mismatch",
+        ...(diagnostic.success ? { diagnostic: diagnostic.data } : {}),
       };
+    }
     const reResolved = await deps.scripting.executeScript({
       target,
       world: "ISOLATED",
@@ -568,8 +838,7 @@ export function createFlowVideoAttachmentHandler(deps: {
     );
     if (
       reResolved[0]?.documentId !== binding.documentId ||
-      flowTabFromUrl(selected.tabId, "Flow", reResolvedState?.href)
-        ?.projectId !== binding.projectId ||
+      !isBoundFlowProjectUrl(reResolvedState?.href, binding.projectId) ||
       reResolvedMatches.length !== 1
     )
       return {
@@ -586,8 +855,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       { ok?: boolean; reason?: string; href?: string } | undefined;
     if (
       composerCheck[0]?.documentId !== binding.documentId ||
-      flowTabFromUrl(selected.tabId, "Flow", composerState?.href)?.projectId !==
-        binding.projectId
+      !isBoundFlowProjectUrl(composerState?.href, binding.projectId)
     )
       return {
         status: "blocked",
@@ -613,8 +881,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       fresh.canonicalTarget !== selected.canonicalTarget ||
       fresh.verificationBinding?.documentId !== binding.documentId ||
       fresh.verificationBinding.projectId !== binding.projectId ||
-      flowTabFromUrl(selected.tabId, "Flow", freshTab.url)?.projectId !==
-        binding.projectId
+      !isBoundFlowProjectUrl(freshTab.url, binding.projectId)
     )
       return { status: "blocked", reason: "target_changed" };
     // Persist before the sole page activation. Any worker restart/lost response becomes readback-only.
@@ -644,8 +911,7 @@ export function createFlowVideoAttachmentHandler(deps: {
         binding.documentId ||
       immediatelyBeforeAction.verificationBinding.projectId !==
         binding.projectId ||
-      flowTabFromUrl(selected.tabId, "Flow", actionTab.url)?.projectId !==
-        binding.projectId
+      !isBoundFlowProjectUrl(actionTab.url, binding.projectId)
     ) {
       await deps.repositories.putFlowVideoAttachmentOperation({
         ...op,
@@ -658,147 +924,7 @@ export function createFlowVideoAttachmentHandler(deps: {
     const action = await deps.scripting.executeScript({
       target,
       world: "ISOLATED",
-      func: async (expectedId: string, expectedUrl: string) => {
-        const visible = (el: Element) => {
-          const r = el.getBoundingClientRect();
-          return (
-            el.isConnected &&
-            r.width > 0 &&
-            r.height > 0 &&
-            getComputedStyle(el).visibility !== "hidden"
-          );
-        };
-        const roots = [
-          ...document.querySelectorAll("flow-base-prompt-box"),
-        ].filter(visible);
-        const chips = () =>
-          roots[0]
-            ? [
-                ...roots[0].querySelectorAll<HTMLButtonElement>(
-                  "button[aria-label='Ingredient']",
-                ),
-              ]
-            : [];
-        const idFromChip = (chip: HTMLButtonElement) => {
-          try {
-            const u = new URL(
-              chip
-                .querySelector("img[alt='Ingredient image']")
-                ?.getAttribute("src") ?? "",
-            );
-            return u.protocol === "https:" &&
-              u.hostname === "flow-content.google"
-              ? /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
-                  .exec(u.pathname)?.[1]
-                  ?.toLowerCase()
-              : undefined;
-          } catch {
-            return undefined;
-          }
-        };
-        const read = () => {
-          const list = document.querySelector(
-            "[role=listbox][aria-label='Asset list']",
-          );
-          const preview = document.querySelector<HTMLImageElement>(
-            "img.detail-preview-image[alt^='Preview of']",
-          );
-          const panel =
-            preview?.parentElement?.closest(
-              "section,[data-picker-detail-scope]",
-            ) ?? preview?.parentElement?.parentElement;
-          const row = [
-            ...(list?.querySelectorAll<HTMLButtonElement>(
-              "button[role=option].asset-item",
-            ) ?? []),
-          ].find((r) =>
-            [
-              ...r.querySelectorAll<HTMLImageElement>(
-                "img.asset-thumbnail-image",
-              ),
-            ].some((img) => (img.currentSrc || img.src) === expectedUrl),
-          );
-          const action = [
-            ...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? []),
-          ].filter(
-            (b) =>
-              b.textContent?.trim().toLowerCase() === "add to prompt" &&
-              visible(b),
-          );
-          return { list, preview, panel, row, action };
-        };
-        if (roots.length !== 1)
-          return { ok: false, reason: "composer_unavailable_after_preflight" };
-        const attachmentControls = [
-          ...roots[0]!.querySelectorAll<HTMLButtonElement>(
-            "button[aria-label='Add ingredients to the prompt box']",
-          ),
-        ].filter(visible);
-        if (
-          attachmentControls.length !== 1 ||
-          attachmentControls[0]!.disabled ||
-          attachmentControls[0]!.getAttribute("aria-disabled") === "true"
-        )
-          return { ok: false, reason: "attachment_control_unavailable" };
-        let existing = chips();
-        if (
-          existing.some((chip) => !idFromChip(chip))
-        )
-          return { ok: false, reason: "existing_chip_identity_unreadable" };
-        if (existing.filter((chip) => idFromChip(chip) === expectedId).length > 1)
-          return { ok: false, reason: "duplicate_matching_chips" };
-        if (existing.length && !(existing.length === 1 && idFromChip(existing[0]!) === expectedId && existing[0]!.getAttribute("aria-busy") === "false"))
-          return { ok: false, reason: "existing_chip_conflict" };
-        if (
-          existing.length === 1 &&
-          idFromChip(existing[0]!) === expectedId &&
-          existing[0]!.getAttribute("aria-busy") === "false"
-        )
-          return { ok: true, already: true };
-        if (
-          !document.querySelector("[role=listbox][aria-label='Asset list']")
-        ) {
-          const open = roots[0]!.querySelector<HTMLButtonElement>(
-            "button[aria-label='Add ingredients to the prompt box']",
-          );
-          if (!open || !visible(open))
-            return { ok: false, reason: "picker_missing" };
-          open.click();
-        }
-        for (let i = 0; i < 40; i++) {
-          const p = read();
-          if (p.row && p.preview && p.action.length === 1) {
-            p.row.click();
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 50));
-        }
-        const p = read();
-        if (
-          !p.row ||
-          !p.preview ||
-          (p.preview.currentSrc || p.preview.src) !== expectedUrl ||
-          p.action.length !== 1
-        )
-          return { ok: false, reason: "candidate_missing_or_virtualized" };
-        existing = chips();
-        if (existing.length)
-          return { ok: false, reason: "chip_conflict_before_add" };
-        p.action[0]!.click();
-        for (let i = 0; i < 60; i++) {
-          await new Promise((r) => setTimeout(r, 100));
-          existing = chips();
-          if (existing.some((chip) => !idFromChip(chip)))
-            return { ok: false, reason: "chip_identity_unreadable_after_add" };
-          if (
-            existing.length === 1 &&
-            idFromChip(existing[0]!) === expectedId &&
-            existing[0]!.getAttribute("aria-busy") === "false"
-          )
-            return { ok: true, already: false };
-        }
-        return { ok: false, reason: "attachment_uncertain" };
-      },
+      func: flowVideoAttachmentActionInPage,
       args: [pinned.providerAssetId ?? "", candidate.url],
     });
     const outcome = action[0]?.result as
@@ -834,5 +960,5 @@ export function createFlowVideoAttachmentHandler(deps: {
       reason: outcome?.reason ?? "attachment_uncertain",
     };
   }
-  return { attach, status, verifyAttachedReference, reconcilePreClickFailure };
+  return { attach, inspectReferenceBytes, status, verifyAttachedReference, reconcilePreClickFailure };
 }

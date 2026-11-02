@@ -811,7 +811,7 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("imageQueue.start"),
     payload: z.object({ queueId: z.string().uuid() }).strict(),
   }),
-  ...(["pause", "resume", "stop"] as const).map((command) =>
+  ...(["pause", "resume", "stop", "recheckAndResume"] as const).map((command) =>
     requestBase.extend({
       type: z.literal(`imageQueue.${command}`),
       payload: z
@@ -1053,6 +1053,10 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
   }),
   requestBase.extend({
+    type: z.literal("flow.video.inspectReferenceBytes"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
+  }),
+  requestBase.extend({
     type: z.literal("flow.video.verifyAttachedReference"),
     payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
   }),
@@ -1072,15 +1076,22 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("flow.videoQueue.start"),
     payload: z.object({ preparedBatchId: z.string().min(1).max(512) }).strict(),
   }),
-  ...(["pause", "resume", "stop"] as const).map((command) =>
-    requestBase.extend({
-      type: z.literal(`flow.videoQueue.${command}`),
-      payload: z.object({
-        preparedBatchId: z.string().min(1).max(512),
-        expectedRevision: z.number().int().nonnegative(),
-      }).strict(),
-    }),
-  ),
+  requestBase.extend({
+    type: z.literal("flow.videoQueue.pause"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.videoQueue.resume"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.videoQueue.stop"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.videoQueue.recheckAndResume"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+  }),
   requestBase.extend({
     type: z.literal("flow.video.reconcilePreClickFailure"),
     payload: z.object({

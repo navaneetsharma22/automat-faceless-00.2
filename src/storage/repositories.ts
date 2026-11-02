@@ -481,6 +481,8 @@ export function createDexieRepositoryDatabase(
           return database.transaction("rw", database.flowVideoAttachmentOperations, operation);
         case "flowVideoQueues":
           return database.transaction("rw", database.flowVideoQueues, operation);
+        case "flowVideoQueues+flowVideoAttachmentOperations":
+          return database.transaction("rw", database.flowVideoQueues, database.flowVideoAttachmentOperations, operation);
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -3180,6 +3182,30 @@ export class ExtensionRepositories {
     return this.tables.transaction(["flowVideoQueues"], async () => {
       const current = await this.tables.flowVideoQueues.get(input.next.queueId);
       if (!current || current.revision !== input.expectedRevision) return undefined;
+      if (input.next.revision !== current.revision + 1)
+        throw new Error("flow_video_queue_revision_invalid");
+      await this.tables.flowVideoQueues.put(input.next);
+      const saved = await this.tables.flowVideoQueues.get(input.next.queueId);
+      if (!saved || !FlowVideoQueueRecordSchema.safeParse(saved).success)
+        throw new Error("flow_video_queue_persistence_failed");
+      return saved;
+    });
+  }
+
+  async updateFlowVideoQueueIfOperationsUnchanged(input: {
+    expectedRevision: number;
+    expectedOperations: Array<{ id: string; operation?: FlowVideoAttachmentOperation }>;
+    next: FlowVideoQueueRecord;
+  }): Promise<FlowVideoQueueRecord | undefined> {
+    if (!FlowVideoQueueRecordSchema.safeParse(input.next).success)
+      throw new Error("flow_video_queue_invalid");
+    return this.tables.transaction(["flowVideoQueues+flowVideoAttachmentOperations"], async () => {
+      const current = await this.tables.flowVideoQueues.get(input.next.queueId);
+      if (!current || current.revision !== input.expectedRevision) return undefined;
+      for (const snapshot of input.expectedOperations) {
+        const operation = await this.tables.flowVideoAttachmentOperations.get(snapshot.id);
+        if (JSON.stringify(operation) !== JSON.stringify(snapshot.operation)) return undefined;
+      }
       if (input.next.revision !== current.revision + 1)
         throw new Error("flow_video_queue_revision_invalid");
       await this.tables.flowVideoQueues.put(input.next);

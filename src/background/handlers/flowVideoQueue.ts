@@ -1,326 +1,192 @@
-import type { FlowVideoQueueRecord } from "../../domain/jobs/videoQueue";
+import type { FlowVideoQueueItem, FlowVideoQueueRecord } from "../../domain/jobs/videoQueue";
+import type { ReferenceByteComparisonDiagnostic } from "../../domain/media/references";
 import {
-  nextVideoCompletionCheck,
   nextVideoDispatchAt,
-  VIDEO_QUEUE_COMPLETION_CHECK_MS,
+  nextVideoReadinessDeadline,
   VIDEO_QUEUE_DISPATCH_GAP_MS,
 } from "../../domain/jobs/videoQueue";
 import type { ExtensionRepositories } from "../../storage/repositories";
 import { PreparedVideoBatchRecordSchema } from "../../shared/schemas";
+import type { PreparedVideoBatchRecord } from "../../domain/batches/types";
+import type { FlowVideoAttachmentOperation } from "../../storage/db";
 import { createQueueAlarmRuntime } from "../scheduler";
 
 export const FLOW_VIDEO_QUEUE_ALARM_PREFIX = "automat-flow-video-queue:";
 const HISTORIC_SHOT_ONE_BATCH = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
 const HISTORIC_SHOT_ONE_ITEM = "import:default:video:item:0";
 
-export type AttributableVideoResult = {
-  status: "processing" | "completed" | "failed" | "unknown";
-  attemptId: string;
-  resultIdentity?: string;
-  reason?: string;
-  attributable?: true;
-};
-
 export type FlowVideoQueueView = FlowVideoQueueRecord;
 
 export function createFlowVideoQueueHandler(input: {
   repositories: ExtensionRepositories;
   alarms: Pick<typeof chrome.alarms, "create" | "clear">;
-  attachReference: (preparedBatchId: string, itemId: string) => Promise<{ status: string; reason?: string }>;
+  attachReference: (preparedBatchId: string, itemId: string) => Promise<{ status: string; reason?: string; diagnostic?: ReferenceByteComparisonDiagnostic }>;
   generateOnce: (preparedBatchId: string, itemId: string) => Promise<{ status: string; reason?: string; attemptId?: string }>;
-  inspectCompletion?: (input: { preparedBatchId: string; itemId: string; attemptId: string }) => Promise<AttributableVideoResult>;
   revalidate?: (preparedBatchId: string) => Promise<string | undefined>;
+  inspectReferenceBytes?: (preparedBatchId: string, itemId: string) => Promise<{
+    status: string; reason?: string; matches?: boolean;
+    diagnostic?: ReferenceByteComparisonDiagnostic;
+  }>;
   now?: () => number;
 }) {
   const now = input.now ?? Date.now;
-  const alarms = createQueueAlarmRuntime({
-    alarms: input.alarms,
-    prefix: FLOW_VIDEO_QUEUE_ALARM_PREFIX,
-    now,
-  });
+  const alarms = createQueueAlarmRuntime({ alarms: input.alarms, prefix: FLOW_VIDEO_QUEUE_ALARM_PREFIX, now });
   const queueIdFor = (batchId: string) => `flow-video:${batchId}`;
+  const generationMatches = (
+    batch: PreparedVideoBatchRecord,
+    item: PreparedVideoBatchRecord["items"][number],
+    generation: NonNullable<FlowVideoAttachmentOperation["videoGeneration"]>,
+  ) => generation.preparedBatchId === batch.id && generation.itemId === item.itemId &&
+    generation.canonicalShotId === item.canonicalShotId && generation.promptHash === item.contentHash &&
+    generation.referenceId === item.reference.referenceId && generation.tabId === batch.target.tabId &&
+    generation.projectId === batch.target.projectId && generation.canonicalTarget === batch.target.canonicalTarget &&
+    generation.documentId === batch.target.documentId;
 
   async function makeQueue(preparedBatchId: string): Promise<FlowVideoQueueRecord> {
     const old = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
     if (old) return old;
-    const batch = PreparedVideoBatchRecordSchema.safeParse(
-      await input.repositories.getPreparedVideoBatchById(preparedBatchId),
-    );
-    if (!batch.success || batch.data.id !== preparedBatchId || batch.data.destination !== "Flow")
-      throw new Error("prepared_flow_batch_invalid");
+    const batch = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(preparedBatchId));
+    if (!batch.success || batch.data.id !== preparedBatchId || batch.data.destination !== "Flow") throw new Error("prepared_flow_batch_invalid");
     const at = now();
-    const items = [];
+    const items: FlowVideoQueueItem[] = [];
     for (const [order, item] of batch.data.items.entries()) {
-      const historicShotOne = batch.data.id === HISTORIC_SHOT_ONE_BATCH && item.itemId === HISTORIC_SHOT_ONE_ITEM;
-      const existing = historicShotOne
-        ? await input.repositories.getFlowVideoAttachmentOperation(`${preparedBatchId}:${item.itemId}`)
-        : undefined;
+      const historicalShotOne = batch.data.id === HISTORIC_SHOT_ONE_BATCH && item.itemId === HISTORIC_SHOT_ONE_ITEM;
+      const operation = await input.repositories.getFlowVideoAttachmentOperation(`${preparedBatchId}:${item.itemId}`);
+      const generation = operation?.videoGeneration;
+      const generationBound = Boolean(generation && generationMatches(batch.data, item, generation));
+      const dispatched = generation?.state === "dispatched" && generationBound ? generation : undefined;
+      const priorIntent = generation && (generation.state !== "dispatched" || !generationBound) ? generation : undefined;
       items.push({
-        itemId: item.itemId,
-        order,
-        shotId: item.canonicalShotId,
-        referenceId: item.reference.referenceId,
-        promptHash: item.contentHash,
-        state: historicShotOne && !existing?.videoGeneration ? "uncertain" as const : "pending" as const,
-        ...(historicShotOne && !existing?.videoGeneration ? { reason: "historical_shot_one_requires_operation_verification" } : {}),
+        itemId: item.itemId, order, shotId: item.canonicalShotId, referenceId: item.reference.referenceId, promptHash: item.contentHash,
+        state: dispatched ? "sent" : priorIntent ? "uncertain" : historicalShotOne ? "uncertain" : "pending",
+        ...(dispatched ? { attemptId: dispatched.attemptId, dispatchReceipt: { attemptId: dispatched.attemptId, storedAt: dispatched.updatedAt } } : {}),
+        ...(priorIntent ? { attemptId: priorIntent.attemptId, reason: !generationBound ? "existing_generation_binding_mismatch" : priorIntent.reason ?? "existing_generation_no_replay" } : {}),
+        ...(historicalShotOne && !dispatched && !priorIntent ? { reason: "historical_shot_one_requires_operation_verification" } : {}),
       });
     }
+    const lastDispatchAt = items.reduce<number | null>((latest, item) => item.dispatchReceipt ? Math.max(latest ?? 0, item.dispatchReceipt.storedAt) : latest, null);
     return input.repositories.createFlowVideoQueue({
-      queueId: queueIdFor(preparedBatchId),
-      preparedBatchId,
-      state: "ready",
-      items,
-      lastDispatchAt: null,
-      nextActionAt: null,
-      revision: 0,
-      createdAt: at,
-      updatedAt: at,
+      queueId: queueIdFor(preparedBatchId), preparedBatchId, state: items.every((item) => item.state === "sent") ? "sent" : "ready",
+      items, lastDispatchAt, nextActionAt: null, revision: 0, createdAt: at, updatedAt: at,
     });
   }
 
   async function save(queue: FlowVideoQueueRecord, patch: Partial<FlowVideoQueueRecord>) {
-    const next: FlowVideoQueueRecord = {
-      ...queue,
-      ...patch,
-      revision: queue.revision + 1,
-      updatedAt: now(),
-    };
-    const saved = await input.repositories.updateFlowVideoQueue({
-      expectedRevision: queue.revision,
-      next,
-    });
+    const next = { ...queue, ...patch, revision: queue.revision + 1, updatedAt: now() };
+    const saved = await input.repositories.updateFlowVideoQueue({ expectedRevision: queue.revision, next });
     if (!saved) throw new Error("flow_video_queue_revision_changed");
     return saved;
   }
 
-  const schedule = (queue: FlowVideoQueueRecord) =>
-    alarms.schedule(queue.queueId, ["paused", "blocked", "stopped", "completed"].includes(queue.state) ? null : queue.nextActionAt);
+  const schedule = (queue: FlowVideoQueueRecord) => alarms.schedule(queue.queueId,
+    ["paused", "blocked", "stopped", "sent"].includes(queue.state) ? null : queue.nextActionAt);
+
+  async function fail(queue: FlowVideoQueueRecord, item: FlowVideoQueueItem, reason: string, uncertain: boolean, byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic) {
+    const latest = await input.repositories.getFlowVideoQueue(queue.queueId) ?? queue;
+    const preserveControl = latest.state === "paused" || latest.state === "stopped";
+    const saved = await save(latest, {
+      items: latest.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: uncertain ? "uncertain" as const : "failed" as const, reason, ...(byteMismatchDiagnostic ? { byteMismatchDiagnostic } : {}) } : entry),
+      state: preserveControl ? latest.state : "paused",
+      pauseReason: preserveControl ? latest.pauseReason : reason,
+      nextActionAt: null,
+    });
+    await schedule(saved);
+    return saved;
+  }
+
+  async function persistReceipt(queue: FlowVideoQueueRecord, item: FlowVideoQueueItem, attemptId: string, storedAt: number) {
+    const latest = await input.repositories.getFlowVideoQueue(queue.queueId);
+    if (!latest) throw new Error("flow_video_queue_not_found");
+    // A Pause/Stop received during activation is preserved while the durable receipt is still recorded.
+    const sentItems = latest.items.map((entry) => entry.itemId === item.itemId
+      ? { ...entry, state: "sent" as const, attemptId, dispatchReceipt: { attemptId, storedAt }, reason: undefined, readinessStartedAt: undefined, readinessDeadlineAt: undefined }
+      : entry);
+    const nextPending = sentItems.find((entry) => entry.state === "pending" || entry.state === "waiting_for_generate");
+    const timedAt = nextPending ? nextVideoDispatchAt(storedAt, now()) : null;
+    const preserveControl = latest.state === "paused" || latest.state === "stopped";
+    const saved = await save(latest, {
+      items: sentItems,
+      lastDispatchAt: Math.max(latest.lastDispatchAt ?? 0, storedAt),
+      state: preserveControl ? latest.state : nextPending ? "waiting" : "sent",
+      pauseReason: preserveControl ? latest.pauseReason : undefined,
+      nextActionAt: preserveControl ? null : timedAt,
+    });
+    await schedule(saved);
+    return saved;
+  }
 
   async function process(queueId: string): Promise<FlowVideoQueueRecord> {
     let queue = await input.repositories.getFlowVideoQueue(queueId);
     if (!queue) throw new Error("flow_video_queue_not_found");
-    if (["paused", "blocked", "stopped", "completed"].includes(queue.state)) return queue;
+    if (["paused", "blocked", "stopped", "sent"].includes(queue.state)) return queue;
     if (input.revalidate) {
       const invalid = await input.revalidate(queue.preparedBatchId).catch(() => "target_revalidation_failed");
-      if (invalid) {
-        queue = await save(queue, { state: "paused", pauseReason: invalid, nextActionAt: null });
-        await schedule(queue);
-        return queue;
-      }
+      if (invalid) { queue = await save(queue, { state: "paused", pauseReason: invalid, nextActionAt: null }); await schedule(queue); return queue; }
     }
-
-    const active = queue.items.find((item) =>
-      item.state === "awaiting_completion" || item.state === "awaiting_verification",
-    );
-    if (active) {
-      if (!input.inspectCompletion) {
-        queue = await save(queue, {
-          items: queue.items.map((item) => item.itemId === active.itemId
-            ? { ...item, state: "awaiting_verification" as const, reason: "video_result_attribution_unavailable", nextCheckAt: undefined }
-            : item),
-          state: "paused",
-          pauseReason: "video_result_attribution_unavailable",
-          nextActionAt: null,
-        });
-        await schedule(queue);
-        return queue;
-      }
-      if (active.nextCheckAt !== undefined && now() < active.nextCheckAt) {
-        await schedule(queue);
-        return queue;
-      }
-      if (!active.attemptId) {
-        queue = await save(queue, { state: "paused", pauseReason: "attempt_identity_missing", nextActionAt: null });
-        await schedule(queue);
-        return queue;
-      }
-      const inspected = input.inspectCompletion
-        ? await input.inspectCompletion({ preparedBatchId: queue.preparedBatchId, itemId: active.itemId, attemptId: active.attemptId }).catch(() => ({ status: "unknown" as const, attemptId: active.attemptId, reason: "result_inspection_failed" }))
-        : { status: "unknown" as const, attemptId: active.attemptId, reason: "video_result_attribution_unavailable" };
-      if (inspected.attemptId !== active.attemptId) {
-        queue = await save(queue, { state: "paused", pauseReason: "completion_attempt_mismatch", nextActionAt: null });
-        await schedule(queue);
-        return queue;
-      }
-      if (inspected.status === "completed" && inspected.attributable === true && inspected.resultIdentity) {
-        const items = queue.items.map((item) => item.itemId === active.itemId
-          ? { ...item, state: "completed" as const, resultIdentity: inspected.resultIdentity, completedAt: now(), reason: undefined, nextCheckAt: undefined }
-          : item);
-        const next = items.find((item) => item.state === "pending");
-        const nextAt = next ? nextVideoDispatchAt(queue.lastDispatchAt, now()) : null;
-        queue = await save(queue, {
-          items,
-          state: next ? "waiting" : "completed",
-          pauseReason: undefined,
-          nextActionAt: nextAt,
-        });
-        await schedule(queue);
-        return nextAt !== null && nextAt <= now() ? process(queueId) : queue;
-      }
-      if (inspected.status === "failed" && inspected.attributable === true && inspected.resultIdentity) {
-        const items = queue.items.map((item) => item.itemId === active.itemId
-          ? { ...item, state: "failed" as const, resultIdentity: inspected.resultIdentity, reason: "provider_failed_attributable" }
-          : item);
-        queue = await save(queue, { items, state: "paused", pauseReason: "provider_failed_attributable", nextActionAt: null });
-        await schedule(queue);
-        return queue;
-      }
-      const reason = inspected.reason ?? (inspected.status === "processing" ? "provider_still_processing" : "completion_unverified");
-      const itemState = inspected.status === "processing" ? "awaiting_completion" as const : "awaiting_verification" as const;
-      const nextCheckAt = nextVideoCompletionCheck(now());
-      queue = await save(queue, {
-        items: queue.items.map((item) => item.itemId === active.itemId ? { ...item, state: itemState, reason, nextCheckAt } : item),
-        state: "waiting",
-        pauseReason: undefined,
-        nextActionAt: nextCheckAt,
-      });
-      await schedule(queue);
-      return queue;
-    }
-
-    const unresolved = queue.items.find((item) => item.state === "uncertain" || item.state === "failed");
+    const unresolved = queue.items.find((entry) => entry.state === "uncertain" || entry.state === "failed");
     if (unresolved) {
-      queue = await save(queue, {
-        state: "paused",
-        pauseReason: unresolved.reason ?? "item_requires_review",
-        nextActionAt: null,
-      });
-      await schedule(queue);
-      return queue;
+      queue = await save(queue, { state: "paused", pauseReason: unresolved.reason ?? "item_requires_review", nextActionAt: null });
+      await schedule(queue); return queue;
     }
-
-    const pending = queue.items.find((item) => item.state === "pending");
-    if (!pending) {
-      queue = await save(queue, { state: "completed", nextActionAt: null, pauseReason: undefined });
-      await schedule(queue);
-      return queue;
+    const item = queue.items.find((entry) => entry.state === "pending" || entry.state === "waiting_for_generate");
+    if (!item) {
+      const uncertain = queue.items.find((entry) => entry.state === "dispatching" || entry.state === "attaching");
+      if (uncertain) { queue = await save(queue, { state: "paused", pauseReason: uncertain.reason ?? "item_requires_review", nextActionAt: null }); await schedule(queue); return queue; }
+      queue = await save(queue, { state: "sent", pauseReason: undefined, nextActionAt: null }); await schedule(queue); return queue;
     }
-    if (queue.nextActionAt !== null && now() < queue.nextActionAt) {
-      await schedule(queue);
-      return queue;
+    if (item.state === "waiting_for_generate" && item.readinessDeadlineAt !== undefined && now() >= item.readinessDeadlineAt) {
+      queue = await save(queue, { state: "paused", pauseReason: "flow_generate_readiness_timeout", nextActionAt: null });
+      await schedule(queue); return queue;
     }
-
-    const operation = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${pending.itemId}`);
-    if (operation?.videoGeneration) {
-      const gen = operation.videoGeneration;
-      if (gen.state === "dispatched") {
-        if (!input.inspectCompletion) {
-          queue = await save(queue, {
-            items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "awaiting_verification", attemptId: gen.attemptId, reason: "video_result_attribution_unavailable", nextCheckAt: undefined } : item),
-            state: "paused",
-            pauseReason: "video_result_attribution_unavailable",
-            nextActionAt: null,
-          });
-          await schedule(queue);
-          return queue;
-        }
-        const nextCheckAt = nextVideoCompletionCheck(now());
-        queue = await save(queue, {
-          items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "awaiting_verification", attemptId: gen.attemptId, reason: "existing_generation_requires_attribution", nextCheckAt } : item),
-          state: "waiting",
-          nextActionAt: nextCheckAt,
-        });
-        await schedule(queue);
-        return queue;
-      }
-      queue = await save(queue, {
-        items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "uncertain", attemptId: gen.attemptId, reason: gen.reason ?? `generation_${gen.state}` } : item),
-        state: "paused",
-        pauseReason: gen.reason ?? `generation_${gen.state}`,
-        nextActionAt: null,
-      });
-      await schedule(queue);
-      return queue;
-    }
-
+    if (queue.nextActionAt !== null && now() < queue.nextActionAt) { await schedule(queue); return queue; }
     if (queue.lastDispatchAt !== null && now() < queue.lastDispatchAt + VIDEO_QUEUE_DISPATCH_GAP_MS) {
-      queue = await save(queue, { state: "waiting", nextActionAt: queue.lastDispatchAt + VIDEO_QUEUE_DISPATCH_GAP_MS });
-      await schedule(queue);
-      return queue;
+      queue = await save(queue, { state: "waiting", nextActionAt: queue.lastDispatchAt + VIDEO_QUEUE_DISPATCH_GAP_MS }); await schedule(queue); return queue;
     }
-    queue = await save(queue, {
-      items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "attaching", reason: undefined } : item),
-      state: "waiting",
-      nextActionAt: null,
-    });
-    const attachment = await input.attachReference(queue.preparedBatchId, pending.itemId).catch(() => ({ status: "uncertain", reason: "attachment_response_lost" }));
-    if (attachment.status !== "attached" && attachment.status !== "already_attached") {
-      const uncertain = attachment.status === "uncertain";
-      queue = await save(queue, {
-        items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: uncertain ? "uncertain" : "failed", reason: attachment.reason ?? (uncertain ? "attachment_uncertain" : "attachment_blocked") } : item),
-        state: "paused",
-        pauseReason: attachment.reason ?? (uncertain ? "attachment_uncertain" : "attachment_blocked"),
-        nextActionAt: null,
-      });
-      await schedule(queue);
-      return queue;
-    }
-    const beforeGenerate = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${pending.itemId}`);
-    if (beforeGenerate?.videoGeneration) {
-      queue = await save(queue, { items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "uncertain", attemptId: beforeGenerate.videoGeneration!.attemptId, reason: "existing_generation_no_replay" } : item), state: "paused", pauseReason: "existing_generation_no_replay", nextActionAt: null });
-      await schedule(queue);
-      return queue;
-    }
-    queue = await save(queue, { items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "dispatching" } : item) });
-    const dispatchGate = await input.repositories.getFlowVideoQueue(queue.queueId);
-    if (!dispatchGate || dispatchGate.state === "paused" || dispatchGate.state === "stopped") {
-      if (dispatchGate) {
-        const gateSaved = await save(dispatchGate, {
-          items: dispatchGate.items.map((item) => item.itemId === pending.itemId
-            ? { ...item, state: dispatchGate.state === "stopped" ? "skipped" as const : "pending" as const }
-            : item),
-        });
-        await schedule(gateSaved);
-        return gateSaved;
+
+    if (item.state === "pending") {
+      queue = await save(queue, { state: "waiting", nextActionAt: null, items: queue.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: "attaching" as const, reason: undefined } : entry) });
+      const attachment = await input.attachReference(queue.preparedBatchId, item.itemId).catch((): Awaited<ReturnType<typeof input.attachReference>> => ({ status: "uncertain", reason: "attachment_response_lost" }));
+      if (attachment.status !== "attached" && attachment.status !== "already_attached") return fail(queue, item, attachment.reason ?? "attachment_blocked", attachment.status === "uncertain", attachment.diagnostic);
+      const operation = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${item.itemId}`);
+      if (operation?.videoGeneration) {
+        if (operation.videoGeneration.state === "dispatched") return persistReceipt(queue, item, operation.videoGeneration.attemptId, operation.videoGeneration.updatedAt);
+        return fail(queue, item, operation.videoGeneration.reason ?? "existing_generation_no_replay", true);
       }
-      return queue;
+      queue = await save(await input.repositories.getFlowVideoQueue(queueId) ?? queue, { items: (await input.repositories.getFlowVideoQueue(queueId) ?? queue).items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: "dispatching" as const } : entry) });
+    } else {
+      queue = await save(queue, { state: "waiting", items: queue.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: "dispatching" as const } : entry) });
     }
-    const generated = await input.generateOnce(queue.preparedBatchId, pending.itemId).catch(() => ({ status: "uncertain", reason: "generation_response_lost" }));
-    const latest = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${pending.itemId}`);
-    const generation = latest?.videoGeneration;
+
+    const dispatchGate = await input.repositories.getFlowVideoQueue(queueId);
+    if (!dispatchGate || dispatchGate.state === "paused" || dispatchGate.state === "stopped") return dispatchGate ?? queue;
+    const generated = await input.generateOnce(queue.preparedBatchId, item.itemId).catch(() => ({ status: "uncertain", reason: "generation_response_lost" }));
+    const operation = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${item.itemId}`);
+    const generation = operation?.videoGeneration;
     if (generation?.state === "dispatched") {
-      const dispatchedAt = generation.updatedAt;
-      if (!input.inspectCompletion) {
-        queue = await save(queue, {
-          items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "awaiting_verification", attemptId: generation.attemptId, reason: "video_result_attribution_unavailable" } : item),
-          lastDispatchAt: dispatchedAt,
-          state: "paused",
-          pauseReason: "video_result_attribution_unavailable",
-          nextActionAt: null,
-        });
-        await schedule(queue);
-        return queue;
-      }
-      const nextCheckAt = nextVideoCompletionCheck(dispatchedAt);
-      queue = await save(queue, {
-        items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "awaiting_completion", attemptId: generation.attemptId, reason: undefined, nextCheckAt } : item),
-        lastDispatchAt: dispatchedAt,
-        state: "waiting",
-        nextActionAt: nextCheckAt,
-      });
-      await schedule(queue);
-      return queue;
+      const batch = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
+      const preparedItem = batch.success ? batch.data.items.find((entry) => entry.itemId === item.itemId) : undefined;
+      if (!batch.success || !preparedItem || !generationMatches(batch.data, preparedItem, generation))
+        return fail(queue, item, "dispatched_generation_binding_mismatch", true);
+      return persistReceipt(queue, item, generation.attemptId, generation.updatedAt);
     }
-    const state = generated.status === "uncertain" || generated.status === "already_dispatched" ? "uncertain" as const : "failed" as const;
-    queue = await save(queue, {
-      items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state, attemptId: generation?.attemptId, reason: generated.reason ?? "generation_not_confirmed" } : item),
-      state: "paused",
-      pauseReason: generated.reason ?? "generation_not_confirmed",
-      nextActionAt: null,
-    });
-    await schedule(queue);
-    return queue;
+    if (generated.reason === "generate_disabled" && !generation) {
+      const current = await input.repositories.getFlowVideoQueue(queueId) ?? queue;
+      if (current.state === "paused" || current.state === "stopped") return current;
+      const startedAt = item.readinessStartedAt ?? now();
+      const deadlineAt = item.readinessDeadlineAt ?? nextVideoReadinessDeadline(startedAt);
+      const checkAt = Math.min(deadlineAt, now() + 30_000);
+      const waiting = await save(current, {
+        state: "waiting", pauseReason: undefined, nextActionAt: checkAt,
+        items: current.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: "waiting_for_generate" as const, readinessStartedAt: startedAt, readinessDeadlineAt: deadlineAt, reason: "generate_disabled" } : entry),
+      });
+      await schedule(waiting); return waiting;
+    }
+    return fail(queue, item, generated.reason ?? "generation_not_confirmed", generated.status === "uncertain" || generation?.state === "dispatch_intent");
   }
 
-  async function run(queueId: string) {
-    return alarms.serialize(queueId, () => process(queueId));
-  }
-
+  async function run(queueId: string) { return alarms.serialize(queueId, () => process(queueId)); }
   return {
-    get: async (preparedBatchId: string) => {
-      const queue = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
-      return queue ?? null;
-    },
+    get: async (preparedBatchId: string) => input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId)) ?? null,
     start: async (preparedBatchId: string) => {
       const queue = await makeQueue(preparedBatchId);
       if (queue.state === "ready") return run(queue.queueId);
@@ -332,53 +198,142 @@ export function createFlowVideoQueueHandler(input: {
     resume: async (preparedBatchId: string, expectedRevision: number) => {
       const queue = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("flow_video_queue_resume_invalid");
-      const next = await save(queue, { state: "waiting", pauseReason: undefined, nextActionAt: queue.nextActionAt ?? now() });
+      const blocked = queue.items.find((entry) => entry.state === "uncertain" || entry.state === "failed");
+      if (blocked) { const saved = await save(queue, { state: "blocked", pauseReason: blocked.reason ?? "item_requires_review", nextActionAt: null }); await schedule(saved); return saved; }
+      const items = queue.items.map((entry) => entry.state === "waiting_for_generate" ? { ...entry, readinessStartedAt: now(), readinessDeadlineAt: nextVideoReadinessDeadline(now()) } : entry);
+      const next = await save(queue, { state: "waiting", pauseReason: undefined, items, nextActionAt: queue.nextActionAt && queue.nextActionAt > now() ? queue.nextActionAt : now() });
       return run(next.queueId);
     },
-    onAlarm: (name: string) => {
-      const queueId = alarms.queueIdFromAlarm(name);
-      return queueId ? run(queueId) : Promise.resolve(undefined);
+    recheckAndResume: async (preparedBatchId: string, expectedRevision: number) => {
+      const queueId = queueIdFor(preparedBatchId);
+      const queue = await input.repositories.getFlowVideoQueue(queueId);
+      if (!queue || queue.revision !== expectedRevision || !["paused", "blocked"].includes(queue.state))
+        throw new Error("flow_video_queue_recheck_invalid");
+      const failedItems = queue.items.filter((entry) => entry.state === "failed" || entry.state === "uncertain");
+      if (failedItems.length !== 1 || failedItems[0]?.state !== "failed" || failedItems[0]?.reason !== "candidate_bytes_mismatch")
+        throw new Error("flow_video_queue_failure_not_recheckable");
+      if (!input.inspectReferenceBytes || !input.revalidate)
+        throw new Error("flow_video_queue_recheck_unavailable");
+
+      const batchResult = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(preparedBatchId));
+      if (!batchResult.success || batchResult.data.id !== preparedBatchId || batchResult.data.destination !== "Flow")
+        throw new Error("prepared_flow_batch_invalid");
+      const batch = batchResult.data;
+      const failedItem = failedItems[0];
+      const preparedItem = batch.items.find((entry) => entry.itemId === failedItem.itemId);
+      if (!preparedItem || preparedItem.reference.referenceId !== failedItem.referenceId || preparedItem.contentHash !== failedItem.promptHash)
+        throw new Error("flow_video_queue_pairing_changed");
+
+      const readOperations = async () => Promise.all(queue.items.map(async (entry) => ({
+        itemId: entry.itemId,
+        operation: await input.repositories.getFlowVideoAttachmentOperation(`${preparedBatchId}:${entry.itemId}`),
+      })));
+      const operationsBefore = await readOperations();
+      for (const { itemId, operation } of operationsBefore) {
+        const entry = queue.items.find((candidate) => candidate.itemId === itemId)!;
+        if (entry.state === "sent") {
+          const sentPreparedItem = batch.items.find((candidate) => candidate.itemId === itemId);
+          const generation = operation?.videoGeneration;
+          if (!sentPreparedItem || generation?.state !== "dispatched" || !generationMatches(batch, sentPreparedItem, generation) || entry.dispatchReceipt?.attemptId !== generation.attemptId)
+            throw new Error("sent_item_operation_changed");
+          continue;
+        }
+        if (itemId === failedItem.itemId) {
+          // candidate_bytes_mismatch is recorded before attachment action_intent.
+          if (operation !== undefined) throw new Error("failed_item_has_existing_operation");
+          continue;
+        }
+        if (["failed", "uncertain", "attaching", "dispatching"].includes(entry.state) ||
+          operation?.status === "action_intent" || operation?.status === "uncertain" ||
+          (operation?.videoGeneration && operation.videoGeneration.state !== "dispatched"))
+          throw new Error("flow_video_queue_has_unresolved_intent");
+      }
+
+      const targetBefore = await input.revalidate(preparedBatchId).catch(() => "target_revalidation_failed");
+      if (targetBefore) throw new Error("target_revalidation_failed");
+      const inspection = await input.inspectReferenceBytes(preparedBatchId, failedItem.itemId);
+      if (inspection.status !== "inspected" || inspection.matches !== true ||
+        inspection.diagnostic?.preparedSha256 !== preparedItem.reference.sha256 ||
+        inspection.diagnostic.candidateBytesSha256 !== preparedItem.reference.sha256)
+        throw new Error(inspection.reason ?? "reference_recheck_did_not_match");
+
+      const latestQueue = await input.repositories.getFlowVideoQueue(queueId);
+      if (!latestQueue || latestQueue.revision !== expectedRevision || latestQueue.state !== queue.state)
+        throw new Error("flow_video_queue_changed_during_recheck");
+      const latestFailed = latestQueue.items.find((entry) => entry.itemId === failedItem.itemId);
+      if (!latestFailed || latestFailed.state !== "failed" || latestFailed.reason !== "candidate_bytes_mismatch" ||
+        latestFailed.referenceId !== failedItem.referenceId || latestFailed.promptHash !== failedItem.promptHash)
+        throw new Error("flow_video_queue_failure_changed");
+      const operationsAfter = await readOperations();
+      if (JSON.stringify(operationsBefore) !== JSON.stringify(operationsAfter))
+        throw new Error("flow_video_operation_changed_during_recheck");
+      const targetAfter = await input.revalidate(preparedBatchId).catch(() => "target_revalidation_failed");
+      if (targetAfter) throw new Error("target_revalidation_failed");
+
+      const updatedItems = latestQueue.items.map((entry) => entry.itemId === failedItem.itemId
+        ? { ...entry, state: "pending" as const, priorReason: entry.priorReason ?? entry.reason, reason: undefined }
+        : entry);
+      const nextRecord: FlowVideoQueueRecord = {
+        ...latestQueue,
+        items: updatedItems,
+        state: "waiting",
+        pauseReason: undefined,
+        nextActionAt: nextVideoDispatchAt(latestQueue.lastDispatchAt, now()),
+        revision: latestQueue.revision + 1,
+        updatedAt: now(),
+      };
+      const next = await input.repositories.updateFlowVideoQueueIfOperationsUnchanged({
+        expectedRevision: latestQueue.revision,
+        expectedOperations: operationsBefore.map(({ itemId, operation }) => ({ id: `${preparedBatchId}:${itemId}`, operation })),
+        next: nextRecord,
+      });
+      if (!next) throw new Error("flow_video_queue_or_operation_changed");
+      await schedule(next);
+      return run(next.queueId);
     },
+    onAlarm: (name: string) => { const queueId = alarms.queueIdFromAlarm(name); return queueId ? run(queueId) : Promise.resolve(undefined); },
     reconcileStartup: async () => {
-      for (const queue of await input.repositories.listFlowVideoQueues()) {
+      for (let queue of await input.repositories.listFlowVideoQueues()) {
+        // Migrate old completion-wait records only when their durable item operation proves Generate was dispatched.
+        let changed = false;
+        const items = [...queue.items];
+        for (const [index, entry] of items.entries()) {
+          if (!["awaiting_completion", "awaiting_verification"].includes(entry.state)) continue;
+          const operation = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${entry.itemId}`);
+          const generation = operation?.videoGeneration;
+          const batch = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
+          const preparedItem = batch.success ? batch.data.items.find((item) => item.itemId === entry.itemId) : undefined;
+          if (generation?.state !== "dispatched" || !batch.success || !preparedItem || !generationMatches(batch.data, preparedItem, generation)) continue;
+          items[index] = { ...entry, state: "sent", attemptId: generation.attemptId, dispatchReceipt: { attemptId: generation.attemptId, storedAt: generation.updatedAt }, priorReason: entry.reason, reason: undefined };
+          changed = true;
+        }
+        if (changed) {
+          const lastDispatchAt = items.reduce<number | null>((latest, entry) => entry.dispatchReceipt ? Math.max(latest ?? 0, entry.dispatchReceipt.storedAt) : latest, null);
+          const pending = items.some((entry) => entry.state === "pending" || entry.state === "waiting_for_generate");
+          const legacyAttributionPause = queue.state === "paused" && queue.pauseReason === "video_result_attribution_unavailable";
+          const preservePause = queue.state === "paused" && !legacyAttributionPause;
+          queue = await save(queue, {
+            items, lastDispatchAt,
+            state: preservePause ? "paused" : pending ? "waiting" : "sent",
+            pauseReason: preservePause ? queue.pauseReason : undefined,
+            nextActionAt: preservePause ? null : pending ? nextVideoDispatchAt(lastDispatchAt, now()) : null,
+          });
+        }
         if (queue.state === "waiting" && queue.nextActionAt !== null) await schedule(queue);
-        if (queue.items.some((item) => item.state === "dispatching" || item.state === "attaching")) {
-          const pending = queue.items.find((item) => item.state === "dispatching" || item.state === "attaching")!;
-          const op = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${pending.itemId}`);
-          if (pending.state === "dispatching" && op?.videoGeneration?.state === "dispatched") {
-            const nextCheckAt = now() + VIDEO_QUEUE_COMPLETION_CHECK_MS;
-            const resumed = {
-              ...queue,
-              state: "waiting" as const,
-              pauseReason: undefined,
-              items: queue.items.map((item) => item.itemId === pending.itemId ? {
-                ...item,
-                state: "awaiting_verification" as const,
-                attemptId: op.videoGeneration!.attemptId,
-                reason: "worker_restart_after_dispatch",
-                nextCheckAt,
-              } : item),
-              nextActionAt: nextCheckAt,
-              revision: queue.revision + 1,
-              updatedAt: now(),
-            };
-            const saved = await input.repositories.updateFlowVideoQueue({ expectedRevision: queue.revision, next: resumed });
-            if (!saved) throw new Error("flow_video_queue_revision_changed");
+        if (queue.items.some((entry) => entry.state === "dispatching" || entry.state === "attaching")) {
+          const inFlight = queue.items.find((entry) => entry.state === "dispatching" || entry.state === "attaching")!;
+          const operation = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${inFlight.itemId}`);
+          const generation = operation?.videoGeneration;
+          const batch = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
+          const preparedItem = batch.success ? batch.data.items.find((item) => item.itemId === inFlight.itemId) : undefined;
+          if (generation?.state === "dispatched" && batch.success && preparedItem && generationMatches(batch.data, preparedItem, generation)) {
+            const saved = await persistReceipt(queue, inFlight, generation.attemptId, generation.updatedAt);
+            if (saved.state === "waiting") await schedule(saved);
+          } else {
+            const reason = inFlight.state === "dispatching" ? "worker_restart_during_generation" : "worker_restart_during_attachment";
+            const saved = await save(queue, { state: "paused", pauseReason: reason, items: queue.items.map((entry) => entry.itemId === inFlight.itemId ? { ...entry, state: "uncertain" as const, attemptId: generation?.attemptId, reason } : entry), nextActionAt: null });
             await schedule(saved);
-            continue;
           }
-          const next = {
-            ...queue,
-            state: "paused" as const,
-            pauseReason: pending.state === "dispatching" ? "worker_restart_during_generation" : "worker_restart_during_attachment",
-            items: queue.items.map((item) => item.itemId === pending.itemId ? { ...item, state: "uncertain" as const, attemptId: op?.videoGeneration?.attemptId, reason: pending.state === "dispatching" ? "worker_restart_during_generation" : "worker_restart_during_attachment" } : item),
-            nextActionAt: null,
-            revision: queue.revision + 1,
-            updatedAt: now(),
-          };
-          const saved = await input.repositories.updateFlowVideoQueue({ expectedRevision: queue.revision, next });
-          if (!saved) throw new Error("flow_video_queue_revision_changed");
-          await schedule(saved);
         }
       }
     },
@@ -387,14 +342,12 @@ export function createFlowVideoQueueHandler(input: {
   async function command(preparedBatchId: string, expectedRevision: number, state: "paused" | "stopped", reason: string) {
     const queue = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
     if (!queue || queue.revision !== expectedRevision || !["ready", "waiting", "paused"].includes(queue.state)) throw new Error("flow_video_queue_command_invalid");
-    const items = queue.items.map((item) => {
-      if (state === "stopped" && item.state === "pending") return { ...item, state: "skipped" as const };
-      if (item.state === "attaching" || item.state === "dispatching")
-        return { ...item, state: "uncertain" as const, reason: item.state === "dispatching" ? "pause_during_generation_delivery" : "pause_during_attachment_delivery" };
-      return item;
+    const items = queue.items.map((entry) => {
+      if (state === "stopped" && entry.state === "pending") return { ...entry, state: "skipped" as const };
+      if (entry.state === "attaching" || entry.state === "dispatching") return { ...entry, state: "uncertain" as const, reason: entry.state === "dispatching" ? "pause_during_generation_delivery" : "pause_during_attachment_delivery" };
+      return entry;
     });
-    const next = await save(queue, { state, pauseReason: reason, nextActionAt: null, items });
-    await schedule(next);
-    return next;
+    const saved = await save(queue, { state, pauseReason: reason, nextActionAt: null, items });
+    await schedule(saved); return saved;
   }
 }
