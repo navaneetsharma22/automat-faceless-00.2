@@ -1,6 +1,7 @@
 *.md
 /phases/
 node_modules/
+/artifacts/video-queue-presentation/*.png
 
 # Keep only the actively maintained project/status decisions visible to Git.
 !ARCHITECTURE.md

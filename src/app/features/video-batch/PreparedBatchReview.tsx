@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PreparedVideoBatchRecord } from "../../../domain/batches/types";
+import { VIDEO_QUEUE_DISPATCH_GAP_MS } from "../../../domain/jobs/videoQueue";
 import {
   FoundationClientError,
   type createFoundationClient,
 } from "../../../shared/messageClient";
 import styles from "./PreparedBatchReview.module.css";
+import { Button } from "../../components/Button";
+import { useOptionalToast } from "../../components/ToastHost";
 
 export type PreparedBatchReviewProps = {
   preparedBatch: PreparedVideoBatchRecord;
@@ -40,6 +43,8 @@ type VideoQueueSnapshot = {
   revision: number;
   items: Array<{
     itemId: string; order: number; shotId: string; referenceId: string; state: string; reason?: string; priorReason?: string; attemptId?: string;
+    readinessStartedAt?: number; readinessDeadlineAt?: number;
+    dispatchReceipt?: { attemptId: string; storedAt: number };
     byteMismatchDiagnostic?: {
       stage: "candidate_byte_verification" | "read_only_reference_inspection"; acquisitionRoute: "verified_document_same_origin" | "scoped_extension_fetch" | "verified_detail_original_extension_fetch"; preparedSha256: string; metadataSha256: string; savedBytesSha256: string;
       candidateBytesSha256: string; candidateMediaId: string; mimeType: string;
@@ -82,8 +87,11 @@ export function PreparedBatchReview({
       currentImageSourceBatchId !== preparedBatch.imageSourceBatchId);
   const [videoQueue, setVideoQueue] = useState<VideoQueueSnapshot | null>(null);
   const [videoQueueBusy, setVideoQueueBusy] = useState(false);
+  const [videoQueueAction, setVideoQueueAction] = useState<string | null>(null);
   const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
   const [videoQueueNotice, setVideoQueueNotice] = useState<string | null>(null);
+  const toast = useOptionalToast();
+  const previousAllSent = useRef<{ queueId: string; allSent: boolean } | null>(null);
   const [referenceInspection, setReferenceInspection] = useState<Record<string, ReferenceByteInspection>>({});
   const [referenceInspectionBusy, setReferenceInspectionBusy] = useState<string | null>(null);
 
@@ -98,8 +106,21 @@ export function PreparedBatchReview({
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [preparedBatch.destination, preparedBatch.id, persistenceClient]);
 
-async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "reconcilePreAddFailure") {
+  const sentReceiptCount = videoQueue?.items.filter(hasDurableDispatchReceipt).length ?? 0;
+  const allPromptsSent = Boolean(videoQueue && videoQueue.items.length > 0 && sentReceiptCount === videoQueue.items.length);
+
+  useEffect(() => {
+    if (!videoQueue) return;
+    const previous = previousAllSent.current;
+    if (previous?.queueId === videoQueue.queueId && !previous.allSent && allPromptsSent) {
+      toast?.add({ kind: "success", message: `All ${videoQueue.items.length} video prompts sent to Flow successfully.` });
+    }
+    previousAllSent.current = { queueId: videoQueue.queueId, allSent: allPromptsSent };
+  }, [allPromptsSent, toast, videoQueue]);
+
+  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "reconcilePreAddFailure") {
     setVideoQueueBusy(true);
+    setVideoQueueAction(action);
     setVideoQueueError(null);
     setVideoQueueNotice(null);
     const type = `flow.videoQueue.${action}` as const;
@@ -117,6 +138,7 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
       setVideoQueueError(code);
     } finally {
       setVideoQueueBusy(false);
+      setVideoQueueAction(null);
     }
   }
 
@@ -148,6 +170,17 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
     videoQueue.items.filter((item) => item.state === "uncertain" || item.state === "failed").length === 1 &&
     videoQueue.items.some((item) => item.itemId === RECONCILABLE_PREADD_RECORD.itemId && item.referenceId === RECONCILABLE_PREADD_RECORD.referenceId && item.state === "uncertain" && item.reason === RECONCILABLE_PREADD_RECORD.reason) &&
     !videoQueue.items.some((item) => item.itemId !== RECONCILABLE_PREADD_RECORD.itemId && ["uncertain", "failed", "attaching", "dispatching"].includes(item.state));
+  const activeQueueItem = videoQueue?.items.find((item) => item.state === "attaching" || item.state === "dispatching");
+  const readinessQueueItem = videoQueue?.items.find((item) => item.state === "waiting_for_generate");
+  const nextQueueItem = activeQueueItem ?? readinessQueueItem ?? videoQueue?.items.find((item) => item.state === "pending");
+  const videoQueueStatus = getVideoQueueStatus(videoQueue, allPromptsSent, activeQueueItem, readinessQueueItem);
+  const preparedHeading = allPromptsSent
+    ? `All ${videoQueue?.items.length ?? 0} image–prompt pairs sent to Flow`
+    : videoQueueStatus === "Ready" || !videoQueue
+      ? "Prepared — not submitted to Flow/Vids."
+      : videoQueueStatus === "Sending"
+        ? "Sending video prompts to Flow"
+        : `Video queue ${videoQueueStatus.toLowerCase()}`;
 
   return (
     <section
@@ -157,13 +190,13 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
       <div className={styles.header}>
         <div>
           <h3 id="prepared-review-heading" className={styles.title}>
-            Prepared — not submitted to Flow/Vids.
+            {preparedHeading}
           </h3>
           <p className={styles.disclaimer}>
             Use Start once to process the paired Flow references and video prompts sequentially. Provider settings remain user-controlled.
           </p>
         </div>
-        <span className={styles.badge}>Status: Prepared</span>
+        <span className={styles.badge}>Status: {allPromptsSent ? "All sent" : videoQueueStatus}</span>
       </div>
 
       {isStaleSource ? (
@@ -216,20 +249,20 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
                 <p>One start action sends paired references and prompts in order. Sent means Generate was dispatched; provider completion is not verified here.</p>
               </div>
               {!videoQueue || videoQueue.state === "ready" ? (
-                <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("start")}>Start</button>
+                <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "start"} loadingLabel="Starting" onClick={() => void runVideoQueue("start")}>Start</Button>
               ) : videoQueue.state === "waiting" ? (
                 <div className={styles.videoQueueActions}>
-                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("pause")}>Pause</button>
-                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</button>
+                  <Button type="button" variant="secondary" disabled={videoQueueBusy} loading={videoQueueAction === "pause"} loadingLabel="Pausing" onClick={() => void runVideoQueue("pause")}>Pause</Button>
+                  <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && recheckableFailure ? (
-                <button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</button>
+                <Button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} loading={videoQueueAction === "recheckAndResume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</Button>
               ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && reconcilablePreAddFailure ? (
-                <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("reconcilePreAddFailure")}>Reconcile Shot 2 pre-Add failure</button>
+                <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "reconcilePreAddFailure"} loadingLabel="Reconciling" onClick={() => void runVideoQueue("reconcilePreAddFailure")}>Reconcile Shot 2 pre-Add failure</Button>
               ) : videoQueue.state === "paused" && !videoQueue.items.some((item) => item.state === "uncertain" || item.state === "failed") ? (
                 <div className={styles.videoQueueActions}>
-                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("resume")}>Resume</button>
-                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</button>
+                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Resuming" onClick={() => void runVideoQueue("resume")}>Resume</Button>
+                  <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : null}
             </div>
@@ -237,11 +270,34 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
               <>
                 {videoQueueNotice ? <p role="status">{videoQueueNotice}</p> : null}
                 {videoQueueError ? <p role="alert">Queue action failed: {videoQueueError}</p> : null}
-                <p role="status">{videoQueue.state === "waiting" && videoQueue.nextActionAt
-                  ? `${videoQueue.items.some((item) => item.state === "waiting_for_generate") ? "Waiting for Generate; next readiness check" : "Next dispatch"}: ${new Date(videoQueue.nextActionAt).toLocaleTimeString()}`
-                  : videoQueue.pauseReason ? `${videoQueue.state === "blocked" ? "Blocked" : videoQueue.state === "stopped" ? "Stopped" : "Paused"}: ${videoQueue.pauseReason}`
-                    : videoQueue.state === "sent" || videoQueue.state === "completed" ? "All sent; provider completion not verified" : `Queue ${videoQueue.state}`}</p>
-                <p>{videoQueue.items.filter((item) => item.state === "sent" || item.state === "awaiting_completion" || item.state === "awaiting_verification" || item.state === "completed").length}/{videoQueue.items.length} shots sent. “All sent” does not mean all videos completed.</p>
+                <div className={styles.queueOverview}>
+                  <div className={styles.queueOverviewState}>
+                    <span className={`${styles.stateBadge} ${styles[`state${videoQueueStatus.replace(/[^a-zA-Z0-9]/g, "")}`] ?? ""}`}>
+                      <span aria-hidden="true">{statusIcon(videoQueueStatus)}</span> {videoQueueStatus}
+                    </span>
+                    {videoQueue.pauseReason && ["paused", "stopped", "blocked"].includes(videoQueue.state) ? <p>{videoQueue.pauseReason.replaceAll("_", " ")}</p> : null}
+                  </div>
+                  <div className={styles.queueOverviewProgress}>
+                    <label htmlFor={`video-queue-progress-${videoQueue.queueId}`}>Prompts sent to Flow</label>
+                    <progress id={`video-queue-progress-${videoQueue.queueId}`} max={videoQueue.items.length || 1} value={sentReceiptCount} aria-valuetext={`${sentReceiptCount} of ${videoQueue.items.length} prompts sent`} />
+                    <strong>{sentReceiptCount} of {videoQueue.items.length} prompts sent</strong>
+                    {allPromptsSent ? <p>Video completion is checked in Flow.</p> : null}
+                  </div>
+                  <div className={styles.queueOverviewShot}>
+                    <span>{activeQueueItem ? "Current Shot" : "Current / next Shot"}</span>
+                    <strong>{nextQueueItem ? `Shot ${nextQueueItem.shotId}` : allPromptsSent ? "All prompts sent" : videoQueue.state === "stopped" ? "Queue stopped" : "No pending Shot"}</strong>
+                    {nextQueueItem?.reason && (nextQueueItem.state === "failed" || nextQueueItem.state === "uncertain") ? <code>{nextQueueItem.reason}</code> : null}
+                  </div>
+                </div>
+                {videoQueue.state === "waiting" && videoQueue.nextActionAt !== null && !activeQueueItem && !allPromptsSent ? (
+                  <VideoDispatchClock deadline={videoQueue.nextActionAt} waitingForGenerate={Boolean(readinessQueueItem)} intervalMs={VIDEO_QUEUE_DISPATCH_GAP_MS} shotId={nextQueueItem?.shotId} />
+                ) : null}
+                {videoQueue.state === "waiting" && videoQueue.nextActionAt === null && !allPromptsSent ? (
+                  <p className={styles.queueChecking} role="status" aria-live="polite">{readinessQueueItem ? "Checking Generate readiness…" : activeQueueItem ? "Sending next shot…" : "Checking next shot…"}</p>
+                ) : null}
+                <p className={styles.queueStatusAnnouncement} role="status" aria-live="polite">{videoQueueStatus}{nextQueueItem && !allPromptsSent ? ` — Shot ${nextQueueItem.shotId}` : ""}</p>
+                <details className={styles.queueDiagnostics}>
+                  <summary>Queue diagnostics and recovery evidence</summary>
                 <ol aria-label="Flow video shot statuses">
                   {videoQueue.items.map((item) => (
                     <li key={item.itemId}>
@@ -264,9 +320,9 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
                       ) : null}
                       {item.state === "failed" && item.reason === "candidate_bytes_mismatch" ? (
                         <div>
-                          <button type="button" disabled={referenceInspectionBusy !== null} onClick={() => void inspectReferenceBytes(item.itemId)}>
+                          <Button size="compact" variant="secondary" type="button" disabled={referenceInspectionBusy !== null} loading={referenceInspectionBusy === item.itemId} loadingLabel="Inspecting" onClick={() => void inspectReferenceBytes(item.itemId)}>
                             {referenceInspectionBusy === item.itemId ? "Inspecting reference bytes…" : "Inspect reference bytes"}
-                          </button>
+                          </Button>
                           {referenceInspection[item.itemId] ? (
                             referenceInspection[item.itemId]!.diagnostic ? (
                               <details open>
@@ -290,6 +346,7 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
                     </li>
                   ))}
                 </ol>
+                </details>
               </>
             ) : null}
             {videoQueueError ? <p role="alert">Queue action failed: {videoQueueError}</p> : null}
@@ -303,9 +360,96 @@ async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "re
             eligible={preparedBatch.destination === "Flow"}
             persistenceClient={persistenceClient}
             queueManaged={preparedBatch.destination === "Flow"}
+            queueItem={videoQueue?.items.find((entry) => entry.itemId === item.itemId)}
+            queueState={videoQueue?.state}
           />
         ))}
       </div>
+    </section>
+  );
+}
+
+function hasDurableDispatchReceipt(item: VideoQueueSnapshot["items"][number]): boolean {
+  return Boolean(item.attemptId && item.dispatchReceipt?.attemptId === item.attemptId && Number.isFinite(item.dispatchReceipt.storedAt));
+}
+
+function getVideoQueueStatus(
+  queue: VideoQueueSnapshot | null,
+  allSent: boolean,
+  active?: VideoQueueSnapshot["items"][number],
+  readiness?: VideoQueueSnapshot["items"][number],
+): string {
+  if (allSent) return "All sent";
+  if (!queue) return "Ready";
+  if (queue.state === "blocked") return "Blocked";
+  if (queue.state === "paused") return "Paused";
+  if (queue.state === "stopped") return "Stopped";
+  if (active) return "Sending";
+  if (readiness) return "Waiting for Generate";
+  if (queue.state === "ready") return "Ready";
+  return queue.nextActionAt === null ? "Checking" : "Waiting";
+}
+
+function statusIcon(status: string): string {
+  if (status === "Sent" || status === "All sent") return "✓";
+  if (status === "Sending") return "●";
+  if (status.includes("Waiting")) return "◷";
+  if (status === "Blocked") return "!";
+  if (status === "Paused") return "Ⅱ";
+  if (status === "Stopped") return "■";
+  if (status === "Ready") return "○";
+  return "…";
+}
+
+function getQueueItemStatus(item?: VideoQueueSnapshot["items"][number], queueState?: VideoQueueSnapshot["state"]): string {
+  if (!item) return "Prepared";
+  if (hasDurableDispatchReceipt(item)) return "Sent";
+  if (item.state === "attaching" || item.state === "dispatching") return "Sending";
+  if (item.state === "waiting_for_generate") return "Waiting for Generate";
+  if (item.state === "failed" || item.state === "uncertain") return "Blocked";
+  if (item.state === "skipped" || (item.state === "pending" && queueState === "stopped")) return "Stopped";
+  if (item.state === "pending" && queueState === "paused") return "Paused";
+  if (item.state === "pending" && queueState === "ready") return "Ready";
+  return item.state === "pending" ? "Pending" : item.state.replaceAll("_", " ");
+}
+
+function QueueItemBadge({ item, queueState }: { item?: VideoQueueSnapshot["items"][number]; queueState?: VideoQueueSnapshot["state"] }) {
+  const status = getQueueItemStatus(item, queueState);
+  const stateClass = styles[`itemState${status.replace(/[^a-zA-Z0-9]/g, "")}`] ?? "";
+  return <span className={`${styles.itemStatusBadge} ${stateClass}`}><span aria-hidden="true">{statusIcon(status)}</span> {status}</span>;
+}
+
+function VideoDispatchClock({
+  deadline,
+  waitingForGenerate,
+  intervalMs,
+  shotId,
+}: {
+  deadline: number;
+  waitingForGenerate: boolean;
+  intervalMs: number;
+  shotId?: string;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const remaining = Math.max(0, deadline - now);
+  const seconds = Math.ceil(remaining / 1000);
+  const display = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  const progress = Math.max(0, Math.min(100, ((intervalMs - remaining) / intervalMs) * 100));
+  return (
+    <section className={styles.dispatchClock} aria-label="Video dispatch interval">
+      <div className={styles.dispatchClockHeader}>
+        <strong>{waitingForGenerate ? "Waiting for Generate — remaining" : "Next shot in"}</strong>
+        {shotId ? <span>{waitingForGenerate ? "Readiness check" : `Shot ${shotId}`}</span> : null}
+      </div>
+      <div className={styles.dispatchTimer} role="timer" aria-live="off" aria-label={`${waitingForGenerate ? "Waiting for Generate" : "Next shot in"}: ${display}`}>
+        {display}
+      </div>
+      <div className={styles.dispatchTrack} aria-hidden="true"><span style={{ width: `${progress}%` }} /></div>
+      <p>{remaining === 0 ? (waitingForGenerate ? "Checking Generate readiness…" : "Checking next shot…") : "The saved scheduler deadline controls the next check."}</p>
     </section>
   );
 }
@@ -316,12 +460,16 @@ function PreparedItemCard({
   eligible,
   persistenceClient,
   queueManaged,
+  queueItem,
+  queueState,
 }: {
   item: PreparedVideoBatchRecord["items"][number];
   preparedBatchId: string;
   eligible: boolean;
   persistenceClient: ReturnType<typeof createFoundationClient>;
   queueManaged: boolean;
+  queueItem?: VideoQueueSnapshot["items"][number];
+  queueState?: VideoQueueSnapshot["state"];
 }) {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -585,6 +733,8 @@ function PreparedItemCard({
               ? `(raw "${item.shotId}")`
               : ""}
           </h4>
+          {queueManaged ? <QueueItemBadge item={queueItem} queueState={queueState} /> : null}
+          {queueItem && (queueItem.state === "failed" || queueItem.state === "uncertain") && queueItem.reason ? <p className={styles.currentBlocker} role="alert">Current blocker: <code>{queueItem.reason}</code></p> : null}
           <p className={styles.itemSpecs}>
             Reference: {item.reference.width}×{item.reference.height},{" "}
             {item.reference.mimeType}, version{" "}
@@ -641,7 +791,9 @@ function PreparedItemCard({
         <summary className={styles.summary}>
           Exact video prompt JSON (hash: {item.contentHash.slice(0, 12)}...)
         </summary>
+        <p className={styles.fullPromptHash}>SHA-256: <code>{item.contentHash}</code></p>
         <pre className={styles.rawJson}>{item.rawJsonBody}</pre>
+        {queueItem?.priorReason ? <p className={styles.priorFailure}>Previous failure (resolved by explicit recovery): <code>{queueItem.priorReason}</code></p> : null}
       </details>
     </article>
   );

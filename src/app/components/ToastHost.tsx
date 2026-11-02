@@ -52,3 +52,7 @@ export function useToast(): ToastManager {
   }
   return manager;
 }
+
+export function useOptionalToast(): ToastManager | null {
+  return useContext(ToastContext);
+}

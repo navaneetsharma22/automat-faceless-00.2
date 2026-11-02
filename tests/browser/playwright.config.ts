@@ -37,6 +37,7 @@ export default defineConfig({
     "imageQueueStorage.spec.ts",
     "imageQueueSequence.spec.ts",
     "imageQueuePresentation.spec.ts",
+    "videoQueuePresentation.spec.ts",
     "imageQueueCreateTransition.spec.ts",
     "referenceCaptureStorage.spec.ts",
     "flowVideoAttachmentStorage.spec.ts",

@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Destination } from "../../src/app/features/video-batch/Destination";
 import { PreparedBatchReview } from "../../src/app/features/video-batch/PreparedBatchReview";
+import { ToastHost } from "../../src/app/components/ToastHost";
 import type { createFoundationClient } from "../../src/shared/messageClient";
 import type { PreparedVideoBatchRecord } from "../../src/domain/batches/types";
 import type { SelectedTargetRecord } from "../../src/storage/db";
@@ -371,6 +372,42 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     expect(container?.textContent).toContain("Resume is a separate action");
     expect(Array.from(container?.querySelectorAll("button") ?? []).some((button) => button.textContent?.trim() === "Resume")).toBe(true);
     expect(reconciled).toBe(true);
+    expect(request.mock.calls.some(([type]) => type === "flow.videoQueue.resume" || type === "flow.video.attachReference" || type === "flow.video.generateOnce")).toBe(false);
+  });
+
+  it("announces the transition to durable all-sent once and does not toast on finished remount", async () => {
+    const items = [0, 1].map((order) => ({
+      itemId: `item-${order}`, order, shotId: String(order + 1), referenceId: `00000000-0000-4000-8000-00000000000${order + 1}`,
+      promptHash: String(order).repeat(64), state: "pending", attemptId: undefined, dispatchReceipt: undefined,
+    }));
+    let currentQueue = { queueId: "flow-video:toast-fixture", preparedBatchId: mockPreparedBatch.id, state: "ready", nextActionAt: null, revision: 1, items };
+    const sentQueue = { ...currentQueue, state: "sent", revision: 2, items: items.map((item) => ({ ...item, state: "sent", attemptId: `attempt-${item.order}`, dispatchReceipt: { attemptId: `attempt-${item.order}`, storedAt: 10_000 + item.order } })) };
+    const request = vi.fn(async (type: string) => {
+      if (type === "flow.videoQueue.get") return currentQueue;
+      if (type === "flow.videoQueue.start") { currentQueue = sentQueue; return sentQueue; }
+      if (type === "flow.reference.getSavedReference") return { data: "", reference: { mimeType: "image/png" } };
+      return null;
+    });
+    const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
+    await act(async () => {
+      root?.render(createElement(ToastHost, null, createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client })));
+      await Promise.resolve();
+    });
+    const start = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent?.trim() === "Start");
+    await act(async () => { start?.click(); await Promise.resolve(); });
+    expect(container?.textContent).toContain("All 2 image–prompt pairs sent to Flow");
+    expect(container?.textContent).toContain("Video completion is checked in Flow.");
+    expect(container?.textContent).toContain("All 2 video prompts sent to Flow successfully.");
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>("button[aria-label='Dismiss success notification']")?.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+      root?.render(createElement(ToastHost, null, null));
+      await Promise.resolve();
+      root?.render(createElement(ToastHost, null, createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client })));
+      await Promise.resolve();
+    });
+    expect(container?.textContent).not.toContain("All 2 video prompts sent to Flow successfully.");
+    expect(container?.textContent).toContain("All 2 image–prompt pairs sent to Flow");
     expect(request.mock.calls.some(([type]) => type === "flow.videoQueue.resume" || type === "flow.video.attachReference" || type === "flow.video.generateOnce")).toBe(false);
   });
 
