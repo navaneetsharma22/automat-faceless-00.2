@@ -3,8 +3,12 @@ import {
   ReferenceAssignmentRecordSchema,
   sha256Bytes,
 } from "../../domain/media/references";
-import { PreparedVideoBatchRecordSchema } from "../../shared/schemas";
+import {
+  PreparedVideoBatchRecordSchema,
+  VideoSettingsConfirmationSchema,
+} from "../../shared/schemas";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
+import { CONNECTOR_PROTOCOL_VERSION } from "../../platforms/shared/contracts";
 import { flowTabFromUrl } from "../../platforms/flow/connection";
 import { flowReferenceCaptureInPage } from "../../platforms/flow/references";
 import {
@@ -20,6 +24,12 @@ type Script = {
   ) => Promise<Array<{ documentId?: string; result?: unknown }>>;
 };
 const operationId = (batch: string, item: string) => `${batch}:${item}`;
+const PRECLICK_FAILURE_RECORD = {
+  preparedBatchId: "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179",
+  itemId: "import:default:video:item:0",
+  referenceId: "014ebcff-06e3-4ac2-b980-568f0755febf",
+  updatedAt: 1793605485721,
+} as const;
 const ACQUISITION_REASONS = new Set([
   "reference_source_invalid",
   "reference_origin_unsupported",
@@ -41,6 +51,43 @@ const ACQUISITION_REASONS = new Set([
   "reference_resource_failed",
 ]);
 
+/** Read only the attachment structure; provider settings are owned by the user. */
+export function flowVideoAttachmentStructurePreflightInPage(): {
+  ok: boolean;
+  reason?: string;
+  href: string;
+} {
+  const visible = (element: Element) => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return (
+      element.isConnected &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden"
+    );
+  };
+  const href = location.href;
+  const roots = [
+    ...document.querySelectorAll<HTMLElement>("flow-base-prompt-box"),
+  ].filter(visible);
+  if (roots.length !== 1)
+    return { ok: false, reason: "composer_unavailable", href };
+  const attachmentControls = [
+    ...roots[0]!.querySelectorAll<HTMLButtonElement>(
+      "button[aria-label='Add ingredients to the prompt box']",
+    ),
+  ].filter(visible);
+  if (
+    attachmentControls.length !== 1 ||
+    attachmentControls[0]!.disabled ||
+    attachmentControls[0]!.getAttribute("aria-disabled") === "true"
+  )
+    return { ok: false, reason: "attachment_control_unavailable", href };
+  return { ok: true, href };
+}
+
 /** Worker-owned attachment caller. The page DOM is accessed only through exact document-targeted script injections. */
 export function createFlowVideoAttachmentHandler(deps: {
   repositories: ExtensionRepositories;
@@ -59,8 +106,75 @@ export function createFlowVideoAttachmentHandler(deps: {
       ? {
           status: op.status === "action_intent" ? "uncertain" : op.status,
           reason: op.reason,
+          operation: {
+            id: op.id,
+            preparedBatchId: op.preparedBatchId,
+            itemId: op.itemId,
+            referenceId: op.referenceId,
+            status: op.status,
+            reason: op.reason,
+            updatedAt: op.updatedAt,
+            preActivationEvidence: op.preActivationEvidence,
+          },
         }
       : { status: "not_started" };
+  }
+  async function reconcilePreClickFailure(input: {
+    preparedBatchId: string;
+    itemId: string;
+    expectedStatus: "uncertain";
+    expectedReason: "composer_unsupported";
+    expectedReferenceId: string;
+    expectedUpdatedAt: number;
+  }) {
+    if (
+      input.preparedBatchId !== PRECLICK_FAILURE_RECORD.preparedBatchId ||
+      input.itemId !== PRECLICK_FAILURE_RECORD.itemId ||
+      input.expectedReferenceId !== PRECLICK_FAILURE_RECORD.referenceId ||
+      input.expectedStatus !== "uncertain" ||
+      input.expectedReason !== "composer_unsupported" ||
+      input.expectedUpdatedAt !== PRECLICK_FAILURE_RECORD.updatedAt
+    )
+      return { status: "blocked", reason: "reconciliation_not_applicable" };
+    const prepared = await deps.repositories.getPreparedVideoBatchById(
+      input.preparedBatchId,
+    );
+    const preparedBatch = PreparedVideoBatchRecordSchema.safeParse(prepared);
+    const preparedItem = preparedBatch.success
+      ? preparedBatch.data.items.find((item) => item.itemId === input.itemId)
+      : undefined;
+    if (
+      !preparedBatch.success ||
+      preparedBatch.data.destination !== "Flow" ||
+      !preparedItem ||
+      preparedItem.reference.referenceId !== input.expectedReferenceId
+    )
+      return {
+        status: "blocked",
+        reason: "prepared_reference_binding_mismatch",
+      };
+    const reconciled =
+      await deps.repositories.reconcileFlowVideoAttachmentPreClickFailure({
+        expected: {
+          id: operationId(input.preparedBatchId, input.itemId),
+          preparedBatchId: input.preparedBatchId,
+          itemId: input.itemId,
+          referenceId: input.expectedReferenceId,
+          status: input.expectedStatus,
+          reason: input.expectedReason,
+          updatedAt: input.expectedUpdatedAt,
+        },
+        reconciledAt: Date.now(),
+      });
+    if (!reconciled)
+      return { status: "uncertain", reason: "operation_changed" };
+    return {
+      status: "reconciled",
+      reason: "pre_activation_failure_reconciled",
+      operation: await deps.repositories.getFlowVideoAttachmentOperation(
+        operationId(input.preparedBatchId, input.itemId),
+      ),
+    };
   }
   async function attach(preparedBatchId: string, itemId: string) {
     const oid = operationId(preparedBatchId, itemId);
@@ -68,10 +182,35 @@ export function createFlowVideoAttachmentHandler(deps: {
     const inspectOnly = Boolean(op && op.status !== "blocked");
     const batchRaw =
       await deps.repositories.getPreparedVideoBatchById(preparedBatchId);
+    if (!batchRaw)
+      return { status: "blocked", reason: "prepared_flow_item_required" };
+    const rawConfirmation =
+      batchRaw && typeof batchRaw === "object"
+        ? (batchRaw as { manualSettingsDeclaration?: unknown })
+            .manualSettingsDeclaration
+        : undefined;
+    const confirmation =
+      VideoSettingsConfirmationSchema.safeParse(rawConfirmation);
+    if (!confirmation.success)
+      return {
+        status: "blocked",
+        reason: "manual_settings_confirmation_required",
+      };
     const parsed = PreparedVideoBatchRecordSchema.safeParse(batchRaw);
     if (!parsed.success || parsed.data.destination !== "Flow")
       return { status: "blocked", reason: "prepared_flow_item_required" };
     const batch = parsed.data;
+    if (
+      confirmation.data.destination !== "Flow" ||
+      confirmation.data.tabId !== batch.target.tabId ||
+      confirmation.data.canonicalTarget !== batch.target.canonicalTarget ||
+      confirmation.data.projectId !== batch.target.projectId ||
+      confirmation.data.documentId !== batch.target.documentId
+    )
+      return {
+        status: "blocked",
+        reason: "manual_settings_confirmation_binding_mismatch",
+      };
     const item = batch.items.find((candidate) => candidate.itemId === itemId);
     if (!item) return { status: "blocked", reason: "prepared_item_missing" };
     const pinned = await deps.repositories.getReferenceById(
@@ -108,14 +247,10 @@ export function createFlowVideoAttachmentHandler(deps: {
       binding.documentId !== batch.target.documentId ||
       (batch.target.documentId &&
         batch.target.documentId !== binding.documentId) ||
-      binding.extensionBuildId !==
-        BUILD_ID ||
-      binding.extensionProtocolVersion !==
-        PROTOCOL_VERSION ||
-      binding.connectorBuildId !==
-        BUILD_ID ||
-      binding.connectorProtocolVersion !==
-        PROTOCOL_VERSION ||
+      binding.extensionBuildId !== BUILD_ID ||
+      binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+      binding.connectorBuildId !== BUILD_ID ||
+      binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
       pinned.tabId !== selected.tabId ||
       pinned.flowProjectId !== binding.projectId ||
       pinned.documentId !== binding.documentId
@@ -329,6 +464,32 @@ export function createFlowVideoAttachmentHandler(deps: {
         stage: "candidate_revalidation",
         reason: "candidate_changed",
       };
+    const composerCheck = await deps.scripting.executeScript({
+      target,
+      world: "ISOLATED",
+      func: flowVideoAttachmentStructurePreflightInPage,
+    });
+    const composerState = composerCheck[0]?.result as
+      { ok?: boolean; reason?: string; href?: string } | undefined;
+    if (
+      composerCheck[0]?.documentId !== binding.documentId ||
+      flowTabFromUrl(selected.tabId, "Flow", composerState?.href)?.projectId !==
+        binding.projectId
+    )
+      return {
+        status: "blocked",
+        stage: "attachment_structure_preflight",
+        reason: "target_changed",
+      };
+    if (!composerState?.ok)
+      return {
+        status: "blocked",
+        stage: "attachment_structure_preflight",
+        reason:
+          composerState?.reason === "attachment_control_unavailable"
+            ? "attachment_control_unavailable"
+            : "composer_unavailable",
+      };
     await deps.revalidate();
     const fresh = await deps.repositories.getSelectedTarget("Flow");
     const freshTab = await deps.getTab(selected.tabId);
@@ -351,6 +512,9 @@ export function createFlowVideoAttachmentHandler(deps: {
       referenceId: item.reference.referenceId,
       status: "action_intent",
       updatedAt: Date.now(),
+      ...(op?.preActivationEvidence
+        ? { preActivationEvidence: op.preActivationEvidence }
+        : {}),
     };
     if (!(await deps.repositories.claimFlowVideoAttachmentOperation(op)))
       return { status: "uncertain", reason: "concurrent_or_prior_activation" };
@@ -394,11 +558,6 @@ export function createFlowVideoAttachmentHandler(deps: {
         const roots = [
           ...document.querySelectorAll("flow-base-prompt-box"),
         ].filter(visible);
-        const labels = [
-          ...document.querySelectorAll<HTMLElement>(
-            "[role=radio][aria-checked=true]",
-          ),
-        ].map((el) => (el.getAttribute("aria-label") ?? "").toLowerCase());
         const chips = () =>
           roots[0]
             ? [
@@ -455,13 +614,19 @@ export function createFlowVideoAttachmentHandler(deps: {
           );
           return { list, preview, panel, row, action };
         };
+        if (roots.length !== 1)
+          return { ok: false, reason: "composer_unavailable_after_preflight" };
+        const attachmentControls = [
+          ...roots[0]!.querySelectorAll<HTMLButtonElement>(
+            "button[aria-label='Add ingredients to the prompt box']",
+          ),
+        ].filter(visible);
         if (
-          roots.length !== 1 ||
-          labels.filter((x) => x === "video").length !== 1 ||
-          labels.filter((x) => x === "ingredients").length !== 1 ||
-          labels.some((x) => x === "frames" || x === "image")
+          attachmentControls.length !== 1 ||
+          attachmentControls[0]!.disabled ||
+          attachmentControls[0]!.getAttribute("aria-disabled") === "true"
         )
-          return { ok: false, reason: "composer_unsupported" };
+          return { ok: false, reason: "attachment_control_unavailable" };
         let existing = chips();
         if (
           existing.some((chip) => !idFromChip(chip)) ||
@@ -553,5 +718,5 @@ export function createFlowVideoAttachmentHandler(deps: {
       reason: outcome?.reason ?? "attachment_uncertain",
     };
   }
-  return { attach, status };
+  return { attach, status, reconcilePreClickFailure };
 }

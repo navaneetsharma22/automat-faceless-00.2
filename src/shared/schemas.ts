@@ -1056,6 +1056,17 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("flow.video.getAttachmentStatus"),
     payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
   }),
+  requestBase.extend({
+    type: z.literal("flow.video.reconcilePreClickFailure"),
+    payload: z.object({
+      preparedBatchId: z.literal("prepared:default:1235934d-8b2d-43b9-990c-8e103413d179"),
+      itemId: z.literal("import:default:video:item:0"),
+      expectedStatus: z.literal("uncertain"),
+      expectedReason: z.literal("composer_unsupported"),
+      expectedReferenceId: z.literal("014ebcff-06e3-4ac2-b980-568f0755febf"),
+      expectedUpdatedAt: z.number().finite().nonnegative(),
+    }).strict(),
+  }),
 ]);
 
 export const FailureCategorySchema = z.enum([

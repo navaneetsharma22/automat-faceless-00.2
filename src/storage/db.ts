@@ -30,6 +30,14 @@ export type FlowVideoAttachmentOperation = {
   status: "action_intent" | "attached" | "uncertain" | "blocked";
   reason?: string;
   updatedAt: number;
+  preActivationEvidence?: {
+    priorStatus: "uncertain";
+    priorReason: "composer_unsupported";
+    priorUpdatedAt: number;
+    producer: "historical_composer_unsupported_before_picker_click";
+    pickerClickAttempted: false;
+    reconciledAt: number;
+  };
 };
 
 export type SelectedTargetRecord = {

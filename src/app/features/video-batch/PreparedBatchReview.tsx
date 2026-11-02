@@ -13,6 +13,24 @@ export type PreparedBatchReviewProps = {
   currentImageSourceBatchId?: string;
 };
 
+type AttachmentOperationSnapshot = {
+  id: string;
+  preparedBatchId: string;
+  itemId: string;
+  referenceId: string;
+  status: "action_intent" | "attached" | "uncertain" | "blocked";
+  reason?: string;
+  updatedAt: number;
+  preActivationEvidence?: unknown;
+};
+
+const RECONCILABLE_PRECLICK_RECORD = {
+  preparedBatchId: "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179",
+  itemId: "import:default:video:item:0",
+  referenceId: "014ebcff-06e3-4ac2-b980-568f0755febf",
+  updatedAt: 1793605485721,
+} as const;
+
 export function PreparedBatchReview({
   preparedBatch,
   persistenceClient,
@@ -115,6 +133,8 @@ function PreparedItemCard({
   const [attachmentStatus, setAttachmentStatus] = useState(
     "Loading attachment status…",
   );
+  const [attachmentOperation, setAttachmentOperation] =
+    useState<AttachmentOperationSnapshot | null>(null);
   const [attaching, setAttaching] = useState(false);
 
   useEffect(() => {
@@ -125,9 +145,14 @@ function PreparedItemCard({
         itemId: item.itemId,
       })
       .then((result) => {
+        const operation = (
+          result as { operation?: AttachmentOperationSnapshot }
+        )?.operation;
+        if (!cancelled) setAttachmentOperation(operation ?? null);
         const status =
           (result as { status?: string; reason?: string })?.status ??
           "not_started";
+        const reason = (result as { reason?: string })?.reason;
         if (!cancelled)
           setAttachmentStatus(
             status === "attached" || status === "already_attached"
@@ -135,7 +160,9 @@ function PreparedItemCard({
               : status === "uncertain"
                 ? "Attachment delivery uncertain"
                 : status === "blocked"
-                  ? `Blocked: ${(result as { reason?: string }).reason ?? "review required"}`
+                  ? reason === "pre_activation_failure_reconciled"
+                    ? "Reconciled: historical failure preceded the picker click. Attach reference remains a separate action."
+                    : `Blocked: ${reason ?? "review required"}`
                   : "Not attached",
           );
       })
@@ -185,6 +212,64 @@ function PreparedItemCard({
           : "";
       setAttachmentStatus(
         `Attachment delivery uncertain — inspect Flow before retrying (${stage}${code})`,
+      );
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  const canReconcilePreClickFailure = Boolean(
+    eligible &&
+    attachmentOperation &&
+    preparedBatchId === RECONCILABLE_PRECLICK_RECORD.preparedBatchId &&
+    item.itemId === RECONCILABLE_PRECLICK_RECORD.itemId &&
+    item.reference.referenceId === RECONCILABLE_PRECLICK_RECORD.referenceId &&
+    attachmentOperation.id ===
+      `${RECONCILABLE_PRECLICK_RECORD.preparedBatchId}:${RECONCILABLE_PRECLICK_RECORD.itemId}` &&
+    attachmentOperation.preparedBatchId ===
+      RECONCILABLE_PRECLICK_RECORD.preparedBatchId &&
+    attachmentOperation.itemId === RECONCILABLE_PRECLICK_RECORD.itemId &&
+    attachmentOperation.referenceId ===
+      RECONCILABLE_PRECLICK_RECORD.referenceId &&
+    attachmentOperation.status === "uncertain" &&
+    attachmentOperation.reason === "composer_unsupported" &&
+    attachmentOperation.updatedAt === RECONCILABLE_PRECLICK_RECORD.updatedAt &&
+    !attachmentOperation.preActivationEvidence,
+  );
+
+  async function reconcilePreClickFailure() {
+    if (!canReconcilePreClickFailure || !attachmentOperation) return;
+    setAttaching(true);
+    setAttachmentStatus("Reconciling the recorded pre-click failure…");
+    try {
+      const result = (await persistenceClient.request(
+        "flow.video.reconcilePreClickFailure",
+        {
+          preparedBatchId,
+          itemId: item.itemId,
+          expectedStatus: "uncertain",
+          expectedReason: "composer_unsupported",
+          expectedReferenceId: attachmentOperation.referenceId,
+          expectedUpdatedAt: attachmentOperation.updatedAt,
+        },
+      )) as {
+        status?: string;
+        reason?: string;
+        operation?: AttachmentOperationSnapshot;
+      };
+      if (result.status === "reconciled" && result.operation) {
+        setAttachmentOperation(result.operation);
+        setAttachmentStatus(
+          "Reconciled: the recorded failure preceded the picker click. Attach reference remains a separate action.",
+        );
+      } else {
+        setAttachmentStatus(
+          `Reconciliation not applied: ${result.reason ?? "operation_changed"}`,
+        );
+      }
+    } catch {
+      setAttachmentStatus(
+        "Reconciliation not confirmed. The operation was not automatically retried.",
       );
     } finally {
       setAttaching(false);
@@ -249,6 +334,15 @@ function PreparedItemCard({
 
       {eligible ? (
         <div>
+          {canReconcilePreClickFailure ? (
+            <button
+              type="button"
+              disabled={attaching}
+              onClick={() => void reconcilePreClickFailure()}
+            >
+              Reconcile pre-click failure
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={

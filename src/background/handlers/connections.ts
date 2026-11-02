@@ -117,6 +117,14 @@ export type FoundationDependencies = {
   flowVideoAttachment?: {
     attach: (preparedBatchId: string, itemId: string) => Promise<unknown>;
     status: (preparedBatchId: string, itemId: string) => Promise<unknown>;
+    reconcilePreClickFailure: (input: {
+      preparedBatchId: string;
+      itemId: string;
+      expectedStatus: "uncertain";
+      expectedReason: "composer_unsupported";
+      expectedReferenceId: string;
+      expectedUpdatedAt: number;
+    }) => Promise<unknown>;
   };
 };
 
@@ -762,6 +770,9 @@ async function dispatch(
     case "flow.video.getAttachmentStatus":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.status(request.payload.preparedBatchId, request.payload.itemId);
+    case "flow.video.reconcilePreClickFailure":
+      if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
+      return await dependencies.flowVideoAttachment.reconcilePreClickFailure(request.payload);
   }
 }
 

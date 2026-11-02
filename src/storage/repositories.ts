@@ -3159,6 +3159,43 @@ export class ExtensionRepositories {
     });
   }
 
+  async reconcileFlowVideoAttachmentPreClickFailure(input: {
+    expected: Pick<FlowVideoAttachmentOperation, "id" | "preparedBatchId" | "itemId" | "referenceId" | "status" | "reason" | "updatedAt">;
+    reconciledAt: number;
+  }): Promise<boolean> {
+    return this.tables.transaction(["flowVideoAttachmentOperations"], async () => {
+      const current = await this.tables.flowVideoAttachmentOperations.get(input.expected.id);
+      if (
+        !current ||
+        current.id !== input.expected.id ||
+        current.preparedBatchId !== input.expected.preparedBatchId ||
+        current.itemId !== input.expected.itemId ||
+        current.referenceId !== input.expected.referenceId ||
+        current.status !== "uncertain" ||
+        current.status !== input.expected.status ||
+        current.reason !== "composer_unsupported" ||
+        current.reason !== input.expected.reason ||
+        current.updatedAt !== input.expected.updatedAt ||
+        current.preActivationEvidence
+      ) return false;
+      await this.tables.flowVideoAttachmentOperations.put({
+        ...current,
+        status: "blocked",
+        reason: "pre_activation_failure_reconciled",
+        updatedAt: input.reconciledAt,
+        preActivationEvidence: {
+          priorStatus: current.status,
+          priorReason: current.reason,
+          priorUpdatedAt: current.updatedAt,
+          producer: "historical_composer_unsupported_before_picker_click",
+          pickerClickAttempted: false,
+          reconciledAt: input.reconciledAt,
+        },
+      });
+      return true;
+    });
+  }
+
   async listPreparedVideoBatches(
     workspaceId: string,
   ): Promise<PreparedVideoBatchRecord[]> {

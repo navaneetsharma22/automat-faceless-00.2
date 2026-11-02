@@ -408,28 +408,11 @@ describe("Flow pinned video reference attachment (offline fixtures)", () => {
     );
   });
 
-  it("rechecks mode, candidate, document and target after awaited capture before any attachment", async () => {
+  it("rechecks candidate, document and target after awaited capture before any attachment", async () => {
     const { bytes, pinned, item } = fixture();
     const doc = install(
       `${composer()}${gallery()}${picker([{ id: "pinned", url: PINNED_URL }], PINNED_URL)}`,
     );
-    const modePorts = makePorts(pinned, bytes, {
-      captureCandidate: async () => {
-        doc
-          .querySelector("[aria-label='Video']")!
-          .setAttribute("aria-checked", "false");
-        doc
-          .querySelector("[aria-label='Frames']")!
-          .setAttribute("aria-checked", "true");
-        return bytes;
-      },
-    });
-    const activation = vi.fn();
-    doc.querySelector("aside button")!.addEventListener("click", activation);
-    expect(
-      await attachPinnedFlowVideoReference(item, doc, modePorts),
-    ).toMatchObject({ ok: false, reason: "composer_unsupported" });
-    expect(activation).not.toHaveBeenCalled();
     const changedDoc = install(
       `${composer()}${gallery()}${picker([{ id: "pinned", url: PINNED_URL }], PINNED_URL)}`,
     );

@@ -5,7 +5,10 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
-import { createFlowVideoAttachmentHandler } from "../../src/background/handlers/flowVideoAttachment";
+import {
+  createFlowVideoAttachmentHandler,
+  flowVideoAttachmentStructurePreflightInPage,
+} from "../../src/background/handlers/flowVideoAttachment";
 import { flowReferenceCaptureInPage } from "../../src/platforms/flow/references";
 import {
   createFoundationClient,
@@ -13,6 +16,7 @@ import {
 } from "../../src/shared/messageClient";
 import { AppRequestSchema } from "../../src/shared/schemas";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
+import { CONNECTOR_PROTOCOL_VERSION } from "../../src/platforms/shared/contracts";
 import {
   ChromePreferenceRepository,
   ExtensionRepositories,
@@ -21,9 +25,10 @@ import { sha256Bytes } from "../../src/domain/media/references";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 
 const extensionId = "flow-video-attachment-integration";
-const batchId = "prepared-flow-batch";
-const itemId = "prepared-item-1";
-const referenceId = "11111111-1111-4111-8111-111111111111";
+const batchId = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
+const itemId = "import:default:video:item:0";
+const referenceId = "014ebcff-06e3-4ac2-b980-568f0755febf";
+const priorOperationUpdatedAt = 1793605485721;
 const mediaId = "67b8fc4f-e688-4a9b-8cc1-472ff37738d8";
 const tabId = 77;
 const documentId = "flow-document-1";
@@ -50,6 +55,11 @@ async function fixture(
     permissionError?: Error;
     selectedDocumentId?: string;
     selectedVerified?: boolean;
+    extensionProtocolVersion?: number;
+    connectorProtocolVersion?: number;
+    structurePreflight?: { ok: boolean; reason?: string };
+    omitManualSettings?: boolean;
+    mismatchManualSettingsTarget?: boolean;
     injectedDocumentId?: string;
     pageResult?: { ok: boolean; already?: boolean; reason?: string };
     actionError?: Error;
@@ -140,7 +150,21 @@ async function fixture(
     createdAt: 1,
     updatedAt: 1,
   };
-  await database.preparedVideoBatches.put(batch);
+  const storedBatch = {
+    ...batch,
+    ...(overrides.mismatchManualSettingsTarget
+      ? {
+          manualSettingsDeclaration: {
+            ...batch.manualSettingsDeclaration,
+            canonicalTarget: `${canonicalTarget}/other`,
+          },
+        }
+      : {}),
+  } as typeof batch;
+  if (overrides.omitManualSettings)
+    delete (storedBatch as unknown as Record<string, unknown>)
+      .manualSettingsDeclaration;
+  await database.preparedVideoBatches.put(storedBatch);
   await database.pinnedReferenceMedia.put(pin);
   await database.selectedTargets.put({
     provider: "Flow",
@@ -159,9 +183,11 @@ async function fixture(
       documentId: overrides.selectedDocumentId ?? documentId,
       documentToken: "doc-token",
       extensionBuildId: BUILD_ID,
-      extensionProtocolVersion: PROTOCOL_VERSION,
+      extensionProtocolVersion:
+        overrides.extensionProtocolVersion ?? PROTOCOL_VERSION,
       connectorBuildId: BUILD_ID,
-      connectorProtocolVersion: PROTOCOL_VERSION,
+      connectorProtocolVersion:
+        overrides.connectorProtocolVersion ?? CONNECTOR_PROTOCOL_VERSION,
       capability: "read-only-connection-v1",
       verifiedAt: 1,
     },
@@ -189,8 +215,27 @@ async function fixture(
     if (overrides.actionError) throw overrides.actionError;
     return overrides.pageResult ?? { ok: true, already: false };
   });
+  const preflightOperationStates: Array<string | undefined> = [];
   const executeScript = vi.fn(async (input: unknown) => {
     const injection = input as MockInjection;
+    if (injection.func === flowVideoAttachmentStructurePreflightInPage) {
+      preflightOperationStates.push(
+        (
+          await repositories.getFlowVideoAttachmentOperation(
+            `${batchId}:${itemId}`,
+          )
+        )?.status,
+      );
+      return [
+        {
+          documentId,
+          result: {
+            ...(overrides.structurePreflight ?? { ok: true }),
+            href: canonicalTarget,
+          },
+        },
+      ];
+    }
     if (injection.func === flowReferenceCaptureInPage) {
       expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
       expect(injection.args?.[0]).toMatchObject({
@@ -282,6 +327,7 @@ async function fixture(
     addActivation,
     fetchResource,
     hasMediaHostPermission,
+    preflightOperationStates,
     batch,
     item,
     pin,
@@ -293,13 +339,21 @@ describe("Flow video reference attachment request-to-handler integration (offlin
 
   it("loads the prepared pin, verifies bytes, binds tab/document, persists intent before one action, and returns structured success", async () => {
     const f = await fixture();
+    expect(
+      (await f.repositories.getSelectedTarget("Flow"))?.verificationBinding,
+    ).toMatchObject({
+      extensionProtocolVersion: PROTOCOL_VERSION,
+      connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION,
+    });
     const result = await f.client.request("flow.video.attachReference", {
       preparedBatchId: batchId,
       itemId,
     });
     expect(result).toEqual({ status: "attached" });
+    expect(f.preflightOperationStates[0]).toBeUndefined();
     expect(f.addActivation).toHaveBeenCalledTimes(1);
     expect(f.executeScript.mock.calls.map(([call]) => call.target)).toEqual([
+      { tabId, documentIds: [documentId] },
       { tabId, documentIds: [documentId] },
       { tabId, documentIds: [documentId] },
       { tabId, documentIds: [documentId] },
@@ -388,6 +442,8 @@ describe("Flow video reference attachment request-to-handler integration (offlin
       { selectedVerified: false },
       { injectedDocumentId: "different-document" },
       { candidateBytes: new Uint8Array([9]) },
+      { extensionProtocolVersion: 3 },
+      { connectorProtocolVersion: 4 },
     ]) {
       const f = await fixture(options);
       const result = await f.client.request("flow.video.attachReference", {
@@ -424,6 +480,151 @@ describe("Flow video reference attachment request-to-handler integration (offlin
       reason: "pinned_reference_mismatch",
     });
     expect(missingPin.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("requires the existing manual-settings confirmation before provider activation", async () => {
+    for (const overrides of [
+      { omitManualSettings: true },
+      { mismatchManualSettingsTarget: true },
+    ]) {
+      const f = await fixture(overrides);
+      await expect(
+        f.client.request("flow.video.attachReference", {
+          preparedBatchId: batchId,
+          itemId,
+        }),
+      ).resolves.toMatchObject({ status: "blocked" });
+      expect(f.executeScript).not.toHaveBeenCalled();
+      expect(f.addActivation).not.toHaveBeenCalled();
+    }
+  });
+
+  it("blocks a missing attachment control before durable intent and activation", async () => {
+    const f = await fixture({
+      structurePreflight: {
+        ok: false,
+        reason: "attachment_control_unavailable",
+      },
+    });
+    await expect(
+      f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      stage: "attachment_structure_preflight",
+      reason: "attachment_control_unavailable",
+    });
+    expect(
+      f.executeScript.mock.calls.some(
+        ([input]) =>
+          (input as MockInjection).func ===
+          flowVideoAttachmentStructurePreflightInPage,
+      ),
+    ).toBe(true);
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(
+      await f.repositories.getFlowVideoAttachmentOperation(
+        `${batchId}:${itemId}`,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("reconciles only the inspected pre-click record atomically and preserves unrelated uncertainty without activation", async () => {
+    const f = await fixture();
+    const exact = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "composer_unsupported",
+      updatedAt: priorOperationUpdatedAt,
+    };
+    const unrelated = {
+      id: "another-prepared-batch:another-item",
+      preparedBatchId: "another-prepared-batch",
+      itemId: "another-item",
+      referenceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      status: "uncertain" as const,
+      reason: "attachment_uncertain",
+      updatedAt: 12,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(exact);
+    await f.repositories.putFlowVideoAttachmentOperation(unrelated);
+
+    const result = await f.client.request(
+      "flow.video.reconcilePreClickFailure",
+      {
+        preparedBatchId: batchId,
+        itemId,
+        expectedStatus: "uncertain",
+        expectedReason: "composer_unsupported",
+        expectedReferenceId: referenceId,
+        expectedUpdatedAt: priorOperationUpdatedAt,
+      },
+    );
+    expect(result).toMatchObject({
+      status: "reconciled",
+      reason: "pre_activation_failure_reconciled",
+      operation: {
+        id: exact.id,
+        status: "blocked",
+        reason: "pre_activation_failure_reconciled",
+        preActivationEvidence: {
+          priorStatus: "uncertain",
+          priorReason: "composer_unsupported",
+          priorUpdatedAt: priorOperationUpdatedAt,
+          producer: "historical_composer_unsupported_before_picker_click",
+          pickerClickAttempted: false,
+        },
+      },
+    });
+    const reconciled = await f.repositories.getFlowVideoAttachmentOperation(
+      exact.id,
+    );
+    expect(reconciled?.id).toBe(exact.id);
+    expect(reconciled?.preActivationEvidence?.reconciledAt).toBe(
+      reconciled?.updatedAt,
+    );
+    expect(
+      await f.repositories.getFlowVideoAttachmentOperation(unrelated.id),
+    ).toEqual(unrelated);
+    expect(f.executeScript).not.toHaveBeenCalled();
+    expect(f.addActivation).not.toHaveBeenCalled();
+  });
+
+  it("rejects a changed exact operation snapshot without overwriting it", async () => {
+    const f = await fixture();
+    const changed = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "attachment_uncertain",
+      updatedAt: priorOperationUpdatedAt + 1,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(changed);
+    await expect(
+      f.client.request("flow.video.reconcilePreClickFailure", {
+        preparedBatchId: batchId,
+        itemId,
+        expectedStatus: "uncertain",
+        expectedReason: "composer_unsupported",
+        expectedReferenceId: referenceId,
+        expectedUpdatedAt: priorOperationUpdatedAt,
+      }),
+    ).resolves.toMatchObject({
+      status: "uncertain",
+      reason: "operation_changed",
+    });
+    expect(
+      await f.repositories.getFlowVideoAttachmentOperation(changed.id),
+    ).toEqual(changed);
+    expect(f.executeScript).not.toHaveBeenCalled();
+    expect(f.addActivation).not.toHaveBeenCalled();
   });
 
   it("uses scoped worker acquisition for flow-content gallery bytes and verifies the hash before claiming intent", async () => {

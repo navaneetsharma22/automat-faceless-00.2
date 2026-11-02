@@ -170,6 +170,14 @@ export type RequestPayloads = {
   };
   "flow.video.attachReference": { preparedBatchId: string; itemId: string };
   "flow.video.getAttachmentStatus": { preparedBatchId: string; itemId: string };
+  "flow.video.reconcilePreClickFailure": {
+    preparedBatchId: string;
+    itemId: string;
+    expectedStatus: "uncertain";
+    expectedReason: "composer_unsupported";
+    expectedReferenceId: string;
+    expectedUpdatedAt: number;
+  };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -228,6 +236,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "videoBatch.getPrepared": 10_000,
   "flow.video.attachReference": 30_000,
   "flow.video.getAttachmentStatus": 5_000,
+  "flow.video.reconcilePreClickFailure": 5_000,
 };
 
 export function makeRequest<T extends RequestTypes>(
