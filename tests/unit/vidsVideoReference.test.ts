@@ -128,6 +128,35 @@ describe("P10.1 Google Vids prepared reference attachment", () => {
     }
   });
 
+  it("shows one explicit Generate this shot once action only after the attached status and durable Vids generation status", async () => {
+    const fixture = await setup();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    let generationStatus = "not_started";
+    const request = vi.fn(async (type: string) => {
+      if (type === "vids.video.getAttachmentStatus") return { status: "attached" };
+      if (type === "vids.video.getGenerationStatus") return { status: generationStatus };
+      if (type === "vids.video.generateOnce") { generationStatus = "dispatched"; return { status: "dispatched" }; }
+      return null;
+    });
+    try {
+      await act(async () => {
+        root.render(createElement(PreparedBatchReview, { preparedBatch: fixture.prepared, persistenceClient: { request } as unknown as ReturnType<typeof createFoundationClient> }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const generate = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Generate this shot once");
+      expect(generate).toBeDefined();
+      await act(async () => { generate?.click(); generate?.click(); await Promise.resolve(); });
+      expect(request.mock.calls.filter(([type]) => type === "vids.video.generateOnce")).toHaveLength(1);
+      expect(request.mock.calls.some(([type]) => String(type).startsWith("flow."))).toBe(false);
+      expect(container.textContent).toContain("Generate sent for Shot 1. Video completion is not verified here.");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("routes Vids attachment and status only to Vids handlers without touching Flow operations or queue records", async () => {
     const fixture = await setup();
     const vidsAttach = vi.fn(async () => ({ status: "attached" }));

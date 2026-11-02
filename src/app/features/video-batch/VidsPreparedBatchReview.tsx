@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PreparedVideoBatchRecord } from "../../../domain/batches/types";
 import { FoundationClientError, type createFoundationClient } from "../../../shared/messageClient";
 import { Button } from "../../components/Button";
@@ -6,6 +6,11 @@ import styles from "./VidsPreparedBatchReview.module.css";
 
 type AttachmentSnapshot = {
   status: "not_started" | "action_intent" | "attached" | "uncertain" | "blocked" | "unavailable";
+  reason?: string;
+  stage?: string;
+};
+type GenerationSnapshot = {
+  status: "not_started" | "dispatch_intent" | "dispatched" | "uncertain" | "blocked" | "already_dispatched" | "unavailable";
   reason?: string;
   stage?: string;
 };
@@ -49,7 +54,10 @@ function VidsItemCard({ preparedBatch, itemId, persistenceClient }: {
 }) {
   const item = preparedBatch.items.find((candidate) => candidate.itemId === itemId)!;
   const [snapshot, setSnapshot] = useState<AttachmentSnapshot | null>(null);
+  const [generation, setGeneration] = useState<GenerationSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const generatingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +66,15 @@ function VidsItemCard({ preparedBatch, itemId, persistenceClient }: {
       .catch(() => { if (!cancelled) setSnapshot({ status: "unavailable", reason: "operation_status_unavailable" }); });
     return () => { cancelled = true; };
   }, [itemId, persistenceClient, preparedBatch.id]);
+
+  useEffect(() => {
+    if (snapshot?.status !== "attached") { setGeneration(null); return; }
+    let cancelled = false;
+    persistenceClient.request("vids.video.getGenerationStatus", { preparedBatchId: preparedBatch.id, itemId })
+      .then((value) => { if (!cancelled) setGeneration(value as GenerationSnapshot); })
+      .catch(() => { if (!cancelled) setGeneration({ status: "unavailable", reason: "generation_status_unavailable" }); });
+    return () => { cancelled = true; };
+  }, [itemId, persistenceClient, preparedBatch.id, snapshot?.status]);
 
   async function attachReference() {
     if (busy || snapshot?.status !== "not_started") return;
@@ -74,6 +91,23 @@ function VidsItemCard({ preparedBatch, itemId, persistenceClient }: {
     }
   }
 
+  async function generateThisShotOnce() {
+    if (generatingRef.current || generation?.status !== "not_started" || snapshot?.status !== "attached") return;
+    generatingRef.current = true;
+    setGenerating(true);
+    setGeneration({ status: "dispatch_intent" });
+    try {
+      const value = await persistenceClient.request("vids.video.generateOnce", { preparedBatchId: preparedBatch.id, itemId }) as GenerationSnapshot;
+      setGeneration(value);
+    } catch (error) {
+      const reason = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "vids_generate_delivery_uncertain";
+      setGeneration({ status: "uncertain", reason });
+    } finally {
+      generatingRef.current = false;
+      setGenerating(false);
+    }
+  }
+
   const status = snapshot?.status ?? "checking";
   return (
     <li className={styles.card}>
@@ -82,6 +116,14 @@ function VidsItemCard({ preparedBatch, itemId, persistenceClient }: {
         <span className={styles.reference}>{item.reference.width}×{item.reference.height} · {item.reference.mimeType} · v{item.reference.assignmentVersion}</span>
       </div>
       {snapshot?.status === "attached" ? <p role="status" aria-live="polite">Reference uploaded and bound to the verified Google Vids document.</p> : null}
+      {snapshot?.status === "attached" && generation?.status === "not_started" ? <div className={styles.action}>
+        <Button type="button" variant="primary" disabled={generating} loading={generating} loadingLabel="Sending once" onClick={() => void generateThisShotOnce()}>Generate this shot once</Button>
+        <span>Enters this Shot’s exact prepared JSON, verifies the editor and attached reference, then activates Generate once. Vids settings remain unchanged.</span>
+      </div> : null}
+      {generation?.status === "dispatched" || generation?.status === "already_dispatched" ? <p role="status" aria-live="polite">Generate sent for Shot {item.canonicalShotId}. Video completion is not verified here.</p> : null}
+      {generation?.status === "uncertain" || generation?.status === "dispatch_intent" ? <p className={styles.error} role="alert">Generate delivery is uncertain{generation.reason ? ` (${generation.reason})` : ""}. This Shot will not be submitted again automatically.</p> : null}
+      {generation?.status === "blocked" ? <p className={styles.error} role="alert">Vids generation is blocked{generation.reason ? ` (${generation.reason})` : ""}. No retry is offered for this attempted Shot.</p> : null}
+      {generation?.status === "unavailable" ? <p className={styles.error} role="alert">Generation status is unavailable. Reconnect to the selected Google Vids target to inspect its durable status.</p> : null}
       {snapshot?.status === "uncertain" || snapshot?.status === "action_intent" ? <p className={styles.error} role="alert">Upload delivery is uncertain{snapshot.reason ? ` (${snapshot.reason})` : ""}. This reference will not be uploaded again automatically.</p> : null}
       {snapshot?.status === "unavailable" ? <p className={styles.error} role="alert">Vids attachment status is unavailable. Reconnect to the selected Google Vids target before continuing.</p> : null}
       {snapshot?.status === "blocked" ? <p className={styles.error} role="alert">Vids preflight blocked file selection: <code>{snapshot.reason ?? "preflight_failed"}</code></p> : null}

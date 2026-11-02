@@ -18,6 +18,7 @@ import type {
 import type { PreparedVideoBatchRecord } from "../../src/domain/batches/types";
 import type { FlowVideoQueueRecord } from "../../src/domain/jobs/videoQueue";
 import type { VidsVideoAttachmentOperation } from "../../src/domain/jobs/vidsVideoAttachment";
+import type { VidsVideoGenerationOperation } from "../../src/domain/jobs/vidsVideoGeneration";
 
 export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const drafts = new Map<string, PromptDraftRecord>();
@@ -42,6 +43,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const flowVideoAttachmentOperations = new Map<string, FlowVideoAttachmentOperation>();
   const flowVideoQueues = new Map<string, FlowVideoQueueRecord>();
   const vidsVideoAttachmentOperations = new Map<string, VidsVideoAttachmentOperation>();
+  const vidsVideoGenerationOperations = new Map<string, VidsVideoGenerationOperation>();
   let transactionTail = Promise.resolve();
 
   const table = <T extends object>(
@@ -122,6 +124,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
     flowVideoAttachmentOperations: table(flowVideoAttachmentOperations, (item) => item.id),
     flowVideoQueues: table(flowVideoQueues, (item) => item.queueId),
     vidsVideoAttachmentOperations: table(vidsVideoAttachmentOperations, (item) => item.id),
+    vidsVideoGenerationOperations: table(vidsVideoGenerationOperations, (item) => item.id),
     transaction: async (_tableNames, operation) => {
       let release!: () => void;
       const previous = transactionTail;
@@ -146,6 +149,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
         flowVideoAttachmentOperations,
         flowVideoQueues,
         vidsVideoAttachmentOperations,
+        vidsVideoGenerationOperations,
       ].map((values) => new Map(values));
       try {
         return await operation();
@@ -167,6 +171,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
           flowVideoAttachmentOperations,
           flowVideoQueues,
           vidsVideoAttachmentOperations,
+          vidsVideoGenerationOperations,
         ].forEach((values, index) => {
           values.clear();
           for (const [key, value] of snapshots[index]!) {

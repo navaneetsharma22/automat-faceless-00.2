@@ -2,7 +2,7 @@ import Dexie from "dexie";
 import { AutomatDatabase } from "../../src/storage/db";
 import { createDexieRepositoryDatabase, ExtensionRepositories } from "../../src/storage/repositories";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
-import { createFlowVideoAttachmentHandler, flowVideoAttachmentStructurePreflightInPage } from "../../src/background/handlers/flowVideoAttachment";
+import { createFlowVideoAttachmentHandler, flowVideoAttachmentActionInPage, flowVideoAttachmentStructurePreflightInPage } from "../../src/background/handlers/flowVideoAttachment";
 import { ChromePreferenceRepository } from "../../src/storage/repositories";
 import { createFoundationClient } from "../../src/shared/messageClient";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
@@ -18,6 +18,7 @@ declare global {
         oldReferenceDataPreserved: boolean;
         oldQueueDataPreserved: boolean;
         videoQueueStoreAvailable: boolean;
+        vidsGenerationStoreAvailable: boolean;
         videoQueuePersistsAfterReopen: boolean;
         intentPersistsAfterReopen: boolean;
         databaseVersion: number;
@@ -80,6 +81,7 @@ window.__FlowVideoAttachmentStorageFixture = {
     const videoQueueRecord = { queueId: "flow-video:migration-fixture", preparedBatchId: "migration-fixture", state: "ready", items: [], lastDispatchAt: null, nextActionAt: null, revision: 0, createdAt: 1, updatedAt: 1 };
     await upgraded.flowVideoQueues.put(videoQueueRecord as never);
     const videoQueueStoreAvailable = Boolean(upgraded.flowVideoQueues);
+    const vidsGenerationStoreAvailable = Boolean(upgraded.vidsVideoGenerationOperations);
     const version = upgraded.verno;
     upgraded.close();
 
@@ -93,14 +95,14 @@ window.__FlowVideoAttachmentStorageFixture = {
     const runtimeName = `flow-video-request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const runtime = new AutomatDatabase(runtimeName);
     const runtimeRepositories = new ExtensionRepositories(createDexieRepositoryDatabase(runtime));
-    const referenceBytes = new Uint8Array([1, 2, 3]);
+    const referenceBytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL4WQAAAABJRU5ErkJggg=="), (value) => value.charCodeAt(0));
     const referenceHash = await sha256Bytes(referenceBytes);
     const referenceId = "11111111-1111-4111-8111-111111111111";
     const targetDocumentId = "offline-flow-document";
     const targetTabId = 87;
     const targetProjectId = "offline-project";
     const targetUrl = `https://flow.google.com/project/${targetProjectId}`;
-    const candidateUrl = "https://flow.google.com/asb/offline-pinned";
+    const candidateUrl = "https://flow.google.com/images/offline-pinned.png";
     const preparedId = "prepared-with-real-indexeddb";
     const itemId = "prepared-item";
     const mediaId = "67b8fc4f-e688-4a9b-8cc1-472ff37738d8";
@@ -114,9 +116,9 @@ window.__FlowVideoAttachmentStorageFixture = {
     const transport = { executeScript: async (input: unknown) => {
       const injection = input as { func: (...args: never[]) => unknown; args?: unknown[]; target: { tabId: number; documentIds: string[] } };
       exactDocument &&= injection.target.tabId === targetTabId && injection.target.documentIds[0] === targetDocumentId;
-      if (injection.func === flowReferenceCaptureInPage) return [{ documentId: targetDocumentId, result: { ok: true, data: btoa(String.fromCharCode(...referenceBytes)) } }];
+      if (injection.func === flowReferenceCaptureInPage) return [{ documentId: targetDocumentId, result: { ok: true, data: btoa(String.fromCharCode(...referenceBytes)), mimeType: "image/png", width: 1, height: 1 } }];
       if (injection.func === flowVideoAttachmentStructurePreflightInPage) return [{ documentId: targetDocumentId, result: { ok: true, href: targetUrl } }];
-      if (injection.args) {
+      if (injection.func === flowVideoAttachmentActionInPage) {
         intentBeforeAction = (await runtimeRepositories.getFlowVideoAttachmentOperation(`${preparedId}:${itemId}`))?.status === "action_intent";
         activationCount++;
         return [{ documentId: targetDocumentId, result: { ok: true, already: false } }];
@@ -135,6 +137,7 @@ window.__FlowVideoAttachmentStorageFixture = {
       oldReferenceDataPreserved: preserved.reference?.payloadMarker === reference.payloadMarker,
       oldQueueDataPreserved: preserved.queue?.payloadMarker === queue.payloadMarker,
       videoQueueStoreAvailable,
+      vidsGenerationStoreAvailable,
       videoQueuePersistsAfterReopen: durableVideoQueue?.queueId === videoQueueRecord.queueId,
       intentPersistsAfterReopen: durable?.status === "action_intent",
       repositoryClaimIsExclusive: claimed && duplicateClaimRejected && intentReadBeforeClose?.updatedAt === 10,

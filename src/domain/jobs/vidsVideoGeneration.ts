@@ -17,7 +17,7 @@ export const VidsVideoGenerationOperationSchema = z.object({
   failureStage: z.enum(["preflight", "prompt_entry", "generate_preflight", "activation", "persistence"]).optional(),
   reason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(),
   promptReadback: z.object({
-    serialization: z.literal("innerText"),
+    serialization: z.literal("contenteditable_blocks_v1"),
     expectedSha256: z.string().regex(/^[0-9a-f]{64}$/),
     actualSha256: z.string().regex(/^[0-9a-f]{64}$/),
     immediateMatch: z.literal(true),

@@ -10,6 +10,7 @@ import {
   type FlowVideoAttachmentOperation,
 } from "./db";
 import { VidsVideoAttachmentOperationSchema, type VidsVideoAttachmentOperation } from "../domain/jobs/vidsVideoAttachment";
+import { VidsVideoGenerationOperationSchema, type VidsVideoGenerationOperation } from "../domain/jobs/vidsVideoGeneration";
 import {
   FlowVideoQueueRecordSchema,
   type FlowVideoQueueRecord,
@@ -317,6 +318,7 @@ export type RepositoryDatabase = {
   flowVideoAttachmentOperations: Pick<Table<FlowVideoAttachmentOperation, string>, "get" | "put" | "add">;
   flowVideoQueues: Pick<Table<FlowVideoQueueRecord, string>, "get" | "put" | "add" | "toArray">;
   vidsVideoAttachmentOperations: Pick<Table<VidsVideoAttachmentOperation, string>, "get" | "put" | "add">;
+  vidsVideoGenerationOperations: Pick<Table<VidsVideoGenerationOperation, string>, "get" | "put" | "add">;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -343,6 +345,7 @@ export function createDexieRepositoryDatabase(
     flowVideoAttachmentOperations: database.flowVideoAttachmentOperations,
     flowVideoQueues: database.flowVideoQueues,
     vidsVideoAttachmentOperations: database.vidsVideoAttachmentOperations,
+    vidsVideoGenerationOperations: database.vidsVideoGenerationOperations,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -488,6 +491,10 @@ export function createDexieRepositoryDatabase(
           return database.transaction("rw", database.flowVideoQueues, database.flowVideoAttachmentOperations, operation);
         case "vidsVideoAttachmentOperations":
           return database.transaction("rw", database.vidsVideoAttachmentOperations, operation);
+        case "vidsVideoGenerationOperations":
+          return database.transaction("rw", database.vidsVideoGenerationOperations, operation);
+        case "vidsVideoAttachmentOperations+vidsVideoGenerationOperations":
+          return database.transaction("rw", database.vidsVideoAttachmentOperations, database.vidsVideoGenerationOperations, operation);
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -3343,6 +3350,48 @@ export class ExtensionRepositories {
       const saved = await this.tables.vidsVideoAttachmentOperations.get(input.next.id);
       if (!saved || JSON.stringify(saved) !== JSON.stringify(input.next))
         throw new Error("vids_video_attachment_operation_persistence_failed");
+      return true;
+    });
+  }
+
+  async getVidsVideoGenerationOperation(id: string): Promise<VidsVideoGenerationOperation | undefined> {
+    const operation = await this.tables.vidsVideoGenerationOperations.get(id);
+    if (operation && !VidsVideoGenerationOperationSchema.safeParse(operation).success)
+      throw new Error("vids_video_generation_operation_invalid");
+    return operation;
+  }
+
+  async claimVidsVideoGenerationOperation(
+    operation: VidsVideoGenerationOperation,
+    expectedAttachment: VidsVideoAttachmentOperation,
+  ): Promise<boolean> {
+    if (!VidsVideoGenerationOperationSchema.safeParse(operation).success)
+      throw new Error("vids_video_generation_operation_invalid");
+    return this.tables.transaction(["vidsVideoAttachmentOperations+vidsVideoGenerationOperations"], async () => {
+      const attachment = await this.tables.vidsVideoAttachmentOperations.get(expectedAttachment.id);
+      if (!attachment || JSON.stringify(attachment) !== JSON.stringify(expectedAttachment) || attachment.status !== "attached") return false;
+      if (await this.tables.vidsVideoGenerationOperations.get(operation.id)) return false;
+      await this.tables.vidsVideoGenerationOperations.add(operation);
+      const saved = await this.tables.vidsVideoGenerationOperations.get(operation.id);
+      if (!saved || JSON.stringify(saved) !== JSON.stringify(operation))
+        throw new Error("vids_video_generation_operation_persistence_failed");
+      return true;
+    });
+  }
+
+  async updateVidsVideoGenerationOperation(input: {
+    expected: VidsVideoGenerationOperation;
+    next: VidsVideoGenerationOperation;
+  }): Promise<boolean> {
+    if (!VidsVideoGenerationOperationSchema.safeParse(input.next).success)
+      throw new Error("vids_video_generation_operation_invalid");
+    return this.tables.transaction(["vidsVideoGenerationOperations"], async () => {
+      const current = await this.tables.vidsVideoGenerationOperations.get(input.expected.id);
+      if (!current || JSON.stringify(current) !== JSON.stringify(input.expected) || current.status !== "dispatch_intent") return false;
+      await this.tables.vidsVideoGenerationOperations.put(input.next);
+      const saved = await this.tables.vidsVideoGenerationOperations.get(input.next.id);
+      if (!saved || JSON.stringify(saved) !== JSON.stringify(input.next))
+        throw new Error("vids_video_generation_operation_persistence_failed");
       return true;
     });
   }
