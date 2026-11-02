@@ -410,9 +410,6 @@ describe("Flow pinned video reference attachment (offline fixtures)", () => {
 
   it("rechecks candidate, document and target after awaited capture before any attachment", async () => {
     const { bytes, pinned, item } = fixture();
-    const doc = install(
-      `${composer()}${gallery()}${picker([{ id: "pinned", url: PINNED_URL }], PINNED_URL)}`,
-    );
     const changedDoc = install(
       `${composer()}${gallery()}${picker([{ id: "pinned", url: PINNED_URL }], PINNED_URL)}`,
     );

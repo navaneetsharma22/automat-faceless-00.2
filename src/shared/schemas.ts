@@ -1053,6 +1053,14 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
   }),
   requestBase.extend({
+    type: z.literal("flow.video.verifyAttachedReference"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.video.generateOnce"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
+  }),
+  requestBase.extend({
     type: z.literal("flow.video.getAttachmentStatus"),
     payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
   }),

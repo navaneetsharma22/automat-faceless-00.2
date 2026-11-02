@@ -60,6 +60,9 @@ async function fixture(
     structurePreflight?: { ok: boolean; reason?: string };
     omitManualSettings?: boolean;
     mismatchManualSettingsTarget?: boolean;
+    verificationDocumentId?: string;
+    verificationChip?: { busy: string | null; url: string };
+    changeOperationDuringVerification?: boolean;
     injectedDocumentId?: string;
     pageResult?: { ok: boolean; already?: boolean; reason?: string };
     actionError?: Error;
@@ -216,6 +219,7 @@ async function fixture(
     return overrides.pageResult ?? { ok: true, already: false };
   });
   const preflightOperationStates: Array<string | undefined> = [];
+  let verificationRevalidations = 0;
   const executeScript = vi.fn(async (input: unknown) => {
     const injection = input as MockInjection;
     if (injection.func === flowVideoAttachmentStructurePreflightInPage) {
@@ -249,16 +253,20 @@ async function fixture(
         },
       ];
     }
-    if (!injection.args && String(injection.func).includes("aria-busy")) {
+    if (!injection.args && String(injection.func).includes("flow-base-prompt-box") && String(injection.func).includes("aria-busy")) {
+      expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
       return [
         {
-          documentId,
-          result: [
-            {
+          documentId: overrides.verificationDocumentId ?? documentId,
+          result: {
+            ok: true,
+            href: canonicalTarget,
+            count: 1,
+            chips: [overrides.verificationChip ?? {
               busy: "false",
               url: `https://flow-content.google/image/${mediaId}?signed=readback`,
-            },
-          ],
+            }],
+          },
         },
       ];
     }
@@ -291,7 +299,13 @@ async function fixture(
     repositories,
     scripting: { executeScript },
     getTab: async (id) => ({ id, url: canonicalTarget }),
-    revalidate: async () => undefined,
+    revalidate: async () => {
+      verificationRevalidations += 1;
+      if (overrides.changeOperationDuringVerification && verificationRevalidations === 2) {
+        const current = await repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`);
+        if (current) await repositories.putFlowVideoAttachmentOperation({ ...current, reason: "concurrent_update", updatedAt: current.updatedAt + 1 });
+      }
+    },
     hasMediaHostPermission,
     fetchResource,
   });
@@ -497,6 +511,77 @@ describe("Flow video reference attachment request-to-handler integration (offlin
       expect(f.executeScript).not.toHaveBeenCalled();
       expect(f.addActivation).not.toHaveBeenCalled();
     }
+  });
+
+  it("verifies one ready matching chip in the bound document and atomically updates the same uncertain operation without activation", async () => {
+    const f = await fixture();
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "attachment_unverified",
+      updatedAt: 90,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(f.client.request("flow.video.verifyAttachedReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({
+      status: "attached",
+      reason: "attachment_unverified",
+      operation: {
+        id: original.id,
+        status: "attached",
+        reason: "attachment_unverified",
+        verifiedAttachment: { documentId, mediaId },
+      },
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(f.executeScript).toHaveBeenCalledTimes(1);
+    expect((await f.repositories.getFlowVideoAttachmentOperation(original.id))?.id).toBe(original.id);
+  });
+
+  it("rejects a verification result from a different document without changing the operation", async () => {
+    const f = await fixture({ verificationDocumentId: "other-document" });
+    const original = {
+      id: `${batchId}:${itemId}`, preparedBatchId: batchId, itemId, referenceId,
+      status: "uncertain" as const, reason: "attachment_unverified", updatedAt: 91,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(f.client.request("flow.video.verifyAttachedReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({
+      status: "uncertain", reason: "verification_document_mismatch",
+    });
+    expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toEqual(original);
+    expect(f.addActivation).not.toHaveBeenCalled();
+  });
+
+  it("rejects a changed operation snapshot after successful chip inspection", async () => {
+    const f = await fixture({ changeOperationDuringVerification: true });
+    const original = {
+      id: `${batchId}:${itemId}`, preparedBatchId: batchId, itemId, referenceId,
+      status: "uncertain" as const, reason: "attachment_unverified", updatedAt: 92,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(f.client.request("flow.video.verifyAttachedReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({
+      status: "uncertain", reason: "operation_changed",
+    });
+    expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toMatchObject({
+      status: "uncertain", reason: "concurrent_update", updatedAt: 93,
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+  });
+
+  it("requires exactly one ready chip matching the pinned media identity", async () => {
+    const f = await fixture({ verificationChip: { busy: "true", url: `https://flow-content.google/image/${mediaId}` } });
+    const original = {
+      id: `${batchId}:${itemId}`, preparedBatchId: batchId, itemId, referenceId,
+      status: "uncertain" as const, reason: "attachment_unverified", updatedAt: 93,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(f.client.request("flow.video.verifyAttachedReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({
+      status: "uncertain", reason: "verification_chip_not_exact_ready",
+    });
+    expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toEqual(original);
+    expect(f.addActivation).not.toHaveBeenCalled();
   });
 
   it("blocks a missing attachment control before durable intent and activation", async () => {
@@ -778,16 +863,16 @@ describe("Flow video reference attachment request-to-handler integration (offlin
           const injection = input as MockInjection;
           if (injection.func === flowReferenceCaptureInPage)
             return [{ documentId, result: { ok: true, data: base64(bytes) } }];
-          if (!injection.args && String(injection.func).includes("aria-busy"))
+          if (!injection.args && String(injection.func).includes("flow-base-prompt-box") && String(injection.func).includes("aria-busy"))
             return [
               {
                 documentId,
-                result: [
-                  {
-                    busy: "false",
-                    url: `https://flow-content.google/image/${mediaId}?signed=rotated`,
-                  },
-                ],
+                result: {
+                  ok: true,
+                  href: canonicalTarget,
+                  count: 1,
+                  chips: [{ busy: "false", url: `https://flow-content.google/image/${mediaId}?signed=rotated` }],
+                },
               },
             ];
           if (!injection.args)
@@ -842,7 +927,7 @@ describe("Flow video reference attachment request-to-handler integration (offlin
         preparedBatchId: batchId,
         itemId,
       }),
-    ).resolves.toMatchObject({ status: "already_attached" });
+    ).resolves.toMatchObject({ status: "attached" });
     expect(interrupted.addActivation).toHaveBeenCalledTimes(1);
   });
 

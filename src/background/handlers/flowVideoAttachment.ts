@@ -115,9 +115,157 @@ export function createFlowVideoAttachmentHandler(deps: {
             reason: op.reason,
             updatedAt: op.updatedAt,
             preActivationEvidence: op.preActivationEvidence,
+            verifiedAttachment: op.verifiedAttachment,
+            videoGeneration: op.videoGeneration,
           },
         }
       : { status: "not_started" };
+  }
+  async function verifyAttachedReference(preparedBatchId: string, itemId: string) {
+    const id = operationId(preparedBatchId, itemId);
+    const op = await deps.repositories.getFlowVideoAttachmentOperation(id);
+    if (!op || (op.status !== "uncertain" && op.status !== "action_intent"))
+      return { status: "blocked", reason: "verification_operation_not_uncertain" };
+    const raw = await deps.repositories.getPreparedVideoBatchById(preparedBatchId);
+    const parsed = PreparedVideoBatchRecordSchema.safeParse(raw);
+    if (!parsed.success || parsed.data.destination !== "Flow")
+      return { status: "blocked", reason: "prepared_flow_item_required" };
+    const batch = parsed.data;
+    const item = batch.items.find((candidate) => candidate.itemId === itemId);
+    if (
+      !item ||
+      op.preparedBatchId !== preparedBatchId ||
+      op.itemId !== itemId ||
+      op.referenceId !== item.reference.referenceId
+    )
+      return { status: "blocked", reason: "prepared_reference_binding_mismatch" };
+    const confirmation = VideoSettingsConfirmationSchema.safeParse(
+      (raw as { manualSettingsDeclaration?: unknown }).manualSettingsDeclaration,
+    );
+    if (
+      !confirmation.success ||
+      confirmation.data.destination !== "Flow" ||
+      confirmation.data.tabId !== batch.target.tabId ||
+      confirmation.data.canonicalTarget !== batch.target.canonicalTarget ||
+      confirmation.data.projectId !== batch.target.projectId ||
+      confirmation.data.documentId !== batch.target.documentId
+    )
+      return { status: "blocked", reason: "manual_settings_confirmation_binding_mismatch" };
+    const pinned = await deps.repositories.getReferenceById(item.reference.referenceId);
+    if (
+      !pinned ||
+      !ReferenceAssignmentRecordSchema.safeParse(pinned).success ||
+      pinned.referenceId !== item.reference.referenceId ||
+      pinned.assignmentVersion !== item.reference.assignmentVersion ||
+      pinned.sha256 !== item.reference.sha256 ||
+      pinned.byteSize !== item.reference.byteSize ||
+      pinned.mimeType !== item.reference.mimeType ||
+      pinned.width !== item.reference.width ||
+      pinned.height !== item.reference.height ||
+      pinned.tabId !== batch.target.tabId ||
+      pinned.flowProjectId !== batch.target.projectId ||
+      pinned.documentId !== batch.target.documentId ||
+      !pinned.providerAssetId
+    )
+      return { status: "blocked", reason: "pinned_reference_mismatch" };
+    const bytes = new Uint8Array(await pinned.bytes.arrayBuffer());
+    if (
+      bytes.byteLength !== item.reference.byteSize ||
+      (await sha256Bytes(bytes)) !== item.reference.sha256
+    )
+      return { status: "blocked", reason: "reference_bytes_corrupt" };
+
+    await deps.revalidate();
+    const selected = await deps.repositories.getSelectedTarget("Flow");
+    const binding = selected?.verificationBinding;
+    if (
+      !selected || selected.verification !== "verified" || !binding ||
+      selected.tabId !== batch.target.tabId ||
+      selected.canonicalTarget !== batch.target.canonicalTarget ||
+      binding.provider !== "Flow" ||
+      binding.tabId !== selected.tabId ||
+      binding.canonicalTarget !== selected.canonicalTarget ||
+      binding.projectId !== batch.target.projectId ||
+      binding.documentId !== batch.target.documentId ||
+      binding.extensionBuildId !== BUILD_ID ||
+      binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
+      binding.connectorBuildId !== BUILD_ID ||
+      binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION
+    )
+      return { status: "blocked", reason: "target_changed" };
+    const target = { tabId: selected.tabId, documentIds: [binding.documentId] };
+    const tab = await deps.getTab(selected.tabId);
+    const route = flowTabFromUrl(selected.tabId, "Flow", tab.url);
+    if (!route || route.projectId !== binding.projectId || route.canonicalTarget !== selected.canonicalTarget)
+      return { status: "blocked", reason: "target_changed" };
+    const check = await deps.scripting.executeScript({
+      target,
+      world: "ISOLATED",
+      func: () => {
+        const visible = (element: Element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return element.isConnected && rect.width > 0 && rect.height > 0 &&
+            style.display !== "none" && style.visibility !== "hidden";
+        };
+        const roots = [...document.querySelectorAll<HTMLElement>("flow-base-prompt-box")].filter(visible);
+        if (roots.length !== 1) return { ok: false, reason: "composer_unavailable" };
+        const chips = [...roots[0]!.querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")].filter(visible);
+        const images = chips.map((chip) => {
+          const image = chip.querySelector<HTMLImageElement>("img[alt='Ingredient image']");
+          return { busy: chip.getAttribute("aria-busy"), url: image?.currentSrc || image?.src || image?.getAttribute("src") };
+        });
+        return { ok: true, href: location.href, count: chips.length, chips: images };
+      },
+    });
+    const state = check[0]?.result as { ok?: boolean; href?: string; count?: number; chips?: Array<{ busy?: string | null; url?: string }> } | undefined;
+    if (
+      check[0]?.documentId !== binding.documentId ||
+      !state?.href ||
+      flowTabFromUrl(selected.tabId, "Flow", state.href)?.projectId !== binding.projectId
+    )
+      return { status: "uncertain", reason: "verification_document_mismatch" };
+    const chip = state.chips?.[0];
+    const mediaId = flowVideoChipMediaIdFromImageUrl(chip?.url ?? "");
+    if (
+      !state.ok || state.count !== 1 || state.chips?.length !== 1 ||
+      chip?.busy !== "false" || mediaId !== pinned.providerAssetId
+    )
+      return { status: "uncertain", reason: "verification_chip_not_exact_ready" };
+
+    await deps.revalidate();
+    const latest = await deps.repositories.getSelectedTarget("Flow");
+    const latestTab = await deps.getTab(selected.tabId);
+    const latestRoute = flowTabFromUrl(selected.tabId, "Flow", latestTab.url);
+    if (
+      latest?.verification !== "verified" || latest.tabId !== selected.tabId ||
+      latest.canonicalTarget !== selected.canonicalTarget ||
+      latest.verificationBinding?.provider !== "Flow" ||
+      latest.verificationBinding?.tabId !== selected.tabId ||
+      latest.verificationBinding?.canonicalTarget !== selected.canonicalTarget ||
+      latest.verificationBinding?.documentId !== binding.documentId ||
+      latest.verificationBinding?.projectId !== binding.projectId ||
+      latest.verificationBinding?.extensionBuildId !== BUILD_ID ||
+      latest.verificationBinding?.extensionProtocolVersion !== PROTOCOL_VERSION ||
+      latest.verificationBinding?.connectorBuildId !== BUILD_ID ||
+      latest.verificationBinding?.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
+      !latestRoute || latestRoute.projectId !== binding.projectId ||
+      latestRoute.canonicalTarget !== selected.canonicalTarget
+    )
+      return { status: "uncertain", reason: "verification_target_changed" };
+    const verifiedAt = Date.now();
+    const updated = await deps.repositories.markFlowVideoAttachmentVerified({
+      expected: op,
+      documentId: binding.documentId,
+      mediaId,
+      verifiedAt,
+    });
+    if (!updated) return { status: "uncertain", reason: "operation_changed" };
+    return {
+      status: "attached",
+      reason: op.reason,
+      operation: await deps.repositories.getFlowVideoAttachmentOperation(id),
+    };
   }
   async function reconcilePreClickFailure(input: {
     preparedBatchId: string;
@@ -179,7 +327,9 @@ export function createFlowVideoAttachmentHandler(deps: {
   async function attach(preparedBatchId: string, itemId: string) {
     const oid = operationId(preparedBatchId, itemId);
     let op = await deps.repositories.getFlowVideoAttachmentOperation(oid);
-    const inspectOnly = Boolean(op && op.status !== "blocked");
+    if (op?.status === "attached") return { status: "already_attached" };
+    if (op && (op.status === "uncertain" || op.status === "action_intent"))
+      return await verifyAttachedReference(preparedBatchId, itemId);
     const batchRaw =
       await deps.repositories.getPreparedVideoBatchById(preparedBatchId);
     if (!batchRaw)
@@ -265,43 +415,6 @@ export function createFlowVideoAttachmentHandler(deps: {
     )
       return { status: "blocked", reason: "target_changed" };
     const target = { tabId: selected.tabId, documentIds: [binding.documentId] };
-    if (inspectOnly) {
-      const check = await deps.scripting.executeScript({
-        target,
-        world: "ISOLATED",
-        func: () => {
-          const root = document.querySelector("flow-base-prompt-box");
-          const chips = [
-            ...(root?.querySelectorAll<HTMLButtonElement>(
-              "button[aria-label='Ingredient']",
-            ) ?? []),
-          ];
-          return chips.map((chip) => ({
-            busy: chip.getAttribute("aria-busy"),
-            url: chip.querySelector<HTMLImageElement>(
-              "img[alt='Ingredient image']",
-            )?.src,
-          }));
-        },
-      });
-      const chips = check[0]?.result as
-        Array<{ busy?: string | null; url?: string }> | undefined;
-      const exact =
-        chips?.length === 1 &&
-        chips[0]?.busy === "false" &&
-        flowVideoChipMediaIdFromImageUrl(chips[0]?.url ?? "") ===
-          pinned.providerAssetId;
-      if (exact && op) {
-        await deps.repositories.putFlowVideoAttachmentOperation({
-          ...op,
-          status: "attached",
-          reason: undefined,
-          updatedAt: Date.now(),
-        });
-        return { status: "already_attached" };
-      }
-      return { status: "uncertain", reason: "prior_activation_unresolved" };
-    }
     const inspect = await deps.scripting.executeScript({
       target,
       world: "ISOLATED",
@@ -629,10 +742,13 @@ export function createFlowVideoAttachmentHandler(deps: {
           return { ok: false, reason: "attachment_control_unavailable" };
         let existing = chips();
         if (
-          existing.some((chip) => !idFromChip(chip)) ||
-          existing.filter((chip) => idFromChip(chip) === expectedId).length > 1
+          existing.some((chip) => !idFromChip(chip))
         )
-          return { ok: false, reason: "attachment_unverified" };
+          return { ok: false, reason: "existing_chip_identity_unreadable" };
+        if (existing.filter((chip) => idFromChip(chip) === expectedId).length > 1)
+          return { ok: false, reason: "duplicate_matching_chips" };
+        if (existing.length && !(existing.length === 1 && idFromChip(existing[0]!) === expectedId && existing[0]!.getAttribute("aria-busy") === "false"))
+          return { ok: false, reason: "existing_chip_conflict" };
         if (
           existing.length === 1 &&
           idFromChip(existing[0]!) === expectedId &&
@@ -667,13 +783,13 @@ export function createFlowVideoAttachmentHandler(deps: {
           return { ok: false, reason: "candidate_missing_or_virtualized" };
         existing = chips();
         if (existing.length)
-          return { ok: false, reason: "attachment_unverified" };
+          return { ok: false, reason: "chip_conflict_before_add" };
         p.action[0]!.click();
         for (let i = 0; i < 60; i++) {
           await new Promise((r) => setTimeout(r, 100));
           existing = chips();
           if (existing.some((chip) => !idFromChip(chip)))
-            return { ok: false, reason: "attachment_unverified" };
+            return { ok: false, reason: "chip_identity_unreadable_after_add" };
           if (
             existing.length === 1 &&
             idFromChip(existing[0]!) === expectedId &&
@@ -718,5 +834,5 @@ export function createFlowVideoAttachmentHandler(deps: {
       reason: outcome?.reason ?? "attachment_uncertain",
     };
   }
-  return { attach, status, reconcilePreClickFailure };
+  return { attach, status, verifyAttachedReference, reconcilePreClickFailure };
 }

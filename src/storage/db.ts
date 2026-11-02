@@ -30,6 +30,29 @@ export type FlowVideoAttachmentOperation = {
   status: "action_intent" | "attached" | "uncertain" | "blocked";
   reason?: string;
   updatedAt: number;
+  verifiedAttachment?: {
+    documentId: string;
+    mediaId: string;
+    verifiedAt: number;
+  };
+  videoGeneration?: {
+    attemptId: string;
+    preparedBatchId: string;
+    itemId: string;
+    canonicalShotId: string;
+    promptHash: string;
+    referenceId: string;
+    tabId: number;
+    projectId: string;
+    canonicalTarget: string;
+    documentId: string;
+    state: "dispatch_intent" | "dispatched" | "uncertain" | "blocked";
+    reason?: string;
+    pressAttempted?: boolean;
+    releaseAttempted?: boolean;
+    createdAt: number;
+    updatedAt: number;
+  };
   preActivationEvidence?: {
     priorStatus: "uncertain";
     priorReason: "composer_unsupported";

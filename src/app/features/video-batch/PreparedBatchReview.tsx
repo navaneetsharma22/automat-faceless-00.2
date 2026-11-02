@@ -21,6 +21,13 @@ type AttachmentOperationSnapshot = {
   status: "action_intent" | "attached" | "uncertain" | "blocked";
   reason?: string;
   updatedAt: number;
+  verifiedAttachment?: { documentId: string; mediaId: string; verifiedAt: number };
+  videoGeneration?: {
+    attemptId: string;
+    state: "dispatch_intent" | "dispatched" | "uncertain" | "blocked";
+    reason?: string;
+    promptHash: string;
+  };
   preActivationEvidence?: unknown;
 };
 
@@ -153,9 +160,16 @@ function PreparedItemCard({
           (result as { status?: string; reason?: string })?.status ??
           "not_started";
         const reason = (result as { reason?: string })?.reason;
+        const generation = operation?.videoGeneration;
         if (!cancelled)
           setAttachmentStatus(
-            status === "attached" || status === "already_attached"
+            generation?.state === "dispatched"
+              ? "Generate was sent once; provider acceptance and completion are unverified"
+              : generation?.state === "dispatch_intent" || generation?.state === "uncertain"
+                ? `Generation delivery uncertain — inspect Flow before retrying${generation.reason ? ` (${generation.reason})` : ""}`
+                : generation?.state === "blocked"
+                  ? `Generation blocked${generation.reason ? ` (${generation.reason})` : ""}; no automatic retry`
+                  : status === "attached" || status === "already_attached"
               ? "Attached and verified"
               : status === "uncertain"
                 ? "Attachment delivery uncertain"
@@ -214,6 +228,65 @@ function PreparedItemCard({
         `Attachment delivery uncertain — inspect Flow before retrying (${stage}${code})`,
       );
     } finally {
+      setAttaching(false);
+    }
+  }
+
+  async function verifyAttachedReference() {
+    if (!attachmentOperation || !["uncertain", "action_intent"].includes(attachmentOperation.status)) return;
+    setAttaching(true);
+    setAttachmentStatus("Verifying the existing reference in the bound Flow document…");
+    try {
+      const result = (await persistenceClient.request(
+        "flow.video.verifyAttachedReference",
+        { preparedBatchId, itemId: item.itemId },
+      )) as { status?: string; reason?: string; operation?: AttachmentOperationSnapshot };
+      if (result.status === "attached" && result.operation) {
+        setAttachmentOperation(result.operation);
+        setAttachmentStatus("Attached and verified in the bound Flow document");
+      } else {
+        const reason = result.reason && /^[a-z0-9_]{1,64}$/.test(result.reason) ? result.reason : "verification_unconfirmed";
+        setAttachmentStatus(`Verification not confirmed (${reason}); no attachment action was taken`);
+      }
+    } catch (error) {
+      const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "request_failed";
+      setAttachmentStatus(`Verification unavailable (${code}); no attachment action was taken`);
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  async function generateVideoOnce() {
+    if (!attachmentOperation || attachmentOperation.status !== "attached" || attachmentOperation.videoGeneration) return;
+    setAttaching(true);
+    setAttachmentStatus("Checking the prepared prompt and attached reference…");
+    try {
+      const result = (await persistenceClient.request("flow.video.generateOnce", {
+        preparedBatchId,
+        itemId: item.itemId,
+      })) as {
+        status?: string;
+        reason?: string;
+        operation?: AttachmentOperationSnapshot;
+      };
+      if (result.operation) setAttachmentOperation(result.operation);
+      if (result.status === "dispatched" || result.status === "already_dispatched") {
+        setAttachmentStatus("Generate was sent once; provider acceptance and completion are unverified");
+      } else if (result.status === "uncertain") {
+        setAttachmentStatus(`Generation delivery uncertain — inspect Flow before retrying${result.reason ? ` (${result.reason})` : ""}`);
+      } else {
+        setAttachmentStatus(`Generation blocked${result.reason ? ` (${result.reason})` : ""}; no automatic retry`);
+      }
+    } catch (error) {
+      const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "request_failed";
+      setAttachmentStatus(`Generation result unavailable (${code}); inspect Flow before retrying`);
+    } finally {
+      try {
+        const latest = (await persistenceClient.request("flow.video.getAttachmentStatus", { preparedBatchId, itemId: item.itemId })) as { operation?: AttachmentOperationSnapshot };
+        if (latest.operation) setAttachmentOperation(latest.operation);
+      } catch {
+        // The generation operation itself remains authoritative; status is only a readback.
+      }
       setAttaching(false);
     }
   }
@@ -341,6 +414,21 @@ function PreparedItemCard({
               onClick={() => void reconcilePreClickFailure()}
             >
               Reconcile pre-click failure
+            </button>
+          ) : null}
+          {attachmentOperation &&
+          (attachmentOperation.status === "uncertain" || attachmentOperation.status === "action_intent") ? (
+            <button type="button" disabled={attaching} onClick={() => void verifyAttachedReference()}>
+              Verify attached reference
+            </button>
+          ) : null}
+          {attachmentOperation?.status === "attached" ? (
+            <button
+              type="button"
+              disabled={attaching || Boolean(attachmentOperation.videoGeneration)}
+              onClick={() => void generateVideoOnce()}
+            >
+              {attaching ? "Preparing this shot…" : attachmentOperation.videoGeneration ? "Generation already attempted" : "Generate this shot once"}
             </button>
           ) : null}
           <button

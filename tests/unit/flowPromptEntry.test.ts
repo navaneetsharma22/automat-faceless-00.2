@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createSavedFlowPromptEntry } from "../../src/background/handlers/flow";
 import {
   enterFlowPrompt,
+  enterFlowVideoPrompt,
   type FlowPromptEntryPort,
 } from "../../src/platforms/flow/promptEntry";
 import {
@@ -276,6 +277,15 @@ describe("bounded Flow prompt entry", () => {
     expect(fixture.commands).not.toContain("Input.dispatchKeyEvent");
     expect(fixture.commands).not.toContain("Page.captureScreenshot");
     expect(fixture.detachCount).toBe(1);
+  });
+
+  it("enters one complete video JSON body losslessly through the shared exact-readback path", async () => {
+    const videoPrompt = JSON.stringify({ shot_id: "1", prompt_type: "video", scene_title: "Shot 1", primary_instruction: "Preserve every character and nested field." });
+    const fixture = makePort();
+    const result = await enterFlowVideoPrompt(videoPrompt, fixture.port);
+    expect(result).toMatchObject({ outcome: "filled", fillVerified: true, immediateMatch: true, settledMatch: true, stableReadback: true });
+    expect(fixture.inputCount).toBe(1);
+    expect(fixture.commands).not.toContain("Input.dispatchMouseEvent");
   });
 
   it("does not retry after uncertain partial insertion", async () => {

@@ -116,6 +116,7 @@ export type FoundationDependencies = {
   };
   flowVideoAttachment?: {
     attach: (preparedBatchId: string, itemId: string) => Promise<unknown>;
+    verifyAttachedReference: (preparedBatchId: string, itemId: string) => Promise<unknown>;
     status: (preparedBatchId: string, itemId: string) => Promise<unknown>;
     reconcilePreClickFailure: (input: {
       preparedBatchId: string;
@@ -126,6 +127,7 @@ export type FoundationDependencies = {
       expectedUpdatedAt: number;
     }) => Promise<unknown>;
   };
+  flowVideoGenerateOnce?: (preparedBatchId: string, itemId: string) => Promise<unknown>;
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -767,6 +769,12 @@ async function dispatch(
     case "flow.video.attachReference":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.attach(request.payload.preparedBatchId, request.payload.itemId);
+    case "flow.video.verifyAttachedReference":
+      if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
+      return await dependencies.flowVideoAttachment.verifyAttachedReference(request.payload.preparedBatchId, request.payload.itemId);
+    case "flow.video.generateOnce":
+      if (!dependencies.flowVideoGenerateOnce) throw new FoundationOperationError("worker_error", "flow_video_generation_unavailable", "Flow video generation is unavailable.");
+      return await dependencies.flowVideoGenerateOnce(request.payload.preparedBatchId, request.payload.itemId);
     case "flow.video.getAttachmentStatus":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.status(request.payload.preparedBatchId, request.payload.itemId);

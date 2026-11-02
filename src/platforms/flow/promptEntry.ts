@@ -86,6 +86,22 @@ export async function enterFlowPrompt(
   rawJsonBody: string,
   port: FlowPromptEntryPort,
 ): Promise<FlowPromptEntryResult> {
+  return enterFlowPromptOfKind(rawJsonBody, "image", port);
+}
+
+/** Video-stage counterpart; shares exact editor entry/readback without changing prompt bytes. */
+export async function enterFlowVideoPrompt(
+  rawJsonBody: string,
+  port: FlowPromptEntryPort,
+): Promise<FlowPromptEntryResult> {
+  return enterFlowPromptOfKind(rawJsonBody, "video", port);
+}
+
+async function enterFlowPromptOfKind(
+  rawJsonBody: string,
+  kind: "image" | "video",
+  port: FlowPromptEntryPort,
+): Promise<FlowPromptEntryResult> {
   const now = port.now ?? Date.now;
   const startedAt = now();
   const expectedBytes = new TextEncoder().encode(rawJsonBody).byteLength;
@@ -115,10 +131,10 @@ export async function enterFlowPrompt(
   if (rawJsonBody.length === 0) {
     return result({
       code: "empty_prompt",
-      message: "The image prompt is empty.",
+      message: `The ${kind} prompt is empty.`,
     });
   }
-  const parsed = importPromptBatch(rawJsonBody, "image");
+  const parsed = importPromptBatch(rawJsonBody, kind);
   if (
     !parsed.ok ||
     parsed.items.length !== 1 ||
@@ -127,7 +143,7 @@ export async function enterFlowPrompt(
     return result({
       code: "invalid_single_prompt",
       message:
-        "Provide exactly one complete image JSON body from the current validated preview.",
+        `Provide exactly one complete ${kind} JSON body from the current validated preview.`,
     });
   }
   if (!port.hasRequiredApis()) {

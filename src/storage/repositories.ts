@@ -3196,6 +3196,85 @@ export class ExtensionRepositories {
     });
   }
 
+  async markFlowVideoAttachmentVerified(input: {
+    expected: FlowVideoAttachmentOperation;
+    documentId: string;
+    mediaId: string;
+    verifiedAt: number;
+  }): Promise<boolean> {
+    return this.tables.transaction(["flowVideoAttachmentOperations"], async () => {
+      const current = await this.tables.flowVideoAttachmentOperations.get(input.expected.id);
+      if (
+        !current ||
+        JSON.stringify(current) !== JSON.stringify(input.expected) ||
+        (current.status !== "uncertain" && current.status !== "action_intent")
+      ) return false;
+      await this.tables.flowVideoAttachmentOperations.put({
+        ...current,
+        status: "attached",
+        updatedAt: input.verifiedAt,
+        verifiedAttachment: {
+          documentId: input.documentId,
+          mediaId: input.mediaId,
+          verifiedAt: input.verifiedAt,
+        },
+      });
+      return true;
+    });
+  }
+
+  async claimFlowVideoGenerationIntent(input: {
+    expected: FlowVideoAttachmentOperation;
+    intent: NonNullable<FlowVideoAttachmentOperation["videoGeneration"]>;
+  }): Promise<boolean> {
+    return this.tables.transaction(["flowVideoAttachmentOperations"], async () => {
+      const current = await this.tables.flowVideoAttachmentOperations.get(input.expected.id);
+      if (
+        !current ||
+        JSON.stringify(current) !== JSON.stringify(input.expected) ||
+        current.status !== "attached" ||
+        current.videoGeneration
+      ) return false;
+      await this.tables.flowVideoAttachmentOperations.put({
+        ...current,
+        videoGeneration: input.intent,
+      });
+      return true;
+    });
+  }
+
+  async updateFlowVideoGeneration(input: {
+    operationId: string;
+    attemptId: string;
+    expectedState: "dispatch_intent";
+    state: "dispatched" | "uncertain" | "blocked";
+    reason?: string;
+    pressAttempted?: boolean;
+    releaseAttempted?: boolean;
+    updatedAt: number;
+  }): Promise<boolean> {
+    return this.tables.transaction(["flowVideoAttachmentOperations"], async () => {
+      const current = await this.tables.flowVideoAttachmentOperations.get(input.operationId);
+      if (
+        !current?.videoGeneration ||
+        current.videoGeneration.attemptId !== input.attemptId ||
+        current.videoGeneration.state !== input.expectedState
+      ) return false;
+      await this.tables.flowVideoAttachmentOperations.put({
+        ...current,
+        videoGeneration: {
+          ...current.videoGeneration,
+          state: input.state,
+          ...(input.reason ? { reason: input.reason } : {}),
+          ...(input.pressAttempted !== undefined ? { pressAttempted: input.pressAttempted } : {}),
+          ...(input.releaseAttempted !== undefined ? { releaseAttempted: input.releaseAttempted } : {}),
+          updatedAt: input.updatedAt,
+        },
+      });
+      return true;
+    });
+  }
+
   async listPreparedVideoBatches(
     workspaceId: string,
   ): Promise<PreparedVideoBatchRecord[]> {
