@@ -33,12 +33,13 @@ type AttachmentOperationSnapshot = {
 
 type VideoQueueSnapshot = {
   queueId: string;
+  preparedBatchId: string;
   state: "ready" | "waiting" | "sent" | "paused" | "blocked" | "stopped" | "completed";
   pauseReason?: string;
   nextActionAt: number | null;
   revision: number;
   items: Array<{
-    itemId: string; order: number; shotId: string; state: string; reason?: string; priorReason?: string; attemptId?: string;
+    itemId: string; order: number; shotId: string; referenceId: string; state: string; reason?: string; priorReason?: string; attemptId?: string;
     byteMismatchDiagnostic?: {
       stage: "candidate_byte_verification" | "read_only_reference_inspection"; acquisitionRoute: "verified_document_same_origin" | "scoped_extension_fetch" | "verified_detail_original_extension_fetch"; preparedSha256: string; metadataSha256: string; savedBytesSha256: string;
       candidateBytesSha256: string; candidateMediaId: string; mimeType: string;
@@ -61,6 +62,12 @@ const RECONCILABLE_PRECLICK_RECORD = {
   referenceId: "014ebcff-06e3-4ac2-b980-568f0755febf",
   updatedAt: 1793605485721,
 } as const;
+const RECONCILABLE_PREADD_RECORD = {
+  preparedBatchId: "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179",
+  itemId: "import:default:video:item:1",
+  referenceId: "e8c9315f-f79a-45c6-8184-4fddfce541ce",
+  reason: "candidate_missing_or_virtualized",
+} as const;
 
 export function PreparedBatchReview({
   preparedBatch,
@@ -76,6 +83,7 @@ export function PreparedBatchReview({
   const [videoQueue, setVideoQueue] = useState<VideoQueueSnapshot | null>(null);
   const [videoQueueBusy, setVideoQueueBusy] = useState(false);
   const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
+  const [videoQueueNotice, setVideoQueueNotice] = useState<string | null>(null);
   const [referenceInspection, setReferenceInspection] = useState<Record<string, ReferenceByteInspection>>({});
   const [referenceInspectionBusy, setReferenceInspectionBusy] = useState<string | null>(null);
 
@@ -90,16 +98,20 @@ export function PreparedBatchReview({
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [preparedBatch.destination, preparedBatch.id, persistenceClient]);
 
-  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume") {
+async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "reconcilePreAddFailure") {
     setVideoQueueBusy(true);
     setVideoQueueError(null);
+    setVideoQueueNotice(null);
     const type = `flow.videoQueue.${action}` as const;
     const payload = action === "start"
       ? { preparedBatchId: preparedBatch.id }
       : { preparedBatchId: preparedBatch.id, expectedRevision: videoQueue?.revision ?? -1 };
     try {
       const result = await persistenceClient.request(type, payload);
-      if (result) setVideoQueue(result as VideoQueueSnapshot);
+      if (result) {
+        setVideoQueue(result as VideoQueueSnapshot);
+        if (action === "reconcilePreAddFailure") setVideoQueueNotice("Shot 2's pre-Add failure was reconciled. Resume is a separate action; no attachment or Generate action was performed.");
+      }
     } catch (error) {
       const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "queue_request_failed";
       setVideoQueueError(code);
@@ -130,6 +142,12 @@ export function PreparedBatchReview({
   const recheckableFailure = failedQueueItems.length === 1 &&
     failedQueueItems[0]?.reason === "candidate_bytes_mismatch" &&
     !videoQueue?.items.some((item) => item.state === "uncertain");
+  const reconcilablePreAddFailure = preparedBatch.id === RECONCILABLE_PREADD_RECORD.preparedBatchId &&
+    videoQueue?.preparedBatchId === RECONCILABLE_PREADD_RECORD.preparedBatchId &&
+    (videoQueue.state === "paused" || videoQueue.state === "blocked") &&
+    videoQueue.items.filter((item) => item.state === "uncertain" || item.state === "failed").length === 1 &&
+    videoQueue.items.some((item) => item.itemId === RECONCILABLE_PREADD_RECORD.itemId && item.referenceId === RECONCILABLE_PREADD_RECORD.referenceId && item.state === "uncertain" && item.reason === RECONCILABLE_PREADD_RECORD.reason) &&
+    !videoQueue.items.some((item) => item.itemId !== RECONCILABLE_PREADD_RECORD.itemId && ["uncertain", "failed", "attaching", "dispatching"].includes(item.state));
 
   return (
     <section
@@ -206,6 +224,8 @@ export function PreparedBatchReview({
                 </div>
               ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && recheckableFailure ? (
                 <button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</button>
+              ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && reconcilablePreAddFailure ? (
+                <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("reconcilePreAddFailure")}>Reconcile Shot 2 pre-Add failure</button>
               ) : videoQueue.state === "paused" && !videoQueue.items.some((item) => item.state === "uncertain" || item.state === "failed") ? (
                 <div className={styles.videoQueueActions}>
                   <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("resume")}>Resume</button>
@@ -215,6 +235,8 @@ export function PreparedBatchReview({
             </div>
             {videoQueue ? (
               <>
+                {videoQueueNotice ? <p role="status">{videoQueueNotice}</p> : null}
+                {videoQueueError ? <p role="alert">Queue action failed: {videoQueueError}</p> : null}
                 <p role="status">{videoQueue.state === "waiting" && videoQueue.nextActionAt
                   ? `${videoQueue.items.some((item) => item.state === "waiting_for_generate") ? "Waiting for Generate; next readiness check" : "Next dispatch"}: ${new Date(videoQueue.nextActionAt).toLocaleTimeString()}`
                   : videoQueue.pauseReason ? `${videoQueue.state === "blocked" ? "Blocked" : videoQueue.state === "stopped" ? "Stopped" : "Paused"}: ${videoQueue.pauseReason}`

@@ -9,11 +9,16 @@ import type { ExtensionRepositories } from "../../storage/repositories";
 import { PreparedVideoBatchRecordSchema } from "../../shared/schemas";
 import type { PreparedVideoBatchRecord } from "../../domain/batches/types";
 import type { FlowVideoAttachmentOperation } from "../../storage/db";
+import { ReferenceAssignmentRecordSchema, sha256Bytes } from "../../domain/media/references";
 import { createQueueAlarmRuntime } from "../scheduler";
 
 export const FLOW_VIDEO_QUEUE_ALARM_PREFIX = "automat-flow-video-queue:";
 const HISTORIC_SHOT_ONE_BATCH = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
 const HISTORIC_SHOT_ONE_ITEM = "import:default:video:item:0";
+const HISTORIC_SHOT_TWO_BATCH = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
+const HISTORIC_SHOT_TWO_ITEM = "import:default:video:item:1";
+const HISTORIC_SHOT_TWO_REFERENCE = "e8c9315f-f79a-45c6-8184-4fddfce541ce";
+const HISTORIC_SHOT_TWO_UPDATED_AT = 1793616678655;
 
 export type FlowVideoQueueView = FlowVideoQueueRecord;
 
@@ -290,6 +295,91 @@ export function createFlowVideoQueueHandler(input: {
       if (!next) throw new Error("flow_video_queue_or_operation_changed");
       await schedule(next);
       return run(next.queueId);
+    },
+    reconcilePreAddFailure: async (preparedBatchId: string, expectedRevision: number) => {
+      if (preparedBatchId !== HISTORIC_SHOT_TWO_BATCH) throw new Error("flow_video_pre_add_snapshot_mismatch");
+      const queueId = queueIdFor(preparedBatchId);
+      const queue = await input.repositories.getFlowVideoQueue(queueId);
+      if (!queue || queue.revision !== expectedRevision || !["paused", "blocked"].includes(queue.state))
+        throw new Error("flow_video_queue_reconcile_invalid");
+      const target = queue.items.filter((entry) => entry.itemId === HISTORIC_SHOT_TWO_ITEM);
+      if (target.length !== 1 || target[0]?.state !== "uncertain" || target[0].reason !== "candidate_missing_or_virtualized" || target[0].referenceId !== HISTORIC_SHOT_TWO_REFERENCE)
+        throw new Error("flow_video_pre_add_snapshot_mismatch");
+      if (queue.items.some((entry) => entry.itemId !== HISTORIC_SHOT_TWO_ITEM && ["uncertain", "failed", "attaching", "dispatching"].includes(entry.state)))
+        throw new Error("flow_video_queue_has_unrelated_uncertainty");
+      if (!input.revalidate) throw new Error("target_revalidation_unavailable");
+
+      const batchResult = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(preparedBatchId));
+      if (!batchResult.success || batchResult.data.id !== HISTORIC_SHOT_TWO_BATCH || batchResult.data.destination !== "Flow") throw new Error("prepared_flow_batch_invalid");
+      const batch = batchResult.data;
+      const item = batch.items.find((entry) => entry.itemId === HISTORIC_SHOT_TWO_ITEM);
+      const queueItem = target[0]!;
+      if (!item || item.reference.referenceId !== HISTORIC_SHOT_TWO_REFERENCE || item.reference.referenceId !== queueItem.referenceId || item.contentHash !== queueItem.promptHash)
+        throw new Error("flow_video_queue_pairing_changed");
+
+      const operations = await Promise.all(queue.items.map(async (entry) => ({ id: `${preparedBatchId}:${entry.itemId}`, operation: await input.repositories.getFlowVideoAttachmentOperation(`${preparedBatchId}:${entry.itemId}`) })));
+      let targetOperation: FlowVideoAttachmentOperation | undefined;
+      for (const snapshot of operations) {
+        const entry = queue.items.find((candidate) => `${preparedBatchId}:${candidate.itemId}` === snapshot.id)!;
+        const operation = snapshot.operation;
+        if (entry.itemId === HISTORIC_SHOT_TWO_ITEM) {
+          if (!operation || operation.id !== `${preparedBatchId}:${HISTORIC_SHOT_TWO_ITEM}` || operation.preparedBatchId !== preparedBatchId || operation.itemId !== HISTORIC_SHOT_TWO_ITEM || operation.referenceId !== HISTORIC_SHOT_TWO_REFERENCE || operation.status !== "uncertain" || operation.reason !== "candidate_missing_or_virtualized" || operation.updatedAt !== HISTORIC_SHOT_TWO_UPDATED_AT || operation.videoGeneration || operation.verifiedAttachment || operation.preActivationEvidence || operation.preAddReconciliationEvidence)
+            throw new Error("flow_video_pre_add_operation_snapshot_mismatch");
+          targetOperation = operation;
+          continue;
+        }
+        if (entry.state === "sent") {
+          const sentItem = batch.items.find((candidate) => candidate.itemId === entry.itemId);
+          const generation = operation?.videoGeneration;
+          if (!sentItem || generation?.state !== "dispatched" || !generationMatches(batch, sentItem, generation) || entry.dispatchReceipt?.attemptId !== generation.attemptId)
+            throw new Error("sent_item_operation_changed");
+          continue;
+        }
+        if (operation?.status === "action_intent" || operation?.status === "uncertain" || operation?.videoGeneration)
+          throw new Error("flow_video_queue_has_unresolved_intent");
+      }
+      if (!targetOperation) throw new Error("flow_video_pre_add_operation_missing");
+
+      const targetBefore = await input.revalidate(preparedBatchId).catch(() => "target_revalidation_failed");
+      if (targetBefore) throw new Error("target_revalidation_failed");
+      const savedReference = await input.repositories.getReferenceById(HISTORIC_SHOT_TWO_REFERENCE);
+      if (!savedReference || !ReferenceAssignmentRecordSchema.safeParse(savedReference).success ||
+        savedReference.assignmentVersion !== item.reference.assignmentVersion || savedReference.sha256 !== item.reference.sha256 || savedReference.byteSize !== item.reference.byteSize ||
+        savedReference.mimeType !== item.reference.mimeType || savedReference.width !== item.reference.width || savedReference.height !== item.reference.height ||
+        savedReference.workspaceId !== batch.workspaceId || savedReference.batchId !== batch.imageSourceBatchId || savedReference.batchSourceHash !== batch.imageSourceBatchHash ||
+        savedReference.shotId !== item.canonicalShotId || savedReference.tabId !== batch.target.tabId || savedReference.flowProjectId !== batch.target.projectId ||
+        savedReference.canonicalTarget !== batch.target.canonicalTarget || savedReference.documentId !== batch.target.documentId || !savedReference.providerAssetId)
+        throw new Error("prepared_reference_binding_changed");
+      const savedBytes = new Uint8Array(await savedReference.bytes.arrayBuffer());
+      if (savedBytes.byteLength !== item.reference.byteSize || await sha256Bytes(savedBytes) !== item.reference.sha256 || savedReference.sha256 !== item.reference.sha256)
+        throw new Error("prepared_reference_bytes_mismatch");
+      const currentReference = await input.repositories.getReferenceById(HISTORIC_SHOT_TWO_REFERENCE);
+      if (!currentReference || currentReference.assignmentVersion !== savedReference.assignmentVersion || currentReference.sha256 !== savedReference.sha256 ||
+        currentReference.batchId !== savedReference.batchId || currentReference.batchSourceHash !== savedReference.batchSourceHash || currentReference.shotId !== savedReference.shotId ||
+        currentReference.tabId !== savedReference.tabId || currentReference.flowProjectId !== savedReference.flowProjectId || currentReference.documentId !== savedReference.documentId ||
+        currentReference.bytes.size !== item.reference.byteSize || await sha256Bytes(new Uint8Array(await currentReference.bytes.arrayBuffer())) !== item.reference.sha256)
+        throw new Error("prepared_reference_changed_during_reconcile");
+      const targetAfter = await input.revalidate(preparedBatchId).catch(() => "target_revalidation_failed");
+      if (targetAfter) throw new Error("target_revalidation_failed");
+
+      const latestQueue = await input.repositories.getFlowVideoQueue(queueId);
+      if (!latestQueue || latestQueue.revision !== expectedRevision || JSON.stringify(latestQueue) !== JSON.stringify(queue)) throw new Error("flow_video_queue_changed_during_reconcile");
+      const latestOperations = await Promise.all(queue.items.map(async (entry) => ({ id: `${preparedBatchId}:${entry.itemId}`, operation: await input.repositories.getFlowVideoAttachmentOperation(`${preparedBatchId}:${entry.itemId}`) })));
+      if (JSON.stringify(latestOperations) !== JSON.stringify(operations)) throw new Error("flow_video_operation_changed_during_reconcile");
+      const reconciledAt = now();
+      const nextOperation: FlowVideoAttachmentOperation = {
+        ...targetOperation, status: "blocked", reason: "pre_add_failure_reconciled", updatedAt: reconciledAt,
+        preAddReconciliationEvidence: { priorStatus: "uncertain", priorReason: "candidate_missing_or_virtualized", priorUpdatedAt: HISTORIC_SHOT_TWO_UPDATED_AT, producer: "historical_candidate_missing_before_add_activation", addClickAttempted: false, reconciledAt },
+      };
+      const nextQueue: FlowVideoQueueRecord = {
+        ...queue, state: "paused", pauseReason: "pre_add_failure_reconciled", nextActionAt: null,
+        items: queue.items.map((entry) => entry.itemId === HISTORIC_SHOT_TWO_ITEM ? { ...entry, state: "pending", priorReason: entry.reason, reason: undefined } : entry),
+        revision: queue.revision + 1, updatedAt: reconciledAt,
+      };
+      const saved = await input.repositories.reconcileFlowVideoPreAddFailure({ expectedRevision, expectedOperations: operations, expectedOperation: targetOperation, nextOperation, nextQueue });
+      if (!saved) throw new Error("flow_video_queue_or_operation_changed");
+      await schedule(saved);
+      return saved;
     },
     onAlarm: (name: string) => { const queueId = alarms.queueIdFromAlarm(name); return queueId ? run(queueId) : Promise.resolve(undefined); },
     reconcileStartup: async () => {

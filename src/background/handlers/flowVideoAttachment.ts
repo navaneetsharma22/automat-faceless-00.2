@@ -316,6 +316,7 @@ export function createFlowVideoAttachmentHandler(deps: {
             reason: op.reason,
             updatedAt: op.updatedAt,
             preActivationEvidence: op.preActivationEvidence,
+            preAddReconciliationEvidence: op.preAddReconciliationEvidence,
             verifiedAttachment: op.verifiedAttachment,
             videoGeneration: op.videoGeneration,
           },
@@ -894,6 +895,9 @@ export function createFlowVideoAttachmentHandler(deps: {
       updatedAt: Date.now(),
       ...(op?.preActivationEvidence
         ? { preActivationEvidence: op.preActivationEvidence }
+        : {}),
+      ...(op?.preAddReconciliationEvidence
+        ? { preAddReconciliationEvidence: op.preAddReconciliationEvidence }
         : {}),
     };
     if (!(await deps.repositories.claimFlowVideoAttachmentOperation(op)))

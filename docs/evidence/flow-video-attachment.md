@@ -1,4 +1,4 @@
-# P09.1 Flow video reference attachment
+﻿# P09.1 Flow video reference attachment
 
 Date: 2 November 2026. Evidence scope: source review and offline DOM/resource fixtures. No live provider action was performed.
 
@@ -136,3 +136,13 @@ Source inspection disproved the source-URL replacement hypothesis. `acquireCandi
 `action_intent` is claimed immediately before the injected action. Either reason producer is reached before the Add click, so Add was not clicked when this reason is returned. The previous code could have opened the picker; it could have clicked the row only when preview and Add already existed. The persisted reason does not distinguish those sub-branches. No installed browser surface was available, so the actual Shot 2 operation/click telemetry is **NOT_READ**; no operation was mutated, replayed, or recovered.
 
 Checks: focused Vitest **2 files / 31 tests PASS**; typecheck and ESLint **PASS**; production build **PASS**, ID **`automat-faceless-0.1.0-mvz58ssl`**, four JavaScript bundles, output `dist/`; `git diff --check` **PASS** with existing CRLF warnings. No Resume, replay, or Generate occurred.
+
+### Exact Shot 2 pre-Add failure reconciliation - 2 November 2026
+
+The existing queue now exposes a narrowly scoped **Reconcile Shot 2 pre-Add failure** action only for the supplied batch, item, reference, queue reason and uncertain state. The worker additionally compares the exact persisted attachment operation, including `updatedAt: 1793616678655`, and rejects any generation intent, preexisting reconciliation evidence, unrelated unresolved queue item, modified operation, or changed queue revision.
+
+Before persistence it validates the prepared video pairing and exact saved reference assignment (source workspace/batch/hash, Shot ID, assignment version, media metadata, selected Flow project/tab/document), hashes the original stored bytes against the prepared SHA-256, re-reads and hashes the reference, and revalidates the bound target/document. Shot 1 must still have its matching dispatched generation operation and queue receipt. The historical producer review supplies the explicit no-Add-activation proof; absent chips are not consulted for replay authorization.
+
+Reconciliation updates the same Shot 2 operation to a blocked reconciled state with bounded evidence retaining the original uncertain status, reason and timestamp, and updates the same queue to `paused` with Shot 2 pending and its old failure in `priorReason`. The update transaction atomically compares queue revision and operation snapshots. Shot 1 remains Sent. The request returns without calling attachment or Generate; Resume is exposed as a separate user action only after this transition. Images 40s, Videos 30s, and readiness timeout 60s are unchanged.
+
+Offline verification: focused Vitest **2 files / 23 tests PASS**, including successful exact-snapshot transition, changed-operation rejection, generation-intent and unrelated-uncertainty rejection, prior evidence/Shot 1 preservation, zero attachment/Generate, and UI Resume availability without auto-Resume; typecheck and ESLint **PASS**; build **PASS**, ID `automat-faceless-0.1.0-mvz5qesp`, output `dist/` (4 validated bundles). Live storage reconciliation, Resume and Generate are **NOT_RUN**.

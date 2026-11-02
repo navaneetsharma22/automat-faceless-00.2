@@ -135,6 +135,7 @@ export type FoundationDependencies = {
     pause: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     resume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     recheckAndResume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+    reconcilePreAddFailure: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
   };
 };
@@ -802,6 +803,9 @@ async function dispatch(
     case "flow.videoQueue.recheckAndResume":
       if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
       return await dependencies.flowVideoQueue[request.type.slice("flow.videoQueue.".length) as "pause" | "resume" | "stop" | "recheckAndResume"](request.payload.preparedBatchId, request.payload.expectedRevision);
+    case "flow.videoQueue.reconcilePreAddFailure":
+      if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
+      return await dependencies.flowVideoQueue.reconcilePreAddFailure(request.payload.preparedBatchId, request.payload.expectedRevision);
     case "flow.video.reconcilePreClickFailure":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.reconcilePreClickFailure(request.payload);

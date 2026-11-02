@@ -62,6 +62,14 @@ export type FlowVideoAttachmentOperation = {
     pickerClickAttempted: false;
     reconciledAt: number;
   };
+  preAddReconciliationEvidence?: {
+    priorStatus: "uncertain";
+    priorReason: "candidate_missing_or_virtualized";
+    priorUpdatedAt: number;
+    producer: "historical_candidate_missing_before_add_activation";
+    addClickAttempted: false;
+    reconciledAt: number;
+  };
 };
 
 export type SelectedTargetRecord = {

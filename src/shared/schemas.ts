@@ -1093,6 +1093,10 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
   }),
   requestBase.extend({
+    type: z.literal("flow.videoQueue.reconcilePreAddFailure"),
+    payload: z.object({ preparedBatchId: z.literal("prepared:default:1235934d-8b2d-43b9-990c-8e103413d179"), expectedRevision: z.number().int().nonnegative() }).strict(),
+  }),
+  requestBase.extend({
     type: z.literal("flow.video.reconcilePreClickFailure"),
     payload: z.object({
       preparedBatchId: z.literal("prepared:default:1235934d-8b2d-43b9-990c-8e103413d179"),

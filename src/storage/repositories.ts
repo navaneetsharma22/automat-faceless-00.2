@@ -3216,6 +3216,33 @@ export class ExtensionRepositories {
     });
   }
 
+  async reconcileFlowVideoPreAddFailure(input: {
+    expectedRevision: number;
+    expectedOperations: Array<{ id: string; operation?: FlowVideoAttachmentOperation }>;
+    expectedOperation: FlowVideoAttachmentOperation;
+    nextOperation: FlowVideoAttachmentOperation;
+    nextQueue: FlowVideoQueueRecord;
+  }): Promise<FlowVideoQueueRecord | undefined> {
+    if (!FlowVideoQueueRecordSchema.safeParse(input.nextQueue).success)
+      throw new Error("flow_video_queue_invalid");
+    return this.tables.transaction(["flowVideoQueues+flowVideoAttachmentOperations"], async () => {
+      const queue = await this.tables.flowVideoQueues.get(input.nextQueue.queueId);
+      if (!queue || queue.revision !== input.expectedRevision) return undefined;
+      for (const snapshot of input.expectedOperations) {
+        const operation = await this.tables.flowVideoAttachmentOperations.get(snapshot.id);
+        if (JSON.stringify(operation) !== JSON.stringify(snapshot.operation)) return undefined;
+      }
+      const current = await this.tables.flowVideoAttachmentOperations.get(input.expectedOperation.id);
+      if (JSON.stringify(current) !== JSON.stringify(input.expectedOperation)) return undefined;
+      if (input.nextQueue.revision !== queue.revision + 1) throw new Error("flow_video_queue_revision_invalid");
+      await this.tables.flowVideoAttachmentOperations.put(input.nextOperation);
+      await this.tables.flowVideoQueues.put(input.nextQueue);
+      const saved = await this.tables.flowVideoQueues.get(input.nextQueue.queueId);
+      if (!saved || !FlowVideoQueueRecordSchema.safeParse(saved).success) throw new Error("flow_video_queue_persistence_failed");
+      return saved;
+    });
+  }
+
   async listFlowVideoQueues(): Promise<FlowVideoQueueRecord[]> {
     const records = await this.tables.flowVideoQueues.toArray();
     if (records.some((record) => !FlowVideoQueueRecordSchema.safeParse(record).success))

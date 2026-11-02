@@ -338,6 +338,42 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     expect(request).toHaveBeenCalledWith("flow.videoQueue.recheckAndResume", { preparedBatchId: "prepared:default:req-12345", expectedRevision: 4 });
   });
 
+  it("exposes exact Shot 2 pre-Add reconciliation and then a separate Resume action", async () => {
+    const batchId = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
+    const shotTwoRef = "e8c9315f-f79a-45c6-8184-4fddfce541ce";
+    const base = {
+      queueId: `flow-video:${batchId}`, preparedBatchId: batchId, state: "paused", pauseReason: "candidate_missing_or_virtualized", nextActionAt: null, revision: 9,
+      items: [
+        { itemId: "import:default:video:item:0", order: 0, shotId: "1", referenceId: "014ebcff-06e3-4ac2-b980-568f0755febf", promptHash: "a".repeat(64), state: "sent", attemptId: "shot-one" },
+        { itemId: "import:default:video:item:1", order: 1, shotId: "2", referenceId: shotTwoRef, promptHash: "b".repeat(64), state: "uncertain", reason: "candidate_missing_or_virtualized" },
+      ],
+    };
+    let reconciled = false;
+    const request = vi.fn(async (type: string) => {
+      if (type === "flow.videoQueue.get") return base;
+      if (type === "flow.videoQueue.reconcilePreAddFailure") {
+        reconciled = true;
+        return { ...base, state: "paused", pauseReason: "pre_add_failure_reconciled", revision: 10,
+          items: [base.items[0], { ...base.items[1], state: "pending", reason: undefined, priorReason: "candidate_missing_or_virtualized" }] };
+      }
+      return null;
+    });
+    const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
+    const preparedBatch = { ...mockPreparedBatch, id: batchId };
+    await act(async () => {
+      root?.render(createElement(PreparedBatchReview, { preparedBatch, persistenceClient: client }));
+      await Promise.resolve();
+    });
+    const reconcile = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent?.includes("Reconcile Shot 2 pre-Add failure"));
+    expect(reconcile).toBeDefined();
+    await act(async () => { reconcile?.click(); await Promise.resolve(); });
+    expect(request).toHaveBeenCalledWith("flow.videoQueue.reconcilePreAddFailure", { preparedBatchId: batchId, expectedRevision: 9 });
+    expect(container?.textContent).toContain("Resume is a separate action");
+    expect(Array.from(container?.querySelectorAll("button") ?? []).some((button) => button.textContent?.trim() === "Resume")).toBe(true);
+    expect(reconciled).toBe(true);
+    expect(request.mock.calls.some(([type]) => type === "flow.videoQueue.resume" || type === "flow.video.attachReference" || type === "flow.video.generateOnce")).toBe(false);
+  });
+
   it("displays metadata grid with destination, target, declared duration, and expandable JSON", () => {
     act(() => {
       root?.render(

@@ -7,6 +7,7 @@ import type { FlowVideoQueueRecord } from "../../src/domain/jobs/videoQueue";
 import type { PreparedVideoBatchRecord } from "../../src/domain/batches/types";
 import type { FlowVideoAttachmentOperation } from "../../src/storage/db";
 import type { ReferenceByteComparisonDiagnostic } from "../../src/domain/media/references";
+import { sha256Bytes } from "../../src/domain/media/references";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 
 const batchId = "prepared-video-two-shots";
@@ -353,5 +354,100 @@ describe("P09.3 Flow video timed submission", () => {
   it("uses a 60-second readiness timeout and 30-second submission floor", () => {
     expect(VIDEO_QUEUE_DISPATCH_GAP_MS).toBe(30_000);
     expect(VIDEO_QUEUE_READINESS_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it("reconciles only the exact historical pre-Add Shot 2 snapshot and leaves Resume separate", async () => {
+    const historicBatchId = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
+    const shotOneId = "import:default:video:item:0";
+    const shotTwoId = "import:default:video:item:1";
+    const shotOneRef = "014ebcff-06e3-4ac2-b980-568f0755febf";
+    const shotTwoRef = "e8c9315f-f79a-45c6-8184-4fddfce541ce";
+    const shotTwoUpdatedAt = 1793616678655;
+    const byteData = new Uint8Array([1, 2, 3, 4, 5]);
+    const referenceSha = await sha256Bytes(byteData);
+    const bodies = [JSON.stringify({ shot_id: "1" }), JSON.stringify({ shot_id: "2" })];
+    const hashes = await Promise.all(bodies.map((body) => sha256Hex(body)));
+    const reference = (referenceId: string) => ({ referenceId, assignmentVersion: 1, sha256: referenceSha, mimeType: "image/png", byteSize: byteData.length, width: 1, height: 1, capturedAt: 1 });
+    const batch: PreparedVideoBatchRecord = {
+      id: historicBatchId, requestId: "33333333-3333-4333-8333-333333333333", workspaceId: "default", preparedAt: 1, videoBatchId: "video-source", videoSourceHash: "a".repeat(64), videoSourceText: "[]",
+      imageSourceBatchId: "image-source", imageSourceBatchHash: "b".repeat(64), destination: "Flow",
+      target: { provider: "Flow", tabId: 7, canonicalTarget: "https://flow.google.com/project/p", projectId: "p", documentId: "doc", verification: "verified", verifiedAt: 1 },
+      manualSettingsDeclaration: { confirmationId: "confirm", confirmedAt: 1, destination: "Flow", declaredDurationSeconds: 6, tabId: 7, canonicalTarget: "https://flow.google.com/project/p", projectId: "p", documentId: "doc" },
+      status: "prepared", itemCount: 2, items: [
+        { itemId: shotOneId, order: 0, shotId: "1", canonicalShotId: "1", rawJsonBody: bodies[0]!, contentHash: hashes[0]!, sourceSpan: { start: 0, end: bodies[0]!.length }, reference: reference(shotOneRef) },
+        { itemId: shotTwoId, order: 1, shotId: "2", canonicalShotId: "2", rawJsonBody: bodies[1]!, contentHash: hashes[1]!, sourceSpan: { start: 0, end: bodies[1]!.length }, reference: reference(shotTwoRef) },
+      ], createdAt: 1, updatedAt: 1,
+    };
+    const db = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(db);
+    await db.preparedVideoBatches.put(batch);
+    await db.referenceAssignments.put({
+      assignmentId: "default:image-source:2", referenceId: shotTwoRef, captureOperationId: "33333333-3333-4333-8333-333333333333", workspaceId: "default", batchId: "image-source", batchSourceHash: "b".repeat(64), shotId: "2", promptHash: "c".repeat(64),
+      selectionVersion: "44444444-4444-4444-8444-444444444444", assignmentVersion: 1, flowProjectId: "p", tabId: 7, canonicalTarget: batch.target.canonicalTarget, documentId: "doc", providerAssetId: "media-shot-2", observedSourceSha256: referenceSha,
+      bytes: new Blob([byteData], { type: "image/png" }), mimeType: "image/png", byteSize: byteData.length, sha256: referenceSha, width: 1, height: 1, capturedAt: 1,
+      acquisitionProvenance: "verified_flow_document_extension_fetch", qualityProvenance: "observed_resource_original_bytes_no_upscale",
+    });
+    const firstGeneration: NonNullable<FlowVideoAttachmentOperation["videoGeneration"]> = {
+      attemptId: "shot-one-dispatch", preparedBatchId: historicBatchId, itemId: shotOneId, canonicalShotId: "1", promptHash: hashes[0]!, referenceId: shotOneRef,
+      tabId: 7, projectId: "p", canonicalTarget: batch.target.canonicalTarget, documentId: "doc", state: "dispatched", createdAt: 1793616600000, updatedAt: 1793616600000,
+    };
+    const shotOneOperation: FlowVideoAttachmentOperation = { id: `${historicBatchId}:${shotOneId}`, preparedBatchId: historicBatchId, itemId: shotOneId, referenceId: shotOneRef, status: "attached", updatedAt: 1793616600000, videoGeneration: firstGeneration };
+    const shotTwoOperation: FlowVideoAttachmentOperation = { id: `${historicBatchId}:${shotTwoId}`, preparedBatchId: historicBatchId, itemId: shotTwoId, referenceId: shotTwoRef, status: "uncertain", reason: "candidate_missing_or_virtualized", updatedAt: shotTwoUpdatedAt };
+    await repositories.putFlowVideoAttachmentOperation(shotOneOperation);
+    await repositories.putFlowVideoAttachmentOperation(shotTwoOperation);
+    const queue: FlowVideoQueueRecord = {
+      queueId: `flow-video:${historicBatchId}`, preparedBatchId: historicBatchId, state: "paused", pauseReason: "candidate_missing_or_virtualized",
+      items: [
+        { itemId: shotOneId, order: 0, shotId: "1", referenceId: shotOneRef, promptHash: hashes[0]!, state: "sent", attemptId: firstGeneration.attemptId, dispatchReceipt: { attemptId: firstGeneration.attemptId, storedAt: firstGeneration.updatedAt } },
+        { itemId: shotTwoId, order: 1, shotId: "2", referenceId: shotTwoRef, promptHash: hashes[1]!, state: "uncertain", reason: "candidate_missing_or_virtualized" },
+      ], lastDispatchAt: firstGeneration.updatedAt, nextActionAt: null, revision: 9, createdAt: 1, updatedAt: shotTwoUpdatedAt,
+    };
+    await repositories.createFlowVideoQueue(queue);
+    const create = vi.fn(async () => undefined);
+    const clear = vi.fn(async () => true);
+    const revalidate = vi.fn(async () => undefined);
+    const attach = vi.fn(async () => ({ status: "attached" }));
+    const generate = vi.fn(async () => ({ status: "dispatched" }));
+    const handler = createFlowVideoQueueHandler({ repositories, alarms: { create, clear } as never, attachReference: attach, generateOnce: generate, revalidate, now: () => 1793616700000 });
+
+    const reconciled = await handler.reconcilePreAddFailure(historicBatchId, queue.revision);
+    expect(reconciled).toMatchObject({ state: "paused", revision: 10, pauseReason: "pre_add_failure_reconciled", items: [{ state: "sent", attemptId: firstGeneration.attemptId }, { state: "pending", priorReason: "candidate_missing_or_virtualized" }] });
+    expect(await repositories.getFlowVideoAttachmentOperation(shotTwoOperation.id)).toMatchObject({
+      id: shotTwoOperation.id, status: "blocked", reason: "pre_add_failure_reconciled", updatedAt: 1793616700000,
+      preAddReconciliationEvidence: { priorStatus: "uncertain", priorReason: "candidate_missing_or_virtualized", priorUpdatedAt: shotTwoUpdatedAt, producer: "historical_candidate_missing_before_add_activation", addClickAttempted: false, reconciledAt: 1793616700000 },
+    });
+    expect(await repositories.getFlowVideoAttachmentOperation(shotOneOperation.id)).toEqual(shotOneOperation);
+    expect(attach).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+
+    const changedCurrent = { ...shotTwoOperation, reason: "concurrent_change" };
+    await repositories.putFlowVideoAttachmentOperation(changedCurrent);
+    const expectedOperations = await Promise.all(reconciled.items.map(async (entry) => ({ id: `${historicBatchId}:${entry.itemId}`, operation: await repositories.getFlowVideoAttachmentOperation(`${historicBatchId}:${entry.itemId}`) })));
+    expect(await repositories.reconcileFlowVideoPreAddFailure({
+      expectedRevision: reconciled.revision, expectedOperations, expectedOperation: shotTwoOperation,
+      nextOperation: { ...changedCurrent, status: "blocked", reason: "should_not_write" }, nextQueue: { ...reconciled, revision: reconciled.revision + 1 },
+    })).toBeUndefined();
+    expect(await repositories.getFlowVideoAttachmentOperation(shotTwoOperation.id)).toEqual(changedCurrent);
+
+    const intent = { ...shotTwoOperation, videoGeneration: {
+      attemptId: "unexpected-intent", preparedBatchId: historicBatchId, itemId: shotTwoId, canonicalShotId: "2", promptHash: hashes[1]!, referenceId: shotTwoRef,
+      tabId: 7, projectId: "p", canonicalTarget: batch.target.canonicalTarget, documentId: "doc", state: "dispatch_intent" as const, createdAt: 1, updatedAt: 1,
+    } };
+    await repositories.putFlowVideoAttachmentOperation(intent);
+    const uncertainQueue = await repositories.updateFlowVideoQueue({ expectedRevision: reconciled.revision, next: {
+      ...reconciled, state: "paused", pauseReason: "candidate_missing_or_virtualized", revision: reconciled.revision + 1, updatedAt: 1793616700001,
+      items: reconciled.items.map((entry) => entry.itemId === shotTwoId ? { ...entry, state: "uncertain", reason: "candidate_missing_or_virtualized" } : entry),
+    } });
+    await expect(handler.reconcilePreAddFailure(historicBatchId, uncertainQueue!.revision)).rejects.toThrow("flow_video_pre_add_operation_snapshot_mismatch");
+    expect(attach).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+
+    const unrelatedUncertain = await repositories.updateFlowVideoQueue({ expectedRevision: uncertainQueue!.revision, next: {
+      ...uncertainQueue!, revision: uncertainQueue!.revision + 1, updatedAt: 1793616700002,
+      items: [...uncertainQueue!.items, { itemId: "unrelated", order: 2, shotId: "3", referenceId: shotOneRef, promptHash: hashes[0]!, state: "uncertain", reason: "unrelated_uncertainty" }],
+    } });
+    await expect(handler.reconcilePreAddFailure(historicBatchId, unrelatedUncertain!.revision)).rejects.toThrow("flow_video_queue_has_unrelated_uncertainty");
+    expect(attach).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
   });
 });
