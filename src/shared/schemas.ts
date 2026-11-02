@@ -1048,6 +1048,14 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("videoBatch.getPrepared"),
     payload: z.object({ workspaceId: workspaceIdSchema }).strict(),
   }),
+  requestBase.extend({
+    type: z.literal("flow.video.attachReference"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.video.getAttachmentStatus"),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
+  }),
 ]);
 
 export const FailureCategorySchema = z.enum([

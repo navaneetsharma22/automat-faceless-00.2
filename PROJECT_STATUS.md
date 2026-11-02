@@ -22,7 +22,7 @@ Baseline: 28 October 2026.
 | Manual Flow reference selection (P07.1)                       | OFFLINE_VERIFIED; extension-owned picker is the supported path; user-reported live selection/save evidence for Shots 34/35; direct Flow click/right-click alternatives unverified                            |
 | Durable reference capture and assignment review (P07.2/P07.3) | OFFLINE_VERIFIED; real IndexedDB capture/replacement/reopen/reorder regression; user-reported live saved-image persistence for Shots 34/35; G-REFERENCE COMPLETE for Phase 07 scope                          |
 | Stable Shot-ID pairing and video review (P08.2)               | OFFLINE_VERIFIED; pure deterministic validator joins explicit canonical Shot IDs; UI displays exact video JSON, thumbnails, matched/invalid counts, and unused references                                    |
-| Video preparation & settings confirmation (P08.3)           | OFFLINE_VERIFIED; AC14–AC17 pass offline; exclusive Flow/Vids destination, manual tracking duration, durable immutable prepared snapshot with pinned media, zero execution queues |
+| Video preparation & settings confirmation (P08.3)             | OFFLINE_VERIFIED; AC14–AC17 pass offline; exclusive Flow/Vids destination, manual tracking duration, durable immutable prepared snapshot with pinned media, zero execution queues                            |
 
 The application includes the dashboard, bounded read-only provider connections, exact JSON import/preservation, P04.1/P04.2 offline/local-fixture scope, and the P04.3 evidence-backed discovery/fill-only compatibility implementation recorded below. **USER_REPORTED_PASS:** Flow and Vids now connect after the shared route-parser correction, including the account-prefixed Flow context. The user-supplied diagnostic exposed a visible contenteditable candidate and the local implementation now supports that exact observed host structure. The new package has not been confirmed in the user's loaded browser. Live fill/readback and generation remain unverified. Vids preservation evidence remains limited to the shown empty-document test.
 
@@ -1129,7 +1129,7 @@ Implemented local preparation and persistence of reviewed video batches with exa
    - `Destination` component (`src/app/features/video-batch/Destination.tsx`) provides exclusive radio controls for Flow or Vids. No third destination, combined routing, or fallback.
    - Requires verified connected target (`verification === "verified"` and `connectionState === "verified"`).
    - User-declared duration (whole seconds) recorded as tracking metadata only; no JSON duration inference, offset calculation, or comparison.
-   - Provider-specific confirmation wording: *"I manually selected and checked the settings in Flow/Vids for this batch."*
+   - Provider-specific confirmation wording: _"I manually selected and checked the settings in Flow/Vids for this batch."_
    - Confirmation resets automatically on destination change, target change, declared duration change, video draft/source change, selected image source change, or reference assignment version change.
 
 2. **Durable Immutable Prepared Video-Batch Snapshot**:
@@ -1143,12 +1143,13 @@ Implemented local preparation and persistence of reviewed video batches with exa
    - Zero execution queue items, alarms, uploads, prompt injections, or Generate actions.
 
 3. **Honest Preparation Review & Reload**:
-   - `PreparedBatchReview` (`src/app/features/video-batch/PreparedBatchReview.tsx`) renders prominent banner: *"Prepared — not submitted to Flow/Vids."*
-   - Explicit disclaimer: *"Provider Execution Unavailable: This video batch is prepared and persisted locally. No provider requests, scheduler alarms, prompt insertions, or generate actions were executed. Provider execution is not implemented in this phase (P08.3)."*
+   - `PreparedBatchReview` (`src/app/features/video-batch/PreparedBatchReview.tsx`) renders prominent banner: _"Prepared — not submitted to Flow/Vids."_
+   - Explicit disclaimer: _"Provider Execution Unavailable: This video batch is prepared and persisted locally. No provider requests, scheduler alarms, prompt insertions, or generate actions were executed. Provider execution is not implemented in this phase (P08.3)."_
    - Displays Prepared Batch ID, Destination, Target, Declared Duration (`{duration}s User-declared whole-batch metadata`), paired shot count, saved thumbnails via existing local media path, and expandable raw video JSON.
    - Restores automatically on dashboard reload from `preparedVideoBatches`.
 
 Checks:
+
 - `tests/integration/videoBatchPreparation.test.ts`: **13/13 PASS**.
 - `tests/unit/destinationPresentation.test.tsx`: **7/7 PASS**.
 - Full test suite: **42 test files / 474 tests PASS**.
@@ -1166,9 +1167,26 @@ Fixed the Videos destination panel staying stale after a successful reconnect. T
 
 Focused regressions: `tests/unit/selectedTargetConnectionStore.test.ts`, `tests/unit/destinationPresentation.test.tsx`, and `tests/integration/videoBatchPreparation.test.ts` passed (**25/25 tests**). Typecheck, ESLint, Prettier for changed source/tests/evidence, `git diff --check`, and production build passed. Package ID: **`automat-faceless-0.1.0-mvxkytjz`**; output: `dist/` (4 JavaScript bundles). Live reconnect remains **NOT_RUN**; verification is synthetic/offline.
 
+## P09.1 Flow video reference attachment correction - 2 November 2026
 
-## P09.1 Flow video reference attachment investigation - 1 November 2026
+Corrected the offline adapter in `src/platforms/flow/video.ts` to resolve the prepared item's pinned reference, select its gallery/picker row independent of active preview/title/order, find the separate text-labeled Add to prompt action inside a scoped list/detail panel, and observe one ready identity-matched chip without replay. Saved and current candidate byte hashes remain separate checks. Target/mode/candidate/preview state is re-resolved around asynchronous steps. A per-document guard coalesces concurrent requests and inspects uncertain delivery on re-entry.
 
-P09.1 implementation remains **NOT_STARTED**. The requested starter files src/platforms/flow/video.ts and tests/unit/flowVideoReference.test.ts are absent. Existing P07 reference records provide pinned bytes, SHA-256, MIME type, dimensions, capture provenance, project/tab/document binding and providerAssetId when observed. Existing P08 prepared items pin referenceId, assignmentVersion, SHA-256, MIME type and dimensions. However, repository evidence contains no inspected Flow video composer DOM or asset-picker/gallery identity/version contract, and no inspectable Flow browser tab was available during this task.
+Runtime wiring review found no production P09.1 caller or attachment message. `PreparedBatchReview` continues to show provider execution unavailable. Existing pieces include saved-reference retrieval through `getSavedReference`/`getReferenceById` and same-origin candidate capture through `flowReferenceCaptureInPage`; no handler wires these with a current binding recheck and chip identity contract. The supplied chip example has no verified relation to gallery `data-media-id`; the adapter requires an explicit verified identity reader, and no production reader exists. **The runtime attachment feature remains unavailable.** The in-module guard is not durable across worker restarts and is not a runtime recovery system.
 
-Exact attachment therefore cannot be implemented or reported as verified without inventing selectors or treating provider asset ID/thumbnail equality as proof of byte identity. No provider action, DOM mutation, prompt entry, Generate action, setting change, or queue operation was performed. P09.1 remains incomplete; the specific next evidence needed is a read-only inspection of the current Flow Video + Ingredients composer and evidenced picker/gallery DOM, including a reliable asset identity/version or byte relationship for the already-captured reference. G-FLOW-VIDEO remains **NOT_PASSED**. No focused tests or build were run because no safe implementation path could be established.
+Offline fixtures use separate list/detail DOM and a test-only identity reader. Focused Vitest: **1 file / 9 tests PASS**. Typecheck **PASS**; ESLint **PASS**; production build **PASS**, package ID **`automat-faceless-0.1.0-mvyn9f1g`** (4 JavaScript bundles; existing Vite inlineDynamicImports/code-splitting warning); `git diff --check` **PASS**. No live provider action, prompt entry, generation, settings change, or queue dispatch occurred. Live attachment is **NOT_RUN**; G-FLOW-VIDEO remains **NOT_PASSED**. P09.2 was not started.
+
+### P09.1 runtime wiring follow-up - 2 November 2026
+
+Added the Flow-only per-item **Attach reference** action to prepared video review and schema-validated attach/status messages. The exact runtime chain is `PreparedBatchReview` → `createFoundationClient` → `flow.video.attachReference` → `createConnectionMessageListener` → `createFlowVideoAttachmentHandler` → `ExtensionRepositories` + exact-document `chrome.scripting.executeScript`. The handler loads the prepared snapshot and item independently, loads the pinned media by its prepared `referenceId`, validates assignment metadata and saved bytes/hash, checks the selected Flow binding and route, discovers the gallery URL/media ID from the bound document, captures candidate bytes using `flowReferenceCaptureInPage`, and compares SHA-256 before any page action.
+
+Chip identity now uses `flowVideoChipMediaIdFromImageUrl`: exact HTTPS `flow-content.google` origin and `/image/<UUID>` path, with UUID comparison against the dynamically observed gallery media ID. Signed query values are ignored. User-supplied direct inspection is preserved in [Flow chip identity evidence](docs/evidence/flow-video-chip-identity.md); it establishes only the observed sample relationship. IndexedDB `flowVideoAttachmentOperations` stores activation intent before the sole Add action and records verified/uncertain results; unresolved intent is inspected read-only and cannot trigger another activation. The action leaves prompt text, settings, Generate, queues, prepared JSON, and video completion unchanged. No legacy/reference evidence folder existed, so the supplied observation was recorded in a new separate evidence file.
+
+Checks: `npm run typecheck` **PASS**; `npm run lint` **PASS**; production build **PASS**, package ID **`automat-faceless-0.1.0-mvynvr68`** (4 JavaScript bundles; existing Vite inlineDynamicImports/code-splitting warning); `git diff --check` **PASS**; `tests/unit/flowVideoReference.test.ts` **10/10 PASS** after rerun with the reviewed test command. Offline request-to-handler integration tests were not completed. Live extension attachment remains **NOT_RUN**; G-FLOW-VIDEO remains **NOT_PASSED**. P09.2 was not started.
+
+### P09.1 request-to-handler verification follow-up - 2 November 2026
+
+The previously missing offline request-to-handler integration coverage is now **COMPLETE**. Added `tests/integration/flowVideoReferenceAttachment.test.ts`, exercising the real foundation client, request schema, connection dispatcher, attachment handler, and repository behavior. It covers success, rejected request and preflight cases, exact tab/document binding, saved/candidate byte mismatch, chip identity rejection, concurrency, response loss/injection exception, handler recreation/readback, reference preservation after reselection, and unchanged prepared prompt/queue state. Only external tab and Chrome scripting outputs are simulated; those outputs do not establish live Flow compatibility.
+
+Added `tests/browser/flowVideoAttachmentStorage.spec.ts` and harness. Chromium opens a v9 IndexedDB containing existing prepared, pinned-reference, and queue records, upgrades it using production `AutomatDatabase` v10, verifies records remain, claims intent through production `ExtensionRepositories`, closes/reopens the database, and verifies the intent persists. The same browser harness also routes an actual foundation-client request through dispatcher/handler/Dexie repository using simulated `chrome.scripting` output.
+
+Results: focused Vitest **4 files / 40 tests PASS** (`flowVideoReferenceAttachment`, `videoBatchPreparation`, `flowVideoReference`, `messages`); Chromium IndexedDB **1/1 PASS**; typecheck **PASS**; `npm run lint` **PASS**; build **PASS**, package ID **`automat-faceless-0.1.0-mvyofeth`** (4 JavaScript bundles; existing Vite inlineDynamicImports/code-splitting warning); `git diff --check` **PASS**. Live attachment remains **NOT_RUN**, and G-FLOW-VIDEO remains **NOT_PASSED**. P09.2 was not started.

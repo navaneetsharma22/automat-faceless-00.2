@@ -114,6 +114,10 @@ export type FoundationDependencies = {
     ) => Promise<{ accepted: boolean; code?: string }>;
     invalidateActiveSession: (reason: string) => Promise<void>;
   };
+  flowVideoAttachment?: {
+    attach: (preparedBatchId: string, itemId: string) => Promise<unknown>;
+    status: (preparedBatchId: string, itemId: string) => Promise<unknown>;
+  };
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -752,6 +756,12 @@ async function dispatch(
       );
       return record ?? null;
     }
+    case "flow.video.attachReference":
+      if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
+      return await dependencies.flowVideoAttachment.attach(request.payload.preparedBatchId, request.payload.itemId);
+    case "flow.video.getAttachmentStatus":
+      if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
+      return await dependencies.flowVideoAttachment.status(request.payload.preparedBatchId, request.payload.itemId);
   }
 }
 

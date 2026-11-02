@@ -27,3 +27,4 @@ node_modules/
 !docs/evidence/timed-image-queue.md
 config.bat
 !docs/evidence/flow-video-attachment.md
+!docs/evidence/flow-video-chip-identity.md

@@ -37,6 +37,7 @@ import {
   inspectFlowEditorAgainstQueueItem,
 } from "./generationQueue";
 import { flowTabFromUrl } from "../platforms/flow/connection";
+import { createFlowVideoAttachmentHandler } from "./handlers/flowVideoAttachment";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -123,6 +124,12 @@ const flowReferenceHandler = createFlowReferenceHandler({
   },
   sendToDocument: (tabId, documentId, message) =>
     chrome.tabs.sendMessage(tabId, message, { documentId }),
+});
+const flowVideoAttachment = createFlowVideoAttachmentHandler({
+  repositories,
+  scripting: { executeScript: (input) => chrome.scripting.executeScript(input as never) },
+  getTab: async (tabId) => chrome.tabs.get(tabId),
+  revalidate: () => connectionLifecycle.revalidate("Flow", false),
 });
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   void (async () => {
@@ -423,6 +430,7 @@ chrome.runtime.onMessage.addListener(
     flowCountRebaseline,
     flowImageObservation: flowImageObservation.handle,
     flowReferenceHandler,
+    flowVideoAttachment,
     startTimedImageQueue: timedQueueScheduler.start,
     commandTimedImageQueue: (command, queueId, expectedRevision) =>
       timedQueueScheduler[command](queueId, expectedRevision),

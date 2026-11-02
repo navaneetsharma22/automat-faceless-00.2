@@ -9,6 +9,7 @@ import type {
 import type { FlowImageAttemptRecord } from "../../src/domain/jobs/attempt";
 import type { FlowImagePromptSnapshotRecord } from "../../src/domain/batches/flowImagePromptSnapshot";
 import type { FlowCountRecoveryRecord } from "../../src/storage/db";
+import type { FlowVideoAttachmentOperation } from "../../src/storage/db";
 import type { ImageSubmissionQueueRecord } from "../../src/domain/jobs/queue";
 import type {
   ReferenceAssignmentRecord,
@@ -36,6 +37,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   >();
   const preparedVideoBatches = new Map<string, PreparedVideoBatchRecord>();
   const pinnedReferenceMedia = new Map<string, ReferenceAssignmentRecord>();
+  const flowVideoAttachmentOperations = new Map<string, FlowVideoAttachmentOperation>();
   let transactionTail = Promise.resolve();
 
   const table = <T extends object>(
@@ -113,6 +115,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
       pinnedReferenceMedia,
       (item) => item.referenceId,
     ),
+    flowVideoAttachmentOperations: table(flowVideoAttachmentOperations, (item) => item.id),
     transaction: async (_tableNames, operation) => {
       let release!: () => void;
       const previous = transactionTail;
@@ -134,6 +137,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
         referenceCaptureOperations,
         preparedVideoBatches,
         pinnedReferenceMedia,
+        flowVideoAttachmentOperations,
       ].map((values) => new Map(values));
       try {
         return await operation();
@@ -152,6 +156,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
           referenceCaptureOperations,
           preparedVideoBatches,
           pinnedReferenceMedia,
+          flowVideoAttachmentOperations,
         ].forEach((values, index) => {
           values.clear();
           for (const [key, value] of snapshots[index]!) {

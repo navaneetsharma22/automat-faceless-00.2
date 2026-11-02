@@ -33,10 +33,8 @@ export function PreparedBatchReview({
             Prepared — not submitted to Flow/Vids.
           </h3>
           <p className={styles.disclaimer}>
-            <strong>Provider Execution Unavailable:</strong> This video batch is
-            prepared and persisted locally. No provider requests, scheduler
-            alarms, prompt insertions, or generate actions were executed. Provider
-            execution is not implemented in this phase (P08.3).
+            Flow reference attachment is available per item. The batch remains
+            prepared: no video prompt is entered and no generation is submitted.
           </p>
         </div>
         <span className={styles.badge}>Status: Prepared</span>
@@ -88,6 +86,8 @@ export function PreparedBatchReview({
           <PreparedItemCard
             key={item.itemId}
             item={item}
+            preparedBatchId={preparedBatch.id}
+            eligible={preparedBatch.destination === "Flow"}
             persistenceClient={persistenceClient}
           />
         ))}
@@ -98,13 +98,39 @@ export function PreparedBatchReview({
 
 function PreparedItemCard({
   item,
+  preparedBatchId,
+  eligible,
   persistenceClient,
 }: {
   item: PreparedVideoBatchRecord["items"][number];
+  preparedBatchId: string;
+  eligible: boolean;
   persistenceClient: ReturnType<typeof createFoundationClient>;
 }) {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [attachmentStatus, setAttachmentStatus] = useState("Loading attachment status…");
+  const [attaching, setAttaching] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void persistenceClient.request("flow.video.getAttachmentStatus", { preparedBatchId, itemId: item.itemId }).then((result) => {
+      const status = (result as { status?: string; reason?: string })?.status ?? "not_started";
+      if (!cancelled) setAttachmentStatus(status === "attached" || status === "already_attached" ? "Attached and verified" : status === "uncertain" ? "Attachment delivery uncertain" : status === "blocked" ? `Blocked: ${(result as { reason?: string }).reason ?? "review required"}` : "Not attached");
+    }).catch(() => { if (!cancelled) setAttachmentStatus("Status unavailable"); });
+    return () => { cancelled = true; };
+  }, [preparedBatchId, item.itemId, persistenceClient]);
+
+  async function attachReference() {
+    setAttaching(true);
+    setAttachmentStatus("Checking Flow target and reference…");
+    try {
+      const result = (await persistenceClient.request("flow.video.attachReference", { preparedBatchId, itemId: item.itemId })) as { status?: string; reason?: string };
+      const status = result?.status;
+      setAttachmentStatus(status === "attached" ? "Attached and verified" : status === "already_attached" ? "Already attached and verified" : status === "uncertain" ? "Attachment delivery uncertain — inspect Flow before retrying" : status === "blocked" ? `Blocked: ${result?.reason ?? "preflight failed"}` : "Attachment status unavailable");
+    } catch { setAttachmentStatus("Attachment delivery uncertain — inspect Flow before retrying"); }
+    finally { setAttaching(false); }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -160,6 +186,8 @@ function PreparedItemCard({
           </p>
         </div>
       </div>
+
+      {eligible ? <div><button type="button" disabled={attaching || attachmentStatus.startsWith("Attached") || attachmentStatus.startsWith("Already attached")} onClick={() => void attachReference()}>{attaching ? "Attaching…" : "Attach reference"}</button><span role="status" aria-live="polite"> {attachmentStatus}</span></div> : null}
 
       <details className={styles.details}>
         <summary className={styles.summary}>

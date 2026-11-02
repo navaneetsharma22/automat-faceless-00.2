@@ -21,6 +21,16 @@ export type PromptDraftRecord = {
   updatedAt: number;
 };
 
+export type FlowVideoAttachmentOperation = {
+  id: string;
+  preparedBatchId: string;
+  itemId: string;
+  referenceId: string;
+  status: "action_intent" | "attached" | "uncertain" | "blocked";
+  reason?: string;
+  updatedAt: number;
+};
+
 export type SelectedTargetRecord = {
   provider: "Flow" | "Vids";
   tabId: number;
@@ -164,6 +174,7 @@ export class AutomatDatabase extends Dexie {
   referenceCaptureOperations!: Table<ReferenceCaptureOperationRecord, string>;
   preparedVideoBatches!: Table<PreparedVideoBatchRecord, string>;
   pinnedReferenceMedia!: Table<ReferenceAssignmentRecord, string>;
+  flowVideoAttachmentOperations!: Table<FlowVideoAttachmentOperation, string>;
 
   constructor(name = "automat-faceless-app-v1") {
     super(name);
@@ -273,6 +284,22 @@ export class AutomatDatabase extends Dexie {
         "&id, requestId, workspaceId, videoBatchId, destination, status, createdAt",
       pinnedReferenceMedia:
         "&referenceId, workspaceId, batchId, shotId, sha256",
+    });
+    this.version(10).stores({
+      promptDrafts: "&id, kind, updatedAt",
+      selectedTargets: "&provider, tabId, verification, updatedAt",
+      workflows: "&id, updatedAt",
+      batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
+      promptItems: "&id, batchId, workspaceId, kind, order",
+      flowImageAttempts: "&attemptId, &activeKey, &confirmationKey, workspaceId, batchId, itemId, state, createdAt",
+      flowImagePromptSnapshots: "&snapshotId, workspaceId, batchId, itemId, promptHash, createdAt",
+      flowCountRecoveries: "&recoveryId, oldAttemptId, oldSourceHash, newSourceHash, projectId, createdAt",
+      imageSubmissionQueues: "&queueId, workspaceId, state, createdAt",
+      referenceAssignments: "&assignmentId, referenceId, captureOperationId, workspaceId, batchId, shotId, selectionVersion",
+      referenceCaptureOperations: "&captureOperationId, workspaceId, batchId, shotId, status, startedAt",
+      preparedVideoBatches: "&id, requestId, workspaceId, videoBatchId, destination, status, createdAt",
+      pinnedReferenceMedia: "&referenceId, workspaceId, batchId, shotId, sha256",
+      flowVideoAttachmentOperations: "&id, preparedBatchId, itemId, referenceId, status, updatedAt",
     });
   }
 }

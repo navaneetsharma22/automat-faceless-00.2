@@ -168,6 +168,8 @@ export type RequestPayloads = {
   "videoBatch.getPrepared": {
     workspaceId: string;
   };
+  "flow.video.attachReference": { preparedBatchId: string; itemId: string };
+  "flow.video.getAttachmentStatus": { preparedBatchId: string; itemId: string };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -224,6 +226,8 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.reference.getSavedReference": 15_000,
   "videoBatch.prepare": 30_000,
   "videoBatch.getPrepared": 10_000,
+  "flow.video.attachReference": 30_000,
+  "flow.video.getAttachmentStatus": 5_000,
 };
 
 export function makeRequest<T extends RequestTypes>(

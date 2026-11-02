@@ -7,6 +7,7 @@ import {
   type SelectedTargetRecord,
   type WorkflowRecord,
   type FlowCountRecoveryRecord,
+  type FlowVideoAttachmentOperation,
 } from "./db";
 import {
   ImageSubmissionQueueRecordSchema,
@@ -308,6 +309,7 @@ export type RepositoryDatabase = {
     Table<ReferenceAssignmentRecord, string>,
     "put" | "get" | "toArray"
   >;
+  flowVideoAttachmentOperations: Pick<Table<FlowVideoAttachmentOperation, string>, "get" | "put" | "add">;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -331,6 +333,7 @@ export function createDexieRepositoryDatabase(
     referenceCaptureOperations: database.referenceCaptureOperations,
     preparedVideoBatches: database.preparedVideoBatches,
     pinnedReferenceMedia: database.pinnedReferenceMedia,
+    flowVideoAttachmentOperations: database.flowVideoAttachmentOperations,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -468,6 +471,8 @@ export function createDexieRepositoryDatabase(
             database.preparedVideoBatches,
             operation,
           );
+        case "flowVideoAttachmentOperations":
+          return database.transaction("rw", database.flowVideoAttachmentOperations, operation);
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -3125,6 +3130,27 @@ export class ExtensionRepositories {
     id: string,
   ): Promise<PreparedVideoBatchRecord | undefined> {
     return await this.tables.preparedVideoBatches.get(id);
+  }
+
+  async getFlowVideoAttachmentOperation(id: string): Promise<FlowVideoAttachmentOperation | undefined> {
+    return this.tables.flowVideoAttachmentOperations.get(id);
+  }
+
+  async putFlowVideoAttachmentOperation(operation: FlowVideoAttachmentOperation): Promise<void> {
+    await this.tables.flowVideoAttachmentOperations.put(operation);
+  }
+
+  async addFlowVideoAttachmentOperation(operation: FlowVideoAttachmentOperation): Promise<void> {
+    await this.tables.flowVideoAttachmentOperations.add(operation);
+  }
+
+  async claimFlowVideoAttachmentOperation(operation: FlowVideoAttachmentOperation): Promise<boolean> {
+    return this.tables.transaction(["flowVideoAttachmentOperations"], async () => {
+      const current = await this.tables.flowVideoAttachmentOperations.get(operation.id);
+      if (current && current.status !== "blocked") return false;
+      await this.tables.flowVideoAttachmentOperations.put(operation);
+      return true;
+    });
   }
 
   async listPreparedVideoBatches(
