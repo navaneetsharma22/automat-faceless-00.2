@@ -58,6 +58,63 @@ test("Flow document capture fetches, decodes, and hashes original same-origin im
   }
 });
 
+test("production default fetcher retains its native WorkerGlobalScope receiver", async ({
+  page,
+}) => {
+  await page.route("https://flow.google.com/**", (route) =>
+    route.fulfill({ status: 200, contentType: "text/html", body: "fixture" }),
+  );
+  await page.goto("https://flow.google.com/project/native-fetch-receiver");
+  await page.route(
+    "https://flow.google.com/native-fetch-receiver-fixture",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "text/plain",
+        body: "native worker fetch succeeded",
+      }),
+  );
+  const bundle = await rolldown({
+    input: resolve(
+      process.cwd(),
+      "tests/browser/referenceFetchWorkerHarness.ts",
+    ),
+  });
+  try {
+    const built = await bundle.generate({
+      format: "iife",
+      name: "ReferenceFetchWorkerFixture",
+    });
+    const chunk = built.output.find((output) => output.type === "chunk");
+    if (!chunk) throw new Error("Reference fetch worker harness missing");
+    const result = await page.evaluate(async (workerSource) => {
+      const workerUrl = URL.createObjectURL(
+        new Blob([workerSource], { type: "text/javascript" }),
+      );
+      const worker = new Worker(workerUrl);
+      try {
+        return await new Promise((resolve, reject) => {
+          worker.onmessage = (event) => resolve(event.data);
+          worker.onerror = (event) => reject(new Error(event.message));
+          worker.postMessage(
+            `${location.origin}/native-fetch-receiver-fixture`,
+          );
+        });
+      } finally {
+        worker.terminate();
+        URL.revokeObjectURL(workerUrl);
+      }
+    }, chunk.code);
+    expect(result).toEqual({
+      ok: true,
+      status: 200,
+      body: "native worker fetch succeeded",
+    });
+  } finally {
+    await bundle.close();
+  }
+});
+
 test("real IndexedDB persists captured reference bytes and preserves prior assignment on rejected replacement", async ({
   page,
 }) => {

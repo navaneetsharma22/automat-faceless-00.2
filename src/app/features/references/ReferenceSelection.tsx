@@ -10,6 +10,8 @@ import type {
 import { FLOW_REFERENCE_EVENT_MESSAGE } from "../../../shared/schemas";
 import type { ReferenceAssignmentRecord } from "../../../domain/media/references";
 import { CONNECTION_STATE_CHANGED_MESSAGE } from "../../../shared/messages";
+import { requestProviderAccess } from "../../../platforms/shared/chromeConnectionPort";
+import { flowReferenceResource } from "../../../platforms/flow/referenceResource";
 import type { PromptBatchSnapshot } from "../../../storage/repositories";
 import styles from "../../Dashboard.module.css";
 import refStyles from "./ReferenceSelection.module.css";
@@ -128,6 +130,9 @@ export function ReferenceSelection({
   const [captureOperationIds, setCaptureOperationIds] = useState<
     Record<string, string>
   >({});
+  const [mediaPermissionNeeded, setMediaPermissionNeeded] = useState<
+    Record<string, boolean>
+  >({});
   const [flowVerified, setFlowVerified] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
@@ -141,6 +146,9 @@ export function ReferenceSelection({
   const [pickerAmbiguousCount, setPickerAmbiguousCount] = useState(0);
   const [pickerUnsupportedCount, setPickerUnsupportedCount] = useState(0);
   const [thumbnailFailures, setThumbnailFailures] = useState<
+    Record<string, boolean>
+  >({});
+  const [previewPermissionNeeded, setPreviewPermissionNeeded] = useState<
     Record<string, boolean>
   >({});
   const [thumbnailDiagnostics, setThumbnailDiagnostics] = useState<
@@ -545,6 +553,39 @@ export function ReferenceSelection({
     }
   };
 
+  const handleRequestMediaPermission = async (
+    sourceUrl: string,
+    mediaId: string | undefined,
+    key: string,
+    preview = false,
+  ) => {
+    let permission: string;
+    try {
+      permission = flowReferenceResource(sourceUrl, mediaId).permission;
+    } catch {
+      return;
+    }
+    try {
+      const granted = await requestProviderAccess({ origins: [permission] });
+      if (granted) {
+        if (preview)
+          setPreviewPermissionNeeded((current) => ({
+            ...current,
+            [key]: false,
+          }));
+        else
+          setMediaPermissionNeeded((current) => ({ ...current, [key]: false }));
+        setPickerStatus(
+          "Flow image host access granted. Retry the preview or Save reference action.",
+        );
+      }
+    } catch {
+      setPickerStatus(
+        "Flow image host permission could not be checked or requested. Retry from this button.",
+      );
+    }
+  };
+
   const handleLoadPreview = async (candidateId: string) => {
     if (
       !activeSession ||
@@ -640,8 +681,20 @@ export function ReferenceSelection({
         activeSession?.sessionId !== sessionId
       )
         return;
-      const message =
-        error instanceof Error ? error.message.slice(0, 140) : "preview_failed";
+      const errorCode =
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : error instanceof Error
+            ? error.message
+            : "preview_failed";
+      const message = errorCode.slice(0, 140);
+      setPreviewPermissionNeeded((current) => ({
+        ...current,
+        [candidateId]: errorCode === "reference_media_permission_needed",
+      }));
       setThumbnailFailures((current) => ({ ...current, [candidateId]: true }));
       setPickerStatus(
         `Preview failed (${message}). Refresh images or try another candidate.`,
@@ -819,6 +872,10 @@ export function ReferenceSelection({
           return;
         }
         if (status.status === "cancelled" || status.status === "failed") {
+          setMediaPermissionNeeded((current) => ({
+            ...current,
+            [shotId]: status.reason === "reference_media_permission_needed",
+          }));
           setCaptureOperationIds((current) => {
             const next = { ...current };
             delete next[shotId];
@@ -845,6 +902,10 @@ export function ReferenceSelection({
       });
       const reason =
         error instanceof Error ? error.message.slice(0, 100) : "capture_failed";
+      setMediaPermissionNeeded((current) => ({
+        ...current,
+        [shotId]: reason === "reference_media_permission_needed",
+      }));
       setCaptureStatus((current) => ({
         ...current,
         [shotId]: `Capture failed (${reason}). The previous saved reference was kept.`,
@@ -1137,6 +1198,20 @@ export function ReferenceSelection({
                             used; refresh the picker or choose another image.
                           </p>
                         ) : null}
+                        {previewPermissionNeeded[candidate.candidateId] ? (
+                          <Button
+                            onClick={() =>
+                              void handleRequestMediaPermission(
+                                candidate.sourceUrl,
+                                candidate.providerAssetId,
+                                candidate.candidateId,
+                                true,
+                              )
+                            }
+                          >
+                            Allow Flow image host access
+                          </Button>
+                        ) : null}
                         {thumbnailDiagnostics[candidate.candidateId] ? (
                           <details className={refStyles.thumbnailDiagnostics}>
                             <summary>Preview diagnostics</summary>
@@ -1288,6 +1363,19 @@ export function ReferenceSelection({
                                 }
                               >
                                 Save reference
+                              </Button>
+                            ) : null}
+                            {mediaPermissionNeeded[shotId] ? (
+                              <Button
+                                onClick={() =>
+                                  void handleRequestMediaPermission(
+                                    candidate.sourceUrl,
+                                    candidate.providerAssetId,
+                                    shotId,
+                                  )
+                                }
+                              >
+                                Allow Flow image host access
                               </Button>
                             ) : null}
                             <Button

@@ -8,6 +8,7 @@ import {
   createFlowReferenceContextMenuProperties,
   createFlowReferenceSelectionInjection,
   flowReferencePreviewInPage,
+  flowReferenceCaptureResolver,
   flowReferenceContextMenuId,
   flowReferenceSelectionProducer,
 } from "../../src/platforms/flow/references";
@@ -20,6 +21,7 @@ import {
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
+import { sha256Bytes } from "../../src/domain/media/references";
 
 describe("Phase 07.1 Reference Selection Sessions", () => {
   async function createFixture() {
@@ -36,6 +38,18 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       message: unknown;
     }> = [];
     let documentReply: unknown;
+    let mediaFetcher: typeof fetch = async (url) => {
+      const response = new Response(
+        new Uint8Array([
+          0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+        ]),
+        {
+          headers: { "content-type": "image/webp" },
+        },
+      );
+      Object.defineProperty(response, "url", { value: String(url) });
+      return response;
+    };
     let currentDocumentId = "doc-flow-1";
     let failContextMenu = false;
 
@@ -61,6 +75,8 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
     const handler = createFlowReferenceHandler({
       extensionId: "test-extension-id",
       repositories,
+      hasMediaHostPermission: async () => true,
+      fetchResource: (url, init) => mediaFetcher(url, init),
       storageSession,
       broadcastMessage: async (msg) => {
         broadcastEvents.push(msg);
@@ -82,6 +98,32 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       scripting: {
         executeScript: async (injection) => {
           scriptInjections.push(injection);
+          if (
+            (injection as { func?: unknown }).func ===
+            flowReferenceCaptureResolver
+          ) {
+            const args = (
+              injection as { args?: Array<Record<string, unknown>> }
+            ).args?.[0];
+            return [
+              {
+                documentId: currentDocumentId,
+                frameId: 0,
+                result: {
+                  ok: true,
+                  candidate: {
+                    ...args,
+                    sourceUrl:
+                      "https://lh3.googleusercontent.com/media/sample-card-40.jpg?token=live",
+                    providerAssetId: "asset-genuine-40",
+                    cardTag: "flow-image-tile",
+                    naturalWidth: 1024,
+                    naturalHeight: 1024,
+                  },
+                },
+              },
+            ];
+          }
           if (
             (injection as { func?: unknown }).func ===
             flowReferencePreviewInPage
@@ -138,6 +180,9 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       },
       setDocumentReply: (reply: unknown) => {
         documentReply = reply;
+      },
+      setMediaFetcher: (fetcher: typeof fetch) => {
+        mediaFetcher = fetcher;
       },
       setCurrentDocumentId: (documentId: string) => {
         currentDocumentId = documentId;
@@ -483,7 +528,8 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         batchId: batch.batch.id,
         shotId: "40",
         candidate: {
-          sourceUrl: "https://flow.google.com/media/sample-card-40.jpg",
+          sourceUrl:
+            "https://lh3.googleusercontent.com/media/sample-card-40.jpg?token=test",
           naturalWidth: 1024,
           naturalHeight: 1024,
           displayWidth: 256,
@@ -602,15 +648,40 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       expect(scriptInjections).toHaveLength(priorInjectionCount);
     });
 
-    it("requests a compact preview by candidate ID in the verified same document", async () => {
+    it("requests a compact preview by candidate ID and fetches the observed approved media URL in the worker", async () => {
       const { handler, setDocumentReply, scriptInjections } =
         await setupActiveSession();
+      vi.stubGlobal("createImageBitmap", async () => ({
+        width: 900,
+        height: 600,
+        close() {},
+      }));
+      vi.stubGlobal(
+        "OffscreenCanvas",
+        class {
+          width: number;
+          height: number;
+          constructor(width: number, height: number) {
+            this.width = width;
+            this.height = height;
+          }
+          getContext() {
+            return { drawImage() {} };
+          }
+          async convertToBlob() {
+            return new Blob([new Uint8Array([1, 2, 3])], {
+              type: "image/webp",
+            });
+          }
+        },
+      );
       const active = (await handler.getActiveSession())!;
       const candidateId = "00000000-0000-4000-8000-000000000004";
       const previewId = "00000000-0000-4000-8000-000000000005";
       const candidate = {
         candidateId,
-        sourceUrl: "https://flow.google.com/media/observed-image.webp",
+        sourceUrl:
+          "https://lh3.googleusercontent.com/media/observed-image.webp?signature=private",
         naturalWidth: 900,
         naturalHeight: 600,
         displayWidth: 300,
@@ -644,19 +715,84 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
           (entry) =>
             (entry as { func?: unknown }).func === flowReferencePreviewInPage,
         ),
-      ).toMatchObject({
-        target: { tabId: active.tabId, documentIds: [active.documentId] },
-        world: "MAIN",
-        args: [
-          {
-            action: "fetch",
-            sessionId: active.sessionId,
-            candidateId,
-            previewId,
-            sourceUrl: candidate.sourceUrl,
-          },
-        ],
+      ).toBeUndefined();
+      vi.unstubAllGlobals();
+    });
+
+    it("rejects a Flow content image whose re-resolved gallery media ID changes during preview acquisition", async () => {
+      const fixture = await setupActiveSession();
+      const { handler, setDocumentReply, setMediaFetcher } = fixture;
+      vi.stubGlobal("createImageBitmap", async () => ({
+        width: 1376,
+        height: 768,
+        close() {},
+      }));
+      vi.stubGlobal(
+        "OffscreenCanvas",
+        class {
+          width: number;
+          height: number;
+          constructor(width: number, height: number) {
+            this.width = width;
+            this.height = height;
+          }
+          getContext() {
+            return { drawImage() {} };
+          }
+          async convertToBlob() {
+            return new Blob([new Uint8Array([1])], { type: "image/webp" });
+          }
+        },
+      );
+      const active = (await handler.getActiveSession())!;
+      const mediaId = "5a836a9f-197d-4400-aa12-2d4c7492a444";
+      const otherMediaId = "00000000-0000-4000-8000-000000000001";
+      const candidateId = "00000000-0000-4000-8000-000000000088";
+      const pickerCandidate = {
+        candidateId,
+        sourceUrl: `https://flow-content.google/image/${mediaId}?sig=ephemeral`,
+        providerAssetId: mediaId,
+        naturalWidth: 1376,
+        naturalHeight: 768,
+        displayWidth: 300,
+        displayHeight: 168,
+        cardTag: "flow-image-tile",
+        selectedAt: 10000,
+      };
+      setDocumentReply({
+        ok: true,
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidate: pickerCandidate,
       });
+      setMediaFetcher(async (url) => {
+        setDocumentReply({
+          ok: true,
+          buildId: BUILD_ID,
+          sessionId: active.sessionId,
+          candidate: {
+            ...pickerCandidate,
+            sourceUrl: `https://flow-content.google/image/${otherMediaId}?sig=changed`,
+            providerAssetId: otherMediaId,
+          },
+        });
+        const response = new Response(
+          new Uint8Array([
+            0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+          ]),
+          { headers: { "content-type": "image/webp" } },
+        );
+        Object.defineProperty(response, "url", { value: String(url) });
+        return response;
+      });
+      await expect(
+        handler.getPreview(
+          active.sessionId,
+          candidateId,
+          "00000000-0000-4000-8000-000000000089",
+        ),
+      ).rejects.toMatchObject({ code: "candidate_missing_or_changed" });
+      vi.unstubAllGlobals();
     });
 
     it("rejects a resolver response for a different opaque token", async () => {
@@ -1050,7 +1186,7 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       // Candidate is stored only in transient session state
       const state = await handler.getState("ws-1");
       expect(state.candidates["40"]).toMatchObject({
-        sourceUrl: candidatePayload.candidate.sourceUrl,
+        sourceUrl: "https://lh3.googleusercontent.com/media/sample-card-40.jpg",
         providerAssetId: candidatePayload.candidate.providerAssetId,
         selectionVersion: expect.any(String),
         workspaceId: "ws-1",
@@ -1069,7 +1205,8 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
           batchId: candidatePayload.batchId,
           shotId: "40",
           candidate: expect.objectContaining({
-            sourceUrl: candidatePayload.candidate.sourceUrl,
+            sourceUrl:
+              "https://lh3.googleusercontent.com/media/sample-card-40.jpg",
             selectionVersion: expect.any(String),
             documentId: "doc-flow-1",
           }),
@@ -1103,6 +1240,51 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         workspaceId: "ws-1",
         shotId: "40",
       });
+    });
+
+    it("persists the exact original cross-origin response bytes and their SHA-256", async () => {
+      const { handler, candidatePayload, validSender, repositories } =
+        await setupActiveSession();
+      vi.stubGlobal("createImageBitmap", async () => ({
+        width: 1024,
+        height: 1024,
+        close() {},
+      }));
+      const accepted = await handler.handleCandidateSelected(
+        candidatePayload,
+        validSender,
+      );
+      expect(accepted.accepted).toBe(true);
+      const state = await handler.getState("ws-1");
+      const candidate = state.candidates["40"]!;
+      const captureOperationId = "00000000-0000-4000-8000-000000000077";
+      const result = await handler.captureReference({
+        workspaceId: "ws-1",
+        batchId: candidate.batchId,
+        shotId: "40",
+        selectionVersion: candidate.selectionVersion!,
+        expectedAssignmentVersion: 0,
+        captureOperationId,
+      });
+      const stored = await repositories.getReferenceAssignment(
+        "ws-1",
+        candidate.batchId,
+        "40",
+      );
+      const original = new Uint8Array([
+        0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+      ]);
+      expect(result.saved).toBe(true);
+      expect(stored?.bytes).toBeInstanceOf(Blob);
+      expect(new Uint8Array(await stored!.bytes.arrayBuffer())).toEqual(
+        original,
+      );
+      expect(stored?.sha256).toBe(await sha256Bytes(original));
+      expect(stored?.acquisitionProvenance).toBe(
+        "verified_flow_document_extension_fetch",
+      );
+      expect(candidate.sourceUrl).not.toContain("token=");
+      vi.unstubAllGlobals();
     });
   });
 

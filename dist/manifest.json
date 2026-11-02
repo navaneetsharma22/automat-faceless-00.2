@@ -10,7 +10,9 @@
     "https://flow.google.com/*",
     "https://labs.google/*",
     "https://vids.google.com/*",
-    "https://docs.google.com/*"
+    "https://docs.google.com/*",
+    "https://lh3.googleusercontent.com/*",
+    "https://flow-content.google/*"
   ],
   "background": {
     "service_worker": "background.js",

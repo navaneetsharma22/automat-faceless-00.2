@@ -89,6 +89,17 @@ export function flowReferenceCaptureResolver(expected: {
     return null;
   };
   const cards = Array.from(project.querySelectorAll("*")).filter(eligible);
+  const stableSourceKey = (value: string) => {
+    try {
+      const url = new URL(value);
+      url.search = "";
+      url.hash = "";
+      return url.href;
+    } catch {
+      return "";
+    }
+  };
+  const expectedSourceKey = stableSourceKey(expected.sourceUrl);
   const matches: Array<Record<string, unknown>> = [];
   let ambiguous = false;
   for (const card of cards) {
@@ -98,7 +109,9 @@ export function flowReferenceCaptureResolver(expected: {
     if (images.length !== 1) {
       if (
         images.some(
-          (image) => (image.currentSrc || image.src) === expected.sourceUrl,
+          (image) =>
+            stableSourceKey(image.currentSrc || image.src) ===
+            expectedSourceKey,
         )
       )
         ambiguous = true;
@@ -121,7 +134,7 @@ export function flowReferenceCaptureResolver(expected: {
     };
     const contextMenuIdentity = expected.cardTag === "context-menu-image";
     if (
-      candidate.sourceUrl === expected.sourceUrl &&
+      stableSourceKey(candidate.sourceUrl) === expectedSourceKey &&
       (contextMenuIdentity ||
         candidate.providerAssetId === expected.providerAssetId) &&
       (contextMenuIdentity || candidate.cardTag === expected.cardTag) &&

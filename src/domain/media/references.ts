@@ -34,9 +34,10 @@ export const ReferenceAssignmentRecordSchema = z
     width: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS),
     height: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS),
     capturedAt: z.number().finite().nonnegative(),
-    acquisitionProvenance: z.literal(
+    acquisitionProvenance: z.enum([
       "verified_flow_document_same_origin_fetch",
-    ),
+      "verified_flow_document_extension_fetch",
+    ]),
     qualityProvenance: z.literal("observed_resource_original_bytes_no_upscale"),
   })
   .strict()
