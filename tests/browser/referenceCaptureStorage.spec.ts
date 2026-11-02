@@ -219,9 +219,9 @@ test("real IndexedDB keeps reference identity with each Shot through reorder, re
     expect(
       report.secondView.map((entry) => entry.thumbnailAssociation),
     ).toEqual([
-      "workspace-reorder-fixture:import:workspace-reorder-fixture:image:36",
-      "workspace-reorder-fixture:import:workspace-reorder-fixture:image:34",
-      "workspace-reorder-fixture:import:workspace-reorder-fixture:image:35",
+      `workspace-reorder-fixture:import:workspace-reorder-fixture:image:${report.batchSourceHash}:36`,
+      `workspace-reorder-fixture:import:workspace-reorder-fixture:image:${report.batchSourceHash}:34`,
+      `workspace-reorder-fixture:import:workspace-reorder-fixture:image:${report.batchSourceHash}:35`,
     ]);
     expect(report.secondView[2]).toMatchObject({
       shotId: "35",

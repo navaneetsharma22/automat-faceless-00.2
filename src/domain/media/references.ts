@@ -100,8 +100,13 @@ export function referenceAssignmentId(
   workspaceId: string,
   batchId: string,
   shotId: string,
+  batchSourceHash?: string,
 ): string {
-  return `${workspaceId}:${batchId}:${shotId}`;
+  // The prompt batch row is mutable per workspace/kind. Include its exact source
+  // hash so reimports with reused Shot IDs cannot address another source's row.
+  return batchSourceHash
+    ? `${workspaceId}:${batchId}:${batchSourceHash}:${shotId}`
+    : `${workspaceId}:${batchId}:${shotId}`;
 }
 
 export async function sha256Bytes(

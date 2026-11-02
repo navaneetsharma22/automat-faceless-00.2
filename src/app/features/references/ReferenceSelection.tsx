@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/schemas";
 import { FLOW_REFERENCE_EVENT_MESSAGE } from "../../../shared/schemas";
 import type { ReferenceAssignmentRecord } from "../../../domain/media/references";
+import { sha256Hex } from "../../../domain/batches/hashPrompt";
 import { CONNECTION_STATE_CHANGED_MESSAGE } from "../../../shared/messages";
 import { requestProviderAccess } from "../../../platforms/shared/chromeConnectionPort";
 import { flowReferenceResource } from "../../../platforms/flow/referenceResource";
@@ -109,6 +110,9 @@ export function ReferenceSelection({
   workspaceId?: string;
 }) {
   const [batch, setBatch] = useState<PromptBatchSnapshot | null>(null);
+  const [batchSourceHash, setBatchSourceHash] = useState<string | null>(null);
+  const batchSourceHashRef = useRef<string | null>(null);
+  const batchStateReadGeneration = useRef(0);
   const [missingShotIds, setMissingShotIds] = useState(false);
   const [duplicateShotIds, setDuplicateShotIds] = useState<string[]>([]);
   const [activeSession, setActiveSession] =
@@ -306,39 +310,60 @@ export function ReferenceSelection({
   }, [persistenceClient]);
 
   const loadBatchAndState = useCallback(async () => {
+    const generation = ++batchStateReadGeneration.current;
+    let batchData: PromptBatchSnapshot | undefined;
     try {
-      const batchData = (await persistenceClient.request("promptBatch.get", {
+      batchData = (await persistenceClient.request("promptBatch.get", {
         workspaceId,
         kind: "image",
       })) as PromptBatchSnapshot | undefined;
-
-      if (!batchData || !batchData.items || batchData.items.length === 0) {
+    } catch {
+      if (generation === batchStateReadGeneration.current) {
         setBatch(null);
+        setBatchSourceHash(null);
+        batchSourceHashRef.current = null;
+        setCandidates({});
+        setSavedReferences({});
+        setSavedReferenceUrls({});
         setMissingShotIds(false);
         setDuplicateShotIds([]);
-        return;
       }
+      return;
+    }
 
-      setBatch(batchData);
-
-      const hasMissing = batchData.items.some((item) => !item.shotId);
-      setMissingShotIds(hasMissing);
-
-      const shotCounts = new Map<string, number>();
-      for (const item of batchData.items) {
-        if (item.shotId) {
-          shotCounts.set(item.shotId, (shotCounts.get(item.shotId) ?? 0) + 1);
-        }
-      }
-      const duplicates = Array.from(shotCounts.entries())
-        .filter(([, count]) => count > 1)
-        .map(([id]) => id);
-      setDuplicateShotIds(duplicates);
-    } catch {
+    if (generation !== batchStateReadGeneration.current) return;
+    if (!batchData || !batchData.items || batchData.items.length === 0) {
       setBatch(null);
+      setBatchSourceHash(null);
+      batchSourceHashRef.current = null;
+      setCandidates({});
+      setSavedReferences({});
+      setSavedReferenceUrls({});
       setMissingShotIds(false);
       setDuplicateShotIds([]);
+      return;
     }
+    const currentBatchSourceHash = await sha256Hex(batchData.batch.sourceText);
+    if (generation !== batchStateReadGeneration.current) return;
+    if (batchSourceHashRef.current !== currentBatchSourceHash) {
+      batchSourceHashRef.current = currentBatchSourceHash;
+      for (const url of savedReferenceUrlsRef.current.values()) URL.revokeObjectURL(url);
+      savedReferenceUrlsRef.current.clear();
+      savedReferenceReadGeneration.current += 1;
+      setCandidates({});
+      setSavedReferences({});
+      setSavedReferenceUrls({});
+      setCaptureStatus({});
+      setCaptureOperationIds({});
+    }
+    setBatch(batchData);
+    setBatchSourceHash(currentBatchSourceHash);
+    setMissingShotIds(batchData.items.some((item) => !item.shotId));
+    const shotCounts = new Map<string, number>();
+    for (const item of batchData.items) {
+      if (item.shotId) shotCounts.set(item.shotId, (shotCounts.get(item.shotId) ?? 0) + 1);
+    }
+    setDuplicateShotIds([...shotCounts.entries()].filter(([, count]) => count > 1).map(([id]) => id));
 
     try {
       const stateData = (await persistenceClient.request(
@@ -346,6 +371,8 @@ export function ReferenceSelection({
         { workspaceId },
       )) as {
         activeSession: ActiveReferenceSelectionSession | null;
+        batchId?: string | null;
+        batchSourceHash?: string | null;
         candidates: Record<string, ReferenceCandidate>;
         savedReferences?: Omit<ReferenceAssignmentRecord, "bytes">[];
         captureOperations?: Array<{
@@ -355,7 +382,8 @@ export function ReferenceSelection({
           reason?: string;
         }>;
       };
-      if (stateData) {
+      if (generation !== batchStateReadGeneration.current) return;
+      if (stateData && stateData.batchId === batchData.batch.id && stateData.batchSourceHash === currentBatchSourceHash) {
         setActiveSession(stateData.activeSession ?? null);
         setCandidates(stateData.candidates ?? {});
         const saved = stateData.savedReferences ?? [];
@@ -379,6 +407,11 @@ export function ReferenceSelection({
           return next;
         });
         void loadSavedReferenceImages(saved);
+      } else {
+        setActiveSession(null);
+        setCandidates({});
+        setSavedReferences({});
+        setSavedReferenceUrls({});
       }
     } catch {
       // Ignored if worker reference handler not available yet
@@ -404,9 +437,12 @@ export function ReferenceSelection({
       if (rawMsg.type === FLOW_REFERENCE_EVENT_MESSAGE) {
         const eventMsg = rawMsg as FlowReferenceEventMessage;
         if (eventMsg.workspaceId !== workspaceId) return;
+        if (eventMsg.event !== "session_cancelled" && (
+          !("batchId" in eventMsg) || eventMsg.batchId !== batch?.batch.id ||
+          !("batchSourceHash" in eventMsg) || eventMsg.batchSourceHash !== batchSourceHash
+        )) return;
 
         if (eventMsg.event === "candidate_selected") {
-          if (eventMsg.batchId !== batch?.batch.id) return;
           pickerReadGeneration.current += 1;
           clearPreviews();
           setPickerCandidates([]);
@@ -475,6 +511,7 @@ export function ReferenceSelection({
   }, [
     workspaceId,
     batch?.batch.id,
+    batchSourceHash,
     activeSession?.sessionId,
     checkFlowConnection,
     loadBatchAndState,
@@ -802,6 +839,7 @@ export function ReferenceSelection({
       !candidate?.selectionVersion ||
       candidate.workspaceId !== workspaceId ||
       candidate.batchId !== batch.batch.id ||
+      candidate.batchSourceHash !== batchSourceHash ||
       candidate.shotId !== shotId
     ) {
       setCaptureStatus((current) => ({

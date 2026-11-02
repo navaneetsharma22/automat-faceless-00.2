@@ -6,6 +6,7 @@ import {
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import { validateAndPairVideoShots } from "../../src/domain/batches/pairShots";
 import type { ReferenceAssignmentRecord } from "../../src/domain/media/references";
+import { referenceAssignmentId } from "../../src/domain/media/references";
 
 function makeReferenceRecord(
   shotId: string,
@@ -16,14 +17,15 @@ function makeReferenceRecord(
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   ]);
   const blob = new Blob([bytes], { type: "image/png" });
+  const batchSourceHash = overrides.batchSourceHash ?? "a".repeat(64);
 
   return {
-    assignmentId: `default:import:default:image:${shotId}`,
+    assignmentId: referenceAssignmentId("default", "import:default:image", shotId, batchSourceHash),
     referenceId: `00000000-0000-4000-8000-${suffix}`,
     captureOperationId: `10000000-0000-4000-8000-${suffix}`,
     workspaceId: "default",
     batchId: "import:default:image",
-    batchSourceHash: "a".repeat(64),
+    batchSourceHash,
     shotId,
     promptHash: "b".repeat(64),
     selectionVersion: `20000000-0000-4000-8000-${suffix}`,

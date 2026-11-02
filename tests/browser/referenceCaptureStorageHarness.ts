@@ -47,6 +47,7 @@ export async function verifyDurableReferenceCaptureStorage() {
     () => 1_000,
   );
   const sourceText = '{"shot_id":"1","text":"fixture prompt"}';
+  const batchSourceHash = await sha256Hex(sourceText);
   const batch = await repositories.savePromptBatch({
     workspaceId: "workspace-fixture",
     kind: "image",
@@ -83,7 +84,7 @@ export async function verifyDurableReferenceCaptureStorage() {
     captureOperationId,
     workspaceId: "workspace-fixture",
     batchId: batch.batch.id,
-    batchSourceHash: await sha256Hex(sourceText),
+    batchSourceHash,
     shotId: "1",
     promptHash: batch.items[0]!.contentHash,
     selectionVersion: crypto.randomUUID(),
@@ -113,6 +114,7 @@ export async function verifyDurableReferenceCaptureStorage() {
       "workspace-fixture",
       batch.batch.id,
       "1",
+      operation.batchSourceHash,
     ),
     referenceId: crypto.randomUUID(),
     captureOperationId,
@@ -154,6 +156,7 @@ export async function verifyDurableReferenceCaptureStorage() {
     "workspace-fixture",
     batch.batch.id,
     "1",
+    operation.batchSourceHash,
   );
   const savedOperation =
     await reopenedRepositories.getReferenceCaptureOperation(captureOperationId);
@@ -188,6 +191,7 @@ export async function verifyDurableReferenceCaptureStorage() {
     "workspace-fixture",
     batch.batch.id,
     "1",
+    operation.batchSourceHash,
   );
   const failedOperation =
     await reopenedRepositories.getReferenceCaptureOperation(
@@ -305,6 +309,7 @@ export async function verifyReferenceAssignmentReorder() {
     kind: "image",
     sourceText,
   });
+  const batchSourceHash = await sha256Hex(sourceText);
   const selected = await repositories.recordSelectedTarget({
     provider: "Flow",
     tabId: 42,
@@ -375,7 +380,7 @@ export async function verifyReferenceAssignmentReorder() {
       captureOperationId,
       workspaceId: "workspace-reorder-fixture",
       batchId: batch.batch.id,
-      batchSourceHash: await sha256Hex(sourceText),
+      batchSourceHash,
       shotId,
       promptHash: prompt.contentHash,
       selectionVersion,
@@ -394,6 +399,7 @@ export async function verifyReferenceAssignmentReorder() {
         operation.workspaceId,
         operation.batchId,
         shotId,
+        operation.batchSourceHash,
       ),
       referenceId: crypto.randomUUID(),
       captureOperationId,
@@ -433,6 +439,7 @@ export async function verifyReferenceAssignmentReorder() {
         "workspace-reorder-fixture",
         batch.batch.id,
         shotId,
+        batchSourceHash,
       );
       if (!assignment) throw new Error("fixture_assignment_missing");
       records.set(shotId, assignment);
@@ -451,7 +458,7 @@ export async function verifyReferenceAssignmentReorder() {
     createDexieRepositoryDatabase(reopened),
     () => 2_100,
   );
-  const beforeReplacement = await readAssignments(repositories, batch.batch.id);
+  const beforeReplacement = await readAssignments(repositories, batch.batch.id, batchSourceHash);
   const replacementCanvas = document.createElement("canvas");
   replacementCanvas.width = 7;
   replacementCanvas.height = 3;
@@ -481,7 +488,7 @@ export async function verifyReferenceAssignmentReorder() {
   replacementDecoded.close();
   const replacementMediaId = "fixture-media-shot-35-jaguar-replacement";
   await save("35", replacementMediaId, 1);
-  const afterReplacement = await readAssignments(repositories, batch.batch.id);
+  const afterReplacement = await readAssignments(repositories, batch.batch.id, batchSourceHash);
   const unchanged34 = sameAssignment(
     beforeReplacement.get("34")!,
     afterReplacement.get("34")!,
@@ -501,7 +508,7 @@ export async function verifyReferenceAssignmentReorder() {
   repositories = new ExtensionRepositories(
     createDexieRepositoryDatabase(reopenedAgain),
   );
-  const finalRecords = await readAssignments(repositories, batch.batch.id);
+  const finalRecords = await readAssignments(repositories, batch.batch.id, batchSourceHash);
   const secondOrder = ["36", "34", "35"];
   const secondView = await viewAssignments(finalRecords, secondOrder);
   const persistedSourceUnchanged =
@@ -509,6 +516,7 @@ export async function verifyReferenceAssignmentReorder() {
   reopenedAgain.close();
   await new AutomatDatabase(name).delete();
   return {
+    batchSourceHash,
     firstOrder: shotIds,
     firstView,
     replacementMediaId,
@@ -524,6 +532,7 @@ export async function verifyReferenceAssignmentReorder() {
 async function readAssignments(
   repositories: ExtensionRepositories,
   batchId: string,
+  batchSourceHash: string,
 ) {
   const result = new Map<string, ReferenceAssignmentRecord>();
   for (const shotId of ["34", "35", "36"]) {
@@ -531,6 +540,7 @@ async function readAssignments(
       "workspace-reorder-fixture",
       batchId,
       shotId,
+      batchSourceHash,
     );
     if (!assignment) throw new Error("fixture_assignment_missing_after_reopen");
     result.set(shotId, assignment);

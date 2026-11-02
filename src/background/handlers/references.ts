@@ -274,8 +274,9 @@ export function createFlowReferenceHandler(
   const getTransientCandidatesMap = async (
     workspaceId: string,
     batchId: string,
+    batchSourceHash: string,
   ): Promise<Record<string, ReferenceCandidate>> => {
-    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}`;
+    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}:${batchSourceHash}`;
     const records = await storage.get(key);
     return (records[key] as Record<string, ReferenceCandidate>) ?? {};
   };
@@ -283,11 +284,12 @@ export function createFlowReferenceHandler(
   const setTransientCandidate = async (
     workspaceId: string,
     batchId: string,
+    batchSourceHash: string,
     shotId: string,
     candidate: ReferenceCandidate,
   ): Promise<void> => {
-    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}`;
-    const current = await getTransientCandidatesMap(workspaceId, batchId);
+    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}:${batchSourceHash}`;
+    const current = await getTransientCandidatesMap(workspaceId, batchId, batchSourceHash);
     await storage.set({
       [key]: {
         ...current,
@@ -299,10 +301,11 @@ export function createFlowReferenceHandler(
   const clearTransientCandidate = async (
     workspaceId: string,
     batchId: string,
+    batchSourceHash: string,
     shotId: string,
   ): Promise<void> => {
-    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}`;
-    const current = await getTransientCandidatesMap(workspaceId, batchId);
+    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}:${batchSourceHash}`;
+    const current = await getTransientCandidatesMap(workspaceId, batchId, batchSourceHash);
     const updated = { ...current };
     delete updated[shotId];
     await storage.set({ [key]: updated });
@@ -311,8 +314,9 @@ export function createFlowReferenceHandler(
   const clearAllTransientCandidates = async (
     workspaceId: string,
     batchId: string,
+    batchSourceHash: string,
   ): Promise<void> => {
-    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}`;
+    const key = `${TRANSIENT_CANDIDATES_STORAGE_KEY}:${workspaceId}:${batchId}:${batchSourceHash}`;
     await storage.remove(key);
   };
 
@@ -356,7 +360,7 @@ export function createFlowReferenceHandler(
     if (
       !savedBatch ||
       savedBatch.batch.id !== active.batchId ||
-      active.sourceHash !== active.batchId ||
+      active.sourceHash !== (await sha256Hex(savedBatch.batch.sourceText)) ||
       savedBatch.items.filter((item) => item.shotId === active.shotId)
         .length !== 1
     ) {
@@ -407,8 +411,9 @@ export function createFlowReferenceHandler(
   const captureShotKey = (
     workspaceId: string,
     batchId: string,
+    batchSourceHash: string,
     shotId: string,
-  ) => `${workspaceId}:${batchId}:${shotId}`;
+  ) => `${workspaceId}:${batchId}:${batchSourceHash}:${shotId}`;
   const referenceMetadata = (record: ReferenceAssignmentRecord) => {
     return Object.fromEntries(
       Object.entries(record).filter(([key]) => key !== "bytes"),
@@ -420,9 +425,17 @@ export function createFlowReferenceHandler(
     shotId: string;
     selectionVersion: string;
   }) => {
+    const savedBatch = await dependencies.repositories.getPromptBatch(
+      input.workspaceId,
+      "image",
+    );
+    const currentBatchSourceHash = savedBatch
+      ? await sha256Hex(savedBatch.batch.sourceText)
+      : "";
     const candidates = await getTransientCandidatesMap(
       input.workspaceId,
       input.batchId,
+      currentBatchSourceHash,
     );
     const candidate = candidates[input.shotId];
     if (
@@ -443,18 +456,13 @@ export function createFlowReferenceHandler(
         "The accepted candidate changed or was cleared. Select the intended Flow image again before saving.",
       );
     }
-    const savedBatch = await dependencies.repositories.getPromptBatch(
-      input.workspaceId,
-      "image",
-    );
     const matchingItems =
       savedBatch?.items.filter((item) => item.shotId === input.shotId) ?? [];
     if (
       !savedBatch ||
       savedBatch.batch.id !== input.batchId ||
+      candidate.batchSourceHash !== currentBatchSourceHash ||
       matchingItems.length !== 1 ||
-      (await sha256Hex(savedBatch.batch.sourceText)) !==
-        candidate.batchSourceHash ||
       (await sha256Hex(matchingItems[0]!.rawJsonBody)) !== candidate.promptHash
     ) {
       throw new ReferenceSelectionError(
@@ -560,6 +568,7 @@ export function createFlowReferenceHandler(
     workspaceId: string,
     batchId: string,
     shotId: string,
+    batchSourceHash: string,
   ) => {
     const operationIds =
       await dependencies.repositories.cancelReferenceCapturesForShot(
@@ -567,6 +576,7 @@ export function createFlowReferenceHandler(
         batchId,
         shotId,
         now(),
+        batchSourceHash,
       );
     await Promise.all(operationIds.map(cancelCaptureInPage));
   };
@@ -642,12 +652,14 @@ export function createFlowReferenceHandler(
         input.workspaceId,
         input.batchId,
         input.shotId,
+        candidate.batchSourceHash,
       );
       const currentAssignment =
         await dependencies.repositories.getReferenceAssignment(
           input.workspaceId,
           input.batchId,
           input.shotId,
+          candidate.batchSourceHash,
         );
       if (
         (currentAssignment?.assignmentVersion ?? 0) !==
@@ -696,6 +708,7 @@ export function createFlowReferenceHandler(
         captureOperationId: input.captureOperationId,
         workspaceId: input.workspaceId,
         batchId: input.batchId,
+        batchSourceHash: candidate.batchSourceHash!,
         shotId: input.shotId,
         stage: "capturing",
       });
@@ -841,11 +854,12 @@ export function createFlowReferenceHandler(
         captureOperationId: input.captureOperationId,
         workspaceId: input.workspaceId,
         batchId: input.batchId,
+        batchSourceHash: candidate.batchSourceHash!,
         shotId: input.shotId,
         stage: "saving",
       });
       const saved = await withShotLock(
-        captureShotKey(input.workspaceId, input.batchId, input.shotId),
+        captureShotKey(input.workspaceId, input.batchId, candidate.batchSourceHash!, input.shotId),
         async () => {
           const latest = await validateCaptureContext(input);
           const current = await resolveCaptureCandidateInDocument(
@@ -881,6 +895,7 @@ export function createFlowReferenceHandler(
         captureOperationId: input.captureOperationId,
         workspaceId: input.workspaceId,
         batchId: input.batchId,
+        batchSourceHash: candidate.batchSourceHash!,
         shotId: input.shotId,
         referenceId: saved.referenceId,
       });
@@ -947,6 +962,9 @@ export function createFlowReferenceHandler(
       const matchingShots = savedBatch?.items.filter(
         (item) => item.shotId === active.shotId,
       );
+      const savedBatchSourceHash = savedBatch
+        ? await sha256Hex(savedBatch.batch.sourceText)
+        : "";
       if (
         !dependencies.contextMenu ||
         !selected ||
@@ -962,7 +980,7 @@ export function createFlowReferenceHandler(
         binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
         binding.connectorProtocolVersion !== 1 ||
         savedBatch?.batch.id !== active.batchId ||
-        active.sourceHash !== active.batchId ||
+        active.sourceHash !== savedBatchSourceHash ||
         matchingShots?.length !== 1 ||
         !scripting?.executeScript
       ) {
@@ -1031,6 +1049,7 @@ export function createFlowReferenceHandler(
           "not_found",
         );
       }
+      const batchSourceHash = await sha256Hex(savedBatch.batch.sourceText);
 
       // 3. Verify unambiguous Shot IDs
       const items = savedBatch.items;
@@ -1142,7 +1161,7 @@ export function createFlowReferenceHandler(
         sessionId,
         workspaceId: input.workspaceId,
         batchId: input.batchId,
-        sourceHash: savedBatch.batch.id, // validated batch identity
+        sourceHash: batchSourceHash,
         shotId: input.shotId,
         tabId: selected.tabId,
         projectId: binding.projectId,
@@ -1178,6 +1197,8 @@ export function createFlowReferenceHandler(
         event: "session_started",
         sessionId,
         workspaceId: input.workspaceId,
+        batchId: input.batchId,
+        batchSourceHash,
         shotId: input.shotId,
       });
 
@@ -1251,14 +1272,18 @@ export function createFlowReferenceHandler(
         workspaceId,
         "image",
       );
-      const candidates = savedBatch
-        ? await getTransientCandidatesMap(workspaceId, savedBatch.batch.id)
+      const batchSourceHash = savedBatch
+        ? await sha256Hex(savedBatch.batch.sourceText)
+        : undefined;
+      const candidates = savedBatch && batchSourceHash
+        ? await getTransientCandidatesMap(workspaceId, savedBatch.batch.id, batchSourceHash)
         : {};
       const savedReferences = savedBatch
         ? (
             await dependencies.repositories.listReferenceAssignments(
               workspaceId,
               savedBatch.batch.id,
+              batchSourceHash,
             )
           ).map(referenceMetadata)
         : [];
@@ -1266,15 +1291,20 @@ export function createFlowReferenceHandler(
         ? await dependencies.repositories.listReferenceCaptureOperations(
             workspaceId,
             savedBatch.batch.id,
+            batchSourceHash,
           )
         : [];
 
       return {
         activeSession:
-          activeSession && activeSession.workspaceId === workspaceId
+          activeSession && activeSession.workspaceId === workspaceId &&
+          activeSession.batchId === savedBatch?.batch.id &&
+          activeSession.sourceHash === batchSourceHash
             ? activeSession
             : null,
         candidates,
+        batchId: savedBatch?.batch.id ?? null,
+        batchSourceHash: batchSourceHash ?? null,
         savedReferences,
         captureOperations: captureOperations
           .filter((operation) => operation.status === "acquiring")
@@ -1675,17 +1705,20 @@ export function createFlowReferenceHandler(
         "image",
       );
       if (savedBatch) {
+        const batchSourceHash = await sha256Hex(savedBatch.batch.sourceText);
         await withShotLock(
-          captureShotKey(workspaceId, savedBatch.batch.id, shotId),
+          captureShotKey(workspaceId, savedBatch.batch.id, batchSourceHash, shotId),
           async () => {
             await cancelCapturesForShot(
               workspaceId,
               savedBatch.batch.id,
               shotId,
+              batchSourceHash,
             );
             await clearTransientCandidate(
               workspaceId,
               savedBatch.batch.id,
+              batchSourceHash,
               shotId,
             );
           },
@@ -1695,6 +1728,10 @@ export function createFlowReferenceHandler(
         type: FLOW_REFERENCE_EVENT_MESSAGE,
         event: "candidate_cleared",
         workspaceId,
+        ...(savedBatch ? {
+          batchId: savedBatch.batch.id,
+          batchSourceHash: await sha256Hex(savedBatch.batch.sourceText),
+        } : {}),
         shotId,
       });
       return { ok: true };
@@ -1814,10 +1851,13 @@ export function createFlowReferenceHandler(
         const matchingShots = savedBatch?.items.filter(
           (item) => item.shotId === active.shotId,
         );
+        const savedBatchSourceHash = savedBatch
+          ? await sha256Hex(savedBatch.batch.sourceText)
+          : "";
         if (
           !savedBatch ||
           savedBatch.batch.id !== active.batchId ||
-          active.sourceHash !== active.batchId ||
+          active.sourceHash !== savedBatchSourceHash ||
           matchingShots?.length !== 1
         ) {
           return { accepted: false, code: "batch_or_shot_changed" };
@@ -1914,7 +1954,7 @@ export function createFlowReferenceHandler(
       if (
         !savedBatch ||
         savedBatch.batch.id !== active.batchId ||
-        active.sourceHash !== active.batchId ||
+        active.sourceHash !== (await sha256Hex(savedBatch.batch.sourceText)) ||
         savedBatch.items.filter((item) => item.shotId === active.shotId)
           .length !== 1
       ) {
@@ -1965,6 +2005,7 @@ export function createFlowReferenceHandler(
           parsedCandidate.data.sourceUrl,
           parsedCandidate.data.providerAssetId,
         );
+        const batchSourceHash = await sha256Hex(savedBatch.batch.sourceText);
         const acceptedCandidate = ReferenceCandidateSchema.parse({
           ...parsedCandidate.data,
           sourceUrl: sourceResource.resourceKey,
@@ -1972,7 +2013,7 @@ export function createFlowReferenceHandler(
           workspaceId: active.workspaceId,
           batchId: active.batchId,
           shotId: active.shotId,
-          batchSourceHash: await sha256Hex(savedBatch.batch.sourceText),
+          batchSourceHash,
           promptHash: promptItem.contentHash,
           flowProjectId: active.projectId,
           tabId: active.tabId,
@@ -1983,18 +2024,20 @@ export function createFlowReferenceHandler(
           observedSourceSha256: await sha256Hex(sourceResource.resourceKey),
         });
         await withShotLock(
-          captureShotKey(active.workspaceId, active.batchId, active.shotId),
+          captureShotKey(active.workspaceId, active.batchId, batchSourceHash, active.shotId),
           async () => {
             await cancelCapturesForShot(
               active.workspaceId,
               active.batchId,
               active.shotId,
+              batchSourceHash,
             );
             await setActiveSession(null);
             await removeContextMenu(active.sessionId);
             await setTransientCandidate(
               active.workspaceId,
               active.batchId,
+              batchSourceHash,
               active.shotId,
               acceptedCandidate,
             );
@@ -2008,6 +2051,7 @@ export function createFlowReferenceHandler(
           sessionId: active.sessionId,
           workspaceId: active.workspaceId,
           batchId: active.batchId,
+          batchSourceHash,
           shotId: active.shotId,
           candidate: acceptedCandidate,
           retained: false,

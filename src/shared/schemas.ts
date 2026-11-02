@@ -696,6 +696,7 @@ export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
       sessionId: z.string().min(1).max(128),
       workspaceId: workspaceIdSchema,
       batchId: z.string().min(1).max(256),
+      batchSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
       shotId: z.string().regex(/^[1-9][0-9]*$/),
       candidate: ReferenceCandidateSchema,
       retained: z.literal(false),
@@ -720,6 +721,8 @@ export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
       event: z.literal("session_started"),
       sessionId: z.string().min(1).max(128),
       workspaceId: workspaceIdSchema,
+      batchId: z.string().min(1).max(256),
+      batchSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
       shotId: z.string().regex(/^[1-9][0-9]*$/),
     })
     .strict(),
@@ -728,6 +731,8 @@ export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
       type: z.literal(FLOW_REFERENCE_EVENT_MESSAGE),
       event: z.literal("candidate_cleared"),
       workspaceId: workspaceIdSchema,
+      batchId: z.string().min(1).max(256).optional(),
+      batchSourceHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
       shotId: z.string().regex(/^[1-9][0-9]*$/),
     })
     .strict(),
@@ -738,6 +743,7 @@ export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
       captureOperationId: z.string().uuid(),
       workspaceId: workspaceIdSchema,
       batchId: z.string().min(1).max(256),
+      batchSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
       shotId: z.string().regex(/^[1-9][0-9]*$/),
       stage: z.enum(["capturing", "saving"]),
     })
@@ -749,6 +755,7 @@ export const FlowReferenceEventMessageSchema = z.discriminatedUnion("event", [
       captureOperationId: z.string().uuid(),
       workspaceId: workspaceIdSchema,
       batchId: z.string().min(1).max(256),
+      batchSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
       shotId: z.string().regex(/^[1-9][0-9]*$/),
       referenceId: z.string().uuid(),
     })

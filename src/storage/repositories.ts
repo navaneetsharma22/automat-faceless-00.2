@@ -519,24 +519,57 @@ export class ExtensionRepositories {
   async listReferenceAssignments(
     workspaceId: string,
     batchId: string,
+    batchSourceHash?: string,
   ): Promise<ReferenceAssignmentRecord[]> {
-    return (await this.tables.referenceAssignments.toArray()).filter(
-      (record) =>
-        record.workspaceId === workspaceId && record.batchId === batchId,
+    const records = (await this.tables.referenceAssignments.toArray()).filter(
+      (record) => record.workspaceId === workspaceId && record.batchId === batchId,
     );
+    if (!batchSourceHash) return records;
+    const byShot = new Map<string, ReferenceAssignmentRecord>();
+    for (const record of records) {
+      if (record.batchSourceHash !== batchSourceHash) continue;
+      const current = byShot.get(record.shotId);
+      const isVersionedKey = record.assignmentId === referenceAssignmentId(
+        workspaceId, batchId, record.shotId, batchSourceHash,
+      );
+      const currentIsVersionedKey = current?.assignmentId === referenceAssignmentId(
+        workspaceId, batchId, record.shotId, batchSourceHash,
+      );
+      if (!current || (isVersionedKey && !currentIsVersionedKey)) byShot.set(record.shotId, record);
+    }
+    return [...byShot.values()];
   }
 
   async getReferenceAssignment(
     workspaceId: string,
     batchId: string,
     shotId: string,
+    batchSourceHash?: string,
   ): Promise<ReferenceAssignmentRecord | undefined> {
-    const record = await this.tables.referenceAssignments.get(
-      referenceAssignmentId(workspaceId, batchId, shotId),
-    );
+    const record = batchSourceHash
+      ? await this.getReferenceAssignmentForSource(workspaceId, batchId, shotId, batchSourceHash)
+      : await this.tables.referenceAssignments.get(referenceAssignmentId(workspaceId, batchId, shotId));
     return record && ReferenceAssignmentRecordSchema.safeParse(record).success
       ? record
       : undefined;
+  }
+
+  private async getReferenceAssignmentForSource(
+    workspaceId: string,
+    batchId: string,
+    shotId: string,
+    batchSourceHash: string,
+  ): Promise<ReferenceAssignmentRecord | undefined> {
+    const versioned = await this.tables.referenceAssignments.get(
+      referenceAssignmentId(workspaceId, batchId, shotId, batchSourceHash),
+    );
+    if (versioned) return versioned;
+    // Read legacy rows only for their exact recorded source hash. New writes use
+    // the versioned key and leave legacy history intact.
+    const legacy = await this.tables.referenceAssignments.get(
+      referenceAssignmentId(workspaceId, batchId, shotId),
+    );
+    return legacy?.batchSourceHash === batchSourceHash ? legacy : undefined;
   }
 
   async getReferenceByOperation(
@@ -571,11 +604,13 @@ export class ExtensionRepositories {
   async listReferenceCaptureOperations(
     workspaceId: string,
     batchId: string,
+    batchSourceHash?: string,
   ): Promise<ReferenceCaptureOperationRecord[]> {
     return (await this.tables.referenceCaptureOperations.toArray()).filter(
       (record) =>
         record.workspaceId === workspaceId &&
         record.batchId === batchId &&
+        (!batchSourceHash || record.batchSourceHash === batchSourceHash) &&
         ReferenceCaptureOperationRecordSchema.safeParse(record).success,
     );
   }
@@ -585,6 +620,7 @@ export class ExtensionRepositories {
     batchId: string,
     shotId: string,
     completedAt: number,
+    batchSourceHash?: string,
   ): Promise<string[]> {
     return this.tables.transaction(["referenceCaptureOperations"], async () => {
       const operations = (
@@ -594,6 +630,7 @@ export class ExtensionRepositories {
           item.workspaceId === workspaceId &&
           item.batchId === batchId &&
           item.shotId === shotId &&
+          (!batchSourceHash || item.batchSourceHash === batchSourceHash) &&
           item.status === "acquiring",
       );
       for (const operation of operations)
@@ -631,16 +668,16 @@ export class ExtensionRepositories {
             current.workspaceId === operation.workspaceId &&
             current.batchId === operation.batchId &&
             current.shotId === operation.shotId &&
+            current.batchSourceHash === operation.batchSourceHash &&
             current.status === "acquiring",
         );
         if (anotherActiveOperation)
           throw new Error("reference_capture_already_active_for_shot");
-        const current = await this.tables.referenceAssignments.get(
-          referenceAssignmentId(
-            operation.workspaceId,
-            operation.batchId,
-            operation.shotId,
-          ),
+        const current = await this.getReferenceAssignmentForSource(
+          operation.workspaceId,
+          operation.batchId,
+          operation.shotId,
+          operation.batchSourceHash,
         );
         if (
           (current?.assignmentVersion ?? 0) !==
@@ -701,8 +738,11 @@ export class ExtensionRepositories {
             item.batchId === assignment.batchId &&
             item.shotId === assignment.shotId,
         );
-        const current = await this.tables.referenceAssignments.get(
-          assignment.assignmentId,
+        const current = await this.getReferenceAssignmentForSource(
+          assignment.workspaceId,
+          assignment.batchId,
+          assignment.shotId,
+          assignment.batchSourceHash,
         );
         const selected = await this.tables.selectedTargets.get("Flow");
         if (
@@ -2932,6 +2972,7 @@ export class ExtensionRepositories {
     const referenceAssignments = await this.listReferenceAssignments(
       workspaceId,
       imageSourceBatchId,
+      imageSourceBatchHash,
     );
     const pairingResult = validateAndPairVideoShots({
       workspaceId,
@@ -2980,8 +3021,11 @@ export class ExtensionRepositories {
           `Video shot at order ${pair.order} is not paired with a verified reference.`,
         );
       }
-      const assignment = await this.tables.referenceAssignments.get(
-        referenceAssignmentId(workspaceId, imageSourceBatchId, pair.canonicalShotId),
+      const assignment = await this.getReferenceAssignmentForSource(
+        workspaceId,
+        imageSourceBatchId,
+        pair.canonicalShotId,
+        imageSourceBatchHash,
       );
       if (!assignment || !assignment.bytes || !(assignment.bytes instanceof Blob)) {
         throw new VideoBatchPreparationError(
@@ -3107,12 +3151,11 @@ export class ExtensionRepositories {
         }
         // Re-check reference assignments
         for (const item of preparedItems) {
-          const liveAssignment = await this.tables.referenceAssignments.get(
-            referenceAssignmentId(
-              workspaceId,
-              imageSourceBatchId,
-              item.canonicalShotId,
-            ),
+          const liveAssignment = await this.getReferenceAssignmentForSource(
+            workspaceId,
+            imageSourceBatchId,
+            item.canonicalShotId,
+            imageSourceBatchHash,
           );
           if (
             !liveAssignment ||

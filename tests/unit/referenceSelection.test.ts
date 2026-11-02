@@ -21,7 +21,8 @@ import {
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
-import { sha256Bytes } from "../../src/domain/media/references";
+import { referenceAssignmentId, sha256Bytes, type ReferenceAssignmentRecord } from "../../src/domain/media/references";
+import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 
 describe("Phase 07.1 Reference Selection Sessions", () => {
   async function createFixture() {
@@ -113,9 +114,12 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
                   ok: true,
                   candidate: {
                     ...args,
-                    sourceUrl:
-                      "https://lh3.googleusercontent.com/media/sample-card-40.jpg?token=live",
-                    providerAssetId: "asset-genuine-40",
+                    sourceUrl: typeof args?.sourceUrl === "string"
+                      ? args.sourceUrl
+                      : "https://lh3.googleusercontent.com/media/sample-card-40.jpg?token=live",
+                    providerAssetId: typeof args?.providerAssetId === "string"
+                      ? args.providerAssetId
+                      : "asset-genuine-40",
                     cardTag: "flow-image-tile",
                     naturalWidth: 1024,
                     naturalHeight: 1024,
@@ -366,13 +370,15 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       expect(active?.documentId).toBe("doc-flow-1");
 
       // Verifies broadcast
-      expect(broadcastEvents).toContainEqual({
+      expect(broadcastEvents).toContainEqual(expect.objectContaining({
         type: FLOW_REFERENCE_EVENT_MESSAGE,
         event: "session_started",
         sessionId: result.sessionId,
         workspaceId: "ws-1",
+        batchId: batch!.batch.id,
+        batchSourceHash: active?.sourceHash,
         shotId: "20",
-      });
+      }));
 
       // Verifies isolated world injection
       expect(scriptInjections).toHaveLength(2); // 1 for target doc probe + 1 for start selection
@@ -1234,12 +1240,14 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       await handler.clearCandidate("ws-1", "40");
       const stateAfterClear = await handler.getState("ws-1");
       expect(stateAfterClear.candidates["40"]).toBeUndefined();
-      expect(broadcastEvents).toContainEqual({
+      expect(broadcastEvents).toContainEqual(expect.objectContaining({
         type: FLOW_REFERENCE_EVENT_MESSAGE,
         event: "candidate_cleared",
         workspaceId: "ws-1",
+        batchId: candidatePayload.batchId,
+        batchSourceHash: state.batchSourceHash,
         shotId: "40",
-      });
+      }));
     });
 
     it("persists the exact original cross-origin response bytes and their SHA-256", async () => {
@@ -1270,6 +1278,7 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         "ws-1",
         candidate.batchId,
         "40",
+        candidate.batchSourceHash,
       );
       const original = new Uint8Array([
         0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
@@ -1284,6 +1293,100 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         "verified_flow_document_extension_fetch",
       );
       expect(candidate.sourceUrl).not.toContain("token=");
+      vi.unstubAllGlobals();
+    });
+
+    it("keeps reused Shot 01 references isolated by image source hash across reimport and capture", async () => {
+      const fixture = await createFixture();
+      await setupVerifiedFlowTarget(fixture.repositories, fixture.database);
+      vi.stubGlobal("createImageBitmap", async () => ({ width: 1024, height: 1024, close() {} }));
+      const sourceFor = (scene: string) => `01: {"shot_id":"01","prompt":"${scene}"}`;
+      const dinosaurSource = sourceFor("dinosaur in forest");
+      const dinosaurBatch = await fixture.repositories.savePromptBatch({ workspaceId: "ws-1", kind: "image", sourceText: dinosaurSource });
+
+      const selectAndSave = async (batchSource: typeof dinosaurBatch, sourceLabel: string) => {
+        const session = await fixture.handler.startSelection({ workspaceId: "ws-1", batchId: batchSource.batch.id, shotId: "1" });
+        const candidatePayload: FlowReferenceCandidateSelectedMessage = {
+          type: FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE,
+          protocolVersion: PROTOCOL_VERSION,
+          buildId: BUILD_ID,
+          sessionId: session.sessionId,
+          workspaceId: "ws-1",
+          batchId: batchSource.batch.id,
+          shotId: "1",
+          candidate: {
+            sourceUrl: `https://lh3.googleusercontent.com/${sourceLabel}-shot-01`,
+            naturalWidth: 1024,
+            naturalHeight: 1024,
+            displayWidth: 256,
+            displayHeight: 256,
+            providerAssetId: `${sourceLabel}-asset-01`,
+            cardTag: "flow-image-tile",
+            selectedAt: fixture.clock(),
+          },
+        };
+        const sender = { id: "test-extension-id", frameId: 0, tab: { id: 101 }, documentId: "doc-flow-1" };
+        expect((await fixture.handler.handleCandidateSelected(candidatePayload, sender)).accepted).toBe(true);
+        const state = await fixture.handler.getState("ws-1");
+        const candidate = state.candidates["1"]!;
+        expect(candidate.batchSourceHash).toBe(await sha256Hex(batchSource.batch.sourceText));
+        expect((await fixture.handler.captureReference({
+          workspaceId: "ws-1", batchId: batchSource.batch.id, shotId: "1",
+          selectionVersion: candidate.selectionVersion!, expectedAssignmentVersion: 0,
+          captureOperationId: crypto.randomUUID(),
+        })).saved).toBe(true);
+        return state.batchSourceHash as string;
+      };
+
+      const dinosaurHash = await sha256Hex(dinosaurBatch.batch.sourceText);
+      const dinosaurBytes = new Uint8Array([1, 2, 3, 4]);
+      const dinosaurReference: ReferenceAssignmentRecord = {
+        assignmentId: referenceAssignmentId("ws-1", dinosaurBatch.batch.id, "1"),
+        referenceId: crypto.randomUUID(),
+        captureOperationId: crypto.randomUUID(),
+        workspaceId: "ws-1",
+        batchId: dinosaurBatch.batch.id,
+        batchSourceHash: dinosaurHash,
+        shotId: "1",
+        promptHash: dinosaurBatch.items[0]!.contentHash,
+        selectionVersion: crypto.randomUUID(),
+        assignmentVersion: 1,
+        flowProjectId: "proj-1",
+        tabId: 101,
+        canonicalTarget: "https://flow.google.com/project/proj-1",
+        documentId: "doc-flow-1",
+        providerAssetId: "dinosaur-asset-01",
+        observedSourceSha256: await sha256Hex("dinosaur-image-source"),
+        bytes: new Blob([dinosaurBytes], { type: "image/png" }),
+        mimeType: "image/png",
+        byteSize: dinosaurBytes.byteLength,
+        sha256: await sha256Bytes(dinosaurBytes),
+        width: 2,
+        height: 2,
+        capturedAt: fixture.clock(),
+        acquisitionProvenance: "verified_flow_document_same_origin_fetch",
+        qualityProvenance: "observed_resource_original_bytes_no_upscale",
+      };
+      await fixture.database.referenceAssignments.put(dinosaurReference);
+
+      const volcanoSource = sourceFor("volcano at dawn");
+      const volcanoBatch = await fixture.repositories.savePromptBatch({ workspaceId: "ws-1", kind: "image", sourceText: volcanoSource });
+      expect(volcanoBatch.batch.id).toBe(dinosaurBatch.batch.id);
+      expect(volcanoBatch.items[0]!.id).toBe(dinosaurBatch.items[0]!.id);
+      expect(volcanoBatch.items[0]!.shotId).toBe(dinosaurBatch.items[0]!.shotId);
+      const beforeVolcanoSave = await fixture.handler.getState("ws-1");
+      expect(beforeVolcanoSave.batchSourceHash).not.toBe(dinosaurHash);
+      expect(beforeVolcanoSave.savedReferences).toEqual([]);
+      expect(beforeVolcanoSave.candidates["1"]).toBeUndefined();
+
+      const volcanoHash = await selectAndSave(volcanoBatch, "volcano");
+      const volcanoReference = await fixture.repositories.getReferenceAssignment("ws-1", volcanoBatch.batch.id, "1", volcanoHash);
+      const dinosaurAfter = await fixture.repositories.getReferenceAssignment("ws-1", dinosaurBatch.batch.id, "1", dinosaurHash);
+      expect(volcanoReference?.referenceId).not.toBe(dinosaurReference?.referenceId);
+      expect(volcanoReference?.assignmentId).not.toBe(dinosaurReference?.assignmentId);
+      expect(dinosaurAfter?.referenceId).toBe(dinosaurReference?.referenceId);
+      expect(await fixture.repositories.listReferenceAssignments("ws-1", dinosaurBatch.batch.id, dinosaurHash)).toHaveLength(1);
+      expect(await fixture.repositories.listReferenceAssignments("ws-1", volcanoBatch.batch.id, volcanoHash)).toHaveLength(1);
       vi.unstubAllGlobals();
     });
   });
