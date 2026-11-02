@@ -11,6 +11,7 @@ import {
 } from "./db";
 import { VidsVideoAttachmentOperationSchema, type VidsVideoAttachmentOperation } from "../domain/jobs/vidsVideoAttachment";
 import { VidsVideoGenerationOperationSchema, type VidsVideoGenerationOperation } from "../domain/jobs/vidsVideoGeneration";
+import { VidsVideoQueueRecordSchema, type VidsVideoQueueRecord } from "../domain/jobs/vidsVideoQueue";
 import {
   FlowVideoQueueRecordSchema,
   type FlowVideoQueueRecord,
@@ -319,6 +320,7 @@ export type RepositoryDatabase = {
   flowVideoQueues: Pick<Table<FlowVideoQueueRecord, string>, "get" | "put" | "add" | "toArray">;
   vidsVideoAttachmentOperations: Pick<Table<VidsVideoAttachmentOperation, string>, "get" | "put" | "add">;
   vidsVideoGenerationOperations: Pick<Table<VidsVideoGenerationOperation, string>, "get" | "put" | "add">;
+  vidsVideoQueues: Pick<Table<VidsVideoQueueRecord, string>, "get" | "put" | "add" | "toArray">;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -346,6 +348,7 @@ export function createDexieRepositoryDatabase(
     flowVideoQueues: database.flowVideoQueues,
     vidsVideoAttachmentOperations: database.vidsVideoAttachmentOperations,
     vidsVideoGenerationOperations: database.vidsVideoGenerationOperations,
+    vidsVideoQueues: database.vidsVideoQueues,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -493,8 +496,14 @@ export function createDexieRepositoryDatabase(
           return database.transaction("rw", database.vidsVideoAttachmentOperations, operation);
         case "vidsVideoGenerationOperations":
           return database.transaction("rw", database.vidsVideoGenerationOperations, operation);
+        case "vidsVideoQueues":
+          return database.transaction("rw", database.vidsVideoQueues, operation);
+        case "vidsVideoAttachmentOperations+vidsVideoQueues":
+          return database.transaction("rw", database.vidsVideoAttachmentOperations, database.vidsVideoQueues, operation);
         case "vidsVideoAttachmentOperations+vidsVideoGenerationOperations":
           return database.transaction("rw", database.vidsVideoAttachmentOperations, database.vidsVideoGenerationOperations, operation);
+        case "vidsVideoAttachmentOperations+vidsVideoGenerationOperations+vidsVideoQueues":
+          return database.transaction("rw", database.vidsVideoAttachmentOperations, database.vidsVideoGenerationOperations, database.vidsVideoQueues, operation);
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -3324,10 +3333,50 @@ export class ExtensionRepositories {
     return operation;
   }
 
-  async claimVidsVideoAttachmentOperation(operation: VidsVideoAttachmentOperation): Promise<boolean> {
+  async getVidsVideoQueue(queueId: string): Promise<VidsVideoQueueRecord | undefined> {
+    const queue = await this.tables.vidsVideoQueues.get(queueId);
+    if (queue && !VidsVideoQueueRecordSchema.safeParse(queue).success) throw new Error("vids_video_queue_invalid");
+    return queue;
+  }
+
+  async listVidsVideoQueues(): Promise<VidsVideoQueueRecord[]> {
+    const queues = await this.tables.vidsVideoQueues.toArray();
+    if (queues.some((queue) => !VidsVideoQueueRecordSchema.safeParse(queue).success)) throw new Error("vids_video_queue_invalid");
+    return queues;
+  }
+
+  async createVidsVideoQueue(queue: VidsVideoQueueRecord): Promise<VidsVideoQueueRecord> {
+    if (!VidsVideoQueueRecordSchema.safeParse(queue).success) throw new Error("vids_video_queue_invalid");
+    return this.tables.transaction(["vidsVideoQueues"], async () => {
+      const current = await this.tables.vidsVideoQueues.get(queue.queueId);
+      if (current) return current;
+      await this.tables.vidsVideoQueues.add(queue);
+      const saved = await this.tables.vidsVideoQueues.get(queue.queueId);
+      if (!saved || JSON.stringify(saved) !== JSON.stringify(queue)) throw new Error("vids_video_queue_persistence_failed");
+      return saved;
+    });
+  }
+
+  async updateVidsVideoQueue(input: { expectedRevision: number; next: VidsVideoQueueRecord }): Promise<VidsVideoQueueRecord | undefined> {
+    if (!VidsVideoQueueRecordSchema.safeParse(input.next).success) throw new Error("vids_video_queue_invalid");
+    return this.tables.transaction(["vidsVideoQueues"], async () => {
+      const current = await this.tables.vidsVideoQueues.get(input.next.queueId);
+      if (!current || current.revision !== input.expectedRevision) return undefined;
+      if (input.next.revision !== current.revision + 1) throw new Error("vids_video_queue_revision_invalid");
+      await this.tables.vidsVideoQueues.put(input.next);
+      const saved = await this.tables.vidsVideoQueues.get(input.next.queueId);
+      if (!saved || JSON.stringify(saved) !== JSON.stringify(input.next)) throw new Error("vids_video_queue_persistence_failed");
+      return saved;
+    });
+  }
+
+  async claimVidsVideoAttachmentOperation(operation: VidsVideoAttachmentOperation, queueOwned = false): Promise<boolean> {
     if (!VidsVideoAttachmentOperationSchema.safeParse(operation).success)
       throw new Error("vids_video_attachment_operation_invalid");
-    return this.tables.transaction(["vidsVideoAttachmentOperations"], async () => {
+    return this.tables.transaction(["vidsVideoAttachmentOperations+vidsVideoQueues"], async () => {
+      const queue = await this.tables.vidsVideoQueues.get(`vids-video:${operation.preparedBatchId}`);
+      if (queue && (!queueOwned || queue.state !== "preparing")) return false;
+      if (!queue && queueOwned) return false;
       if (await this.tables.vidsVideoAttachmentOperations.get(operation.id)) return false;
       await this.tables.vidsVideoAttachmentOperations.add(operation);
       const saved = await this.tables.vidsVideoAttachmentOperations.get(operation.id);
@@ -3364,10 +3413,14 @@ export class ExtensionRepositories {
   async claimVidsVideoGenerationOperation(
     operation: VidsVideoGenerationOperation,
     expectedAttachment: VidsVideoAttachmentOperation,
+    queueOwned = false,
   ): Promise<boolean> {
     if (!VidsVideoGenerationOperationSchema.safeParse(operation).success)
       throw new Error("vids_video_generation_operation_invalid");
-    return this.tables.transaction(["vidsVideoAttachmentOperations+vidsVideoGenerationOperations"], async () => {
+    return this.tables.transaction(["vidsVideoAttachmentOperations+vidsVideoGenerationOperations+vidsVideoQueues"], async () => {
+      const queue = await this.tables.vidsVideoQueues.get(`vids-video:${operation.preparedBatchId}`);
+      if (queue && (!queueOwned || queue.state !== "checking_generate")) return false;
+      if (!queue && queueOwned) return false;
       const attachment = await this.tables.vidsVideoAttachmentOperations.get(expectedAttachment.id);
       if (!attachment || JSON.stringify(attachment) !== JSON.stringify(expectedAttachment) || attachment.status !== "attached") return false;
       if (await this.tables.vidsVideoGenerationOperations.get(operation.id)) return false;

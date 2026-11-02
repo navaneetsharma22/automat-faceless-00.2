@@ -19,6 +19,7 @@ declare global {
         oldQueueDataPreserved: boolean;
         videoQueueStoreAvailable: boolean;
         vidsGenerationStoreAvailable: boolean;
+        vidsVideoQueueStoreAvailable: boolean;
         videoQueuePersistsAfterReopen: boolean;
         intentPersistsAfterReopen: boolean;
         databaseVersion: number;
@@ -82,6 +83,7 @@ window.__FlowVideoAttachmentStorageFixture = {
     await upgraded.flowVideoQueues.put(videoQueueRecord as never);
     const videoQueueStoreAvailable = Boolean(upgraded.flowVideoQueues);
     const vidsGenerationStoreAvailable = Boolean(upgraded.vidsVideoGenerationOperations);
+    const vidsVideoQueueStoreAvailable = Boolean(upgraded.vidsVideoQueues);
     const version = upgraded.verno;
     upgraded.close();
 
@@ -138,6 +140,7 @@ window.__FlowVideoAttachmentStorageFixture = {
       oldQueueDataPreserved: preserved.queue?.payloadMarker === queue.payloadMarker,
       videoQueueStoreAvailable,
       vidsGenerationStoreAvailable,
+      vidsVideoQueueStoreAvailable,
       videoQueuePersistsAfterReopen: durableVideoQueue?.queueId === videoQueueRecord.queueId,
       intentPersistsAfterReopen: durable?.status === "action_intent",
       repositoryClaimIsExclusive: claimed && duplicateClaimRejected && intentReadBeforeClose?.updatedAt === 10,

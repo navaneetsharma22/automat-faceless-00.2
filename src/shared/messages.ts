@@ -172,9 +172,15 @@ export type RequestPayloads = {
   "flow.video.attachReference": { preparedBatchId: string; itemId: string };
   "vids.video.attachReference": { preparedBatchId: string; itemId: string };
   "vids.video.getAttachmentStatus": { preparedBatchId: string; itemId: string };
+  "vids.video.getReferencePreview": { preparedBatchId: string; itemId: string };
   "vids.video.generateOnce": { preparedBatchId: string; itemId: string };
   "vids.video.getGenerationStatus": { preparedBatchId: string; itemId: string };
   "vids.video.recoverPreActivationFailure": { expected: VidsVideoGenerationOperation };
+  "vids.videoQueue.get": { preparedBatchId: string };
+  "vids.videoQueue.start": { preparedBatchId: string };
+  "vids.videoQueue.pause": { preparedBatchId: string; expectedRevision: number };
+  "vids.videoQueue.resume": { preparedBatchId: string; expectedRevision: number };
+  "vids.videoQueue.stop": { preparedBatchId: string; expectedRevision: number };
   "flow.video.inspectReferenceBytes": { preparedBatchId: string; itemId: string };
   "flow.video.verifyAttachedReference": { preparedBatchId: string; itemId: string };
   "flow.video.generateOnce": { preparedBatchId: string; itemId: string };
@@ -253,9 +259,15 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.video.attachReference": 30_000,
   "vids.video.attachReference": 45_000,
   "vids.video.getAttachmentStatus": 5_000,
+  "vids.video.getReferencePreview": 15_000,
   "vids.video.generateOnce": 60_000,
   "vids.video.getGenerationStatus": 5_000,
   "vids.video.recoverPreActivationFailure": 30_000,
+  "vids.videoQueue.get": 10_000,
+  "vids.videoQueue.start": 30_000,
+  "vids.videoQueue.pause": 10_000,
+  "vids.videoQueue.resume": 30_000,
+  "vids.videoQueue.stop": 10_000,
   "flow.video.inspectReferenceBytes": 30_000,
   "flow.video.verifyAttachedReference": 10_000,
   "flow.video.generateOnce": 45_000,

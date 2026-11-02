@@ -42,6 +42,7 @@ import { createFlowVideoGenerateHandler } from "./handlers/flowVideo";
 import { createFlowVideoQueueHandler } from "./handlers/flowVideoQueue";
 import { createVidsVideoAttachmentHandler } from "./handlers/vidsVideoAttachment";
 import { createVidsVideoGenerateHandler } from "./handlers/vidsVideo";
+import { createVidsVideoQueueHandler } from "./handlers/vidsVideoQueue";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -154,12 +155,23 @@ const vidsVideoAttachment = createVidsVideoAttachmentHandler({
   scripting: { executeScript: (input) => chrome.scripting.executeScript(input as never) },
   getTab: async (tabId) => chrome.tabs.get(tabId),
   revalidate: () => connectionLifecycle.revalidate("Vids", false),
+  queueCanContinue: async (preparedBatchId) => ["preparing", "checking_generate"].includes((await repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`))?.state ?? ""),
 });
 const vidsVideoGenerate = createVidsVideoGenerateHandler({
   repositories,
   scripting: { executeScript: (input) => chrome.scripting.executeScript(input as never) },
   getTab: async (tabId) => chrome.tabs.get(tabId),
   revalidate: () => connectionLifecycle.revalidate("Vids", false),
+  queueCanContinue: async (preparedBatchId) => (await repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`))?.state === "checking_generate",
+});
+const vidsVideoQueue = createVidsVideoQueueHandler({
+  repositories,
+  alarms: chrome.alarms,
+  attach: (preparedBatchId, itemId, fromQueue) => vidsVideoAttachment.attach(preparedBatchId, itemId, fromQueue),
+  getAttachment: (preparedBatchId, itemId) => vidsVideoAttachment.get(preparedBatchId, itemId),
+  generate: (preparedBatchId, itemId, fromQueue) => vidsVideoGenerate.generateOnce(preparedBatchId, itemId, fromQueue),
+  getGeneration: (preparedBatchId, itemId) => vidsVideoGenerate.get(preparedBatchId, itemId),
+  transitionFromPrevious: (preparedBatchId, itemId) => vidsVideoGenerate.transitionFromPrevious(preparedBatchId, itemId) as Promise<{ status: "ready" | "blocked"; reason?: string }>,
 });
 const flowVideoQueue = createFlowVideoQueueHandler({
   repositories,
@@ -289,6 +301,7 @@ const timedQueueReady = targetStartupReady.then(async () => {
   await Promise.all([
     timedQueueScheduler.reconcileStartup(),
     flowVideoQueue.reconcileStartup(),
+    vidsVideoQueue.reconcileStartup(),
   ]);
 });
 void workerReady.catch(() => undefined);
@@ -297,6 +310,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     .then(() => Promise.all([
       timedQueueScheduler.onAlarm(alarm.name),
       flowVideoQueue.onAlarm(alarm.name),
+      vidsVideoQueue.onAlarm(alarm.name),
     ]))
     .catch(() => undefined);
 });
@@ -500,6 +514,7 @@ chrome.runtime.onMessage.addListener(
     flowVideoAttachment,
     vidsVideoAttachment,
     vidsVideoGenerate,
+    vidsVideoQueue,
     flowVideoGenerateOnce: flowVideoGenerate.generateOnce,
     flowVideoQueue,
     startTimedImageQueue: timedQueueScheduler.start,

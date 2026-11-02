@@ -8,7 +8,7 @@ import { PreparedVideoBatchRecordSchema, VideoSettingsConfirmationSchema } from 
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import { CONNECTOR_PROTOCOL_VERSION } from "../../platforms/shared/contracts";
 import { parseProviderRoute } from "../../platforms/shared/providerRoute";
-import { enterVidsPromptInPage, activateVidsGenerateInPage } from "../../platforms/vids/video";
+import { enterVidsPromptInPage, activateVidsGenerateInPage, transitionVidsComposerFromPreviousInPage } from "../../platforms/vids/video";
 import type { ExtensionRepositories } from "../../storage/repositories";
 
 type Injection = { documentId?: string; result?: unknown };
@@ -40,6 +40,7 @@ export function createVidsVideoGenerateHandler(deps: {
   revalidate: () => Promise<unknown>;
   now?: () => number;
   createAttemptId?: () => string;
+  queueCanContinue?: (preparedBatchId: string) => Promise<boolean>;
 }) {
   const now = deps.now ?? Date.now;
   const makeId = async (batchId: string, itemId: string) => `vids-generation:${await sha256Hex(`${batchId}\u0000${itemId}`)}`;
@@ -101,7 +102,10 @@ export function createVidsVideoGenerateHandler(deps: {
     return { status, stage: operation.failureStage, reason: operation.reason, operation };
   }
 
-  async function generateOnce(preparedBatchId: string, itemId: string): Promise<VidsVideoGenerateResult> {
+  async function generateOnce(preparedBatchId: string, itemId: string, fromQueue = false): Promise<VidsVideoGenerateResult> {
+    const existingQueue = await deps.repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`);
+    if (existingQueue && !fromQueue) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_owns_prepared_batch" };
+    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId))) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_paused_before_generation_intent" };
     const id = await makeId(preparedBatchId, itemId);
     const existing = await deps.repositories.getVidsVideoGenerationOperation(id);
     const retrySource = existing?.status === "retry_ready" && existing.preActivationRecovery ? existing : undefined;
@@ -160,10 +164,11 @@ export function createVidsVideoGenerateHandler(deps: {
         immediateMatch: true, settledMatch: true, stableReads: exactAgain.result.stableReads!, verifiedAt: timestamp,
       }, activationAttempted: false, activationCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
+    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId))) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_paused_before_generation_intent" };
     try {
       const claimed = retrySource
         ? await deps.repositories.claimVidsVideoGenerationRetry(intent, retrySource, attachment!)
-        : await deps.repositories.claimVidsVideoGenerationOperation(intent, attachment!);
+        : await deps.repositories.claimVidsVideoGenerationOperation(intent, attachment!, fromQueue);
       if (!claimed) {
         const raced = await deps.repositories.getVidsVideoGenerationOperation(id);
         return { status: raced?.status === "dispatched" ? "already_dispatched" : raced?.status ?? "blocked", reason: "generation_operation_already_claimed", operation: raced };
@@ -183,6 +188,10 @@ export function createVidsVideoGenerateHandler(deps: {
     const finalTarget = await validateTarget(batch);
     if ("reason" in finalTarget || finalTarget.binding.documentId !== intent.documentId || finalTarget.selected.tabId !== intent.tabId || finalTarget.selected.canonicalTarget !== intent.canonicalTarget) {
       const operation = await saveOutcome("blocked", "generate_preflight", "vids_target_changed_before_activation", false, 0);
+      return { status: "blocked", stage: "generate_preflight", reason: operation.reason, operation };
+    }
+    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId))) {
+      const operation = await saveOutcome("blocked", "generate_preflight", "vids_queue_paused_before_activation", false, 0);
       return { status: "blocked", stage: "generate_preflight", reason: operation.reason, operation };
     }
     let response: Injection | undefined;
@@ -268,6 +277,36 @@ export function createVidsVideoGenerateHandler(deps: {
     return { status: "retry_ready", operation: await deps.repositories.getVidsVideoGenerationOperation(id) ?? next };
   }
 
-  return { generateOnce, get, recoverPreActivationFailure };
+  async function transitionFromPrevious(preparedBatchId: string, previousItemId: string): Promise<{ status: "ready" | "blocked"; reason?: string }> {
+    const parsed = PreparedVideoBatchRecordSchema.safeParse(await deps.repositories.getPreparedVideoBatchById(preparedBatchId));
+    if (!parsed.success || parsed.data.destination !== "Vids") return { status: "blocked", reason: "prepared_vids_batch_invalid" };
+    const batch = parsed.data;
+    const item = batch.items.find((candidate) => candidate.itemId === previousItemId);
+    if (!item) return { status: "blocked", reason: "prepared_vids_previous_item_missing" };
+    const generation = await deps.repositories.getVidsVideoGenerationOperation(await makeId(batch.id, item.itemId));
+    const attachmentId = `vids:${await sha256Hex(`${batch.id}\u0000${item.itemId}`)}`;
+    const attachment = await deps.repositories.getVidsVideoAttachmentOperation(attachmentId);
+    if (!generation || generation.status !== "dispatched" || generation.activationAttempted !== true || generation.activationCount !== 1 || generation.dispatchedAt === undefined || generation.preparedBatchId !== batch.id || generation.itemId !== item.itemId || generation.promptHash !== item.contentHash || generation.referenceId !== item.reference.referenceId || generation.referenceSha256 !== item.reference.sha256 || !attachment || attachment.status !== "attached" || attachment.documentId !== generation.documentId || attachment.referenceId !== item.reference.referenceId || attachment.referenceSha256 !== item.reference.sha256)
+      return { status: "blocked", reason: "vids_previous_item_dispatch_binding_unverified" };
+    const target = await validateTarget(batch);
+    if ("reason" in target || target.binding.documentId !== generation.documentId || target.selected.tabId !== generation.tabId || target.selected.canonicalTarget !== generation.canonicalTarget)
+      return { status: "blocked", reason: "vids_target_changed_before_composer_transition" };
+    let response: Injection | undefined;
+    try {
+      [response] = await deps.scripting.executeScript({ target: { tabId: generation.tabId, documentIds: [generation.documentId] }, world: "MAIN", func: transitionVidsComposerFromPreviousInPage,
+        args: [{ prompt: item.rawJsonBody, promptSha256: item.contentHash, referenceSha256: item.reference.sha256, referenceMimeType: item.reference.mimeType as "image/png" | "image/jpeg", referenceByteSize: item.reference.byteSize, referenceWidth: item.reference.width, referenceHeight: item.reference.height, timeoutMs: 2500 }] });
+    } catch { return { status: "blocked", reason: "vids_composer_transition_reply_uncertain" }; }
+    if (response?.documentId !== generation.documentId) return { status: "blocked", reason: "vids_document_changed_during_composer_transition" };
+    const result = response.result as Awaited<ReturnType<typeof transitionVidsComposerFromPreviousInPage>> | undefined;
+    const route = parseProviderRoute(result?.href ?? "");
+    if (!route || route.provider !== "Vids" || route.projectId !== batch.target.projectId || route.canonicalTarget !== batch.target.canonicalTarget) return { status: "blocked", reason: "vids_target_changed_during_composer_transition" };
+    if (!result?.ok) return { status: "blocked", reason: safeReason(result?.reason, "vids_composer_transition_failed") };
+    const after = await validateTarget(batch);
+    if ("reason" in after || after.binding.documentId !== generation.documentId || after.selected.tabId !== generation.tabId || after.selected.canonicalTarget !== generation.canonicalTarget)
+      return { status: "blocked", reason: "vids_target_changed_after_composer_transition" };
+    return { status: "ready" };
+  }
+
+  return { generateOnce, get, recoverPreActivationFailure, transitionFromPrevious };
 }
 

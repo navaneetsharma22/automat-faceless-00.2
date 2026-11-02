@@ -30,12 +30,28 @@
 .note { margin: 0; padding: var(--space-3); border-inline-start: 3px solid var(--color-accent); color: var(--color-text-muted); }
 .items { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
 .card { display: grid; gap: var(--space-3); padding: var(--space-4); }
+.thumbnail, .thumbnailPlaceholder { width: min(100%, 18rem); aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--radius-card); background: var(--color-surface); }
+.thumbnailPlaceholder { display: grid; place-items: center; color: var(--color-text-muted); font-size: var(--font-size-sm); }
 .cardHeading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .cardHeading > div { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .reference { color: var(--color-text-muted); font-size: var(--font-size-sm); }
 .action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
 .action span { color: var(--color-text-muted); font-size: var(--font-size-sm); }
 .error { color: var(--color-error); }
+.queue { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-surface-raised); }
+.queueHeading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.queueHeading h4 { margin: 0; font-size: var(--font-size-lg); }
+.queueClock { margin: 0; font-size: var(--font-size-lg); font-weight: 700; }
+.clock { display: grid; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-card); background: var(--color-surface); }
+.clockLabel { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.clockLabel strong { font-size: clamp(1.5rem, 5vw, 2rem); font-variant-numeric: tabular-nums; }
+.progressTrack { height: 0.55rem; overflow: hidden; border-radius: 999px; background: var(--color-border); }
+.progressTrack span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent); transition: width 200ms linear; }
+.progressSummary { height: 0.6rem; overflow: hidden; border-radius: 999px; background: var(--color-border); }
+.progressSummary span { display: block; height: 100%; border-radius: inherit; background: var(--color-accent); transition: width 200ms ease; }
+.queueItem { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin: 0; padding: var(--space-2) 0; border-top: 1px solid var(--color-border); }
+.queueItem details { margin-inline-start: auto; }
+.queueItem code { overflow-wrap: anywhere; }
 .prompt { min-width: 0; border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
 .prompt summary { cursor: pointer; font-weight: 600; }
 .prompt pre { max-width: 100%; max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -44,4 +60,9 @@
 @media (max-width: 640px) {
   .header { flex-direction: column; }
   .target { grid-template-columns: minmax(0, 1fr); }
+  .queueHeading { align-items: flex-start; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progressTrack span, .progressSummary span { transition: none; }
 }

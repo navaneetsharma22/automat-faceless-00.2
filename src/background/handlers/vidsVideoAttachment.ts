@@ -39,6 +39,7 @@ export function createVidsVideoAttachmentHandler(deps: {
   revalidate: () => Promise<unknown>;
   now?: () => number;
   makeUploadOperationId?: () => string;
+  queueCanContinue?: (preparedBatchId: string) => Promise<boolean>;
 }) {
   const now = deps.now ?? Date.now;
   const operationId = async (batchId: string, itemId: string) => `vids:${await sha256Hex(`${batchId}\u0000${itemId}`)}`;
@@ -94,7 +95,25 @@ export function createVidsVideoAttachmentHandler(deps: {
     return { status: operation.status === "action_intent" ? "uncertain" : operation.status, stage: operation.failureStage, reason: operation.reason, operation };
   }
 
-  async function attach(preparedBatchId: string, itemId: string): Promise<BoundedFailure> {
+  async function getPreview(preparedBatchId: string, itemId: string): Promise<{ referenceId: string; sha256: string; mimeType: string; byteSize: number; base64: string } | undefined> {
+    const batch = PreparedVideoBatchRecordSchema.safeParse(await deps.repositories.getPreparedVideoBatchById(preparedBatchId));
+    if (!batch.success || batch.data.destination !== "Vids") return undefined;
+    const item = batch.data.items.find((candidate) => candidate.itemId === itemId);
+    if (!item) return undefined;
+    const reference = await deps.repositories.getReferenceById(item.reference.referenceId);
+    if (!reference || reference.referenceId !== item.reference.referenceId || reference.workspaceId !== batch.data.workspaceId || reference.batchId !== batch.data.imageSourceBatchId || reference.batchSourceHash !== batch.data.imageSourceBatchHash || reference.shotId !== item.canonicalShotId || reference.sha256 !== item.reference.sha256) return undefined;
+    let bytes: Uint8Array;
+    try { bytes = new Uint8Array(await reference.bytes.arrayBuffer()); } catch { return undefined; }
+    if (bytes.byteLength !== item.reference.byteSize || await sha256Bytes(bytes) !== item.reference.sha256) return undefined;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return { referenceId: reference.referenceId, sha256: reference.sha256, mimeType: reference.mimeType, byteSize: bytes.byteLength, base64: btoa(binary) };
+  }
+
+  async function attach(preparedBatchId: string, itemId: string, fromQueue = false): Promise<BoundedFailure> {
+    const existingQueue = await deps.repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`);
+    if (existingQueue && !fromQueue) return resultError("vids_queue_owns_prepared_batch");
+    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId))) return resultError("vids_queue_paused_before_attachment_intent");
     const id = await operationId(preparedBatchId, itemId);
     const existing = await deps.repositories.getVidsVideoAttachmentOperation(id);
     if (existing) return { status: existing.status === "action_intent" ? "uncertain" : existing.status, stage: existing.failureStage, reason: existing.reason ?? "operation_already_exists", operation: existing };
@@ -139,7 +158,7 @@ export function createVidsVideoAttachmentHandler(deps: {
       tabId: current.selected.tabId, canonicalTarget: current.selected.canonicalTarget, documentId,
       status: "action_intent", createdAt: timestamp, updatedAt: timestamp,
     };
-    if (!await deps.repositories.claimVidsVideoAttachmentOperation(operation)) {
+    if (!await deps.repositories.claimVidsVideoAttachmentOperation(operation, fromQueue)) {
       const raced = await deps.repositories.getVidsVideoAttachmentOperation(id);
       return { status: "uncertain", reason: "attachment_operation_already_claimed", operation: raced };
     }
@@ -200,5 +219,5 @@ export function createVidsVideoAttachmentHandler(deps: {
     }
   }
 
-  return { attach, get };
+  return { attach, get, getPreview };
 }
