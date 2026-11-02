@@ -108,6 +108,7 @@ export function flowComposerRuntime(
   expectedText: string,
   returnEditor = false,
   readText = readFlowEditorRuntime,
+  allowedReferenceMediaId?: string,
 ): FlowComposerDiscovery | HTMLElement | null {
   const placeholderText = "what do you want to create?";
   const labelOf = (element: HTMLElement) => {
@@ -238,8 +239,42 @@ export function flowComposerRuntime(
   const profile = richBoundary(editor)
     ? "flow-rich-text"
     : "semantic-container";
-  const mediaPresent = Boolean(
-    boundary.querySelector("img, video, audio, canvas, iframe, object, embed"),
+  const mediaElements = Array.from(
+    boundary.querySelectorAll("img, video, audio, canvas, iframe, object, embed"),
+  );
+  const soleMatchingReadyReference = (element: Element) => {
+    if (
+      !allowedReferenceMediaId ||
+      element.tagName !== "IMG" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        allowedReferenceMediaId,
+      )
+    )
+      return false;
+    const image = element as HTMLImageElement;
+    const chip = image.closest<HTMLButtonElement>(
+      "button[aria-label='Ingredient']",
+    );
+    if (
+      !chip ||
+      chip.getAttribute("aria-busy") !== "false" ||
+      !chip.isConnected ||
+      chip.getClientRects().length === 0 ||
+      boundary.querySelectorAll("button[aria-label='Ingredient']").length !== 1 ||
+      chip.querySelectorAll("img[alt='Ingredient image']").length !== 1 ||
+      chip.querySelector("img[alt='Ingredient image']") !== image
+    )
+      return false;
+    try {
+      const url = new URL(image.currentSrc || image.src || image.getAttribute("src") || "");
+      const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname)?.[1];
+      return url.origin === "https://flow-content.google" && id?.toLowerCase() === allowedReferenceMediaId.toLowerCase();
+    } catch {
+      return false;
+    }
+  };
+  const mediaPresent = mediaElements.length > 0 && !(
+    mediaElements.length === 1 && soleMatchingReadyReference(mediaElements[0]!)
   );
   if (
     (editorKind === "contenteditable" && profile !== "flow-rich-text") ||
@@ -323,9 +358,10 @@ export function flowComposerRuntime(
 export function flowComposerRuntimeExpression(
   expectedText: string,
   returnEditor = false,
+  allowedReferenceMediaId?: string,
 ): string {
   // Pass dependencies positionally: production minification may rename bindings.
-  return `(${flowComposerRuntime.toString()})(${JSON.stringify(expectedText)},${returnEditor},(${readFlowEditorRuntime.toString()}))`;
+  return `(${flowComposerRuntime.toString()})(${JSON.stringify(expectedText)},${returnEditor},(${readFlowEditorRuntime.toString()}),${JSON.stringify(allowedReferenceMediaId)})`;
 }
 
 export function classifyFlowEditorText(

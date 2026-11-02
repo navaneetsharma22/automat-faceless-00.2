@@ -715,8 +715,9 @@ export async function inspectTimedFlowGenerate(
   port: FlowImagePagePort,
   tabId: number,
   expectedText: string,
+  allowedReferenceMediaId?: string,
 ): Promise<TimedFlowGenerateInspection> {
-  const expression = `(${flowTimedGenerateRuntime.toString()})(${JSON.stringify(expectedText)},(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}))`;
+  const expression = `(${flowTimedGenerateRuntime.toString()})(${JSON.stringify(expectedText)},(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}),${JSON.stringify(allowedReferenceMediaId)})`;
   const response = (await port.sendCommand(tabId, "Runtime.evaluate", {
     expression,
     returnByValue: false,
@@ -804,6 +805,7 @@ function flowTimedGenerateRuntime(
   expectedText: string,
   composerRuntime: typeof flowComposerRuntime,
   readText: typeof readFlowEditorRuntime,
+  allowedReferenceMediaId?: string,
 ): {
   composer: "identified" | "missing" | "unsupported";
   exactPrompt: boolean;
@@ -812,7 +814,7 @@ function flowTimedGenerateRuntime(
   generate: "identified" | "missing" | "ambiguous" | "disabled";
   button: HTMLElement | null;
 } {
-  const editor = composerRuntime("", true, readText);
+  const editor = composerRuntime("", true, readText, allowedReferenceMediaId);
   if (!(editor instanceof HTMLElement)) {
     return {
       composer: "missing",
@@ -891,6 +893,7 @@ function revalidateAndInspectButtonRuntime(
   this: unknown,
   composerRuntime: typeof flowComposerRuntime,
   readText: typeof readFlowEditorRuntime,
+  allowedReferenceMediaId?: string,
 ): { x: number; y: number } | null {
   const button = this as unknown;
   if (!(button instanceof HTMLElement)) return null;
@@ -901,7 +904,7 @@ function revalidateAndInspectButtonRuntime(
   ) {
     return null;
   }
-  const editor = composerRuntime("", true, readText);
+  const editor = composerRuntime("", true, readText, allowedReferenceMediaId);
   if (!(editor instanceof HTMLElement)) return null;
   const rich = editor.closest("flow-rich-text-editor");
   const boundary = rich
@@ -944,8 +947,9 @@ export async function inspectFlowImageButton(
   port: FlowImagePagePort,
   tabId: number,
   buttonObjectId: string,
+  allowedReferenceMediaId?: string,
 ): Promise<{ x: number; y: number } | undefined> {
-  const functionDeclaration = `function(){return (${revalidateAndInspectButtonRuntime.toString()}).call(this,(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}));}`;
+  const functionDeclaration = `function(){return (${revalidateAndInspectButtonRuntime.toString()}).call(this,(${flowComposerRuntime.toString()}),(${readFlowEditorRuntime.toString()}),${JSON.stringify(allowedReferenceMediaId)});}`;
   const response = (await port.sendCommand(tabId, "Runtime.callFunctionOn", {
     objectId: buttonObjectId,
     functionDeclaration,

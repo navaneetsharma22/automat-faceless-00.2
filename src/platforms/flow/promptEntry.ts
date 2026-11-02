@@ -93,14 +93,16 @@ export async function enterFlowPrompt(
 export async function enterFlowVideoPrompt(
   rawJsonBody: string,
   port: FlowPromptEntryPort,
+  verifiedReferenceMediaId?: string,
 ): Promise<FlowPromptEntryResult> {
-  return enterFlowPromptOfKind(rawJsonBody, "video", port);
+  return enterFlowPromptOfKind(rawJsonBody, "video", port, verifiedReferenceMediaId);
 }
 
 async function enterFlowPromptOfKind(
   rawJsonBody: string,
   kind: "image" | "video",
   port: FlowPromptEntryPort,
+  allowedReferenceMediaId?: string,
 ): Promise<FlowPromptEntryResult> {
   const now = port.now ?? Date.now;
   const startedAt = now();
@@ -227,7 +229,7 @@ async function enterFlowPromptOfKind(
     const inspected = await evaluate<FlowComposerDiscovery>(
       port,
       target.id,
-      runtimeExpression("", false),
+      runtimeExpression("", false, allowedReferenceMediaId),
       deadline,
       now,
     );
@@ -304,7 +306,7 @@ async function enterFlowPromptOfKind(
       target.id,
       "Runtime.evaluate",
       {
-        expression: runtimeExpression("", true),
+        expression: runtimeExpression("", true, allowedReferenceMediaId),
         returnByValue: false,
         awaitPromise: false,
         userGesture: false,
@@ -331,6 +333,7 @@ async function enterFlowPromptOfKind(
         editorObjectId,
         deadline,
         now,
+        allowedReferenceMediaId,
       );
       const comparison = await compareText(rawJsonBody, settled.text);
       const verified = comparison.equal && settled.stable;
@@ -377,7 +380,7 @@ async function enterFlowPromptOfKind(
       "Runtime.callFunctionOn",
       {
         objectId: editorObjectId,
-        functionDeclaration: `function(){ if (!this.isConnected || (${flowComposerRuntimeExpression("", true)}) !== this) return false; this.focus(); return this.isConnected && document.activeElement === this; }`,
+        functionDeclaration: `function(){ if (!this.isConnected || (${flowComposerRuntimeExpression("", true, allowedReferenceMediaId)}) !== this) return false; this.focus(); return this.isConnected && document.activeElement === this; }`,
         returnByValue: true,
         awaitPromise: false,
       },
@@ -448,6 +451,7 @@ async function enterFlowPromptOfKind(
       editorObjectId,
       deadline,
       now,
+      allowedReferenceMediaId,
     );
     const comparison = await compareText(rawJsonBody, settled.text);
     const actualSha256 = await sha256Hex(settled.text);
@@ -565,8 +569,9 @@ async function enterFlowPromptOfKind(
 function runtimeExpression(
   expectedText: string,
   returnEditor: boolean,
+  allowedReferenceMediaId?: string,
 ): string {
-  return flowComposerRuntimeExpression(expectedText, returnEditor);
+  return flowComposerRuntimeExpression(expectedText, returnEditor, allowedReferenceMediaId);
 }
 
 async function readTopFrame(
@@ -679,6 +684,7 @@ async function readStableEditor(
   originalObjectId: string,
   operationDeadline: number,
   now: () => number,
+  allowedReferenceMediaId?: string,
 ): Promise<{ text: string; replaced: boolean; stable: boolean }> {
   const readDeadline = Math.min(
     operationDeadline,
@@ -710,7 +716,7 @@ async function readStableEditor(
         tabId,
         "Runtime.evaluate",
         {
-          expression: runtimeExpression("", true),
+          expression: runtimeExpression("", true, allowedReferenceMediaId),
           returnByValue: false,
           awaitPromise: false,
           userGesture: false,

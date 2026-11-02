@@ -4,6 +4,10 @@ import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { flowComposerRuntimeExpression } from "../../src/platforms/flow/composer";
 import { flowImageRuntimeExpression } from "../../src/platforms/flow/images";
+import {
+  inspectTimedFlowGenerate,
+  inspectFlowImageButton,
+} from "../../src/platforms/flow/images";
 import type { FlowPromptEntryPort } from "../../src/platforms/flow/promptEntry";
 import { importPromptBatch } from "../../src/domain/batches/importBatch";
 import { rolldown } from "rolldown";
@@ -45,12 +49,13 @@ async function enterObservedFixture(
   page: Page,
   source: string,
   partialFailure = false,
+  options: { kind?: "image" | "video"; allowedReferenceMediaId?: string } = {},
 ) {
   Object.defineProperty(globalThis, "__AUTOMAT_BUILD_ID__", {
     value: "local-observed-flow-fixture",
     configurable: true,
   });
-  const { enterFlowPrompt } =
+  const { enterFlowPrompt, enterFlowVideoPrompt } =
     await import("../../src/platforms/flow/promptEntry");
   const session = await page.context().newCDPSession(page);
   const url = "https://flow.google.com/u/1/project/local_fixture";
@@ -87,7 +92,31 @@ async function enterObservedFixture(
       return session.send(method as never, params as never);
     },
   };
-  return { result: await enterFlowPrompt(source, port), commands };
+  const result = options.kind === "video"
+    ? await enterFlowVideoPrompt(source, port, options.allowedReferenceMediaId)
+    : await enterFlowPrompt(source, port);
+  return { result, commands };
+}
+
+async function installObservedComposerWithReadyReference(page: Page) {
+  await installObservedComposer(page);
+  await page.locator("flow-base-prompt-box").evaluate((box, mediaId) => {
+    const editor = box.querySelector<HTMLElement>("[contenteditable='true']")!;
+    editor.className = "ProseMirror";
+    editor.setAttribute("aria-label", "What do you want to create?");
+    editor.innerHTML = '<p><br class="ProseMirror-trailingBreak"></p>';
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.setAttribute("aria-label", "Ingredient");
+    chip.setAttribute("aria-busy", "false");
+    const image = document.createElement("img");
+    image.alt = "Ingredient image";
+    image.width = 12;
+    image.height = 12;
+    image.src = `https://flow-content.google/image/${mediaId}?signed=fixture`;
+    chip.append(image);
+    box.append(chip);
+  }, "5a836a9f-197d-4400-aa12-2d4c7492a444");
 }
 
 async function installLocalComposer(page: Page, extra = "") {
@@ -119,6 +148,59 @@ async function inspect(page: Page, expectedText: string) {
 }
 
 test.describe("Flow composer local DOM fixtures only", () => {
+  test("video prompt entry reads/inserts exact JSON with the one verified attached reference chip present", async ({ page }) => {
+    const mediaId = "5a836a9f-197d-4400-aa12-2d4c7492a444";
+    await installObservedComposerWithReadyReference(page);
+    const rawSource = (await readFile(resolve(process.cwd(), "tests/dinosaur-video-backup.json"), "utf8")).replace(/\r\n/g, "\n");
+    const imported = importPromptBatch(rawSource, "video");
+    if (!imported.ok || imported.items.length !== 1) throw new Error("Video JSON fixture did not import as one prompt");
+    const source = imported.items[0]!.rawBody;
+    const rejectedWithoutReferenceBinding = await page.evaluate(
+      (expression) => (0, eval)(expression),
+      flowComposerRuntimeExpression("", false),
+    ) as { state: string; diagnostic?: string };
+    expect(rejectedWithoutReferenceBinding).toMatchObject({ state: "unsupported", diagnostic: "composer_media_present" });
+
+    const { result, commands } = await enterObservedFixture(page, source, false, {
+      kind: "video",
+      allowedReferenceMediaId: mediaId,
+    });
+    expect(result).toMatchObject({
+      outcome: "filled",
+      fillVerified: true,
+      immediateMatch: true,
+      settledMatch: true,
+      stableReadback: true,
+      composerProfile: "flow-rich-text",
+      textReadback: "dom-block-lines",
+    });
+    expect(result.expectedSha256).toBe(result.actualSha256);
+    expect(commands.filter((method) => method === "Input.insertText")).toHaveLength(1);
+
+    const readback = await page.evaluate(
+      (expression) => (0, eval)(expression),
+      flowComposerRuntimeExpression(source, false, mediaId),
+    ) as { state: string; currentText?: string };
+    expect(readback.state).toBe("already-matching");
+    expect(readback.currentText).toBe(source);
+    expect(await page.locator("[aria-label='Ingredient']").getAttribute("aria-busy")).toBe("false");
+    expect(await page.evaluate(() => (window as unknown as { localComposerEvents: { clicks: number; submits: number } }).localComposerEvents)).toEqual({ clicks: 0, submits: 0 });
+
+    const session = await page.context().newCDPSession(page);
+    try {
+      const port = {
+        attach: async () => undefined,
+        detach: async () => undefined,
+        sendCommand: (_tabId: number, method: string, params?: object) => session.send(method as never, params as never),
+      };
+      const inspected = await inspectTimedFlowGenerate(port, 1, source, mediaId);
+      expect(inspected).toMatchObject({ composer: "identified", exactPrompt: true, generate: "identified" });
+      expect(await inspectFlowImageButton(port, 1, inspected.buttonObjectId!, mediaId)).toBeDefined();
+    } finally {
+      await session.detach();
+    }
+  });
+
   test("minified serialized runtimes keep their text-reader dependencies", async ({
     page,
   }) => {

@@ -290,6 +290,7 @@ describe("P09.2 one prepared Flow video item (offline)", () => {
     expect(f.enterPrompt).toHaveBeenCalledWith(
       prompt,
       expect.objectContaining({ frameId: "main-frame" }),
+      mediaId,
     );
     expect(f.activate).toHaveBeenCalledTimes(1);
     expect(f.getReferenceReads()).toBe(3);

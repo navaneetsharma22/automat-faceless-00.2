@@ -116,14 +116,17 @@ export function createFlowVideoGenerateHandler(deps: {
   enterPrompt?: (
     text: string,
     frame: FrameIdentity,
+    verifiedReferenceMediaId: string,
   ) => Promise<FlowPromptEntryResult>;
   inspectGenerate?: (
     tabId: number,
     text: string,
+    verifiedReferenceMediaId: string,
   ) => Promise<TimedFlowGenerateInspection>;
   buttonPosition?: (
     tabId: number,
     buttonId: string,
+    verifiedReferenceMediaId: string,
   ) => Promise<{ x: number; y: number } | undefined>;
   activate?: (
     tabId: number,
@@ -139,14 +142,14 @@ export function createFlowVideoGenerateHandler(deps: {
   const now = deps.now ?? Date.now;
   const enter =
     deps.enterPrompt ??
-    ((text, frame) =>
-      enterFlowVideoPrompt(text, { ...deps.promptPort, expectedFrame: frame }));
+    ((text, frame, mediaId) =>
+      enterFlowVideoPrompt(text, { ...deps.promptPort, expectedFrame: frame }, mediaId));
   const inspect =
     deps.inspectGenerate ??
-    ((tabId, text) => inspectTimedFlowGenerate(deps.promptPort, tabId, text));
+    ((tabId, text, mediaId) => inspectTimedFlowGenerate(deps.promptPort, tabId, text, mediaId));
   const position =
     deps.buttonPosition ??
-    ((tabId, id) => inspectFlowImageButton(deps.promptPort, tabId, id));
+    ((tabId, id, mediaId) => inspectFlowImageButton(deps.promptPort, tabId, id, mediaId));
   const activate =
     deps.activate ??
     ((tabId, point) =>
@@ -351,7 +354,7 @@ export function createFlowVideoGenerateHandler(deps: {
       frameRoute.canonicalTarget !== ref.selected.canonicalTarget
     )
       return { status: "blocked", reason: "prompt_document_changed" };
-    const filled = await enter(item.rawJsonBody, frame);
+    const filled = await enter(item.rawJsonBody, frame, ref.mediaId);
     if (
       !filled.fillVerified ||
       !filled.immediateMatch ||
@@ -401,7 +404,7 @@ export function createFlowVideoGenerateHandler(deps: {
           status: "blocked",
           reason: "target_or_reference_changed_after_prompt",
         };
-      const generate = await inspect(ref.selected.tabId, item.rawJsonBody);
+      const generate = await inspect(ref.selected.tabId, item.rawJsonBody, ref.mediaId);
       if (
         generate.composer !== "identified" ||
         !generate.exactPrompt ||
@@ -412,7 +415,7 @@ export function createFlowVideoGenerateHandler(deps: {
           status: "blocked",
           reason: "generate_control_or_prompt_preflight_failed",
         };
-      const point = await position(ref.selected.tabId, generate.buttonObjectId);
+      const point = await position(ref.selected.tabId, generate.buttonObjectId, ref.mediaId);
       if (!point)
         return { status: "blocked", reason: "generate_control_changed" };
       const createdAt = now();
@@ -456,9 +459,9 @@ export function createFlowVideoGenerateHandler(deps: {
         "Flow",
         finalFrame?.url,
       );
-      const finalGenerate = await inspect(ref.selected.tabId, item.rawJsonBody);
+      const finalGenerate = await inspect(ref.selected.tabId, item.rawJsonBody, ref.mediaId);
       const finalPoint = finalGenerate.buttonObjectId
-        ? await position(ref.selected.tabId, finalGenerate.buttonObjectId)
+        ? await position(ref.selected.tabId, finalGenerate.buttonObjectId, ref.mediaId)
         : undefined;
       if (
         !finalRef ||
