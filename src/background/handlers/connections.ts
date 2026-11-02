@@ -145,6 +145,7 @@ export type FoundationDependencies = {
     pause: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     resume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+    inspectTransition: (preparedBatchId: string, itemId: string) => Promise<unknown>;
   };
   flowVideoGenerateOnce?: (preparedBatchId: string, itemId: string) => Promise<unknown>;
   flowVideoQueue?: {
@@ -826,6 +827,9 @@ async function dispatch(
     case "vids.videoQueue.stop":
       if (!dependencies.vidsVideoQueue) throw new FoundationOperationError("worker_error", "vids_video_queue_unavailable", "Vids queue is unavailable.");
       return await dependencies.vidsVideoQueue[request.type.slice("vids.videoQueue.".length) as "pause" | "resume" | "stop"](request.payload.preparedBatchId, request.payload.expectedRevision);
+    case "vids.videoQueue.inspectTransition":
+      if (!dependencies.vidsVideoQueue) throw new FoundationOperationError("worker_error", "vids_video_queue_unavailable", "Vids queue is unavailable.");
+      return await dependencies.vidsVideoQueue.inspectTransition(request.payload.preparedBatchId, request.payload.itemId);
     case "flow.video.inspectReferenceBytes":
       if (!dependencies.flowVideoAttachment?.inspectReferenceBytes) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference inspection is unavailable.");
       return await dependencies.flowVideoAttachment.inspectReferenceBytes(request.payload.preparedBatchId, request.payload.itemId);

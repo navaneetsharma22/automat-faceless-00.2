@@ -195,12 +195,53 @@ export async function enterVidsPromptInPage(input: {
 
 export type VidsGenerateActivationResult = { href: string; ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1; referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256" };
 
-/** Removes only the exact prior queue prompt/reference from the scoped Vids Animate composer. */
+export type VidsComposerTransitionDiagnostics = {
+  stage: "sidebar" | "animate" | "editor" | "prompt" | "reference" | "ownership" | "mutation" | "complete";
+  sidebar: "unique" | "missing" | "ambiguous";
+  animateTab: "unique" | "missing" | "ambiguous";
+  animatePanel: "unique" | "missing" | "ambiguous";
+  editor: "unique" | "missing" | "ambiguous";
+  previewCount: number;
+  promptExpectedSha256: string;
+  promptActualSha256?: string;
+  promptMatches?: boolean;
+  promptTextMatches?: boolean;
+  promptHashMatches?: boolean;
+  referenceExpectedSha256: string;
+  referenceActualSha256?: string;
+  referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256";
+  referenceResult: "not_checked" | "matched" | "mismatched" | "unavailable";
+  referenceReason?: string;
+  expectedMimeType: "image/png" | "image/jpeg";
+  actualMimeType?: string;
+  expectedByteSize: number;
+  actualByteSize?: number;
+  expectedWidth: number;
+  expectedHeight: number;
+  actualWidth?: number;
+  actualHeight?: number;
+  operationBound: boolean;
+  attachmentBound: boolean;
+  targetBound: boolean;
+  documentBound: boolean;
+};
+
+/**
+ * P10.3 ownership check. Inspection mode is read-only. Transition mode can
+ * expand only the unique scoped Expand control, then repeats all identity checks.
+ */
 export async function transitionVidsComposerFromPreviousInPage(input: {
   prompt: string; promptSha256: string; referenceSha256: string; referenceMimeType: "image/png" | "image/jpeg";
-  referenceByteSize: number; referenceWidth: number; referenceHeight: number; timeoutMs: number;
-}): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean }> {
+  referenceByteSize: number; referenceWidth: number; referenceHeight: number; timeoutMs: number; inspectOnly?: boolean;
+}): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean; diagnostics: VidsComposerTransitionDiagnostics }> {
   const href = location.href;
+  const diagnostic: VidsComposerTransitionDiagnostics = {
+    stage: "sidebar", sidebar: "missing", animateTab: "missing", animatePanel: "missing", editor: "missing", previewCount: 0,
+    promptExpectedSha256: input.promptSha256, referenceExpectedSha256: input.referenceSha256, referenceResult: "not_checked",
+    expectedMimeType: input.referenceMimeType, expectedByteSize: input.referenceByteSize, expectedWidth: input.referenceWidth, expectedHeight: input.referenceHeight,
+    operationBound: false, attachmentBound: false, targetBound: false, documentBound: false,
+  };
+  const blocked = (stage: VidsComposerTransitionDiagnostics["stage"], reason: string) => ({ href, ok: false, reason, changed: false, diagnostics: { ...diagnostic, stage } });
   const visible = (element: Element) => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return element.isConnected && rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden"; };
   const name = (element: Element) => {
     const aria = element.getAttribute("aria-label")?.trim(); if (aria) return aria;
@@ -208,64 +249,104 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     if (labelled) return labelled.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? "").join(" ").trim();
     return element.getAttribute("title")?.trim() ?? "";
   };
-  const blocked = (reason: string) => ({ href, ok: false, reason, changed: false });
   const sidebars = [...document.querySelectorAll<HTMLElement>("[role='complementary']")].filter(visible).filter((element) => name(element) === "AI video clip");
-  if (sidebars.length !== 1) return blocked(sidebars.length ? "ai_sidebar_ambiguous" : "ai_sidebar_missing");
+  diagnostic.sidebar = sidebars.length === 1 ? "unique" : sidebars.length ? "ambiguous" : "missing";
+  if (sidebars.length !== 1) return blocked("sidebar", sidebars.length ? "ai_sidebar_ambiguous" : "ai_sidebar_missing");
   const sidebar = sidebars[0]!;
-  const tabs = [...sidebar.querySelectorAll<HTMLElement>("[role='tab'][aria-selected='true']")].filter(visible).filter((element) => name(element) === "Animate");
-  const panels = [...sidebar.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter(visible).filter((element) => name(element) === "Animate");
-  if (tabs.length !== 1 || panels.length !== 1) return blocked("vids_composer_collapsed_or_changed");
+  const findTabs = () => [...sidebar.querySelectorAll<HTMLElement>("[role='tab'][aria-selected='true']")].filter(visible).filter((element) => name(element) === "Animate");
+  const findPanels = () => [...sidebar.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter(visible).filter((element) => name(element) === "Animate");
+  const tabs = findTabs();
+  const panels = findPanels();
+  diagnostic.animateTab = tabs.length === 1 ? "unique" : tabs.length ? "ambiguous" : "missing";
+  diagnostic.animatePanel = panels.length === 1 ? "unique" : panels.length ? "ambiguous" : "missing";
+  if (tabs.length !== 1) return blocked("animate", tabs.length ? "animate_tab_ambiguous" : "animate_tab_not_selected");
+  if (panels.length !== 1 && !input.inspectOnly) {
+    const expanders = [...sidebar.querySelectorAll<HTMLElement>("button[aria-expanded='false'], [role='button'][aria-expanded='false']")].filter(visible).filter((element) => name(element) === "Expand");
+    if (expanders.length === 1) {
+      expanders[0]!.click();
+      return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "animate" } };
+    }
+  }
+  if (tabs.length !== 1 || panels.length !== 1) return blocked("animate", panels.length > 1 ? "animate_panel_ambiguous" : "vids_composer_collapsed_or_changed");
   const panel = panels[0]!;
   const editors = [...panel.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible);
-  if (editors.length !== 1) return blocked("prompt_editor_changed");
+  diagnostic.editor = editors.length === 1 ? "unique" : editors.length ? "ambiguous" : "missing";
+  if (editors.length !== 1) return blocked("editor", editors.length ? "prompt_editor_ambiguous" : "prompt_editor_changed");
   const editor = editors[0]!;
-  const serialize = (root: HTMLElement): string => {
-    const blocks = new Set(["DIV", "P"]);
-    const walk = (node: Node): string => {
-      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
-      if (node.nodeType !== Node.ELEMENT_NODE) return "";
-      const element = node as HTMLElement; if (element.tagName === "BR") return "\n";
-      let output = "", content = false;
-      for (const child of [...element.childNodes]) { const block = child.nodeType === Node.ELEMENT_NODE && blocks.has((child as Element).tagName); if (block && content && !output.endsWith("\n")) output += "\n"; const value = walk(child); output += value; if (value.length) content = true; }
-      return output;
-    };
+  const blocks = new Set(["DIV", "P"]);
+  const walk = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const element = node as HTMLElement; if (element.tagName === "BR") return "\n";
+    let output = "", content = false;
+    for (const child of [...element.childNodes]) { const block = child.nodeType === Node.ELEMENT_NODE && blocks.has((child as Element).tagName); if (block && content && !output.endsWith("\n")) output += "\n"; const value = walk(child); output += value; if (value.length) content = true; }
+    return output;
+  };
+  const serialize = (root: HTMLElement) => {
     let output = "";
     for (const child of [...root.childNodes]) { const block = child.nodeType === Node.ELEMENT_NODE && blocks.has((child as Element).tagName); if (block && output.length && !output.endsWith("\n")) output += "\n"; output += walk(child); }
     return output;
   };
-  const previews = [...panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
-  const currentPrompt = serialize(editor);
-  if (previews.length === 0 && (!currentPrompt || currentPrompt === "\n")) return { href, ok: true, changed: false };
-  if (previews.length !== 1 || !previews[0]!.complete || previews[0]!.naturalWidth !== input.referenceWidth || previews[0]!.naturalHeight !== input.referenceHeight || currentPrompt !== input.prompt) return blocked("vids_previous_composer_content_conflict");
   const digest = async (bytes: ArrayBuffer) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join("");
-  if (await digest(new TextEncoder().encode(currentPrompt).buffer) !== input.promptSha256) return blocked("vids_previous_prompt_hash_mismatch");
-  const fileInputs = [...panel.querySelectorAll<HTMLInputElement>("input[type='file']")];
-  if (fileInputs.length > 1 || fileInputs.length === 1 && fileInputs[0]!.files && fileInputs[0]!.files!.length > 1) return blocked("reference_file_selection_ambiguous");
-  let bytes: ArrayBuffer, mimeType: string, byteSize: number;
-  const file = fileInputs[0]?.files?.[0];
-  try {
-    if (file) { bytes = await file.arrayBuffer(); mimeType = file.type; byteSize = file.size; }
-    else {
-      const url = new URL(previews[0]!.currentSrc || previews[0]!.src);
-      if (url.protocol !== "blob:" || url.origin !== location.origin) return blocked("reference_preview_blob_unavailable");
-      const response = await fetch(url.href); if (!response.ok) return blocked("reference_preview_blob_unreadable");
-      const blob = await response.blob(); bytes = await blob.arrayBuffer(); mimeType = blob.type; byteSize = blob.size;
+  const previews = [...panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
+  diagnostic.previewCount = Math.min(previews.length, 1_000);
+  if (previews.length === 1) {
+    diagnostic.actualWidth = previews[0]!.naturalWidth;
+    diagnostic.actualHeight = previews[0]!.naturalHeight;
+  }
+  const currentPrompt = serialize(editor);
+  diagnostic.stage = "prompt";
+  try { diagnostic.promptActualSha256 = await digest(new TextEncoder().encode(currentPrompt).buffer); }
+  catch { return blocked("prompt", "vids_previous_prompt_hash_unavailable"); }
+  diagnostic.promptTextMatches = currentPrompt === input.prompt;
+  diagnostic.promptHashMatches = diagnostic.promptActualSha256 === input.promptSha256;
+  diagnostic.promptMatches = diagnostic.promptTextMatches && diagnostic.promptHashMatches;
+
+  diagnostic.stage = "reference";
+  if (previews.length !== 1 || !previews[0]!.complete || previews[0]!.naturalWidth !== input.referenceWidth || previews[0]!.naturalHeight !== input.referenceHeight) {
+    diagnostic.referenceResult = "unavailable";
+    diagnostic.referenceReason = previews.length !== 1 ? "reference_preview_count_mismatch" : !previews[0]!.complete ? "reference_preview_not_ready" : "reference_preview_dimensions_mismatch";
+  } else {
+    const inputs = [...panel.querySelectorAll<HTMLInputElement>("input[type='file']")];
+    const file = inputs.length === 1 ? inputs[0]!.files?.[0] : undefined;
+    let bytes: ArrayBuffer | undefined;
+    try {
+      if (inputs.length > 1 || (inputs.length === 1 && !inputs[0]!.files)) throw new Error("reference_file_input_ambiguous");
+      if (file) {
+        bytes = await file.arrayBuffer(); diagnostic.actualMimeType = file.type === "image/png" || file.type === "image/jpeg" ? file.type : "unsupported"; diagnostic.actualByteSize = Math.min(file.size, Number.MAX_SAFE_INTEGER); diagnostic.referenceProofSource = "selected_file_sha256";
+      } else {
+        const url = new URL(previews[0]!.currentSrc || previews[0]!.src);
+        if (url.protocol !== "blob:" || url.origin !== location.origin) throw new Error("reference_preview_blob_unavailable");
+        const response = await fetch(url.href); if (!response.ok) throw new Error("reference_preview_blob_unreadable");
+        const blob = await response.blob(); bytes = await blob.arrayBuffer(); diagnostic.actualMimeType = blob.type === "image/png" || blob.type === "image/jpeg" ? blob.type : "unsupported"; diagnostic.actualByteSize = Math.min(blob.size, Number.MAX_SAFE_INTEGER); diagnostic.referenceProofSource = "preview_blob_sha256";
+      }
+      const actual = await digest(bytes!);
+      diagnostic.referenceActualSha256 = actual;
+      diagnostic.referenceResult = diagnostic.actualMimeType === input.referenceMimeType && diagnostic.actualByteSize === input.referenceByteSize && actual === input.referenceSha256 ? "matched" : "mismatched";
+      if (diagnostic.referenceResult === "mismatched") diagnostic.referenceReason = "reference_identity_or_metadata_mismatch";
+    } catch (error) {
+      diagnostic.referenceResult = "unavailable";
+      diagnostic.referenceReason = error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "reference_identity_proof_unavailable";
     }
-  } catch { return blocked("reference_identity_proof_unavailable"); }
-  if (mimeType !== input.referenceMimeType || byteSize !== input.referenceByteSize || await digest(bytes) !== input.referenceSha256) return blocked("vids_previous_reference_identity_mismatch");
+  }
+  if (!diagnostic.promptTextMatches) return blocked("prompt", "vids_previous_composer_content_conflict");
+  if (!diagnostic.promptHashMatches) return blocked("prompt", "vids_previous_prompt_hash_mismatch");
+  if (diagnostic.referenceResult !== "matched") return blocked("reference", "vids_previous_reference_identity_mismatch");
   const remove = [...panel.querySelectorAll<HTMLButtonElement>("button[aria-label='Remove image']")].filter(visible);
-  if (remove.length !== 1) return blocked("reference_remove_control_ambiguous");
+  if (remove.length !== 1) return blocked("ownership", "reference_remove_control_ambiguous");
+  if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
+  diagnostic.stage = "mutation";
   remove[0]!.click();
   const until = Date.now() + input.timeoutMs;
   while (Date.now() < until && panel.querySelectorAll("img[alt='Uploaded image preview']").length !== 0) await new Promise((resolve) => setTimeout(resolve, 50));
-  if (panel.querySelectorAll("img[alt='Uploaded image preview']").length !== 0) return blocked("vids_previous_reference_removal_unconfirmed");
+  if (panel.querySelectorAll("img[alt='Uploaded image preview']").length !== 0) return blocked("mutation", "vids_previous_reference_removal_unconfirmed");
   const range = document.createRange(); range.selectNodeContents(editor); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-  if (!document.execCommand("delete")) { selection?.removeAllRanges(); return blocked("vids_previous_prompt_clear_failed"); }
+  if (!document.execCommand("delete")) { selection?.removeAllRanges(); return blocked("mutation", "vids_previous_prompt_clear_failed"); }
   selection?.removeAllRanges();
   editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
   const promptUntil = Date.now() + input.timeoutMs;
-  while (Date.now() < promptUntil) { const text = serialize(editor); if (!text || text === "\n") return { href, ok: true, changed: true }; await new Promise((resolve) => setTimeout(resolve, 50)); }
-  return blocked("vids_previous_prompt_clear_unconfirmed");
+  while (Date.now() < promptUntil) { const text = serialize(editor); if (!text || text === "\n") return { href, ok: true, changed: true, diagnostics: { ...diagnostic, stage: "complete" } }; await new Promise((resolve) => setTimeout(resolve, 50)); }
+  return blocked("mutation", "vids_previous_prompt_clear_unconfirmed");
 }
 
 /** Final exact prompt/reference/control check and at most one Generate click. */

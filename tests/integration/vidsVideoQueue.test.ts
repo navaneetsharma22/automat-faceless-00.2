@@ -155,7 +155,7 @@ describe("P10.3 isolated Vids timed queue", () => {
     const flowGet = vi.fn(async () => ({ state: "sent" }));
     const preferences = new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined });
     const listener = createConnectionMessageListener("vids-queue-isolation", { repositories, preferences,
-      vidsVideoQueue: { get: vidsGet, start: vi.fn(), pause: vi.fn(), resume: vi.fn(), stop: vi.fn() },
+      vidsVideoQueue: { get: vidsGet, start: vi.fn(), pause: vi.fn(), resume: vi.fn(), stop: vi.fn(), inspectTransition: vi.fn() },
       flowVideoQueue: { get: flowGet, start: vi.fn(), pause: vi.fn(), resume: vi.fn(), stop: vi.fn(), recheckAndResume: vi.fn(), reconcilePreAddFailure: vi.fn() },
     });
     const request = makeRequest("vids.videoQueue.get", { preparedBatchId: batchId }, "vids-queue-get");
@@ -165,6 +165,27 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(flowGet).not.toHaveBeenCalled();
     expect(await db.flowVideoQueues.toArray()).toEqual([]);
     expect(await db.flowVideoAttachmentOperations.toArray()).toEqual([]);
+  });
+
+  it("inspects a previous-item transition read-only and rejects attempted current items", async () => {
+    const f = await setup();
+    const previous = f.batch.items[0]!;
+    const operation: VidsVideoGenerationOperation = { id: "previous-sent", preparedBatchId: batchId, workspaceId: "workspace", itemId: previous.itemId, canonicalShotId: previous.canonicalShotId, promptHash: previous.contentHash, referenceId: previous.reference.referenceId, referenceSha256: previous.reference.sha256, preIntentReferenceProofSource: "preview_blob_sha256", activationReferenceProofSource: "preview_blob_sha256", tabId: 9, canonicalTarget: f.batch.target.canonicalTarget, documentId: "doc", attemptId: "66666666-6666-4666-8666-666666666666", status: "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: previous.contentHash, actualSha256: previous.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: 500 }, activationAttempted: true, activationCount: 1, dispatchedAt: 500, createdAt: 400, updatedAt: 500 };
+    f.operations.set(previous.itemId, operation);
+    const queue: VidsVideoQueueRecord = { queueId: `vids-video:${batchId}`, preparedBatchId: batchId, state: "paused", items: f.batch.items.map((item, order) => ({ itemId: item.itemId, order, shotId: item.canonicalShotId, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, promptHash: item.contentHash, state: order === 0 ? "sent" : "blocked", ...(order === 0 ? { attemptId: operation.attemptId, dispatchReceipt: { attemptId: operation.attemptId, storedAt: operation.dispatchedAt! } } : { reason: "vids_previous_composer_content_conflict" }) })), revision: 7, createdAt: 1, updatedAt: 500, lastDispatchAt: 500, cooldownDeadlineAt: 50_500, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: null, pauseReason: "vids_previous_composer_content_conflict", runId: "run" };
+    await f.repositories.createVidsVideoQueue(queue);
+    const result = await f.handler.inspectTransition(batchId, "item-2");
+    expect(result.status).toBe("ready");
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true);
+    expect(await f.repositories.getVidsVideoQueue(queue.queueId)).toEqual(queue);
+    expect(f.attach).not.toHaveBeenCalled();
+    expect(f.generate).not.toHaveBeenCalled();
+    expect(await f.handler.inspectTransition(batchId, "item-1")).toMatchObject({ status: "blocked" });
+    const attempted: VidsVideoGenerationOperation = { ...operation, id: "shot-2-uncertain", itemId: "item-2", canonicalShotId: "2", referenceId: f.batch.items[1]!.reference.referenceId, referenceSha256: f.batch.items[1]!.reference.sha256, promptHash: f.batch.items[1]!.contentHash, status: "uncertain", activationAttempted: true, activationCount: 1, dispatchedAt: undefined };
+    f.operations.set("item-2", attempted);
+    expect(await f.handler.inspectTransition(batchId, "item-2")).toMatchObject({ status: "blocked", reason: "vids_generation_attempt_requires_review" });
+    await expect(f.handler.resume(batchId, queue.revision)).rejects.toThrow("vids_generation_attempt_requires_review");
+    expect(f.generate).not.toHaveBeenCalled();
   });
 
   it("atomically rejects per-shot intent claims while the Vids queue owns the item", async () => {

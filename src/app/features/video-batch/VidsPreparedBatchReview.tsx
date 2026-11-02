@@ -19,6 +19,15 @@ type GenerationSnapshot = {
   operation?: VidsVideoGenerationOperation;
 };
 type VidsQueueSnapshot = VidsVideoQueueRecord;
+type TransitionDiagnostic = {
+  stage?: string; operationBound?: boolean; attachmentBound?: boolean; targetBound?: boolean; documentBound?: boolean;
+  sidebar?: string; animateTab?: string; animatePanel?: string; editor?: string; previewCount?: number;
+  promptExpectedSha256?: string; promptActualSha256?: string; promptMatches?: boolean; promptTextMatches?: boolean; promptHashMatches?: boolean;
+  referenceExpectedSha256?: string; referenceActualSha256?: string; referenceProofSource?: string;
+  referenceResult?: string; referenceReason?: string; expectedMimeType?: string; actualMimeType?: string;
+  expectedByteSize?: number; actualByteSize?: number; expectedWidth?: number; expectedHeight?: number; actualWidth?: number; actualHeight?: number;
+};
+type TransitionInspection = { status: string; reason?: string; diagnostics?: TransitionDiagnostic };
 
 export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
   preparedBatch: PreparedVideoBatchRecord;
@@ -27,6 +36,8 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
   const [queue, setQueue] = useState<VidsQueueSnapshot | null>(null);
   const [queueBusy, setQueueBusy] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
+  const [transitionInspection, setTransitionInspection] = useState<{ itemId: string; result: TransitionInspection } | null>(null);
+  const [inspectingItemId, setInspectingItemId] = useState<string | null>(null);
   const [clockNow, setClockNow] = useState(Date.now());
   const toast = useOptionalToast();
   const priorAllSent = useRef<{ id: string; allSent: boolean } | null>(null);
@@ -63,6 +74,16 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
       setQueueError(error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "vids_queue_action_failed");
     } finally { setQueueBusy(false); }
   };
+  const inspectTransition = async (itemId: string) => {
+    if (queueBusy) return;
+    setQueueBusy(true); setInspectingItemId(itemId); setQueueError(null); setTransitionInspection(null);
+    try {
+      const result = await persistenceClient.request("vids.videoQueue.inspectTransition", { preparedBatchId: preparedBatch.id, itemId }) as TransitionInspection;
+      setTransitionInspection({ itemId, result });
+    } catch (error) {
+      setQueueError(error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "vids_transition_inspection_failed");
+    } finally { setInspectingItemId(null); setQueueBusy(false); }
+  };
   const queueItem = (itemId: string) => queue?.items.find((item) => item.itemId === itemId);
   const sentCount = queue?.items.filter((item) => item.state === "sent" && item.dispatchReceipt).length ?? 0;
   const nextQueueItem = queue?.items.find((item) => item.state !== "sent");
@@ -83,7 +104,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
         <div><dt>Declared duration</dt><dd>{preparedBatch.manualSettingsDeclaration.declaredDurationSeconds}s · user-declared metadata</dd></div>
         <div><dt>Settings confirmation</dt><dd>{preparedBatch.manualSettingsDeclaration.destination === "Vids" && preparedBatch.manualSettingsDeclaration.tabId === preparedBatch.target.tabId && preparedBatch.manualSettingsDeclaration.canonicalTarget === preparedBatch.target.canonicalTarget ? "Confirmed for this Vids batch and target" : "Not confirmed for this Vids target"}</dd></div>
       </dl>
-      <p className={styles.note}>This Google Vids action uploads only the paired saved reference. It does not insert the prompt or change Vids settings.</p>
+      <p className={styles.note}>Queue submission pairs each saved reference with its exact prepared prompt and sends Generate once. Provider settings remain user-controlled.</p>
 
       <section className={styles.queue} aria-label="Google Vids timed submission queue">
         <div className={styles.queueHeading}><div><p className={styles.eyebrow}>Timed submission</p><h4>{allSent ? `All ${queue?.items.length ?? 0} image–prompt pairs sent to Google Vids` : `Google Vids queue · ${sentCount} of ${preparedBatch.items.length} prompts sent`}</h4></div><span className={styles.status} data-status={queue?.state ?? "ready"}>{queue ? queueStateLabel(queue.state) : "Ready"}</span></div>
@@ -100,7 +121,27 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
           {queue?.state === "paused" ? <><Button variant="primary" disabled={queueBusy} loading={queueBusy} loadingLabel="Resuming" onClick={() => void queueAction("resume")}>Resume</Button><Button variant="quiet" disabled={queueBusy} onClick={() => void queueAction("stop")}>Stop queue</Button></> : null}
           {queue?.state === "stopped" ? <span>The queue is stopped. Sent items remain protected from replay.</span> : null}
         </div>
-        {queue?.items.map((entry) => <p className={styles.queueItem} key={entry.itemId}><strong>Shot {entry.shotId}</strong><span>{queueItemLabel(entry.state)}</span>{entry.reason ? <details><summary>Details</summary><code>{entry.reason}</code></details> : null}</p>)}
+        {queue?.items.map((entry) => <div key={entry.itemId}>
+          <p className={styles.queueItem}><strong>Shot {entry.shotId}</strong><span>{queueItemLabel(entry.state)}</span>{entry.reason ? <details><summary>Details</summary><code>{entry.reason}</code></details> : null}</p>
+          {queue.state === "paused" && entry.state === "blocked" && entry.reason === "vids_previous_composer_content_conflict" ? <div className={styles.action}>
+            <Button variant="secondary" disabled={queueBusy} loading={inspectingItemId === entry.itemId} loadingLabel="Inspecting read-only" onClick={() => void inspectTransition(entry.itemId)}>Inspect transition (read-only)</Button>
+            {transitionInspection?.itemId === entry.itemId ? <details open className={styles.prompt}>
+              <summary>Bounded transition diagnostics</summary>
+              {transitionInspection.result.reason ? <p>{transitionInspection.result.reason.replaceAll("_", " ")}</p> : null}
+              {transitionInspection.result.diagnostics ? <dl className={styles.diagnostics}>
+                <div><dt>Failing stage</dt><dd>{transitionInspection.result.diagnostics.stage ?? "unknown"}</dd></div>
+                <div><dt>Previous operation / attachment / target / document bound</dt><dd>{[transitionInspection.result.diagnostics.operationBound, transitionInspection.result.diagnostics.attachmentBound, transitionInspection.result.diagnostics.targetBound, transitionInspection.result.diagnostics.documentBound].map((value) => value === undefined ? "not checked" : value ? "matched" : "mismatch").join(" / ")}</dd></div>
+                <div><dt>Prompt expected / current SHA-256</dt><dd><code>{transitionInspection.result.diagnostics.promptExpectedSha256 ?? "not checked"}</code><br /><code>{transitionInspection.result.diagnostics.promptActualSha256 ?? "not available"}</code></dd></div>
+                <div><dt>Prompt text / hash match</dt><dd>{[transitionInspection.result.diagnostics.promptTextMatches, transitionInspection.result.diagnostics.promptHashMatches].map((value) => value === undefined ? "not checked" : value ? "yes" : "no").join(" / ")}</dd></div>
+                <div><dt>Reference expected / current SHA-256</dt><dd><code>{transitionInspection.result.diagnostics.referenceExpectedSha256 ?? "not checked"}</code><br /><code>{transitionInspection.result.diagnostics.referenceActualSha256 ?? "not available"}</code></dd></div>
+                <div><dt>Reference proof</dt><dd>{transitionInspection.result.diagnostics.referenceResult ?? "not checked"}{transitionInspection.result.diagnostics.referenceProofSource ? ` · ${transitionInspection.result.diagnostics.referenceProofSource}` : ""}{transitionInspection.result.diagnostics.referenceReason ? ` · ${transitionInspection.result.diagnostics.referenceReason}` : ""}</dd></div>
+                <div><dt>Current media metadata</dt><dd>{transitionInspection.result.diagnostics.actualMimeType ?? "unknown"}, {transitionInspection.result.diagnostics.actualByteSize ?? "unknown"} bytes, {transitionInspection.result.diagnostics.actualWidth ?? "?"}×{transitionInspection.result.diagnostics.actualHeight ?? "?"}</dd></div>
+                <div><dt>Scoped DOM</dt><dd>Sidebar {transitionInspection.result.diagnostics.sidebar ?? "not checked"}; Animate {transitionInspection.result.diagnostics.animateTab ?? "not checked"}/{transitionInspection.result.diagnostics.animatePanel ?? "not checked"}; editor {transitionInspection.result.diagnostics.editor ?? "not checked"}; previews {transitionInspection.result.diagnostics.previewCount ?? "not checked"}</dd></div>
+              </dl> : null}
+              <p>No picker, attachment, prompt, Generate, queue, or operation state was changed by this inspection.</p>
+            </details> : null}
+          </div> : null}
+        </div>)}
       </section>
 
       <ol className={styles.items} aria-label="Google Vids prepared shots">

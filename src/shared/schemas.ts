@@ -1086,6 +1086,7 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   requestBase.extend({ type: z.literal("vids.videoQueue.pause"), payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict() }),
   requestBase.extend({ type: z.literal("vids.videoQueue.resume"), payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict() }),
   requestBase.extend({ type: z.literal("vids.videoQueue.stop"), payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict() }),
+  requestBase.extend({ type: z.literal("vids.videoQueue.inspectTransition"), payload: z.object({ preparedBatchId: z.string().min(1).max(512), itemId: z.string().min(1).max(256) }).strict() }),
   requestBase.extend({
     type: z.literal("flow.video.inspectReferenceBytes"),
     payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),

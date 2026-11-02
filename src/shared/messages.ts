@@ -181,6 +181,7 @@ export type RequestPayloads = {
   "vids.videoQueue.pause": { preparedBatchId: string; expectedRevision: number };
   "vids.videoQueue.resume": { preparedBatchId: string; expectedRevision: number };
   "vids.videoQueue.stop": { preparedBatchId: string; expectedRevision: number };
+  "vids.videoQueue.inspectTransition": { preparedBatchId: string; itemId: string };
   "flow.video.inspectReferenceBytes": { preparedBatchId: string; itemId: string };
   "flow.video.verifyAttachedReference": { preparedBatchId: string; itemId: string };
   "flow.video.generateOnce": { preparedBatchId: string; itemId: string };
@@ -268,6 +269,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "vids.videoQueue.pause": 10_000,
   "vids.videoQueue.resume": 30_000,
   "vids.videoQueue.stop": 10_000,
+  "vids.videoQueue.inspectTransition": 30_000,
   "flow.video.inspectReferenceBytes": 30_000,
   "flow.video.verifyAttachedReference": 10_000,
   "flow.video.generateOnce": 45_000,

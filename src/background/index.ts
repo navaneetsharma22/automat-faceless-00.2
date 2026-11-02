@@ -171,7 +171,7 @@ const vidsVideoQueue = createVidsVideoQueueHandler({
   getAttachment: (preparedBatchId, itemId) => vidsVideoAttachment.get(preparedBatchId, itemId),
   generate: (preparedBatchId, itemId, fromQueue) => vidsVideoGenerate.generateOnce(preparedBatchId, itemId, fromQueue),
   getGeneration: (preparedBatchId, itemId) => vidsVideoGenerate.get(preparedBatchId, itemId),
-  transitionFromPrevious: (preparedBatchId, itemId) => vidsVideoGenerate.transitionFromPrevious(preparedBatchId, itemId) as Promise<{ status: "ready" | "blocked"; reason?: string }>,
+  transitionFromPrevious: (preparedBatchId, itemId, inspectOnly) => vidsVideoGenerate.transitionFromPrevious(preparedBatchId, itemId, inspectOnly) as Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>,
 });
 const flowVideoQueue = createFlowVideoQueueHandler({
   repositories,

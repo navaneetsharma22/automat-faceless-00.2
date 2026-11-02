@@ -17,7 +17,7 @@ export function createVidsVideoQueueHandler(input: {
   getAttachment: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string }>;
   generate: (batchId: string, itemId: string, fromQueue: true) => Promise<{ status: string; reason?: string; operation?: unknown }>;
   getGeneration: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string; operation?: unknown }>;
-  transitionFromPrevious: (batchId: string, previousItemId: string) => Promise<{ status: "ready" | "blocked"; reason?: string }>;
+  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean) => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
   now?: () => number;
   makeRunId?: () => string;
 }) {
@@ -161,6 +161,24 @@ export function createVidsVideoQueueHandler(input: {
 
   return {
     get: async (preparedBatchId: string) => input.repositories.getVidsVideoQueue(queueIdFor(preparedBatchId)),
+    inspectTransition: async (preparedBatchId: string, itemId: string) => {
+      const queue = await input.repositories.getVidsVideoQueue(queueIdFor(preparedBatchId));
+      const current = queue?.items.find((item) => item.itemId === itemId);
+      if (!queue || queue.state !== "paused" || queue.pauseReason !== "vids_previous_composer_content_conflict" || !current || current.state !== "blocked" || current.reason !== "vids_previous_composer_content_conflict" || current.order < 1)
+        return { status: "blocked", reason: "vids_transition_inspection_not_applicable" };
+      const previous = queue.items[current.order - 1];
+      if (!previous || previous.state !== "sent" || !previous.dispatchReceipt || previous.dispatchReceipt.attemptId !== previous.attemptId)
+        return { status: "blocked", reason: "vids_previous_item_dispatch_binding_unverified" };
+      const previousGeneration = await input.getGeneration(preparedBatchId, previous.itemId);
+      const previousOperation = VidsVideoGenerationOperationSchema.safeParse(previousGeneration.operation);
+      if (!previousOperation.success || previousGeneration.status !== "dispatched" || previousOperation.data.attemptId !== previous.dispatchReceipt.attemptId || previousOperation.data.dispatchedAt !== previous.dispatchReceipt.storedAt || previousOperation.data.activationAttempted !== true || previousOperation.data.activationCount !== 1)
+        return { status: "blocked", reason: "vids_previous_item_dispatch_binding_unverified" };
+      const generation = await input.getGeneration(preparedBatchId, itemId);
+      if (generation.status !== "not_started") return { status: "blocked", reason: "vids_generation_attempt_requires_review" };
+      const attachment = await input.getAttachment(preparedBatchId, itemId);
+      if (attachment.status !== "not_started") return { status: "blocked", reason: "vids_attachment_attempt_requires_review" };
+      return input.transitionFromPrevious(preparedBatchId, previous.itemId, true);
+    },
     start: async (preparedBatchId: string) => {
       const id = queueIdFor(preparedBatchId);
       let queue = await input.repositories.getVidsVideoQueue(id);
@@ -185,6 +203,10 @@ export function createVidsVideoQueueHandler(input: {
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("vids_video_queue_revision_changed");
       const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch"]);
       if (queue.items.some((item) => item.state === "uncertain" || (item.state === "blocked" && !retryablePreIntentReasons.has(item.reason ?? "")))) throw new Error("vids_video_queue_requires_review");
+      for (const item of queue.items.filter((candidate) => candidate.state === "blocked" && candidate.reason === "vids_previous_composer_content_conflict")) {
+        if ((await input.getGeneration(preparedBatchId, item.itemId)).status !== "not_started") throw new Error("vids_generation_attempt_requires_review");
+        if ((await input.getAttachment(preparedBatchId, item.itemId)).status !== "not_started") throw new Error("vids_attachment_attempt_requires_review");
+      }
       const resumedItems = queue.items.map((item) => item.state === "blocked" && retryablePreIntentReasons.has(item.reason ?? "") ? { ...item, state: "pending" as const, reason: undefined } : item);
       const stillChecking = queue.items.some((item) => item.state === "checking_generate");
       const resumed = await save(queue, { state: stillChecking ? "checking_generate" : queue.lastDispatchAt !== null && now() < queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS ? "cooldown" : "ready", items: resumedItems, nextActionAt: stillChecking ? Math.min(now() + CHROME_MIN_ALARM_DELAY_MS, queue.readinessDeadlineAt ?? now()) : queue.lastDispatchAt !== null ? Math.max(now(), queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS) : now(), pauseReason: undefined, readinessStartedAt: stillChecking ? queue.readinessStartedAt : null, readinessDeadlineAt: stillChecking ? queue.readinessDeadlineAt : null, runId: input.makeRunId?.() ?? crypto.randomUUID() });
