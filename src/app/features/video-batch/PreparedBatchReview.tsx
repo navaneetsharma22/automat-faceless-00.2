@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import type { PreparedVideoBatchRecord } from "../../../domain/batches/types";
-import type { createFoundationClient } from "../../../shared/messageClient";
+import {
+  FoundationClientError,
+  type createFoundationClient,
+} from "../../../shared/messageClient";
 import styles from "./PreparedBatchReview.module.css";
 
 export type PreparedBatchReviewProps = {
@@ -109,27 +112,83 @@ function PreparedItemCard({
 }) {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const [attachmentStatus, setAttachmentStatus] = useState("Loading attachment status…");
+  const [attachmentStatus, setAttachmentStatus] = useState(
+    "Loading attachment status…",
+  );
   const [attaching, setAttaching] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void persistenceClient.request("flow.video.getAttachmentStatus", { preparedBatchId, itemId: item.itemId }).then((result) => {
-      const status = (result as { status?: string; reason?: string })?.status ?? "not_started";
-      if (!cancelled) setAttachmentStatus(status === "attached" || status === "already_attached" ? "Attached and verified" : status === "uncertain" ? "Attachment delivery uncertain" : status === "blocked" ? `Blocked: ${(result as { reason?: string }).reason ?? "review required"}` : "Not attached");
-    }).catch(() => { if (!cancelled) setAttachmentStatus("Status unavailable"); });
-    return () => { cancelled = true; };
+    void persistenceClient
+      .request("flow.video.getAttachmentStatus", {
+        preparedBatchId,
+        itemId: item.itemId,
+      })
+      .then((result) => {
+        const status =
+          (result as { status?: string; reason?: string })?.status ??
+          "not_started";
+        if (!cancelled)
+          setAttachmentStatus(
+            status === "attached" || status === "already_attached"
+              ? "Attached and verified"
+              : status === "uncertain"
+                ? "Attachment delivery uncertain"
+                : status === "blocked"
+                  ? `Blocked: ${(result as { reason?: string }).reason ?? "review required"}`
+                  : "Not attached",
+          );
+      })
+      .catch(() => {
+        if (!cancelled) setAttachmentStatus("Status unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [preparedBatchId, item.itemId, persistenceClient]);
 
   async function attachReference() {
     setAttaching(true);
     setAttachmentStatus("Checking Flow target and reference…");
     try {
-      const result = (await persistenceClient.request("flow.video.attachReference", { preparedBatchId, itemId: item.itemId })) as { status?: string; reason?: string };
+      const result = (await persistenceClient.request(
+        "flow.video.attachReference",
+        { preparedBatchId, itemId: item.itemId },
+      )) as { status?: string; reason?: string };
       const status = result?.status;
-      setAttachmentStatus(status === "attached" ? "Attached and verified" : status === "already_attached" ? "Already attached and verified" : status === "uncertain" ? "Attachment delivery uncertain — inspect Flow before retrying" : status === "blocked" ? `Blocked: ${result?.reason ?? "preflight failed"}` : "Attachment status unavailable");
-    } catch { setAttachmentStatus("Attachment delivery uncertain — inspect Flow before retrying"); }
-    finally { setAttaching(false); }
+      const stage = (result as { stage?: string }).stage;
+      const diagnostic = [stage, result?.reason]
+        .filter((part) => part && /^[a-z0-9_]{1,64}$/.test(part))
+        .join(": ");
+      setAttachmentStatus(
+        status === "attached"
+          ? "Attached and verified"
+          : status === "already_attached"
+            ? "Already attached and verified"
+            : status === "uncertain"
+              ? `Attachment delivery uncertain — inspect Flow before retrying${diagnostic ? ` (${diagnostic})` : ""}`
+              : status === "blocked"
+                ? `Blocked${diagnostic ? ` (${diagnostic})` : ": preflight failed"}`
+                : "Attachment status unavailable",
+      );
+    } catch (error) {
+      const code =
+        error instanceof FoundationClientError &&
+        /^[a-z0-9_]{1,64}$/.test(error.code)
+          ? error.code
+          : "request_failed";
+      const stage =
+        error instanceof FoundationClientError &&
+        error.stage &&
+        /^[a-z0-9_]{1,64}$/.test(error.stage)
+          ? `${error.stage}:`
+          : "";
+      setAttachmentStatus(
+        `Attachment delivery uncertain — inspect Flow before retrying (${stage}${code})`,
+      );
+    } finally {
+      setAttaching(false);
+    }
   }
 
   useEffect(() => {
@@ -182,12 +241,31 @@ function PreparedItemCard({
           </h4>
           <p className={styles.itemSpecs}>
             Reference: {item.reference.width}×{item.reference.height},{" "}
-            {item.reference.mimeType}, version {item.reference.assignmentVersion}
+            {item.reference.mimeType}, version{" "}
+            {item.reference.assignmentVersion}
           </p>
         </div>
       </div>
 
-      {eligible ? <div><button type="button" disabled={attaching || attachmentStatus.startsWith("Attached") || attachmentStatus.startsWith("Already attached")} onClick={() => void attachReference()}>{attaching ? "Attaching…" : "Attach reference"}</button><span role="status" aria-live="polite"> {attachmentStatus}</span></div> : null}
+      {eligible ? (
+        <div>
+          <button
+            type="button"
+            disabled={
+              attaching ||
+              attachmentStatus.startsWith("Attached") ||
+              attachmentStatus.startsWith("Already attached")
+            }
+            onClick={() => void attachReference()}
+          >
+            {attaching ? "Attaching…" : "Attach reference"}
+          </button>
+          <span role="status" aria-live="polite">
+            {" "}
+            {attachmentStatus}
+          </span>
+        </div>
+      ) : null}
 
       <details className={styles.details}>
         <summary className={styles.summary}>

@@ -128,9 +128,13 @@ const flowReferenceHandler = createFlowReferenceHandler({
 });
 const flowVideoAttachment = createFlowVideoAttachmentHandler({
   repositories,
-  scripting: { executeScript: (input) => chrome.scripting.executeScript(input as never) },
+  scripting: {
+    executeScript: (input) => chrome.scripting.executeScript(input as never),
+  },
   getTab: async (tabId) => chrome.tabs.get(tabId),
   revalidate: () => connectionLifecycle.revalidate("Flow", false),
+  hasMediaHostPermission: (permission) =>
+    chrome.permissions.contains({ origins: [permission] }),
 });
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   void (async () => {
