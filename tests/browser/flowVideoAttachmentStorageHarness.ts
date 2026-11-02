@@ -2,12 +2,13 @@ import Dexie from "dexie";
 import { AutomatDatabase } from "../../src/storage/db";
 import { createDexieRepositoryDatabase, ExtensionRepositories } from "../../src/storage/repositories";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
-import { createFlowVideoAttachmentHandler } from "../../src/background/handlers/flowVideoAttachment";
+import { createFlowVideoAttachmentHandler, flowVideoAttachmentStructurePreflightInPage } from "../../src/background/handlers/flowVideoAttachment";
 import { ChromePreferenceRepository } from "../../src/storage/repositories";
 import { createFoundationClient } from "../../src/shared/messageClient";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import { sha256Bytes } from "../../src/domain/media/references";
 import { flowReferenceCaptureInPage } from "../../src/platforms/flow/references";
+import { CONNECTOR_PROTOCOL_VERSION } from "../../src/platforms/shared/contracts";
 
 declare global {
   interface Window {
@@ -16,6 +17,8 @@ declare global {
         oldPreparedDataPreserved: boolean;
         oldReferenceDataPreserved: boolean;
         oldQueueDataPreserved: boolean;
+        videoQueueStoreAvailable: boolean;
+        videoQueuePersistsAfterReopen: boolean;
         intentPersistsAfterReopen: boolean;
         databaseVersion: number;
         requestHandlerSuccess: boolean;
@@ -74,6 +77,9 @@ window.__FlowVideoAttachmentStorageFixture = {
     const claimed = await repositories.claimFlowVideoAttachmentOperation(intent);
     const duplicateClaimRejected = !(await repositories.claimFlowVideoAttachmentOperation({ ...intent, updatedAt: 11 }));
     const intentReadBeforeClose = await repositories.getFlowVideoAttachmentOperation(intent.id);
+    const videoQueueRecord = { queueId: "flow-video:migration-fixture", preparedBatchId: "migration-fixture", state: "ready", items: [], lastDispatchAt: null, nextActionAt: null, revision: 0, createdAt: 1, updatedAt: 1 };
+    await upgraded.flowVideoQueues.put(videoQueueRecord as never);
+    const videoQueueStoreAvailable = Boolean(upgraded.flowVideoQueues);
     const version = upgraded.verno;
     upgraded.close();
 
@@ -81,6 +87,7 @@ window.__FlowVideoAttachmentStorageFixture = {
     await reopened.open();
     const reopenedRepositories = new ExtensionRepositories(createDexieRepositoryDatabase(reopened));
     const durable = await reopenedRepositories.getFlowVideoAttachmentOperation(intent.id);
+    const durableVideoQueue = await reopened.flowVideoQueues.get(videoQueueRecord.queueId);
     await reopened.close();
     await new AutomatDatabase(name).delete();
     const runtimeName = `flow-video-request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -100,7 +107,7 @@ window.__FlowVideoAttachmentStorageFixture = {
     const pinned = { assignmentId: "workspace:batch:1", referenceId, captureOperationId: "22222222-2222-4222-8222-222222222222", workspaceId: "workspace", batchId: "image-source", batchSourceHash: "a".repeat(64), shotId: "1", promptHash: "b".repeat(64), selectionVersion: "33333333-3333-4333-8333-333333333333", assignmentVersion: 1, flowProjectId: targetProjectId, tabId: targetTabId, canonicalTarget: targetUrl, documentId: targetDocumentId, providerAssetId: mediaId, observedSourceSha256: "c".repeat(64), sha256: referenceHash, mimeType: "image/png" as const, byteSize: referenceBytes.length, width: 1, height: 1, capturedAt: 1, acquisitionProvenance: "verified_flow_document_same_origin_fetch" as const, qualityProvenance: "observed_resource_original_bytes_no_upscale" as const, bytes: new Blob([referenceBytes], { type: "image/png" }) };
     await runtime.preparedVideoBatches.put({ id: preparedId, requestId: "44444444-4444-4444-8444-444444444444", workspaceId: "workspace", preparedAt: 1, videoBatchId: "video-source", videoSourceHash: "d".repeat(64), videoSourceText: "{}", imageSourceBatchId: "image-source", imageSourceBatchHash: "e".repeat(64), destination: "Flow", target: { provider: "Flow", tabId: targetTabId, canonicalTarget: targetUrl, projectId: targetProjectId, documentId: targetDocumentId, verification: "verified", verifiedAt: 1 }, manualSettingsDeclaration: { confirmationId: "settings-confirmation", confirmedAt: 1, destination: "Flow", declaredDurationSeconds: 5, tabId: targetTabId, canonicalTarget: targetUrl, projectId: targetProjectId, documentId: targetDocumentId }, status: "prepared", itemCount: 1, items: [{ itemId, order: 0, canonicalShotId: "1", rawJsonBody: "{}", contentHash: "f".repeat(64), sourceSpan: { start: 0, end: 2 }, reference: { referenceId, assignmentVersion: 1, sha256: referenceHash, mimeType: "image/png", byteSize: referenceBytes.length, width: 1, height: 1, capturedAt: 1 } }], createdAt: 1, updatedAt: 1 });
     await runtime.pinnedReferenceMedia.put(pinned);
-    await runtime.selectedTargets.put({ provider: "Flow", tabId: targetTabId, canonicalTarget: targetUrl, verification: "verified", connectionState: "verified", verificationBinding: { provider: "Flow", tabId: targetTabId, canonicalTarget: targetUrl, projectId: targetProjectId, frameId: 0, documentId: targetDocumentId, documentToken: "offline-token", extensionBuildId: BUILD_ID, extensionProtocolVersion: PROTOCOL_VERSION, connectorBuildId: BUILD_ID, connectorProtocolVersion: PROTOCOL_VERSION, capability: "read-only-connection-v1", verifiedAt: 1 }, updatedAt: 1 });
+    await runtime.selectedTargets.put({ provider: "Flow", tabId: targetTabId, canonicalTarget: targetUrl, verification: "verified", connectionState: "verified", verificationBinding: { provider: "Flow", tabId: targetTabId, canonicalTarget: targetUrl, projectId: targetProjectId, frameId: 0, documentId: targetDocumentId, documentToken: "offline-token", extensionBuildId: BUILD_ID, extensionProtocolVersion: PROTOCOL_VERSION, connectorBuildId: BUILD_ID, connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION, capability: "read-only-connection-v1", verifiedAt: 1 }, updatedAt: 1 });
     let intentBeforeAction = false;
     let activationCount = 0;
     let exactDocument = true;
@@ -108,6 +115,7 @@ window.__FlowVideoAttachmentStorageFixture = {
       const injection = input as { func: (...args: never[]) => unknown; args?: unknown[]; target: { tabId: number; documentIds: string[] } };
       exactDocument &&= injection.target.tabId === targetTabId && injection.target.documentIds[0] === targetDocumentId;
       if (injection.func === flowReferenceCaptureInPage) return [{ documentId: targetDocumentId, result: { ok: true, data: btoa(String.fromCharCode(...referenceBytes)) } }];
+      if (injection.func === flowVideoAttachmentStructurePreflightInPage) return [{ documentId: targetDocumentId, result: { ok: true, href: targetUrl } }];
       if (injection.args) {
         intentBeforeAction = (await runtimeRepositories.getFlowVideoAttachmentOperation(`${preparedId}:${itemId}`))?.status === "action_intent";
         activationCount++;
@@ -126,6 +134,8 @@ window.__FlowVideoAttachmentStorageFixture = {
       oldPreparedDataPreserved: preserved.prepared?.payloadMarker === prepared.payloadMarker,
       oldReferenceDataPreserved: preserved.reference?.payloadMarker === reference.payloadMarker,
       oldQueueDataPreserved: preserved.queue?.payloadMarker === queue.payloadMarker,
+      videoQueueStoreAvailable,
+      videoQueuePersistsAfterReopen: durableVideoQueue?.queueId === videoQueueRecord.queueId,
       intentPersistsAfterReopen: durable?.status === "action_intent",
       repositoryClaimIsExclusive: claimed && duplicateClaimRejected && intentReadBeforeClose?.updatedAt === 10,
       databaseVersion: version,

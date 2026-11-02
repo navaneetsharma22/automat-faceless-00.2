@@ -39,6 +39,7 @@ import {
 import { flowTabFromUrl } from "../platforms/flow/connection";
 import { createFlowVideoAttachmentHandler } from "./handlers/flowVideoAttachment";
 import { createFlowVideoGenerateHandler } from "./handlers/flowVideo";
+import { createFlowVideoQueueHandler } from "./handlers/flowVideoQueue";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -146,6 +147,38 @@ const flowVideoGenerate = createFlowVideoGenerateHandler({
   revalidate: () => connectionLifecycle.revalidate("Flow", false),
   promptPort: flowPort,
 });
+const flowVideoQueue = createFlowVideoQueueHandler({
+  repositories,
+  alarms: chrome.alarms,
+  attachReference: (preparedBatchId, itemId) => flowVideoAttachment.attach(preparedBatchId, itemId),
+  generateOnce: (preparedBatchId, itemId) => flowVideoGenerate.generateOnce(preparedBatchId, itemId),
+  revalidate: async (preparedBatchId) => {
+    await connectionLifecycle.revalidate("Flow", false);
+    const batch = await repositories.getPreparedVideoBatchById(preparedBatchId);
+    const selected = await repositories.getSelectedTarget("Flow");
+    const binding = selected?.verificationBinding;
+    if (!batch || !selected || selected.verification !== "verified" || !binding ||
+      selected.tabId !== batch.target.tabId || selected.canonicalTarget !== batch.target.canonicalTarget ||
+      binding.projectId !== batch.target.projectId || binding.documentId !== batch.target.documentId)
+      return "selected_flow_target_changed";
+    try {
+      const tab = await chrome.tabs.get(selected.tabId);
+      const route = flowTabFromUrl(selected.tabId, tab.title ?? "", tab.url);
+      const [document] = await chrome.scripting.executeScript({
+        target: { tabId: selected.tabId, frameIds: [0] },
+        func: () => location.href,
+      });
+      const documentRoute = flowTabFromUrl(selected.tabId, "", document?.result);
+      if (!route || route.canonicalTarget !== selected.canonicalTarget ||
+        document?.documentId !== binding.documentId || document.frameId !== 0 ||
+        !documentRoute || documentRoute.canonicalTarget !== selected.canonicalTarget)
+        return "selected_flow_document_changed";
+    } catch {
+      return "selected_flow_target_unavailable";
+    }
+    return undefined;
+  },
+});
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   void (async () => {
     const result = await flowReferenceHandler.handleContextMenu(info, tab);
@@ -236,13 +269,19 @@ const workerReady = Promise.all([
   .then(() => undefined);
 // Reconciliation is intentionally limited to durable queue state and alarm
 // restoration, so queue messages can await it without waiting on dispatch.
-const timedQueueReady = targetStartupReady.then(() =>
-  timedQueueScheduler.reconcileStartup(),
-);
+const timedQueueReady = targetStartupReady.then(async () => {
+  await Promise.all([
+    timedQueueScheduler.reconcileStartup(),
+    flowVideoQueue.reconcileStartup(),
+  ]);
+});
 void workerReady.catch(() => undefined);
 chrome.alarms.onAlarm.addListener((alarm) => {
   void timedQueueReady
-    .then(() => timedQueueScheduler.onAlarm(alarm.name))
+    .then(() => Promise.all([
+      timedQueueScheduler.onAlarm(alarm.name),
+      flowVideoQueue.onAlarm(alarm.name),
+    ]))
     .catch(() => undefined);
 });
 void timedQueueReady.catch(() => undefined);
@@ -447,6 +486,7 @@ chrome.runtime.onMessage.addListener(
     flowReferenceHandler,
     flowVideoAttachment,
     flowVideoGenerateOnce: flowVideoGenerate.generateOnce,
+    flowVideoQueue,
     startTimedImageQueue: timedQueueScheduler.start,
     commandTimedImageQueue: (command, queueId, expectedRevision) =>
       timedQueueScheduler[command](queueId, expectedRevision),

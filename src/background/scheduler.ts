@@ -12,6 +12,44 @@ export const IMAGE_QUEUE_ALARM_PREFIX = "automat-image-queue:";
 // use a persisted supported wake time rather than short in-worker timers.
 export const CHROME_MIN_ALARM_DELAY_MS = 30_000;
 
+/** Shared serialized alarm helpers for additive queue kinds. The existing
+ * timed image queue keeps its own persisted timing and state transitions. */
+export function createQueueAlarmRuntime(input: {
+  alarms: Pick<typeof chrome.alarms, "create" | "clear">;
+  prefix: string;
+  now?: () => number;
+  minimumAlarmDelayMs?: number | null;
+}) {
+  const now = input.now ?? Date.now;
+  const minimumAlarmDelayMs = input.minimumAlarmDelayMs === undefined
+    ? CHROME_MIN_ALARM_DELAY_MS
+    : input.minimumAlarmDelayMs;
+  const tails = new Map<string, Promise<unknown>>();
+  return {
+    name: (queueId: string) => `${input.prefix}${queueId}`,
+    serialize<T>(queueId: string, operation: () => Promise<T>): Promise<T> {
+      const previous = tails.get(queueId) ?? Promise.resolve();
+      const current = previous.catch(() => undefined).then(operation);
+      tails.set(queueId, current);
+      void current.finally(() => {
+        if (tails.get(queueId) === current) tails.delete(queueId);
+      }).catch(() => undefined);
+      return current;
+    },
+    async schedule(queueId: string, at: number | null) {
+      const name = `${input.prefix}${queueId}`;
+      if (at === null) await input.alarms.clear(name);
+      else await input.alarms.create(name, { when: minimumAlarmDelayMs === null ? at : Math.max(at, now() + minimumAlarmDelayMs) });
+    },
+    clear(queueId: string) {
+      return input.alarms.clear(`${input.prefix}${queueId}`);
+    },
+    queueIdFromAlarm(name: string): string | undefined {
+      return name.startsWith(input.prefix) ? name.slice(input.prefix.length) : undefined;
+    },
+  };
+}
+
 export type TimedQueueDispatchResult =
   | { status: "activated"; at: number }
   | { status: "waiting" }
@@ -40,27 +78,19 @@ export function createTimedImageQueueScheduler(input: {
   ) => Promise<string | undefined>;
 }) {
   const now = input.now ?? Date.now;
-  const tails = new Map<string, Promise<unknown>>();
-  const serialized = <T>(
-    queueId: string,
-    operation: () => Promise<T>,
-  ): Promise<T> => {
-    const previous = tails.get(queueId) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(operation);
-    tails.set(queueId, current);
-    void current
-      .finally(() => {
-        if (tails.get(queueId) === current) tails.delete(queueId);
-      })
-      .catch(() => undefined);
-    return current;
-  };
+  // Keep image queue deadlines exactly as stored; Flow video shares this
+  // serialized alarm runtime but uses its own persisted result-check times.
+  const queueRuntime = createQueueAlarmRuntime({
+    alarms: input.alarms,
+    prefix: IMAGE_QUEUE_ALARM_PREFIX,
+    now,
+    minimumAlarmDelayMs: null,
+  });
   const schedule = async (queue: ImageSubmissionQueueRecord) => {
-    const name = `${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`;
     if (
       ["paused", "stopped", "blocked", "sent"].includes(queue.state)
     ) {
-      await input.alarms.clear(name);
+      await queueRuntime.clear(queue.queueId);
       return;
     }
     const readinessItem = queue.items.find(
@@ -74,17 +104,17 @@ export function createTimedImageQueueScheduler(input: {
         null)
       : queue.nextEligibleDispatchAt;
     if (when === null) {
-      await input.alarms.clear(name);
+      await queueRuntime.clear(queue.queueId);
       return;
     }
-    await input.alarms.create(name, { when });
+    await queueRuntime.schedule(queue.queueId, when);
   };
 
   const run = (
     queueId: string,
     starting = false,
   ): Promise<ImageSubmissionQueueRecord> =>
-    serialized("single-dispatch-operation", async () => {
+    queueRuntime.serialize("single-dispatch-operation", async () => {
       let queue =
         await input.repositories.getTimedImageSubmissionQueue(queueId);
       if (!queue) throw new Error("image_queue_not_found");
@@ -342,9 +372,8 @@ export function createTimedImageQueueScheduler(input: {
       return resumed;
     },
     onAlarm: (name: string) => {
-      if (!name.startsWith(IMAGE_QUEUE_ALARM_PREFIX))
-        return Promise.resolve(undefined);
-      return run(name.slice(IMAGE_QUEUE_ALARM_PREFIX.length));
+      const queueId = queueRuntime.queueIdFromAlarm(name);
+      return queueId ? run(queueId) : Promise.resolve(undefined);
     },
     reconcileStartup: async () => {
       const queues =

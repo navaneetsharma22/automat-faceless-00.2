@@ -172,6 +172,11 @@ export type RequestPayloads = {
   "flow.video.verifyAttachedReference": { preparedBatchId: string; itemId: string };
   "flow.video.generateOnce": { preparedBatchId: string; itemId: string };
   "flow.video.getAttachmentStatus": { preparedBatchId: string; itemId: string };
+  "flow.videoQueue.get": { preparedBatchId: string };
+  "flow.videoQueue.start": { preparedBatchId: string };
+  "flow.videoQueue.pause": { preparedBatchId: string; expectedRevision: number };
+  "flow.videoQueue.resume": { preparedBatchId: string; expectedRevision: number };
+  "flow.videoQueue.stop": { preparedBatchId: string; expectedRevision: number };
   "flow.video.reconcilePreClickFailure": {
     preparedBatchId: string;
     itemId: string;
@@ -240,6 +245,11 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.video.verifyAttachedReference": 10_000,
   "flow.video.generateOnce": 45_000,
   "flow.video.getAttachmentStatus": 5_000,
+  "flow.videoQueue.get": 10_000,
+  "flow.videoQueue.start": 45_000,
+  "flow.videoQueue.pause": 10_000,
+  "flow.videoQueue.resume": 45_000,
+  "flow.videoQueue.stop": 10_000,
   "flow.video.reconcilePreClickFailure": 5_000,
 };
 

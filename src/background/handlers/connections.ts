@@ -128,6 +128,13 @@ export type FoundationDependencies = {
     }) => Promise<unknown>;
   };
   flowVideoGenerateOnce?: (preparedBatchId: string, itemId: string) => Promise<unknown>;
+  flowVideoQueue?: {
+    get: (preparedBatchId: string) => Promise<unknown>;
+    start: (preparedBatchId: string) => Promise<unknown>;
+    pause: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+    resume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+    stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+  };
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -778,6 +785,17 @@ async function dispatch(
     case "flow.video.getAttachmentStatus":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.status(request.payload.preparedBatchId, request.payload.itemId);
+    case "flow.videoQueue.get":
+      if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
+      return await dependencies.flowVideoQueue.get(request.payload.preparedBatchId);
+    case "flow.videoQueue.start":
+      if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
+      return await dependencies.flowVideoQueue.start(request.payload.preparedBatchId);
+    case "flow.videoQueue.pause":
+    case "flow.videoQueue.resume":
+    case "flow.videoQueue.stop":
+      if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
+      return await dependencies.flowVideoQueue[request.type.slice("flow.videoQueue.".length) as "pause" | "resume" | "stop"](request.payload.preparedBatchId, request.payload.expectedRevision);
     case "flow.video.reconcilePreClickFailure":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.reconcilePreClickFailure(request.payload);

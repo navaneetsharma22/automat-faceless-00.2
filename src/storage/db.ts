@@ -9,6 +9,7 @@ import type { JsonSpan } from "../domain/batches/jsonSpanScanner";
 import type { FlowImageAttemptRecord } from "../domain/jobs/attempt";
 import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
 import type { ImageSubmissionQueueRecord } from "../domain/jobs/queue";
+import type { FlowVideoQueueRecord } from "../domain/jobs/videoQueue";
 import type {
   ReferenceAssignmentRecord,
   ReferenceCaptureOperationRecord,
@@ -210,6 +211,7 @@ export class AutomatDatabase extends Dexie {
   preparedVideoBatches!: Table<PreparedVideoBatchRecord, string>;
   pinnedReferenceMedia!: Table<ReferenceAssignmentRecord, string>;
   flowVideoAttachmentOperations!: Table<FlowVideoAttachmentOperation, string>;
+  flowVideoQueues!: Table<FlowVideoQueueRecord, string>;
 
   constructor(name = "automat-faceless-app-v1") {
     super(name);
@@ -335,6 +337,23 @@ export class AutomatDatabase extends Dexie {
       preparedVideoBatches: "&id, requestId, workspaceId, videoBatchId, destination, status, createdAt",
       pinnedReferenceMedia: "&referenceId, workspaceId, batchId, shotId, sha256",
       flowVideoAttachmentOperations: "&id, preparedBatchId, itemId, referenceId, status, updatedAt",
+    });
+    this.version(11).stores({
+      promptDrafts: "&id, kind, updatedAt",
+      selectedTargets: "&provider, tabId, verification, updatedAt",
+      workflows: "&id, updatedAt",
+      batches: "&id, workflowId, workspaceId, kind, status, updatedAt",
+      promptItems: "&id, batchId, workspaceId, kind, order",
+      flowImageAttempts: "&attemptId, &activeKey, &confirmationKey, workspaceId, batchId, itemId, state, createdAt",
+      flowImagePromptSnapshots: "&snapshotId, workspaceId, batchId, itemId, promptHash, createdAt",
+      flowCountRecoveries: "&recoveryId, oldAttemptId, oldSourceHash, newSourceHash, projectId, createdAt",
+      imageSubmissionQueues: "&queueId, workspaceId, state, createdAt",
+      referenceAssignments: "&assignmentId, referenceId, captureOperationId, workspaceId, batchId, shotId, selectionVersion",
+      referenceCaptureOperations: "&captureOperationId, workspaceId, batchId, shotId, status, startedAt",
+      preparedVideoBatches: "&id, requestId, workspaceId, videoBatchId, destination, status, createdAt",
+      pinnedReferenceMedia: "&referenceId, workspaceId, batchId, shotId, sha256",
+      flowVideoAttachmentOperations: "&id, preparedBatchId, itemId, referenceId, status, updatedAt",
+      flowVideoQueues: "&queueId, preparedBatchId, state, updatedAt",
     });
   }
 }

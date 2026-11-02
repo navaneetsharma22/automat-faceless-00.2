@@ -281,7 +281,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     );
   });
 
-  it("displays honest execution unavailability notice without runnable start or generate actions", () => {
+  it("offers one Flow queue start action without per-shot action buttons", () => {
     act(() => {
       root?.render(
         createElement(PreparedBatchReview, {
@@ -291,13 +291,14 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
       );
     });
 
-    expect(container?.textContent).toContain("Provider Execution Unavailable");
+    expect(container?.textContent).toContain("Flow video queue");
 
-    // Zero runnable Generate, Start, or Submit buttons
     const buttons = Array.from(container?.querySelectorAll("button") ?? []);
     const buttonTexts = buttons.map((b) => b.textContent?.trim());
     expect(buttonTexts).not.toContain("Generate");
-    expect(buttonTexts).not.toContain("Start video batch");
+    expect(buttonTexts).toContain("Start");
+    expect(buttonTexts.filter((text) => text === "Start")).toHaveLength(1);
+    expect(buttonTexts).not.toContain("Attach reference");
     expect(buttonTexts).not.toContain("Submit");
   });
 

@@ -31,6 +31,15 @@ type AttachmentOperationSnapshot = {
   preActivationEvidence?: unknown;
 };
 
+type VideoQueueSnapshot = {
+  queueId: string;
+  state: "ready" | "waiting" | "paused" | "blocked" | "stopped" | "completed";
+  pauseReason?: string;
+  nextActionAt: number | null;
+  revision: number;
+  items: Array<{ itemId: string; order: number; shotId: string; state: string; reason?: string; attemptId?: string }>;
+};
+
 const RECONCILABLE_PRECLICK_RECORD = {
   preparedBatchId: "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179",
   itemId: "import:default:video:item:0",
@@ -49,6 +58,38 @@ export function PreparedBatchReview({
       currentVideoSourceHash !== preparedBatch.videoSourceHash) ||
     (currentImageSourceBatchId &&
       currentImageSourceBatchId !== preparedBatch.imageSourceBatchId);
+  const [videoQueue, setVideoQueue] = useState<VideoQueueSnapshot | null>(null);
+  const [videoQueueBusy, setVideoQueueBusy] = useState(false);
+  const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (preparedBatch.destination !== "Flow") return;
+    let cancelled = false;
+    const load = () => persistenceClient.request("flow.videoQueue.get", { preparedBatchId: preparedBatch.id })
+      .then((value) => { if (!cancelled) setVideoQueue(value ? value as VideoQueueSnapshot : null); })
+      .catch(() => undefined);
+    void load();
+    const timer = window.setInterval(() => void load(), 10_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [preparedBatch.destination, preparedBatch.id, persistenceClient]);
+
+  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop") {
+    setVideoQueueBusy(true);
+    setVideoQueueError(null);
+    const type = `flow.videoQueue.${action}` as const;
+    const payload = action === "start"
+      ? { preparedBatchId: preparedBatch.id }
+      : { preparedBatchId: preparedBatch.id, expectedRevision: videoQueue?.revision ?? -1 };
+    try {
+      const result = await persistenceClient.request(type, payload);
+      if (result) setVideoQueue(result as VideoQueueSnapshot);
+    } catch (error) {
+      const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "queue_request_failed";
+      setVideoQueueError(code);
+    } finally {
+      setVideoQueueBusy(false);
+    }
+  }
 
   return (
     <section
@@ -61,8 +102,7 @@ export function PreparedBatchReview({
             Prepared — not submitted to Flow/Vids.
           </h3>
           <p className={styles.disclaimer}>
-            Flow reference attachment is available per item. The batch remains
-            prepared: no video prompt is entered and no generation is submitted.
+            Use Start once to process the paired Flow references and video prompts sequentially. Provider settings remain user-controlled.
           </p>
         </div>
         <span className={styles.badge}>Status: Prepared</span>
@@ -110,6 +150,43 @@ export function PreparedBatchReview({
       </div>
 
       <div className={styles.itemList}>
+        {preparedBatch.destination === "Flow" ? (
+          <section className={styles.videoQueue} aria-label="Flow video queue">
+            <div className={styles.videoQueueHeader}>
+              <div>
+                <h3>Flow video queue</h3>
+                <p>One start action processes paired references and prompts. Results advance only after attempt-bound verification.</p>
+              </div>
+              {!videoQueue || videoQueue.state === "ready" ? (
+                <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("start")}>Start</button>
+              ) : videoQueue.state === "waiting" ? (
+                <div className={styles.videoQueueActions}>
+                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("pause")}>Pause</button>
+                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</button>
+                </div>
+              ) : videoQueue.state === "paused" && videoQueue.pauseReason !== "video_result_attribution_unavailable" ? (
+                <div className={styles.videoQueueActions}>
+                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("resume")}>Resume</button>
+                  <button type="button" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</button>
+                </div>
+              ) : null}
+            </div>
+            {videoQueue ? (
+              <>
+                <p role="status">{videoQueue.state === "waiting" && videoQueue.nextActionAt
+                  ? `Next dispatch/check: ${new Date(videoQueue.nextActionAt).toLocaleTimeString()}`
+                  : videoQueue.pauseReason ? `Paused: ${videoQueue.pauseReason}` : `Queue ${videoQueue.state}`}</p>
+                <p>{videoQueue.items.filter((item) => item.state === "completed").length}/{videoQueue.items.length} shots have attributable completion.</p>
+                <ol aria-label="Flow video shot statuses">
+                  {videoQueue.items.map((item) => (
+                    <li key={item.itemId}>Shot {item.shotId}: {item.state.replaceAll("_", " ")}{item.reason ? ` — ${item.reason}` : ""}</li>
+                  ))}
+                </ol>
+              </>
+            ) : null}
+            {videoQueueError ? <p role="alert">Queue action failed: {videoQueueError}</p> : null}
+          </section>
+        ) : null}
         {preparedBatch.items.map((item) => (
           <PreparedItemCard
             key={item.itemId}
@@ -117,6 +194,7 @@ export function PreparedBatchReview({
             preparedBatchId={preparedBatch.id}
             eligible={preparedBatch.destination === "Flow"}
             persistenceClient={persistenceClient}
+            queueManaged={preparedBatch.destination === "Flow"}
           />
         ))}
       </div>
@@ -129,11 +207,13 @@ function PreparedItemCard({
   preparedBatchId,
   eligible,
   persistenceClient,
+  queueManaged,
 }: {
   item: PreparedVideoBatchRecord["items"][number];
   preparedBatchId: string;
   eligible: boolean;
   persistenceClient: ReturnType<typeof createFoundationClient>;
+  queueManaged: boolean;
 }) {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -405,7 +485,7 @@ function PreparedItemCard({
         </div>
       </div>
 
-      {eligible ? (
+      {eligible && !queueManaged ? (
         <div>
           {canReconcilePreClickFailure ? (
             <button

@@ -10,6 +10,10 @@ import {
   type FlowVideoAttachmentOperation,
 } from "./db";
 import {
+  FlowVideoQueueRecordSchema,
+  type FlowVideoQueueRecord,
+} from "../domain/jobs/videoQueue";
+import {
   ImageSubmissionQueueRecordSchema,
   TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
   nextTimedDispatchDeadline,
@@ -310,6 +314,7 @@ export type RepositoryDatabase = {
     "put" | "get" | "toArray"
   >;
   flowVideoAttachmentOperations: Pick<Table<FlowVideoAttachmentOperation, string>, "get" | "put" | "add">;
+  flowVideoQueues: Pick<Table<FlowVideoQueueRecord, string>, "get" | "put" | "add" | "toArray">;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -334,6 +339,7 @@ export function createDexieRepositoryDatabase(
     preparedVideoBatches: database.preparedVideoBatches,
     pinnedReferenceMedia: database.pinnedReferenceMedia,
     flowVideoAttachmentOperations: database.flowVideoAttachmentOperations,
+    flowVideoQueues: database.flowVideoQueues,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -473,6 +479,8 @@ export function createDexieRepositoryDatabase(
           );
         case "flowVideoAttachmentOperations":
           return database.transaction("rw", database.flowVideoAttachmentOperations, operation);
+        case "flowVideoQueues":
+          return database.transaction("rw", database.flowVideoQueues, operation);
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -3136,6 +3144,57 @@ export class ExtensionRepositories {
     id: string,
   ): Promise<PreparedVideoBatchRecord | undefined> {
     return await this.tables.preparedVideoBatches.get(id);
+  }
+
+  async getFlowVideoQueue(queueId: string): Promise<FlowVideoQueueRecord | undefined> {
+    const record = await this.tables.flowVideoQueues.get(queueId);
+    if (record && !FlowVideoQueueRecordSchema.safeParse(record).success)
+      throw new Error("flow_video_queue_invalid");
+    return record;
+  }
+
+  async createFlowVideoQueue(record: FlowVideoQueueRecord): Promise<FlowVideoQueueRecord> {
+    if (!FlowVideoQueueRecordSchema.safeParse(record).success)
+      throw new Error("flow_video_queue_invalid");
+    return this.tables.transaction(["flowVideoQueues"], async () => {
+      const current = await this.tables.flowVideoQueues.get(record.queueId);
+      if (current) {
+        if (!FlowVideoQueueRecordSchema.safeParse(current).success)
+          throw new Error("flow_video_queue_invalid");
+        return current;
+      }
+      await this.tables.flowVideoQueues.add(record);
+      const saved = await this.tables.flowVideoQueues.get(record.queueId);
+      if (!saved || !FlowVideoQueueRecordSchema.safeParse(saved).success)
+        throw new Error("flow_video_queue_persistence_failed");
+      return saved;
+    });
+  }
+
+  async updateFlowVideoQueue(input: {
+    expectedRevision: number;
+    next: FlowVideoQueueRecord;
+  }): Promise<FlowVideoQueueRecord | undefined> {
+    if (!FlowVideoQueueRecordSchema.safeParse(input.next).success)
+      throw new Error("flow_video_queue_invalid");
+    return this.tables.transaction(["flowVideoQueues"], async () => {
+      const current = await this.tables.flowVideoQueues.get(input.next.queueId);
+      if (!current || current.revision !== input.expectedRevision) return undefined;
+      if (input.next.revision !== current.revision + 1)
+        throw new Error("flow_video_queue_revision_invalid");
+      await this.tables.flowVideoQueues.put(input.next);
+      const saved = await this.tables.flowVideoQueues.get(input.next.queueId);
+      if (!saved || !FlowVideoQueueRecordSchema.safeParse(saved).success)
+        throw new Error("flow_video_queue_persistence_failed");
+      return saved;
+    });
+  }
+
+  async listFlowVideoQueues(): Promise<FlowVideoQueueRecord[]> {
+    const records = await this.tables.flowVideoQueues.toArray();
+    if (records.some((record) => !FlowVideoQueueRecordSchema.safeParse(record).success))
+      throw new Error("flow_video_queue_invalid");
+    return records;
   }
 
   async getFlowVideoAttachmentOperation(id: string): Promise<FlowVideoAttachmentOperation | undefined> {
