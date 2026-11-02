@@ -19,6 +19,7 @@ import {
   flowResultBaselineMatchesAttempt,
 } from "../domain/jobs/results";
 import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnapshot";
+import { VidsVideoGenerationOperationSchema } from "../domain/jobs/vidsVideoGeneration";
 
 const promptSourceSchema = z
   .string()
@@ -1074,6 +1075,10 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   requestBase.extend({
     type: z.literal("vids.video.getGenerationStatus"),
     payload: z.object({ preparedBatchId: z.string().min(1).max(512), itemId: z.string().min(1).max(256) }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("vids.video.recoverPreActivationFailure"),
+    payload: z.object({ expected: VidsVideoGenerationOperationSchema }).strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.video.inspectReferenceBytes"),

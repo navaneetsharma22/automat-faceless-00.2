@@ -25,6 +25,7 @@ async function setup(options: {
   generateCount?: number;
   changeTargetBeforeIntent?: boolean;
   activationThrows?: boolean;
+  activationResult?: { ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1 };
   injectedDocumentId?: string;
   wrongPromptHash?: boolean;
 } = {}) {
@@ -71,6 +72,7 @@ async function setup(options: {
   await database.selectedTargets.put(target);
   await database.vidsVideoAttachmentOperations.put(attachment);
   const calls: Array<{ func: (...args: never[]) => unknown; args?: unknown[]; target: { tabId: number; documentIds: string[] } }> = [];
+  let attemptNumber = 0;
   const scripting = { executeScript: vi.fn(async (input: { func: (...args: never[]) => unknown; args?: unknown[]; target: { tabId: number; documentIds: string[] } }) => {
     calls.push(input);
     if (input.func === enterVidsPromptInPage) {
@@ -78,15 +80,19 @@ async function setup(options: {
       return [{ documentId: options.injectedDocumentId ?? documentId, result: {
         href: canonicalTarget, ok: !options.entryReason, ...(options.entryReason ? { reason: options.entryReason } : {}),
         promptState: "empty", expectedSha256: promptHash, actualSha256: promptHash, immediateMatch: true, settledMatch: true, stableReads: 3,
-        referenceSha256, referenceByteSize: png.length, generateCount: options.generateCount ?? 1, generateDisabled: options.generateDisabled ?? false,
+        referenceSha256, referenceProofSource: "selected_file_sha256", referenceByteSize: png.length, generateCount: options.generateCount ?? 1, generateDisabled: options.generateDisabled ?? false,
       } }];
     }
+    const activationCall = calls.filter((call) => call.func === activateVidsGenerateInPage).length;
     if (options.activationThrows) throw new Error("lost_injected_reply");
-    return [{ documentId, result: { href: canonicalTarget, ok: true, activationAttempted: true, activationCount: 1 } }];
+    const result = options.activationResult && activationCall === 1
+      ? options.activationResult
+      : { ok: true, activationAttempted: true, activationCount: 1, referenceProofSource: "selected_file_sha256" };
+    return [{ documentId, result: { href: canonicalTarget, ...result } }];
   }) };
   const handler = createVidsVideoGenerateHandler({
     repositories, scripting, getTab: async (tabId) => ({ id: tabId, url: canonicalTarget }), revalidate: async () => undefined,
-    now: () => 5000, createAttemptId: () => "66666666-6666-4666-8666-666666666666",
+    now: () => 5000, createAttemptId: () => attemptNumber++ === 0 ? "66666666-6666-4666-8666-666666666666" : "77777777-7777-4777-8777-777777777777",
   });
   return { database, repositories, prepared, handler, calls, scripting, promptHash, referenceSha256, target, attachment };
 }
@@ -99,7 +105,7 @@ describe("P10.2 Google Vids exact prompt and one-shot generation", () => {
     expect(fixture.calls).toHaveLength(3); // two full prompt/reference preflights, one activation
     expect(fixture.calls.map((call) => call.target.documentIds)).toEqual([[documentId], [documentId], [documentId]]);
     const operation = await fixture.repositories.getVidsVideoGenerationOperation((result.operation as { id: string }).id);
-    expect(operation).toMatchObject({ status: "dispatched", promptHash: fixture.promptHash, referenceSha256: fixture.referenceSha256, documentId, canonicalShotId: "1", activationAttempted: true, activationCount: 1, promptReadback: { expectedSha256: fixture.promptHash, actualSha256: fixture.promptHash, serialization: "contenteditable_blocks_v1", immediateMatch: true, settledMatch: true, stableReads: 3 } });
+    expect(operation).toMatchObject({ status: "dispatched", promptHash: fixture.promptHash, referenceSha256: fixture.referenceSha256, preIntentReferenceProofSource: "selected_file_sha256", activationReferenceProofSource: "selected_file_sha256", documentId, canonicalShotId: "1", activationAttempted: true, activationCount: 1, promptReadback: { expectedSha256: fixture.promptHash, actualSha256: fixture.promptHash, serialization: "contenteditable_blocks_v1", immediateMatch: true, settledMatch: true, stableReads: 3 } });
     expect(await fixture.database.flowVideoAttachmentOperations.toArray()).toEqual([]);
     expect(await fixture.database.flowVideoQueues.toArray()).toEqual([]);
     expect(await fixture.database.vidsVideoAttachmentOperations.toArray()).toHaveLength(1);
@@ -109,7 +115,7 @@ describe("P10.2 Google Vids exact prompt and one-shot generation", () => {
   it.each([
     ["prepared pair or hash mismatch", { wrongPromptHash: true }, "prepared_item_pairing_or_hash_mismatch"],
     ["conflicting text", { entryReason: "prompt_editor_contains_conflicting_text" }, "prompt_editor_contains_conflicting_text"],
-    ["missing reference identity proof", { entryReason: "reference_identity_proof_unavailable" }, "reference_identity_proof_unavailable"],
+    ["missing reference identity proof", { entryReason: "reference_file_selection_missing" }, "reference_file_selection_missing"],
     ["disabled Generate", { generateDisabled: true }, "generate_disabled"],
     ["ambiguous Generate control", { generateCount: 2 }, "vids_generate_control_ambiguous"],
     ["wrong injected document", { injectedDocumentId: "replacement-document" }, "vids_document_changed"],
@@ -135,6 +141,57 @@ describe("P10.2 Google Vids exact prompt and one-shot generation", () => {
     }
   });
 
+  it("persists a proof failure after intent as blocked with zero activation, and never retries it implicitly", async () => {
+    const fixture = await setup({ activationResult: { ok: false, reason: "reference_file_selection_missing", activationAttempted: false, activationCount: 0 } });
+    const first = await fixture.handler.generateOnce(preparedBatchId, itemId);
+    expect(first).toMatchObject({ status: "blocked", stage: "reference_proof", reason: "reference_file_selection_missing" });
+    const saved = await fixture.repositories.getVidsVideoGenerationOperation((first.operation as { id: string }).id);
+    expect(saved).toMatchObject({ status: "blocked", failureStage: "reference_proof", activationAttempted: false, activationCount: 0, reason: "reference_file_selection_missing" });
+    const calls = fixture.calls.length;
+    const second = await fixture.handler.generateOnce(preparedBatchId, itemId);
+    expect(second.status).toBe("blocked");
+    expect(fixture.calls).toHaveLength(calls);
+    expect(fixture.calls.filter((call) => call.func === activateVidsGenerateInPage)).toHaveLength(1);
+  });
+
+  it("reconciles the exact ai_sidebar_missing pre-click snapshot without activation and preserves it on the same operation", async () => {
+    const fixture = await setup({ activationResult: { ok: false, reason: "ai_sidebar_missing", activationAttempted: false, activationCount: 0 } });
+    const first = await fixture.handler.generateOnce(preparedBatchId, itemId);
+    expect(first).toMatchObject({ status: "blocked", stage: "generate_preflight", reason: "ai_sidebar_missing" });
+    const original = first.operation as NonNullable<typeof first.operation>;
+    expect(original).toMatchObject({ status: "blocked", reason: "ai_sidebar_missing", activationAttempted: false, activationCount: 0 });
+    const beforeRecoveryCalls = fixture.calls.length;
+
+    const recovered = await fixture.handler.recoverPreActivationFailure(original);
+    expect(recovered).toMatchObject({ status: "retry_ready", operation: {
+      id: original.id, status: "retry_ready", reason: "ai_sidebar_missing", activationAttempted: false, activationCount: 0,
+      preActivationRecovery: { producer: "ai_sidebar_missing_before_generate_click", priorAttemptId: original.attemptId, priorStatus: "blocked", priorFailureStage: "generate_preflight", priorReason: "ai_sidebar_missing", priorUpdatedAt: original.updatedAt },
+    } });
+    expect(fixture.calls).toHaveLength(beforeRecoveryCalls);
+    expect(fixture.calls.filter((call) => call.func === activateVidsGenerateInPage)).toHaveLength(1);
+
+    const submitted = await fixture.handler.generateOnce(preparedBatchId, itemId);
+    expect(submitted.status).toBe("dispatched");
+    expect(submitted.operation).toMatchObject({ id: original.id, status: "dispatched", attemptId: "77777777-7777-4777-8777-777777777777", preActivationRecovery: { priorAttemptId: original.attemptId, priorReason: "ai_sidebar_missing", priorUpdatedAt: original.updatedAt } });
+    expect(fixture.calls.filter((call) => call.func === activateVidsGenerateInPage)).toHaveLength(2);
+  });
+
+  it("rejects changed snapshots and uncertain/attempted activation from exact pre-click recovery", async () => {
+    const changedFixture = await setup({ activationResult: { ok: false, reason: "ai_sidebar_missing", activationAttempted: false, activationCount: 0 } });
+    const blocked = await changedFixture.handler.generateOnce(preparedBatchId, itemId);
+    const changed = { ...(blocked.operation as NonNullable<typeof blocked.operation>), updatedAt: (blocked.operation as NonNullable<typeof blocked.operation>).updatedAt + 1 };
+    const rejectedChanged = await changedFixture.handler.recoverPreActivationFailure(changed);
+    expect(rejectedChanged).toMatchObject({ status: "blocked", reason: "generation_operation_changed" });
+    expect(changedFixture.calls.filter((call) => call.func === activateVidsGenerateInPage)).toHaveLength(1);
+
+    const uncertainFixture = await setup({ activationThrows: true });
+    const uncertain = await uncertainFixture.handler.generateOnce(preparedBatchId, itemId);
+    const rejectedUncertain = await uncertainFixture.handler.recoverPreActivationFailure(uncertain.operation);
+    expect(uncertain.status).toBe("uncertain");
+    expect(rejectedUncertain).toMatchObject({ status: "blocked", reason: "generation_failure_not_proven_pre_activation" });
+    expect(uncertainFixture.calls.filter((call) => call.func === activateVidsGenerateInPage)).toHaveLength(1);
+  });
+
   it("atomically prevents two concurrent requests from activating Generate twice", async () => {
     const fixture = await setup();
     const [first, second] = await Promise.all([
@@ -150,11 +207,12 @@ describe("P10.2 Google Vids exact prompt and one-shot generation", () => {
     const fixture = await setup();
     const vidsGenerate = vi.fn(async () => ({ status: "dispatched" }));
     const vidsGet = vi.fn(async () => ({ status: "not_started" }));
+    const vidsRecover = vi.fn(async () => ({ status: "retry_ready" }));
     const flowGenerate = vi.fn(async () => ({ status: "dispatched" }));
     const preferences = new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined });
     const listener = createConnectionMessageListener("vids-generate-isolation", {
       repositories: fixture.repositories, preferences,
-      vidsVideoGenerate: { generateOnce: vidsGenerate, get: vidsGet },
+      vidsVideoGenerate: { generateOnce: vidsGenerate, get: vidsGet, recoverPreActivationFailure: vidsRecover },
       flowVideoGenerateOnce: flowGenerate,
       vidsVideoAttachment: { attach: vi.fn(), get: vi.fn() },
     });
@@ -165,8 +223,20 @@ describe("P10.2 Google Vids exact prompt and one-shot generation", () => {
     });
     await send("vids.video.getGenerationStatus");
     await send("vids.video.generateOnce");
+    const expected = {
+      id: `vids-generation:${await sha256Hex(`${preparedBatchId}\u0000${itemId}`)}`, preparedBatchId, workspaceId: "workspace", itemId, canonicalShotId: "1",
+      promptHash: fixture.promptHash, referenceId, referenceSha256: fixture.referenceSha256, tabId: 90, canonicalTarget, documentId,
+      attemptId: "66666666-6666-4666-8666-666666666666", status: "blocked", failureStage: "generate_preflight", reason: "ai_sidebar_missing",
+      preIntentReferenceProofSource: "preview_blob_sha256",
+      promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: fixture.promptHash, actualSha256: fixture.promptHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: 3 },
+      activationAttempted: false, activationCount: 0, createdAt: 1, updatedAt: 4,
+    };
+    const recoveryRequest = makeRequest("vids.video.recoverPreActivationFailure", { expected }, "request-recovery");
+    const recoveryResponse = new Promise<unknown>((resolve) => listener(JSON.parse(JSON.stringify(recoveryRequest)), sender, resolve));
+    await recoveryResponse;
     expect(vidsGet).toHaveBeenCalledWith(preparedBatchId, itemId);
     expect(vidsGenerate).toHaveBeenCalledWith(preparedBatchId, itemId);
+    expect(vidsRecover).toHaveBeenCalledWith(expected);
     expect(flowGenerate).not.toHaveBeenCalled();
     expect(await fixture.database.flowVideoQueues.toArray()).toEqual([]);
     expect(await fixture.database.flowVideoAttachmentOperations.toArray()).toEqual([]);

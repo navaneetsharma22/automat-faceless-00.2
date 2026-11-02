@@ -2,7 +2,7 @@ import { importPromptBatch } from "../../domain/batches/importBatch";
 import { canonicalizeShotId } from "../../domain/batches/inputPolicy";
 import { sha256Hex } from "../../domain/batches/hashPrompt";
 import { ReferenceAssignmentRecordSchema, sha256Bytes } from "../../domain/media/references";
-import type { VidsVideoGenerationOperation } from "../../domain/jobs/vidsVideoGeneration";
+import { VidsVideoGenerationOperationSchema, type VidsVideoGenerationOperation } from "../../domain/jobs/vidsVideoGeneration";
 import { VidsVideoAttachmentOperationSchema } from "../../domain/jobs/vidsVideoAttachment";
 import { PreparedVideoBatchRecordSchema, VideoSettingsConfirmationSchema } from "../../shared/schemas";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
@@ -22,7 +22,7 @@ type VidsScriptPort = {
 };
 
 export type VidsVideoGenerateResult = {
-  status: "not_started" | "dispatch_intent" | "dispatched" | "uncertain" | "blocked" | "already_dispatched";
+  status: "not_started" | "dispatch_intent" | "dispatched" | "uncertain" | "blocked" | "retry_ready" | "already_dispatched";
   stage?: string;
   reason?: string;
   operation?: VidsVideoGenerationOperation;
@@ -86,7 +86,7 @@ export function createVidsVideoGenerateHandler(deps: {
     if (!result?.ok) return { reason: safeReason(result?.reason, "vids_prompt_entry_failed"), result } as const;
     if (result.expectedSha256 !== item.contentHash || result.actualSha256 !== item.contentHash || !result.immediateMatch || !result.settledMatch || (result.stableReads ?? 0) < 3)
       return { reason: "vids_exact_prompt_readback_failed", result } as const;
-    if (result.referenceSha256 !== item.reference.sha256 || result.referenceByteSize !== item.reference.byteSize)
+    if (result.referenceSha256 !== item.reference.sha256 || result.referenceByteSize !== item.reference.byteSize || !["selected_file_sha256", "preview_blob_sha256"].includes(result.referenceProofSource ?? ""))
       return { reason: "vids_reference_identity_mismatch", result } as const;
     if (result.generateCount !== 1) return { reason: result.generateCount ? "vids_generate_control_ambiguous" : "vids_generate_control_missing", result } as const;
     if (result.generateDisabled) return { reason: "generate_disabled", result } as const;
@@ -104,7 +104,8 @@ export function createVidsVideoGenerateHandler(deps: {
   async function generateOnce(preparedBatchId: string, itemId: string): Promise<VidsVideoGenerateResult> {
     const id = await makeId(preparedBatchId, itemId);
     const existing = await deps.repositories.getVidsVideoGenerationOperation(id);
-    if (existing) return { status: existing.status === "dispatched" ? "already_dispatched" : existing.status === "dispatch_intent" ? "uncertain" : existing.status, stage: existing.failureStage, reason: existing.reason ?? "generation_already_attempted", operation: existing };
+    const retrySource = existing?.status === "retry_ready" && existing.preActivationRecovery ? existing : undefined;
+    if (existing && !retrySource) return { status: existing.status === "dispatched" ? "already_dispatched" : existing.status === "dispatch_intent" ? "uncertain" : existing.status, stage: existing.failureStage, reason: existing.reason ?? "generation_already_attempted", operation: existing };
 
     const parsed = PreparedVideoBatchRecordSchema.safeParse(await deps.repositories.getPreparedVideoBatchById(preparedBatchId));
     if (!parsed.success || parsed.data.id !== preparedBatchId || parsed.data.destination !== "Vids") return { status: "blocked", stage: "preflight", reason: "prepared_vids_batch_invalid" };
@@ -134,7 +135,7 @@ export function createVidsVideoGenerateHandler(deps: {
     if ("reason" in before) return { status: "blocked", stage: "preflight", reason: before.reason };
     if (before.binding.documentId !== parsedAttachment.data.documentId) return { status: "blocked", stage: "preflight", reason: "vids_document_changed" };
     const prepared = await inspectAndEnter(batch, item, before.binding.documentId);
-    if ("reason" in prepared) return { status: "blocked", stage: prepared.result?.promptState ? "prompt_entry" : "generate_preflight", reason: prepared.reason };
+    if ("reason" in prepared) return { status: "blocked", stage: prepared.reason?.startsWith("reference_") ? "reference_proof" : prepared.result?.promptState ? "prompt_entry" : "generate_preflight", reason: prepared.reason };
 
     const beforeIntent = await validateTarget(batch);
     if ("reason" in beforeIntent || beforeIntent.binding.documentId !== before.binding.documentId || beforeIntent.selected.tabId !== before.selected.tabId || beforeIntent.selected.canonicalTarget !== before.selected.canonicalTarget)
@@ -151,6 +152,8 @@ export function createVidsVideoGenerateHandler(deps: {
     const intent: VidsVideoGenerationOperation = {
       id, preparedBatchId: batch.id, workspaceId: batch.workspaceId, itemId: item.itemId, canonicalShotId: item.canonicalShotId,
       promptHash: item.contentHash, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256,
+      preIntentReferenceProofSource: exactAgain.result.referenceProofSource,
+      ...(retrySource?.preActivationRecovery ? { preActivationRecovery: retrySource.preActivationRecovery } : {}),
       tabId: before.selected.tabId, canonicalTarget: before.selected.canonicalTarget, documentId: before.binding.documentId,
       attemptId, status: "dispatch_intent", promptReadback: {
         serialization: "contenteditable_blocks_v1", expectedSha256: item.contentHash, actualSha256: exactAgain.result.actualSha256!,
@@ -158,17 +161,20 @@ export function createVidsVideoGenerateHandler(deps: {
       }, activationAttempted: false, activationCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
     try {
-      if (!await deps.repositories.claimVidsVideoGenerationOperation(intent, attachment!)) {
+      const claimed = retrySource
+        ? await deps.repositories.claimVidsVideoGenerationRetry(intent, retrySource, attachment!)
+        : await deps.repositories.claimVidsVideoGenerationOperation(intent, attachment!);
+      if (!claimed) {
         const raced = await deps.repositories.getVidsVideoGenerationOperation(id);
         return { status: raced?.status === "dispatched" ? "already_dispatched" : raced?.status ?? "blocked", reason: "generation_operation_already_claimed", operation: raced };
       }
     } catch { return { status: "blocked", stage: "persistence", reason: "generation_intent_persistence_failed" }; }
 
-    const saveOutcome = async (status: VidsVideoGenerationOperation["status"], stage: VidsVideoGenerationOperation["failureStage"], reason: string | undefined, activationAttempted: boolean, activationCount: 0 | 1) => {
+    const saveOutcome = async (status: VidsVideoGenerationOperation["status"], stage: VidsVideoGenerationOperation["failureStage"], reason: string | undefined, activationAttempted: boolean, activationCount: 0 | 1, activationReferenceProofSource?: VidsVideoGenerationOperation["activationReferenceProofSource"]) => {
       const updatedAt = now();
       const next: VidsVideoGenerationOperation = {
         ...intent, status, ...(stage ? { failureStage: stage } : {}), ...(reason ? { reason: safeReason(reason, "vids_generation_failed") } : {}),
-        activationAttempted, activationCount, ...(status === "dispatched" ? { dispatchedAt: updatedAt } : {}), updatedAt,
+        activationAttempted, activationCount, ...(activationReferenceProofSource ? { activationReferenceProofSource } : {}), ...(status === "dispatched" ? { dispatchedAt: updatedAt } : {}), updatedAt,
       };
       try { await deps.repositories.updateVidsVideoGenerationOperation({ expected: intent, next }); } catch { /* intent remains durable and blocks replay */ }
       return await deps.repositories.getVidsVideoGenerationOperation(id) ?? next;
@@ -201,19 +207,67 @@ export function createVidsVideoGenerateHandler(deps: {
     }
     if (!activation?.ok) {
       const attempted = activation?.activationAttempted === true;
-      const operation = await saveOutcome(attempted ? "uncertain" : "blocked", attempted ? "activation" : "generate_preflight", safeReason(activation?.reason, attempted ? "vids_generate_delivery_uncertain" : "vids_generate_preflight_changed"), attempted, attempted ? 1 : 0);
+      const reason = safeReason(activation?.reason, attempted ? "vids_generate_delivery_uncertain" : "vids_generate_preflight_changed");
+      const stage = attempted ? "activation" : reason.startsWith("reference_") ? "reference_proof" : "generate_preflight";
+      const operation = await saveOutcome(attempted ? "uncertain" : "blocked", stage, reason, attempted, attempted ? 1 : 0);
       return { status: operation.status, stage: operation.failureStage, reason: operation.reason, operation };
     }
     if (!activation.activationAttempted || activation.activationCount !== 1) {
       const operation = await saveOutcome("uncertain", "activation", "vids_generate_activation_unconfirmed", activation.activationAttempted, activation.activationCount);
       return { status: "uncertain", stage: "activation", reason: operation.reason, operation };
     }
-    const operation = await saveOutcome("dispatched", undefined, undefined, true, 1);
+      const operation = await saveOutcome("dispatched", undefined, undefined, true, 1, activation.referenceProofSource);
     return operation.status === "dispatched"
       ? { status: "dispatched", operation }
       : { status: "uncertain", stage: operation.failureStage ?? "persistence", reason: operation.reason ?? "vids_dispatch_receipt_persistence_uncertain", operation };
   }
 
-  return { generateOnce, get };
+  async function recoverPreActivationFailure(expectedInput: unknown): Promise<VidsVideoGenerateResult> {
+    const parsed = VidsVideoGenerationOperationSchema.safeParse(expectedInput);
+    if (!parsed.success) return { status: "blocked", stage: "preflight", reason: "generation_snapshot_invalid" };
+    const expected = parsed.data;
+    const id = await makeId(expected.preparedBatchId, expected.itemId);
+    if (expected.id !== id || expected.status !== "blocked" || expected.failureStage !== "generate_preflight" ||
+        expected.reason !== "ai_sidebar_missing" || expected.activationAttempted !== false || expected.activationCount !== 0 ||
+        expected.preActivationRecovery || !expected.promptReadback.immediateMatch || !expected.promptReadback.settledMatch ||
+        expected.promptReadback.expectedSha256 !== expected.promptHash || expected.promptReadback.actualSha256 !== expected.promptHash ||
+        expected.promptReadback.stableReads < 3)
+      return { status: "blocked", stage: "preflight", reason: "generation_failure_not_proven_pre_activation" };
+    const parsedBatch = PreparedVideoBatchRecordSchema.safeParse(await deps.repositories.getPreparedVideoBatchById(expected.preparedBatchId));
+    if (!parsedBatch.success || parsedBatch.data.destination !== "Vids") return { status: "blocked", stage: "preflight", reason: "prepared_vids_batch_invalid" };
+    const batch = parsedBatch.data;
+    const item = batch.items.find((candidate) => candidate.itemId === expected.itemId);
+    if (!item || expected.workspaceId !== batch.workspaceId || expected.canonicalShotId !== item.canonicalShotId ||
+        expected.promptHash !== item.contentHash || expected.referenceId !== item.reference.referenceId ||
+        expected.referenceSha256 !== item.reference.sha256 || expected.tabId !== batch.target.tabId ||
+        expected.canonicalTarget !== batch.target.canonicalTarget || expected.documentId !== batch.target.documentId)
+      return { status: "blocked", stage: "preflight", reason: "generation_snapshot_binding_mismatch" };
+    const target = await validateTarget(batch);
+    if ("reason" in target || target.selected.tabId !== expected.tabId || target.selected.canonicalTarget !== expected.canonicalTarget || target.binding.documentId !== expected.documentId)
+      return { status: "blocked", stage: "preflight", reason: "vids_target_changed" };
+    const attachmentId = `vids:${await sha256Hex(`${batch.id}\u0000${item.itemId}`)}`;
+    const attachment = VidsVideoAttachmentOperationSchema.safeParse(await deps.repositories.getVidsVideoAttachmentOperation(attachmentId));
+    if (!attachment.success || attachment.data.status !== "attached" || attachment.data.preparedBatchId !== batch.id ||
+        attachment.data.itemId !== item.itemId || attachment.data.referenceId !== item.reference.referenceId ||
+        attachment.data.referenceSha256 !== item.reference.sha256 || attachment.data.documentId !== expected.documentId ||
+        attachment.data.canonicalTarget !== expected.canonicalTarget)
+      return { status: "blocked", stage: "preflight", reason: "vids_reference_not_attached_or_binding_mismatch" };
+    const recoveredAt = now();
+    const next: VidsVideoGenerationOperation = {
+      ...expected, status: "retry_ready", updatedAt: recoveredAt,
+      preActivationRecovery: {
+        producer: "ai_sidebar_missing_before_generate_click", priorAttemptId: expected.attemptId,
+        priorStatus: "blocked", priorFailureStage: "generate_preflight", priorReason: "ai_sidebar_missing",
+        priorPromptReadback: expected.promptReadback,
+        ...(expected.preIntentReferenceProofSource ? { priorPreIntentReferenceProofSource: expected.preIntentReferenceProofSource } : {}),
+        priorCreatedAt: expected.createdAt, priorUpdatedAt: expected.updatedAt, recoveredAt,
+      },
+    };
+    const committed = await deps.repositories.reconcileVidsVideoGenerationPreActivationFailure({ expected, next, expectedAttachment: attachment.data });
+    if (!committed) return { status: "blocked", stage: "persistence", reason: "generation_operation_changed" };
+    return { status: "retry_ready", operation: await deps.repositories.getVidsVideoGenerationOperation(id) ?? next };
+  }
+
+  return { generateOnce, get, recoverPreActivationFailure };
 }
 

@@ -157,6 +157,64 @@ describe("P10.1 Google Vids prepared reference attachment", () => {
     }
   });
 
+  it("exposes the existing blocked operation as a read-only copyable snapshot", async () => {
+    const fixture = await setup();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const operation = {
+      id: "vids-generation:existing", preparedBatchId: batchId, workspaceId: fixture.prepared.workspaceId,
+      itemId, canonicalShotId: "1", promptHash: fixture.prepared.items[0]!.contentHash,
+      referenceId: fixture.prepared.items[0]!.reference.referenceId, referenceSha256: fixture.prepared.items[0]!.reference.sha256,
+      tabId: fixture.prepared.target.tabId, canonicalTarget: fixture.prepared.target.canonicalTarget,
+      documentId: fixture.prepared.target.documentId, attemptId: "66666666-6666-4666-8666-666666666666",
+      status: "blocked", failureStage: "generate_preflight", reason: "ai_sidebar_missing", preIntentReferenceProofSource: "preview_blob_sha256",
+      promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: fixture.prepared.items[0]!.contentHash, actualSha256: fixture.prepared.items[0]!.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: 3 },
+      activationAttempted: false, activationCount: 0, createdAt: 1, updatedAt: 4,
+    };
+    const recovery = {
+      producer: "ai_sidebar_missing_before_generate_click", priorAttemptId: operation.attemptId, priorStatus: "blocked",
+      priorFailureStage: "generate_preflight", priorReason: "ai_sidebar_missing", priorPromptReadback: operation.promptReadback,
+      priorPreIntentReferenceProofSource: "preview_blob_sha256", priorCreatedAt: operation.createdAt, priorUpdatedAt: operation.updatedAt, recoveredAt: 5,
+    };
+    const retryReady = { ...operation, status: "retry_ready", preActivationRecovery: recovery };
+    let generationState: Record<string, unknown> = { status: "blocked", reason: operation.reason, stage: operation.failureStage, operation };
+    const request = vi.fn(async (type: string) => {
+      if (type === "vids.video.getAttachmentStatus") return { status: "attached" };
+      if (type === "vids.video.getGenerationStatus") return generationState;
+      if (type === "vids.video.recoverPreActivationFailure") { generationState = { status: "retry_ready", operation: retryReady }; return generationState; }
+      if (type === "vids.video.generateOnce") return { status: "dispatched" };
+      return null;
+    });
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      await act(async () => {
+        root.render(createElement(PreparedBatchReview, { preparedBatch: fixture.prepared, persistenceClient: { request } as unknown as ReturnType<typeof createFoundationClient> }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(container.textContent).toContain("Read-only generation operation snapshot");
+      expect(container.textContent).toContain("ai_sidebar_missing");
+      expect(container.textContent).toContain('"activationCount": 0');
+      const copy = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Copy operation snapshot");
+      expect(copy).toBeDefined();
+      await act(async () => { copy?.click(); await Promise.resolve(); });
+      expect(writeText).toHaveBeenCalledWith(JSON.stringify(operation, null, 2));
+      const reconcile = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Reconcile proven pre-click failure");
+      expect(reconcile).toBeDefined();
+      await act(async () => { reconcile?.click(); await Promise.resolve(); });
+      expect(request).toHaveBeenCalledWith("vids.video.recoverPreActivationFailure", { expected: operation });
+      expect(request.mock.calls.some(([type]) => type === "vids.video.generateOnce")).toBe(false);
+      const generate = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Generate this shot once");
+      expect(generate).toBeDefined();
+      await act(async () => { generate?.click(); await Promise.resolve(); });
+      expect(request.mock.calls.filter(([type]) => type === "vids.video.generateOnce")).toHaveLength(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("routes Vids attachment and status only to Vids handlers without touching Flow operations or queue records", async () => {
     const fixture = await setup();
     const vidsAttach = vi.fn(async () => ({ status: "attached" }));

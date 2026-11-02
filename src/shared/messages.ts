@@ -1,5 +1,6 @@
 import { BUILD_ID, PROTOCOL_VERSION } from "./buildInfo";
 import type { AppRequest } from "./schemas";
+import type { VidsVideoGenerationOperation } from "../domain/jobs/vidsVideoGeneration";
 
 export { BUILD_ID, PROTOCOL_VERSION };
 export const FOUNDATION_WORKER_RESTARTED =
@@ -173,6 +174,7 @@ export type RequestPayloads = {
   "vids.video.getAttachmentStatus": { preparedBatchId: string; itemId: string };
   "vids.video.generateOnce": { preparedBatchId: string; itemId: string };
   "vids.video.getGenerationStatus": { preparedBatchId: string; itemId: string };
+  "vids.video.recoverPreActivationFailure": { expected: VidsVideoGenerationOperation };
   "flow.video.inspectReferenceBytes": { preparedBatchId: string; itemId: string };
   "flow.video.verifyAttachedReference": { preparedBatchId: string; itemId: string };
   "flow.video.generateOnce": { preparedBatchId: string; itemId: string };
@@ -253,6 +255,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "vids.video.getAttachmentStatus": 5_000,
   "vids.video.generateOnce": 60_000,
   "vids.video.getGenerationStatus": 5_000,
+  "vids.video.recoverPreActivationFailure": 30_000,
   "flow.video.inspectReferenceBytes": 30_000,
   "flow.video.verifyAttachedReference": 10_000,
   "flow.video.generateOnce": 45_000,

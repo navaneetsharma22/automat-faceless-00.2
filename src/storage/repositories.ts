@@ -3379,6 +3379,36 @@ export class ExtensionRepositories {
     });
   }
 
+  async claimVidsVideoGenerationRetry(
+    operation: VidsVideoGenerationOperation,
+    expectedRetryReady: VidsVideoGenerationOperation,
+    expectedAttachment: VidsVideoAttachmentOperation,
+  ): Promise<boolean> {
+    if (!VidsVideoGenerationOperationSchema.safeParse(operation).success || operation.status !== "dispatch_intent")
+      throw new Error("vids_video_generation_operation_invalid");
+    return this.tables.transaction(["vidsVideoAttachmentOperations+vidsVideoGenerationOperations"], async () => {
+      const canonical = (value: unknown): string => {
+        if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+        if (value && typeof value === "object") {
+          const object = value as Record<string, unknown>;
+          return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
+        }
+        return JSON.stringify(value) ?? "undefined";
+      };
+      const current = await this.tables.vidsVideoGenerationOperations.get(expectedRetryReady.id);
+      const attachment = await this.tables.vidsVideoAttachmentOperations.get(expectedAttachment.id);
+      if (!current || canonical(current) !== canonical(expectedRetryReady) || current.status !== "retry_ready" ||
+          !current.preActivationRecovery || !operation.preActivationRecovery ||
+          canonical(current.preActivationRecovery) !== canonical(operation.preActivationRecovery) ||
+          operation.id !== current.id || operation.preparedBatchId !== current.preparedBatchId || operation.itemId !== current.itemId ||
+          !attachment || canonical(attachment) !== canonical(expectedAttachment) || attachment.status !== "attached") return false;
+      await this.tables.vidsVideoGenerationOperations.put(operation);
+      const saved = await this.tables.vidsVideoGenerationOperations.get(operation.id);
+      if (!saved || canonical(saved) !== canonical(operation)) throw new Error("vids_video_generation_retry_persistence_failed");
+      return true;
+    });
+  }
+
   async updateVidsVideoGenerationOperation(input: {
     expected: VidsVideoGenerationOperation;
     next: VidsVideoGenerationOperation;
@@ -3392,6 +3422,36 @@ export class ExtensionRepositories {
       const saved = await this.tables.vidsVideoGenerationOperations.get(input.next.id);
       if (!saved || JSON.stringify(saved) !== JSON.stringify(input.next))
         throw new Error("vids_video_generation_operation_persistence_failed");
+      return true;
+    });
+  }
+
+  async reconcileVidsVideoGenerationPreActivationFailure(input: {
+    expected: VidsVideoGenerationOperation;
+    next: VidsVideoGenerationOperation;
+    expectedAttachment: VidsVideoAttachmentOperation;
+  }): Promise<boolean> {
+    if (!VidsVideoGenerationOperationSchema.safeParse(input.next).success)
+      throw new Error("vids_video_generation_operation_invalid");
+    return this.tables.transaction(["vidsVideoAttachmentOperations+vidsVideoGenerationOperations"], async () => {
+      const current = await this.tables.vidsVideoGenerationOperations.get(input.expected.id);
+      const attachment = await this.tables.vidsVideoAttachmentOperations.get(input.expectedAttachment.id);
+      const canonical = (value: unknown): string => {
+        if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+        if (value && typeof value === "object") {
+          const object = value as Record<string, unknown>;
+          return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
+        }
+        return JSON.stringify(value) ?? "undefined";
+      };
+      if (!current || canonical(current) !== canonical(input.expected) || current.status !== "blocked" ||
+          current.failureStage !== "generate_preflight" || current.reason !== "ai_sidebar_missing" ||
+          current.activationAttempted !== false || current.activationCount !== 0 || current.preActivationRecovery ||
+          !attachment || canonical(attachment) !== canonical(input.expectedAttachment) || attachment.status !== "attached") return false;
+      await this.tables.vidsVideoGenerationOperations.put(input.next);
+      const saved = await this.tables.vidsVideoGenerationOperations.get(input.next.id);
+      if (!saved || canonical(saved) !== canonical(input.next))
+        throw new Error("vids_video_generation_recovery_persistence_failed");
       return true;
     });
   }

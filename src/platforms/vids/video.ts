@@ -9,6 +9,7 @@ export type VidsVideoPromptEntryResult = {
   settledMatch?: boolean;
   stableReads?: number;
   referenceSha256?: string;
+  referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256";
   referenceByteSize?: number;
   previewLoaded?: boolean;
   previewWidth?: number;
@@ -53,6 +54,47 @@ export async function enterVidsPromptInPage(input: {
     const result = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
     return [...result].map((value) => value.toString(16).padStart(2, "0")).join("");
   };
+  const proveReference = async (panel: HTMLElement, preview: HTMLImageElement): Promise<{ sha256: string; byteSize: number; source: "selected_file_sha256" | "preview_blob_sha256" } | { reason: string }> => {
+    const inputs = [...panel.querySelectorAll<HTMLInputElement>("input[type='file']")];
+    if (inputs.length > 1) return { reason: "reference_file_input_ambiguous" };
+    const files = inputs[0]?.files;
+    if (inputs.length === 1 && !files) return { reason: "reference_file_list_unavailable" };
+    if (files && files.length > 1) return { reason: "reference_file_selection_ambiguous" };
+    let bytes: ArrayBuffer;
+    let mimeType: string;
+    let byteSize: number;
+    let source: "selected_file_sha256" | "preview_blob_sha256";
+    const file = files?.[0];
+    if (file) {
+      mimeType = file.type;
+      byteSize = file.size;
+      if (byteSize !== input.referenceByteSize || mimeType !== input.referenceMimeType) return { reason: "reference_file_metadata_mismatch" };
+      try { bytes = await file.arrayBuffer(); }
+      catch { return { reason: "reference_file_read_failed" }; }
+      source = "selected_file_sha256";
+    } else {
+      let previewUrl: URL;
+      try { previewUrl = new URL(preview.currentSrc || preview.src); }
+      catch { return { reason: "reference_preview_blob_url_invalid" }; }
+      if (previewUrl.protocol !== "blob:" || previewUrl.origin !== location.origin) return { reason: "reference_preview_blob_unavailable" };
+      let response: Response;
+      try { response = await fetch(previewUrl.href); }
+      catch { return { reason: "reference_preview_blob_unreadable" }; }
+      if (!response.ok) return { reason: "reference_preview_blob_unreadable" };
+      let blob: Blob;
+      try { blob = await response.blob(); bytes = await blob.arrayBuffer(); }
+      catch { return { reason: "reference_preview_blob_read_failed" }; }
+      mimeType = blob.type;
+      byteSize = blob.size;
+      if (byteSize !== input.referenceByteSize || mimeType !== input.referenceMimeType) return { reason: "reference_preview_blob_metadata_mismatch" };
+      source = "preview_blob_sha256";
+    }
+    try {
+      const result = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      const sha256 = [...result].map((value) => value.toString(16).padStart(2, "0")).join("");
+      return { sha256, byteSize, source };
+    } catch { return { reason: "reference_hash_unavailable" }; }
+  };
   const serializeEditor = (root: HTMLElement): string => {
     const blockTags = new Set(["DIV", "P"]);
     const walk = (node: Node): string => {
@@ -94,16 +136,9 @@ export async function enterVidsPromptInPage(input: {
   const preview = previews[0]!;
   if (!preview.complete || preview.naturalWidth < 1 || preview.naturalHeight < 1) return failure("reference_preview_not_ready");
   if (preview.naturalWidth !== input.referenceWidth || preview.naturalHeight !== input.referenceHeight) return failure("reference_preview_dimensions_mismatch");
-  const files = [...panel.querySelectorAll<HTMLInputElement>("input[type='file']")];
-  if (files.length !== 1 || files[0]!.files?.length !== 1) return failure(files.length > 1 ? "reference_file_input_ambiguous" : "reference_identity_proof_unavailable");
-  const file = files[0]!.files![0]!;
-  if (file.size !== input.referenceByteSize || file.type !== input.referenceMimeType) return failure("reference_file_metadata_mismatch");
-  let actualReferenceSha256: string;
-  try {
-    const referenceBytes = await file.arrayBuffer();
-    const result = new Uint8Array(await crypto.subtle.digest("SHA-256", referenceBytes));
-    actualReferenceSha256 = [...result].map((value) => value.toString(16).padStart(2, "0")).join("");
-  } catch { return failure("reference_identity_proof_unavailable"); }
+  const referenceProof = await proveReference(panel, preview);
+  if ("reason" in referenceProof) return failure(referenceProof.reason);
+  const actualReferenceSha256 = referenceProof.sha256;
   if (actualReferenceSha256 !== input.referenceSha256) return failure("reference_identity_mismatch");
 
   const editors = [...panel.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible);
@@ -152,13 +187,13 @@ export async function enterVidsPromptInPage(input: {
   return {
     href, ok: true, promptState, expectedSha256, actualSha256: await digest(serializeEditor(editor)),
     immediateMatch: true, settledMatch: true, stableReads,
-    referenceSha256: actualReferenceSha256, referenceByteSize: file.size,
+    referenceSha256: actualReferenceSha256, referenceByteSize: referenceProof.byteSize, referenceProofSource: referenceProof.source,
     previewLoaded: true, previewWidth: preview.naturalWidth, previewHeight: preview.naturalHeight,
     generateCount: buttons.length, generateDisabled: buttons.length === 1 ? buttons[0]!.disabled || buttons[0]!.getAttribute("aria-disabled") === "true" : undefined,
   };
 }
 
-export type VidsGenerateActivationResult = { href: string; ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1 };
+export type VidsGenerateActivationResult = { href: string; ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1; referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256" };
 
 /** Final exact prompt/reference/control check and at most one Generate click. */
 export async function activateVidsGenerateInPage(input: {
@@ -172,12 +207,58 @@ export async function activateVidsGenerateInPage(input: {
 }): Promise<VidsGenerateActivationResult> {
   const href = location.href;
   const blocked = (reason: string): VidsGenerateActivationResult => ({ href, ok: false, reason, activationAttempted: false, activationCount: 0 });
+  const proveReference = async (panel: HTMLElement, preview: HTMLImageElement): Promise<{ sha256: string; source: "selected_file_sha256" | "preview_blob_sha256" } | { reason: string }> => {
+    const inputs = [...panel.querySelectorAll<HTMLInputElement>("input[type='file']")];
+    if (inputs.length > 1) return { reason: "reference_file_input_ambiguous" };
+    const files = inputs[0]?.files;
+    if (inputs.length === 1 && !files) return { reason: "reference_file_list_unavailable" };
+    if (files && files.length > 1) return { reason: "reference_file_selection_ambiguous" };
+    let bytes: ArrayBuffer;
+    let mimeType: string;
+    let byteSize: number;
+    let source: "selected_file_sha256" | "preview_blob_sha256";
+    const file = files?.[0];
+    if (file) {
+      mimeType = file.type;
+      byteSize = file.size;
+      if (byteSize !== input.referenceByteSize || mimeType !== input.referenceMimeType) return { reason: "reference_file_metadata_mismatch" };
+      try { bytes = await file.arrayBuffer(); }
+      catch { return { reason: "reference_file_read_failed" }; }
+      source = "selected_file_sha256";
+    } else {
+      let previewUrl: URL;
+      try { previewUrl = new URL(preview.currentSrc || preview.src); }
+      catch { return { reason: "reference_preview_blob_url_invalid" }; }
+      if (previewUrl.protocol !== "blob:" || previewUrl.origin !== location.origin) return { reason: "reference_preview_blob_unavailable" };
+      let response: Response;
+      try { response = await fetch(previewUrl.href); }
+      catch { return { reason: "reference_preview_blob_unreadable" }; }
+      if (!response.ok) return { reason: "reference_preview_blob_unreadable" };
+      let blob: Blob;
+      try { blob = await response.blob(); bytes = await blob.arrayBuffer(); }
+      catch { return { reason: "reference_preview_blob_read_failed" }; }
+      mimeType = blob.type;
+      byteSize = blob.size;
+      if (byteSize !== input.referenceByteSize || mimeType !== input.referenceMimeType) return { reason: "reference_preview_blob_metadata_mismatch" };
+      source = "preview_blob_sha256";
+    }
+    try {
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      return { sha256: [...digest].map((value) => value.toString(16).padStart(2, "0")).join(""), source };
+    } catch { return { reason: "reference_hash_unavailable" }; }
+  };
   const visible = (element: Element) => {
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
     return element.isConnected && rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
   };
-  const name = (element: Element) => element.getAttribute("aria-label")?.trim() ?? "";
+  const name = (element: Element) => {
+    const aria = element.getAttribute("aria-label")?.trim();
+    if (aria) return aria;
+    const labelled = element.getAttribute("aria-labelledby")?.trim();
+    if (labelled) return labelled.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? "").join(" ").trim();
+    return element.getAttribute("title")?.trim() ?? "";
+  };
   const serializeEditor = (root: HTMLElement): string => {
     const blockTags = new Set(["DIV", "P"]);
     const walk = (node: Node): string => {
@@ -213,21 +294,13 @@ export async function activateVidsGenerateInPage(input: {
   const panel = panels[0]!;
   const previews = [...panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
   const removals = [...panel.querySelectorAll<HTMLButtonElement>("button[aria-label='Remove image']")].filter(visible);
-  const inputs = [...panel.querySelectorAll<HTMLInputElement>("input[type='file']")];
   const editors = [...panel.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible);
   const buttons = [...panel.querySelectorAll<HTMLButtonElement>("button[aria-label='Generate']")].filter(visible);
   if (previews.length !== 1 || removals.length !== 1 || !previews[0]!.complete || previews[0]!.naturalWidth < 1 || previews[0]!.naturalHeight < 1) return blocked("reference_preview_changed");
   if (previews[0]!.naturalWidth !== input.referenceWidth || previews[0]!.naturalHeight !== input.referenceHeight) return blocked("reference_preview_dimensions_mismatch");
-  if (inputs.length !== 1 || inputs[0]!.files?.length !== 1) return blocked("reference_identity_proof_unavailable");
-  const file = inputs[0]!.files![0]!;
-  if (file.size !== input.referenceByteSize || file.type !== input.referenceMimeType) return blocked("reference_file_metadata_mismatch");
-  let referenceHash: string;
-  try {
-    const bytes = await file.arrayBuffer();
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-    referenceHash = [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
-  } catch { return blocked("reference_identity_proof_unavailable"); }
-  if (referenceHash !== input.referenceSha256) return blocked("reference_identity_mismatch");
+  const referenceProof = await proveReference(panel, previews[0]!);
+  if ("reason" in referenceProof) return blocked(referenceProof.reason);
+  if (referenceProof.sha256 !== input.referenceSha256) return blocked("reference_identity_mismatch");
   if (editors.length !== 1) return blocked("prompt_editor_changed");
   const prompt = serializeEditor(editors[0]!);
   if (prompt !== input.prompt) return blocked("prompt_readback_changed");
@@ -241,7 +314,7 @@ export async function activateVidsGenerateInPage(input: {
   const activationAttempted = true;
   try {
     button.click();
-    return { href, ok: true, activationAttempted, activationCount: 1 };
+    return { href, ok: true, activationAttempted, activationCount: 1, referenceProofSource: referenceProof.source };
   } catch {
     return { href, ok: false, reason: "generate_activation_delivery_uncertain", activationAttempted, activationCount: 1 };
   }
