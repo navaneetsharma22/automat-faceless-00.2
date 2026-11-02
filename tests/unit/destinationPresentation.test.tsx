@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -267,7 +267,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     }),
   } as unknown as ReturnType<typeof createFoundationClient>;
 
-  it("renders 'Prepared — not submitted to Flow/Vids.' banner", () => {
+  it("renders 'Prepared — not submitted to Flow.' banner", () => {
     act(() => {
       root?.render(
         createElement(PreparedBatchReview, {
@@ -278,7 +278,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     });
 
     expect(container?.textContent).toContain(
-      "Prepared — not submitted to Flow/Vids.",
+      "Prepared — not submitted to Flow.",
     );
   });
 

@@ -169,6 +169,8 @@ export type RequestPayloads = {
     workspaceId: string;
   };
   "flow.video.attachReference": { preparedBatchId: string; itemId: string };
+  "vids.video.attachReference": { preparedBatchId: string; itemId: string };
+  "vids.video.getAttachmentStatus": { preparedBatchId: string; itemId: string };
   "flow.video.inspectReferenceBytes": { preparedBatchId: string; itemId: string };
   "flow.video.verifyAttachedReference": { preparedBatchId: string; itemId: string };
   "flow.video.generateOnce": { preparedBatchId: string; itemId: string };
@@ -245,6 +247,8 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "videoBatch.prepare": 30_000,
   "videoBatch.getPrepared": 10_000,
   "flow.video.attachReference": 30_000,
+  "vids.video.attachReference": 45_000,
+  "vids.video.getAttachmentStatus": 5_000,
   "flow.video.inspectReferenceBytes": 30_000,
   "flow.video.verifyAttachedReference": 10_000,
   "flow.video.generateOnce": 45_000,

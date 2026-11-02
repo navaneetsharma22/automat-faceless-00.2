@@ -9,6 +9,7 @@ import {
   type FlowCountRecoveryRecord,
   type FlowVideoAttachmentOperation,
 } from "./db";
+import { VidsVideoAttachmentOperationSchema, type VidsVideoAttachmentOperation } from "../domain/jobs/vidsVideoAttachment";
 import {
   FlowVideoQueueRecordSchema,
   type FlowVideoQueueRecord,
@@ -315,6 +316,7 @@ export type RepositoryDatabase = {
   >;
   flowVideoAttachmentOperations: Pick<Table<FlowVideoAttachmentOperation, string>, "get" | "put" | "add">;
   flowVideoQueues: Pick<Table<FlowVideoQueueRecord, string>, "get" | "put" | "add" | "toArray">;
+  vidsVideoAttachmentOperations: Pick<Table<VidsVideoAttachmentOperation, string>, "get" | "put" | "add">;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -340,6 +342,7 @@ export function createDexieRepositoryDatabase(
     pinnedReferenceMedia: database.pinnedReferenceMedia,
     flowVideoAttachmentOperations: database.flowVideoAttachmentOperations,
     flowVideoQueues: database.flowVideoQueues,
+    vidsVideoAttachmentOperations: database.vidsVideoAttachmentOperations,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -483,6 +486,8 @@ export function createDexieRepositoryDatabase(
           return database.transaction("rw", database.flowVideoQueues, operation);
         case "flowVideoQueues+flowVideoAttachmentOperations":
           return database.transaction("rw", database.flowVideoQueues, database.flowVideoAttachmentOperations, operation);
+        case "vidsVideoAttachmentOperations":
+          return database.transaction("rw", database.vidsVideoAttachmentOperations, operation);
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -3260,6 +3265,43 @@ export class ExtensionRepositories {
 
   async addFlowVideoAttachmentOperation(operation: FlowVideoAttachmentOperation): Promise<void> {
     await this.tables.flowVideoAttachmentOperations.add(operation);
+  }
+
+  async getVidsVideoAttachmentOperation(id: string): Promise<VidsVideoAttachmentOperation | undefined> {
+    const operation = await this.tables.vidsVideoAttachmentOperations.get(id);
+    if (operation && !VidsVideoAttachmentOperationSchema.safeParse(operation).success)
+      throw new Error("vids_video_attachment_operation_invalid");
+    return operation;
+  }
+
+  async claimVidsVideoAttachmentOperation(operation: VidsVideoAttachmentOperation): Promise<boolean> {
+    if (!VidsVideoAttachmentOperationSchema.safeParse(operation).success)
+      throw new Error("vids_video_attachment_operation_invalid");
+    return this.tables.transaction(["vidsVideoAttachmentOperations"], async () => {
+      if (await this.tables.vidsVideoAttachmentOperations.get(operation.id)) return false;
+      await this.tables.vidsVideoAttachmentOperations.add(operation);
+      const saved = await this.tables.vidsVideoAttachmentOperations.get(operation.id);
+      if (!saved || JSON.stringify(saved) !== JSON.stringify(operation))
+        throw new Error("vids_video_attachment_operation_persistence_failed");
+      return true;
+    });
+  }
+
+  async updateVidsVideoAttachmentOperation(input: {
+    expected: VidsVideoAttachmentOperation;
+    next: VidsVideoAttachmentOperation;
+  }): Promise<boolean> {
+    if (!VidsVideoAttachmentOperationSchema.safeParse(input.next).success)
+      throw new Error("vids_video_attachment_operation_invalid");
+    return this.tables.transaction(["vidsVideoAttachmentOperations"], async () => {
+      const current = await this.tables.vidsVideoAttachmentOperations.get(input.expected.id);
+      if (!current || JSON.stringify(current) !== JSON.stringify(input.expected) || current.status !== "action_intent") return false;
+      await this.tables.vidsVideoAttachmentOperations.put(input.next);
+      const saved = await this.tables.vidsVideoAttachmentOperations.get(input.next.id);
+      if (!saved || JSON.stringify(saved) !== JSON.stringify(input.next))
+        throw new Error("vids_video_attachment_operation_persistence_failed");
+      return true;
+    });
   }
 
   async claimFlowVideoAttachmentOperation(operation: FlowVideoAttachmentOperation): Promise<boolean> {

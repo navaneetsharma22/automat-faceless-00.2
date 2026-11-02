@@ -38,11 +38,18 @@ export default defineConfig({
     "imageQueueSequence.spec.ts",
     "imageQueuePresentation.spec.ts",
     "videoQueuePresentation.spec.ts",
+    "vidsVideoReference.spec.ts",
     "imageQueueCreateTransition.spec.ts",
     "referenceCaptureStorage.spec.ts",
     "flowVideoAttachmentStorage.spec.ts",
   ],
   reporter: "list",
+  webServer: {
+    command: "npm run dev -- --host 127.0.0.1",
+    url: "http://127.0.0.1:5173/",
+    reuseExistingServer: !process.env.CI,
+    timeout: 30_000,
+  },
   use: {
     browserName: "chromium",
     headless: true,

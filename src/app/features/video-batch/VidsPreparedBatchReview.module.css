@@ -1,0 +1,47 @@
+.container {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.header, .card, .target > div {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-5);
+}
+
+.header h3, .card h4 { margin: 0; }
+.header p { margin: var(--space-2) 0 0; color: var(--color-text-muted); }
+.eyebrow { color: var(--color-accent); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.badge, .status { display: inline-flex; width: fit-content; border-radius: 999px; padding: var(--space-1) var(--space-3); background: var(--color-accent-soft); color: var(--color-accent); font-size: var(--font-size-sm); font-weight: 700; }
+.target { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
+.target > div { padding: var(--space-3); }
+.target dt { color: var(--color-text-muted); font-size: var(--font-size-xs); }
+.target dd { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
+.note { margin: 0; padding: var(--space-3); border-inline-start: 3px solid var(--color-accent); color: var(--color-text-muted); }
+.items { display: grid; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.card { display: grid; gap: var(--space-3); padding: var(--space-4); }
+.cardHeading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.cardHeading > div { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.reference { color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.action span { color: var(--color-text-muted); font-size: var(--font-size-sm); }
+.error { color: var(--color-error); }
+.prompt { min-width: 0; border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
+.prompt summary { cursor: pointer; font-weight: 600; }
+.prompt pre { max-width: 100%; max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt code { overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .header { flex-direction: column; }
+  .target { grid-template-columns: minmax(0, 1fr); }
+}

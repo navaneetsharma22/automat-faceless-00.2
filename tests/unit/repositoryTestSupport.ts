@@ -17,6 +17,7 @@ import type {
 } from "../../src/domain/media/references";
 import type { PreparedVideoBatchRecord } from "../../src/domain/batches/types";
 import type { FlowVideoQueueRecord } from "../../src/domain/jobs/videoQueue";
+import type { VidsVideoAttachmentOperation } from "../../src/domain/jobs/vidsVideoAttachment";
 
 export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const drafts = new Map<string, PromptDraftRecord>();
@@ -40,6 +41,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
   const pinnedReferenceMedia = new Map<string, ReferenceAssignmentRecord>();
   const flowVideoAttachmentOperations = new Map<string, FlowVideoAttachmentOperation>();
   const flowVideoQueues = new Map<string, FlowVideoQueueRecord>();
+  const vidsVideoAttachmentOperations = new Map<string, VidsVideoAttachmentOperation>();
   let transactionTail = Promise.resolve();
 
   const table = <T extends object>(
@@ -119,6 +121,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
     ),
     flowVideoAttachmentOperations: table(flowVideoAttachmentOperations, (item) => item.id),
     flowVideoQueues: table(flowVideoQueues, (item) => item.queueId),
+    vidsVideoAttachmentOperations: table(vidsVideoAttachmentOperations, (item) => item.id),
     transaction: async (_tableNames, operation) => {
       let release!: () => void;
       const previous = transactionTail;
@@ -142,6 +145,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
         pinnedReferenceMedia,
         flowVideoAttachmentOperations,
         flowVideoQueues,
+        vidsVideoAttachmentOperations,
       ].map((values) => new Map(values));
       try {
         return await operation();
@@ -162,6 +166,7 @@ export function createMemoryRepositoryDatabase(): RepositoryDatabase {
           pinnedReferenceMedia,
           flowVideoAttachmentOperations,
           flowVideoQueues,
+          vidsVideoAttachmentOperations,
         ].forEach((values, index) => {
           values.clear();
           for (const [key, value] of snapshots[index]!) {

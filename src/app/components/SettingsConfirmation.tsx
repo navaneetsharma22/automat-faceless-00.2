@@ -53,8 +53,9 @@ export function SettingsConfirmation({
           aria-invalid={error ? true : undefined}
         />
         <span>
-          I manually selected and checked the settings in {provider}
-          {contextLabel ? ` for ${contextLabel}` : ""}.
+          {provider === "Vids"
+            ? "I have manually configured the settings in Google Vids for this batch."
+            : `I manually selected and checked the settings in ${provider}${contextLabel ? ` for ${contextLabel}` : ""}.`}
         </span>
       </label>
       <p className={styles.confirmationDescription} id={`${id}-description`}>

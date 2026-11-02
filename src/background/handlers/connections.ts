@@ -128,6 +128,10 @@ export type FoundationDependencies = {
       expectedUpdatedAt: number;
     }) => Promise<unknown>;
   };
+  vidsVideoAttachment?: {
+    attach: (preparedBatchId: string, itemId: string) => Promise<unknown>;
+    get: (preparedBatchId: string, itemId: string) => Promise<unknown>;
+  };
   flowVideoGenerateOnce?: (preparedBatchId: string, itemId: string) => Promise<unknown>;
   flowVideoQueue?: {
     get: (preparedBatchId: string) => Promise<unknown>;
@@ -779,6 +783,12 @@ async function dispatch(
     case "flow.video.attachReference":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.attach(request.payload.preparedBatchId, request.payload.itemId);
+    case "vids.video.attachReference":
+      if (!dependencies.vidsVideoAttachment) throw new FoundationOperationError("worker_error", "vids_video_attachment_unavailable", "Vids reference attachment is unavailable.");
+      return await dependencies.vidsVideoAttachment.attach(request.payload.preparedBatchId, request.payload.itemId);
+    case "vids.video.getAttachmentStatus":
+      if (!dependencies.vidsVideoAttachment) throw new FoundationOperationError("worker_error", "vids_video_attachment_unavailable", "Vids reference attachment status is unavailable.");
+      return await dependencies.vidsVideoAttachment.get(request.payload.preparedBatchId, request.payload.itemId);
     case "flow.video.inspectReferenceBytes":
       if (!dependencies.flowVideoAttachment?.inspectReferenceBytes) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference inspection is unavailable.");
       return await dependencies.flowVideoAttachment.inspectReferenceBytes(request.payload.preparedBatchId, request.payload.itemId);
