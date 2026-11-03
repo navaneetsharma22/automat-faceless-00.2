@@ -201,6 +201,9 @@ export type RequestPayloads = {
     expectedReferenceId: string;
     expectedUpdatedAt: number;
   };
+  "flow.downloadDiagnostic.arm": Record<string, never>;
+  "flow.downloadDiagnostic.stop": Record<string, never>;
+  "flow.downloadDiagnostic.get": Record<string, never>;
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -282,6 +285,9 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.videoQueue.reconcilePreAddFailure": 30_000,
   "flow.videoQueue.stop": 10_000,
   "flow.video.reconcilePreClickFailure": 5_000,
+  "flow.downloadDiagnostic.arm": 30_000,
+  "flow.downloadDiagnostic.stop": 10_000,
+  "flow.downloadDiagnostic.get": 5_000,
 };
 
 export function makeRequest<T extends RequestTypes>(

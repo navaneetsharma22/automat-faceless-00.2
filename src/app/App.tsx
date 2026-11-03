@@ -25,6 +25,7 @@ import { SelectedTargetConnectionStore } from "./features/video-batch/selectedTa
 import { PreparedBatchReview } from "./features/video-batch/PreparedBatchReview";
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import { ReferenceSelection } from "./features/references/ReferenceSelection";
+import { FlowGalleryDiagnostic } from "./features/downloads/FlowGalleryDiagnostic";
 import type { PromptBatchSnapshot } from "../storage/repositories";
 import type {
   PreparedVideoBatchRecord,
@@ -307,6 +308,7 @@ function Dashboard() {
                   <dd>Generation unavailable</dd>
                 </div>
               </dl>
+              <FlowGalleryDiagnostic persistenceClient={batchClient} />
             </div>
           </details>
         </div>

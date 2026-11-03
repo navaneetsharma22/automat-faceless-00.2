@@ -44,6 +44,7 @@ import { createVidsVideoAttachmentHandler } from "./handlers/vidsVideoAttachment
 import { createVidsVideoGenerateHandler } from "./handlers/vidsVideo";
 import { createVidsVideoQueueHandler } from "./handlers/vidsVideoQueue";
 import { createRetryableVidsReadiness, createVidsAlarmLifecycle, createVidsStartupRetryController } from "./vidsAlarmLifecycle";
+import { createFlowDownloadDiagnosticManager } from "./flowDownloadDiagnostic";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -213,6 +214,47 @@ const flowVideoQueue = createFlowVideoQueueHandler({
     return undefined;
   },
 });
+const flowDownloadDiagnostic = createFlowDownloadDiagnosticManager({
+  extensionId: chrome.runtime.id,
+  repositories,
+  permissions: {
+    contains: (input) => chrome.permissions.contains(input as never),
+  },
+  tabs: chrome.tabs,
+  scripting: {
+    executeScript: (input) => chrome.scripting.executeScript(input as never),
+  },
+  debugger: {
+    attach: (target, version) => chrome.debugger.attach(target, version),
+    sendCommand: (target, method, params) =>
+      chrome.debugger.sendCommand(target, method, params),
+    detach: (target) => chrome.debugger.detach(target),
+    onEvent: chrome.debugger.onEvent,
+    onDetach: chrome.debugger.onDetach,
+  },
+  downloads: {
+    onCreated: {
+      available: () => Boolean(chrome.downloads?.onCreated?.addListener),
+      addListener: (listener) =>
+        chrome.downloads?.onCreated?.addListener(listener as never),
+      removeListener: (listener) =>
+        chrome.downloads?.onCreated?.removeListener(listener as never),
+    },
+    onChanged: {
+      available: () => Boolean(chrome.downloads?.onChanged?.addListener),
+      addListener: (listener) =>
+        chrome.downloads?.onChanged?.addListener(listener as never),
+      removeListener: (listener) =>
+        chrome.downloads?.onChanged?.removeListener(listener as never),
+    },
+  },
+  storage: {
+    get: (key) => chrome.storage.session.get(key),
+    set: (value) => chrome.storage.session.set(value),
+    remove: (key) => chrome.storage.session.remove(key),
+  },
+  alarms: chrome.alarms,
+});
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   void (async () => {
     const result = await flowReferenceHandler.handleContextMenu(info, tab);
@@ -320,6 +362,10 @@ const vidsAlarmListener = createVidsAlarmLifecycle({
   dispatch: (name, scheduledTime) => vidsVideoQueue.onAlarm(name, scheduledTime),
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "automat-flow-gallery-download-diagnostic-expire") {
+    void flowDownloadDiagnostic.onAlarm(alarm.name);
+    return;
+  }
   if (vidsStartupRetry.handleAlarm(alarm.name)) return;
   if (alarm.name.startsWith("automat-vids-video-queue:")) {
     vidsAlarmListener(alarm);
@@ -544,6 +590,7 @@ chrome.runtime.onMessage.addListener(
     vidsVideoQueue,
     flowVideoGenerateOnce: flowVideoGenerate.generateOnce,
     flowVideoQueue,
+    flowDownloadDiagnostic,
     startTimedImageQueue: timedQueueScheduler.start,
     commandTimedImageQueue: (command, queueId, expectedRevision) =>
       timedQueueScheduler[command](queueId, expectedRevision),

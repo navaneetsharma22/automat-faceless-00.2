@@ -1,0 +1,216 @@
+import { useCallback, useEffect, useState } from "react";
+import type { FlowGalleryDownloadDiagnostic } from "../../../platforms/flow/downloads";
+import type { createFoundationClient } from "../../../shared/messageClient";
+import { Button } from "../../components/Button";
+import styles from "../../Dashboard.module.css";
+
+type DiagnosticSnapshot = FlowGalleryDownloadDiagnostic | { status: "idle" };
+type Client = ReturnType<typeof createFoundationClient>;
+
+function isActive(snapshot: DiagnosticSnapshot) {
+  return snapshot.status === "armed" || snapshot.status === "action_observed";
+}
+
+function associationLabel(snapshot: FlowGalleryDownloadDiagnostic) {
+  if (snapshot.association === "matched")
+    return `Matched to Chrome download ${snapshot.matchedDownloadId}.`;
+  if (snapshot.association === "ambiguous")
+    return "Ambiguous: multiple exact download candidates were observed.";
+  switch (snapshot.associationReason) {
+    case "no_quality_action":
+      return "Unverified: no 1080p Upscaled action was observed.";
+    case "no_selected_frame_download_event":
+      return "Unverified: no download event was tied to the selected Flow frame.";
+    case "no_exact_url_filename_pair":
+      return "Unverified: the Flow download event did not exactly match a Chrome download.";
+    case "multiple_exact_download_candidates":
+      return "Ambiguous: more than one Chrome download matched the Flow event.";
+    case "multiple_page_download_events":
+      return "Ambiguous: more than one Flow page download event was observed.";
+    case "unique_action_media_and_download_chain":
+      return "Matched.";
+    case "no_action_media_identity_link":
+      return "Unverified: no media request identity linked the action to the download event.";
+  }
+}
+
+export function FlowGalleryDiagnostic({
+  persistenceClient,
+}: {
+  persistenceClient: Client;
+}) {
+  const [snapshot, setSnapshot] = useState<DiagnosticSnapshot>({ status: "idle" });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = (await persistenceClient.request(
+        "flow.downloadDiagnostic.get",
+        {},
+      )) as DiagnosticSnapshot;
+      setSnapshot(next);
+      setError(undefined);
+    } catch {
+      setError("Diagnostic status could not be read from the extension worker.");
+    }
+  }, [persistenceClient]);
+
+  useEffect(() => {
+    let current = true;
+    const read = async () => {
+      if (!current) return;
+      try {
+        const next = (await persistenceClient.request(
+          "flow.downloadDiagnostic.get",
+          {},
+        )) as DiagnosticSnapshot;
+        if (current) setSnapshot(next);
+      } catch {
+        if (current)
+          setError("Diagnostic status could not be read from the extension worker.");
+      }
+    };
+    void read();
+    const interval = window.setInterval(
+      () => void read(),
+      snapshot.status === "armed" || snapshot.status === "action_observed"
+        ? 1_000
+        : 5_000,
+    );
+    return () => {
+      current = false;
+      window.clearInterval(interval);
+    };
+  }, [persistenceClient, snapshot.status]);
+
+  const arm = async () => {
+    setPending(true);
+    setError(undefined);
+    try {
+      if (
+        typeof chrome === "undefined" ||
+        !chrome.permissions?.request
+      ) {
+        setError("Chrome permission requests are unavailable in this dashboard.");
+        return;
+      }
+      // Invoke the optional permission request directly from the operator's click.
+      const granted = await chrome.permissions.request({
+        permissions: ["downloads"],
+      });
+      if (!granted) {
+        setError("Chrome downloads permission was not granted; no observation was armed.");
+        return;
+      }
+      const next = (await persistenceClient.request(
+        "flow.downloadDiagnostic.arm",
+        {},
+      )) as DiagnosticSnapshot;
+      setSnapshot(next);
+    } catch {
+      setError(
+        "The Flow diagnostic could not arm. Confirm the Flow tab is selected and currently connected, then inspect the error before retrying.",
+      );
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const stop = async () => {
+    setPending(true);
+    setError(undefined);
+    try {
+      const next = (await persistenceClient.request(
+        "flow.downloadDiagnostic.stop",
+        {},
+      )) as DiagnosticSnapshot;
+      setSnapshot(next);
+    } catch {
+      setError("The observation could not be stopped from this dashboard.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const active = isActive(snapshot);
+  const report = snapshot.status === "idle" ? undefined : snapshot;
+  return (
+    <article className={styles.downloadCard} aria-labelledby="flow-download-diagnostic-title">
+      <span className={styles.fileIcon} aria-hidden="true">F</span>
+      <h3 id="flow-download-diagnostic-title">Flow Gallery upscale diagnostic</h3>
+      <p>
+        Observe one manually selected 1080p Upscaled action. The extension will
+        not click a quality option, start an upscale, or initiate a download.
+      </p>
+      <p className={styles.disabledReason}>
+        Optional Chrome downloads permission exposes local download IDs,
+        basenames, and completion or interruption state. The diagnostic does
+        not call Chrome&apos;s download-start API. Raw URLs and query tokens are
+        discarded after in-memory fingerprinting.
+      </p>
+      <div className={styles.actionRow}>
+        {active ? (
+          <Button variant="secondary" disabled={pending} onClick={() => void stop()}>
+            {pending ? "Stopping…" : "Stop observation"}
+          </Button>
+        ) : (
+          <Button disabled={pending} loading={pending} onClick={() => void arm()}>
+            Arm one observation
+          </Button>
+        )}
+        <span role="status" aria-live="polite">
+          {pending ? "Working" : snapshot.status === "armed" ? "Armed" : snapshot.status.replaceAll("_", " ")}
+        </span>
+      </div>
+      <p className={styles.disabledReason}>
+        After arming, use the selected Flow tab and manually choose the target
+        Gallery card&apos;s More options → Download → 1080p Upscaled. Observation
+        expires after 20 minutes.
+      </p>
+      {error ? <p className={styles.fieldError} role="alert">{error}</p> : null}
+      {report ? (
+        <div className={styles.flowDiagnosticReport}>
+          <dl>
+            <div><dt>State</dt><dd>{report.status.replaceAll("_", " ")}</dd></div>
+            <div><dt>Selected tab</dt><dd>{report.tabId}</dd></div>
+            <div><dt>Native menu action</dt><dd>{report.nativeActionObserved ? "trusted 1080p Upscaled click observed" : "not observed"}</dd></div>
+            <div><dt>Requested quality</dt><dd>{report.requestedQuality ?? "not observed"}</dd></div>
+            <div><dt>Association</dt><dd>{associationLabel(report)}</dd></div>
+            <div><dt>Browser completion</dt><dd>{report.matchedDownloadId === undefined ? "not verified" : report.downloads.find((item) => item.downloadId === report.matchedDownloadId)?.state ?? "unknown"}</dd></div>
+            <div><dt>Saved-file resolution</dt><dd>not inspected</dd></div>
+          </dl>
+          <p className={styles.disabledReason}>
+            Card owner observed: {report.selectedCard?.ownerFound ? "yes" : "no"}; stable ID attribute observed: {report.selectedCard?.stableIdAttributeObserved ? "yes" : "no"}. Menu controls resolved: {report.menuBinding?.mainMenuControlResolved ? "main" : "main missing"}; {report.menuBinding?.qualityMenuControlResolved ? "quality submenu" : "quality submenu missing"}. 1080p Upscaled: {report.menuBinding?.qualityOptionObserved ? report.menuBinding.qualityOptionEnabled ? "enabled" : "disabled" : "not observed"}. Non-video downloads ignored: {report.nonVideoDownloadCount}.
+          </p>
+          {report.mediaRequests.length ? (
+            <ul aria-label="Sanitized media requests">
+              {report.mediaRequests.map((request) => (
+                <li key={request.requestToken}>
+                  {request.requestToken}: {request.resourceKind}, {request.method}, URL fingerprint {request.urlFingerprint}
+                  {request.mediaIdFingerprint ? `, media ID fingerprint ${request.mediaIdFingerprint}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {report.downloads.length ? (
+            <ul aria-label="Candidate Chrome downloads">
+              {report.downloads.map((download) => (
+                <li key={download.downloadId}>
+                  ID {download.downloadId}: {download.filename} — {download.state}
+                  {download.interruptCode ? ` (${download.interruptCode})` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : <p className={styles.disabledReason}>No candidate MP4/WebM downloads observed.</p>}
+          <p className={styles.disabledReason}>
+            Completed browser downloads do not verify the saved file&apos;s actual resolution. An unverified or ambiguous association requires a separate evidence review; it does not authorize another upscale.
+          </p>
+        </div>
+      ) : null}
+      <Button variant="quiet" size="compact" disabled={pending} onClick={() => void refresh()}>
+        Refresh diagnostic status
+      </Button>
+    </article>
+  );
+}

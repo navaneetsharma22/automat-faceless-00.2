@@ -1057,6 +1057,18 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ workspaceId: workspaceIdSchema }).strict(),
   }),
   requestBase.extend({
+    type: z.literal("flow.downloadDiagnostic.arm"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.downloadDiagnostic.stop"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.downloadDiagnostic.get"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
     type: z.literal("flow.video.attachReference"),
     payload: z.object({ preparedBatchId: z.string().min(1).max(256), itemId: z.string().min(1).max(256) }).strict(),
   }),

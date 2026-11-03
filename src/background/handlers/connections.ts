@@ -157,6 +157,15 @@ export type FoundationDependencies = {
     reconcilePreAddFailure: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
   };
+  flowDownloadDiagnostic?: {
+    arm: () => Promise<unknown>;
+    stop: () => Promise<unknown>;
+    get: () => Promise<unknown>;
+    ingestPageEvent: (
+      raw: unknown,
+      sender: ExtensionMessageSender,
+    ) => Promise<boolean>;
+  };
 };
 
 export type SendResponse = (response: AppResponse) => void;
@@ -861,6 +870,18 @@ async function dispatch(
     case "flow.video.reconcilePreClickFailure":
       if (!dependencies.flowVideoAttachment) throw new FoundationOperationError("worker_error", "flow_video_attachment_unavailable", "Flow reference attachment is unavailable.");
       return await dependencies.flowVideoAttachment.reconcilePreClickFailure(request.payload);
+    case "flow.downloadDiagnostic.arm":
+      if (!dependencies.flowDownloadDiagnostic)
+        throw new FoundationOperationError("worker_error", "flow_download_diagnostic_unavailable", "The Flow download diagnostic is unavailable in this worker.");
+      return await dependencies.flowDownloadDiagnostic.arm();
+    case "flow.downloadDiagnostic.stop":
+      if (!dependencies.flowDownloadDiagnostic)
+        throw new FoundationOperationError("worker_error", "flow_download_diagnostic_unavailable", "The Flow download diagnostic is unavailable in this worker.");
+      return await dependencies.flowDownloadDiagnostic.stop();
+    case "flow.downloadDiagnostic.get":
+      if (!dependencies.flowDownloadDiagnostic)
+        throw new FoundationOperationError("worker_error", "flow_download_diagnostic_unavailable", "The Flow download diagnostic is unavailable in this worker.");
+      return await dependencies.flowDownloadDiagnostic.get();
   }
 }
 
@@ -888,6 +909,47 @@ export function createConnectionMessageListener(
     sender: ExtensionMessageSender,
     sendResponse: SendResponse,
   ): true => {
+    if (
+      rawRequest !== null &&
+      typeof rawRequest === "object" &&
+      "type" in rawRequest &&
+      rawRequest.type === "AUTOMAT_FLOW_GALLERY_DOWNLOAD_DIAGNOSTIC_EVENT"
+    ) {
+      const diagnostic = dependencies.flowDownloadDiagnostic;
+      if (!diagnostic) {
+        sendResponse(
+          failure(
+            "flow-download-diagnostic",
+            "unauthorized_sender",
+            "flow_download_diagnostic_unavailable",
+            "The Flow download diagnostic is unavailable in this worker.",
+          ),
+        );
+        return true;
+      }
+      void diagnostic
+        .ingestPageEvent(rawRequest, sender)
+        .then((accepted) => {
+          sendResponse({
+            protocolVersion: PROTOCOL_VERSION,
+            buildId: BUILD_ID,
+            requestId: "flow-download-diagnostic",
+            ok: true,
+            data: { accepted },
+          });
+        })
+        .catch(() => {
+          sendResponse(
+            failure(
+              "flow-download-diagnostic",
+              "storage_failure",
+              "flow_download_diagnostic_event_failed",
+              "The bounded Flow page observation could not be recorded.",
+            ),
+          );
+        });
+      return true;
+    }
     if (
       rawRequest !== null &&
       typeof rawRequest === "object" &&
