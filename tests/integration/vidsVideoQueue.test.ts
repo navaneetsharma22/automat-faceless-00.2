@@ -16,6 +16,7 @@ import { CONNECTION_CAPABILITY, CONNECTOR_PROTOCOL_VERSION } from "../../src/pla
 import type { SelectedTargetRecord } from "../../src/storage/db";
 import { createConnectionLifecycleService } from "../../src/background/connectionLifecycle";
 import { createVidsVideoGenerateHandler } from "../../src/background/handlers/vidsVideo";
+import { createRetryableVidsReadiness, createVidsAlarmLifecycle } from "../../src/background/vidsAlarmLifecycle";
 import { providerTabFromUrl } from "../../src/platforms/shared/connection";
 import type { ConnectionPort } from "../../src/platforms/shared/contracts";
 
@@ -314,20 +315,84 @@ describe("P10.3 isolated Vids timed queue", () => {
     const firstSent = await alarmRun.waitForQueue(alarmQueue.queueId, (queue) => queue?.state === "cooldown");
     const alarmDeadline = firstSent!.nextActionAt!;
     alarmRun.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
-    const alarmResult = await alarmRun.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${alarmQueue.queueId}`, alarmDeadline);
+    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${alarmQueue.queueId}`;
+    alarmRun.handler.recordAutomaticAlarmReceived(alarmName, alarmDeadline, alarmRun.now());
+    alarmRun.handler.recordAutomaticAlarmReconciliation(alarmName, "completed", alarmRun.now(), alarmRun.now());
+    await alarmRun.waitForQueue(alarmQueue.queueId, (queue) => queue?.lastAutomaticAlarmTrace?.reconciliation === "completed");
+    const alarmResult = await alarmRun.handler.onAlarm(alarmName, alarmDeadline);
     expect(alarmResult?.lastRunDiagnostic).toMatchObject({ trigger: "automatic_alarm", scheduledAt: alarmDeadline, alarmScheduledAt: alarmDeadline, stage: "sent_receipt", claim: "claimed", dispatchTrigger: "automatic_alarm", outcome: "sent" });
     expect(alarmResult?.lastDispatchTrigger).toBe("automatic_alarm");
+    expect(alarmResult?.lastAutomaticAlarmTrace).toMatchObject({ receivedAt: expect.any(Number), alarmScheduledAt: alarmDeadline, reconciliation: "completed", handler: "reached", claim: "claimed", outcome: "sent" });
 
     const resumedRun = await setup();
     const resumedQueue = await resumedRun.handler.start(batchId);
     const resumedFirstSent = await resumedRun.waitForQueue(resumedQueue.queueId, (queue) => queue?.state === "cooldown");
     resumedRun.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
-    const paused = await resumedRun.handler.pause(batchId, resumedFirstSent!.revision);
+    const resumeAlarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${resumedQueue.queueId}`;
+    resumedRun.handler.recordAutomaticAlarmReceived(resumeAlarmName, resumedFirstSent!.nextActionAt!, resumedRun.now());
+    await resumedRun.waitForQueue(resumedQueue.queueId, (queue) => queue?.lastAutomaticAlarmTrace !== undefined);
+    const tracedQueue = (await resumedRun.repositories.getVidsVideoQueue(resumedQueue.queueId))!;
+    const savedAlarmTrace = tracedQueue.lastAutomaticAlarmTrace;
+    const paused = await resumedRun.handler.pause(batchId, tracedQueue.revision);
     const resumed = await resumedRun.handler.resume(batchId, paused.revision);
     const resumeResult = await resumedRun.waitForQueue(resumedQueue.queueId, (queue) => queue?.state === "all_sent");
     expect(resumeResult?.lastRunDiagnostic).toMatchObject({ trigger: "manual_resume", alarmScheduledAt: null, stage: "sent_receipt", claim: "claimed", dispatchTrigger: "manual_resume", outcome: "sent" });
     expect(resumeResult?.lastDispatchTrigger).toBe("manual_resume");
+    expect(resumeResult?.lastAutomaticAlarmTrace).toEqual(savedAlarmTrace);
     expect(resumeResult?.items[0]?.dispatchReceipt).toEqual(resumed.items[0]?.dispatchReceipt);
+  });
+
+  it("persists failed startup reconciliation and rearms the due Vids queue without claiming Shot 2", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`;
+    f.alarms.create.mockClear();
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const receivedAt = f.now();
+    f.handler.recordAutomaticAlarmReceived(alarmName, sent!.nextActionAt!, receivedAt);
+    await f.waitForQueue(started.queueId, (queue) => queue?.lastAutomaticAlarmTrace?.receivedAt === receivedAt);
+    f.handler.recordAutomaticAlarmReconciliation(alarmName, "failed", f.now(), receivedAt);
+    const failedTrace = await f.waitForQueue(started.queueId, (queue) => queue?.lastAutomaticAlarmTrace?.reconciliation === "failed" && queue.lastAlarmScheduleDiagnostic?.outcome === "scheduled");
+    expect(failedTrace).toMatchObject({ state: "cooldown", items: [{ state: "sent", dispatchReceipt: firstReceipt }, { state: "pending" }], lastAutomaticAlarmTrace: { handler: "not_reached", claim: "not_reached", reason: "startup_reconciliation_failed", outcome: "waiting" } });
+    expect(f.alarms.create).toHaveBeenCalledWith(alarmName, { when: f.now() + 30_000 });
+    expect(f.attach).not.toHaveBeenCalledWith(batchId, "item-2", true);
+    expect(f.generate).not.toHaveBeenCalledWith(batchId, "item-2", true);
+  });
+
+  it("recovers from a failed startup alarm restore and dispatches Shot 2 once on the next delivered alarm", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`;
+    const readiness = createRetryableVidsReadiness(Promise.resolve(), () => f.handler.reconcileStartup());
+    const listener = createVidsAlarmLifecycle({
+      prefix: VIDS_VIDEO_QUEUE_ALARM_PREFIX,
+      now: () => f.now(),
+      ready: readiness,
+      recordReceived: f.handler.recordAutomaticAlarmReceived,
+      recordReconciliation: f.handler.recordAutomaticAlarmReconciliation,
+      dispatch: (name, scheduledTime) => f.handler.onAlarm(name, scheduledTime),
+    });
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    f.alarms.create.mockRejectedValueOnce(new Error("synthetic alarm API failure"));
+    const failedAt = f.now();
+    listener({ name: alarmName, scheduledTime: sent!.nextActionAt! });
+    const failed = await f.waitForQueue(started.queueId, (queue) => queue?.lastAutomaticAlarmTrace?.reconciliation === "failed" && queue.lastAutomaticAlarmTrace.reconciliationStep === "alarm_restore");
+    expect(failed).toMatchObject({ state: "cooldown", items: [{ state: "sent", dispatchReceipt: firstReceipt }, { state: "pending" }], lastAutomaticAlarmTrace: { reconciliationErrorCode: "vids_alarm_schedule_failed", handler: "not_reached", claim: "not_reached", outcome: "waiting" } });
+    expect(failed?.lastAutomaticAlarmTrace?.receivedAt).toBe(failedAt);
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+
+    f.advance(30_000);
+    listener({ name: alarmName, scheduledTime: f.now() });
+    const completed = await f.waitForQueue(started.queueId, (queue) => queue?.state === "all_sent");
+    expect(completed?.items[0]?.dispatchReceipt).toEqual(firstReceipt);
+    expect(completed?.lastAutomaticAlarmTrace).toMatchObject({ reconciliation: "completed", handler: "reached", claim: "claimed", outcome: "sent" });
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
   });
 
   it("persists an explicit review state when an alarm handoff throws and ignores duplicate wakeups", async () => {

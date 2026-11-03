@@ -43,6 +43,7 @@ import { createFlowVideoQueueHandler } from "./handlers/flowVideoQueue";
 import { createVidsVideoAttachmentHandler } from "./handlers/vidsVideoAttachment";
 import { createVidsVideoGenerateHandler } from "./handlers/vidsVideo";
 import { createVidsVideoQueueHandler } from "./handlers/vidsVideoQueue";
+import { createRetryableVidsReadiness, createVidsAlarmLifecycle } from "./vidsAlarmLifecycle";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -302,22 +303,29 @@ const workerReady = Promise.all([
   .then(() => undefined);
 // Reconciliation is intentionally limited to durable queue state and alarm
 // restoration, so queue messages can await it without waiting on dispatch.
-const timedQueueReady = targetStartupReady.then(async () => {
-  await Promise.all([
-    timedQueueScheduler.reconcileStartup(),
-    flowVideoQueue.reconcileStartup(),
-    vidsVideoQueue.reconcileStartup(),
-  ]);
+const nonVidsQueueReady = targetStartupReady.then(async () => {
+  await Promise.all([timedQueueScheduler.reconcileStartup(), flowVideoQueue.reconcileStartup()]);
 });
+const ensureVidsQueueReady = createRetryableVidsReadiness(targetStartupReady, () => vidsVideoQueue.reconcileStartup());
+const vidsQueueReady = ensureVidsQueueReady();
+const timedQueueReady = Promise.all([nonVidsQueueReady, vidsQueueReady]).then(() => undefined);
 void workerReady.catch(() => undefined);
+const vidsAlarmListener = createVidsAlarmLifecycle({
+  prefix: "automat-vids-video-queue:",
+  ready: ensureVidsQueueReady,
+  recordReceived: vidsVideoQueue.recordAutomaticAlarmReceived,
+  recordReconciliation: vidsVideoQueue.recordAutomaticAlarmReconciliation,
+  dispatch: (name, scheduledTime) => vidsVideoQueue.onAlarm(name, scheduledTime),
+});
 chrome.alarms.onAlarm.addListener((alarm) => {
-  void timedQueueReady
-    .then(() => Promise.all([
-      timedQueueScheduler.onAlarm(alarm.name),
-      flowVideoQueue.onAlarm(alarm.name),
-      vidsVideoQueue.onAlarm(alarm.name, alarm.scheduledTime),
-    ]))
-    .catch(() => undefined);
+  if (alarm.name.startsWith("automat-vids-video-queue:")) {
+    vidsAlarmListener(alarm);
+    return;
+  }
+  void nonVidsQueueReady.then(() => Promise.all([
+    timedQueueScheduler.onAlarm(alarm.name),
+    flowVideoQueue.onAlarm(alarm.name),
+  ])).catch(() => undefined);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   void timedQueueReady.then(() => vidsVideoQueue.onTargetVisible(tabId)).catch(() => undefined);

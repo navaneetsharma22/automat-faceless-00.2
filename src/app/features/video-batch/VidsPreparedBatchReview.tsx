@@ -128,6 +128,19 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
           </dl>
           <p>These bounded fields exclude prompts, credentials, and media URLs.</p>
         </details> : null}
+        {(queue?.lastAutomaticAlarmTrace || queue?.lastAlarmScheduleDiagnostic) ? <details className={styles.prompt}>
+          <summary>Automatic alarm lifecycle</summary>
+          <dl className={styles.diagnostics}>
+            {queue.lastAlarmScheduleDiagnostic ? <div><dt>Alarm request / result</dt><dd>{queue.lastAlarmScheduleDiagnostic.requestedDueAt === null ? "clear" : new Date(queue.lastAlarmScheduleDiagnostic.requestedDueAt).toLocaleString()} / {queue.lastAlarmScheduleDiagnostic.outcome}{queue.lastAlarmScheduleDiagnostic.reason ? ` (${queue.lastAlarmScheduleDiagnostic.reason})` : ""} · {new Date(queue.lastAlarmScheduleDiagnostic.recordedAt).toLocaleString()}</dd></div> : null}
+            {queue.lastAutomaticAlarmTrace ? <>
+              <div><dt>Alarm received / scheduled time</dt><dd>{new Date(queue.lastAutomaticAlarmTrace.receivedAt).toLocaleString()} / {queue.lastAutomaticAlarmTrace.alarmScheduledAt === null ? "not supplied" : new Date(queue.lastAutomaticAlarmTrace.alarmScheduledAt).toLocaleString()}</dd></div>
+              <div><dt>Startup reconciliation</dt><dd>{queue.lastAutomaticAlarmTrace.reconciliation}{queue.lastAutomaticAlarmTrace.reconciliationAt ? ` · ${new Date(queue.lastAutomaticAlarmTrace.reconciliationAt).toLocaleString()}` : ""}</dd></div>
+              {queue.lastAutomaticAlarmTrace.reconciliationStep ? <div><dt>Reconciliation failure</dt><dd>{queue.lastAutomaticAlarmTrace.reconciliationStep} / {queue.lastAutomaticAlarmTrace.reconciliationErrorCode ?? "unknown_exception"}</dd></div> : null}
+              <div><dt>Queue handler / claim / result</dt><dd>{queue.lastAutomaticAlarmTrace.handler ?? "not reached"} / {queue.lastAutomaticAlarmTrace.claim ?? "not reached"}{queue.lastAutomaticAlarmTrace.reason ? ` / ${queue.lastAutomaticAlarmTrace.reason}` : ""} / {queue.lastAutomaticAlarmTrace.outcome ?? "in progress"} · {queue.lastAutomaticAlarmTrace.elapsedMs} ms</dd></div>
+            </> : null}
+          </dl>
+          <p>This automatic alarm trace is retained separately from manual Resume diagnostics.</p>
+        </details> : null}
         {allSent ? <p className={styles.note}>Video completion can be checked in Google Vids.</p> : null}
         {queue && !["waiting_for_tab", "paused", "stopped", "blocked", "all_sent"].includes(queue.state) ? <QueueClock queue={queue} now={clockNow} /> : null}
         {queue?.state === "waiting_for_tab" ? <p className={styles.note} role="status">Waiting for Vids tab. The queue will recheck the selected Animate composer when that tab becomes visible.</p> : null}
