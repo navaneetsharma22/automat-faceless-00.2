@@ -78,6 +78,7 @@ describe("P10.3 Vids queue presentation", () => {
     const persisted = {
       queueId: `vids-video:${batch.id}`, preparedBatchId: batch.id, state: "cooldown", items: [{ itemId: "item-1", order: 0, shotId: "1", referenceId: batch.items[0]!.reference.referenceId, referenceSha256: batch.items[0]!.reference.sha256, promptHash: batch.items[0]!.contentHash, state: "sent", attemptId: "attempt-1", dispatchReceipt: { attemptId: "attempt-1", storedAt: Date.now() - 1000 } }, { itemId: "item-2", order: 1, shotId: "2", referenceId: batch.items[1]!.reference.referenceId, referenceSha256: batch.items[1]!.reference.sha256, promptHash: batch.items[1]!.contentHash, state: "pending" }],
       revision: 2, createdAt: 1, updatedAt: 1, lastDispatchAt: Date.now() - 1000, cooldownDeadlineAt: Date.now() + 49_000, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: Date.now() + 49_000, runId: "run-1",
+      lastRunDiagnostic: { trigger: "automatic_alarm", scheduledAt: Date.now(), alarmScheduledAt: Date.now(), enteredAt: Date.now(), stage: "claim", claim: "claimed", dispatchTrigger: "automatic_alarm", outcome: "in_progress", elapsedMs: 120 }, lastDispatchTrigger: "automatic_start",
     };
     const client = { request: vi.fn(async (type: string) => { requests.push(type); if (type === "vids.videoQueue.get") return queue; if (type === "vids.video.getAttachmentStatus") return { status: "not_started" }; if (type === "vids.video.getReferencePreview") return null; if (type === "vids.videoQueue.start") { queue = persisted; return queue; } return null; }) };
     host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -87,6 +88,9 @@ describe("P10.3 Vids queue presentation", () => {
     await act(async () => { start!.click(); await Promise.resolve(); });
     expect(host.textContent).toContain("1 of 2 prompts sent");
     expect(host.textContent).toContain("Next prompt in");
+    expect(host.textContent).toContain("automatic_alarm / claim");
+    expect(host.textContent).toContain("claimed / none");
+    expect(host.textContent).toContain("Last Sent dispatch triggerautomatic_start");
     const bar = host.querySelector('[aria-label="Vids prompt dispatch progress"]');
     expect(bar?.getAttribute("aria-valuenow")).toBe("1");
     const before = requests.filter((type) => !type.endsWith(".get") && !type.endsWith("Status") && !type.endsWith("Preview")).length;

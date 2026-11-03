@@ -315,7 +315,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     .then(() => Promise.all([
       timedQueueScheduler.onAlarm(alarm.name),
       flowVideoQueue.onAlarm(alarm.name),
-      vidsVideoQueue.onAlarm(alarm.name),
+      vidsVideoQueue.onAlarm(alarm.name, alarm.scheduledTime),
     ]))
     .catch(() => undefined);
 });

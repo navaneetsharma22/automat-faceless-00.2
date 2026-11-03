@@ -116,6 +116,18 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
         <div className={styles.progressSummary} role="progressbar" aria-label="Vids prompt dispatch progress" aria-valuemin={0} aria-valuemax={preparedBatch.items.length} aria-valuenow={sentCount} aria-valuetext={`${sentCount} of ${preparedBatch.items.length} prompts sent`}><span style={{ width: `${preparedBatch.items.length ? sentCount / preparedBatch.items.length * 100 : 0}%` }} /></div>
         {!allSent ? <p className={styles.queueItem}>Current/next Shot: <strong>{nextQueueItem ? `Shot ${nextQueueItem.shotId}` : "None"}</strong><span>{nextQueueItem ? queueItemLabel(nextQueueItem.state) : "Waiting to start"}</span>{queue?.nextActionAt ? <span>Next check: {new Date(queue.nextActionAt).toLocaleTimeString()}</span> : null}</p> : null}
         {queueReadFailed ? <p className={styles.error} role="status">Queue status refresh failed. The displayed snapshot may be out of date.</p> : null}
+        {queue?.lastRunDiagnostic ? <details className={styles.prompt}>
+          <summary>Latest queue wake diagnostics</summary>
+          <dl className={styles.diagnostics}>
+            <div><dt>Wake trigger / stage</dt><dd>{queue.lastRunDiagnostic.trigger} / {queue.lastRunDiagnostic.stage}</dd></div>
+            <div><dt>Alarm scheduled / queue deadline</dt><dd>{queue.lastRunDiagnostic.alarmScheduledAt === null ? "not an alarm wake" : new Date(queue.lastRunDiagnostic.alarmScheduledAt).toLocaleString()} / {queue.lastRunDiagnostic.scheduledAt === null ? "none" : new Date(queue.lastRunDiagnostic.scheduledAt).toLocaleString()}</dd></div>
+            <div><dt>Worker entry / elapsed</dt><dd>{new Date(queue.lastRunDiagnostic.enteredAt).toLocaleString()} / {queue.lastRunDiagnostic.elapsedMs} ms</dd></div>
+            <div><dt>Shot claim / skip reason</dt><dd>{queue.lastRunDiagnostic.claim} / {queue.lastRunDiagnostic.reason ?? "none"}</dd></div>
+            <div><dt>Dispatch trigger / outcome</dt><dd>{queue.lastRunDiagnostic.dispatchTrigger ?? "not reached"} / {queue.lastRunDiagnostic.outcome}</dd></div>
+            <div><dt>Last Sent dispatch trigger</dt><dd>{queue.lastDispatchTrigger ?? "not recorded"}</dd></div>
+          </dl>
+          <p>These bounded fields exclude prompts, credentials, and media URLs.</p>
+        </details> : null}
         {allSent ? <p className={styles.note}>Video completion can be checked in Google Vids.</p> : null}
         {queue && !["waiting_for_tab", "paused", "stopped", "blocked", "all_sent"].includes(queue.state) ? <QueueClock queue={queue} now={clockNow} /> : null}
         {queue?.state === "waiting_for_tab" ? <p className={styles.note} role="status">Waiting for Vids tab. The queue will recheck the selected Animate composer when that tab becomes visible.</p> : null}

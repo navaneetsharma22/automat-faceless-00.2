@@ -4,6 +4,19 @@ export const VIDS_VIDEO_DISPATCH_GAP_MS = 50_000 as const;
 export const VIDS_VIDEO_READINESS_TIMEOUT_MS = 60_000 as const;
 export const VIDS_VIDEO_QUEUE_STATES = ["ready", "cooldown", "preparing", "checking_generate", "waiting_for_tab", "paused", "stopped", "blocked", "all_sent"] as const;
 export const VIDS_VIDEO_QUEUE_ITEM_STATES = ["pending", "transitioning", "attaching", "entering_prompt", "checking_generate", "sending", "sent", "blocked", "uncertain"] as const;
+export const VidsVideoQueueRunDiagnosticSchema = z.object({
+  trigger: z.enum(["automatic_start", "automatic_alarm", "manual_resume", "visibility_wakeup", "unknown"]),
+  scheduledAt: z.number().finite().nonnegative().nullable(),
+  alarmScheduledAt: z.number().finite().nonnegative().nullable(),
+  enteredAt: z.number().finite().nonnegative(),
+  stage: z.enum(["alarm_entry", "queue_read", "prepared_validation", "cooldown_check", "claim", "composer_transition", "attachment", "generate", "resume_accepted", "sent_receipt", "skipped", "failed"]),
+  claim: z.enum(["not_reached", "claimed", "skipped"]),
+  reason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(),
+  dispatchTrigger: z.enum(["automatic_start", "automatic_alarm", "manual_resume", "visibility_wakeup", "unknown"]).optional(),
+  outcome: z.enum(["in_progress", "sent", "waiting", "paused", "blocked", "uncertain", "skipped", "failed"]),
+  elapsedMs: z.number().int().min(0).max(120_000),
+}).strict();
+export type VidsVideoQueueRunDiagnostic = z.infer<typeof VidsVideoQueueRunDiagnosticSchema>;
 export const VidsVideoTransitionCheckpointSchema = z.object({
   // Optional only to read pre-mw01wgpj queue rows. A checkpoint without a
   // stage is stale and must be re-inspected before any cleanup mutation.
@@ -79,6 +92,8 @@ export type VidsVideoQueueRecord = {
   cooldownDeadlineAt: number | null; readinessDeadlineAt: number | null; readinessStartedAt: number | null;
   nextActionAt: number | null; pauseReason?: string; runId: string;
   executionDocumentRebind?: VidsVideoExecutionRebind;
+  lastRunDiagnostic?: VidsVideoQueueRunDiagnostic;
+  lastDispatchTrigger?: "automatic_start" | "automatic_alarm" | "manual_resume" | "visibility_wakeup" | "unknown";
 };
 const itemSchema = z.object({ itemId: z.string().min(1).max(256), order: z.number().int().nonnegative(), shotId: z.string().regex(/^[1-9][0-9]*$/), referenceId: z.string().uuid(), referenceSha256: z.string().regex(/^[0-9a-f]{64}$/), promptHash: z.string().regex(/^[0-9a-f]{64}$/), state: z.enum(VIDS_VIDEO_QUEUE_ITEM_STATES), reason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(), attemptId: z.string().min(1).max(128).optional(), transitionCheckpoint: VidsVideoTransitionCheckpointSchema.optional(), cleanComposerRecovery: VidsCleanComposerRecoverySchema.optional(), cleanupDiagnostics: VidsCleanupDiagnosticsSchema.optional(), resumeRecoveryEvidence: VidsResumeRecoveryEvidenceSchema.optional(), dispatchReceipt: z.object({ attemptId: z.string().min(1).max(128), storedAt: z.number().finite().nonnegative() }).strict().optional() }).strict();
-export const VidsVideoQueueRecordSchema = z.object({ queueId: z.string().min(1).max(512), preparedBatchId: z.string().min(1).max(512), state: z.enum(VIDS_VIDEO_QUEUE_STATES), items: z.array(itemSchema).nonempty().max(100), revision: z.number().int().nonnegative(), createdAt: z.number().finite().nonnegative(), updatedAt: z.number().finite().nonnegative(), lastDispatchAt: z.number().finite().nonnegative().nullable(), cooldownDeadlineAt: z.number().finite().nonnegative().nullable(), readinessDeadlineAt: z.number().finite().nonnegative().nullable(), readinessStartedAt: z.number().finite().nonnegative().nullable(), nextActionAt: z.number().finite().nonnegative().nullable(), pauseReason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(), runId: z.string().min(1).max(128), executionDocumentRebind: VidsVideoExecutionRebindSchema.optional() }).strict().refine((queue) => queue.items.every((item, index) => item.order === index));
+export const VidsVideoQueueRecordSchema = z.object({ queueId: z.string().min(1).max(512), preparedBatchId: z.string().min(1).max(512), state: z.enum(VIDS_VIDEO_QUEUE_STATES), items: z.array(itemSchema).nonempty().max(100), revision: z.number().int().nonnegative(), createdAt: z.number().finite().nonnegative(), updatedAt: z.number().finite().nonnegative(), lastDispatchAt: z.number().finite().nonnegative().nullable(), cooldownDeadlineAt: z.number().finite().nonnegative().nullable(), readinessDeadlineAt: z.number().finite().nonnegative().nullable(), readinessStartedAt: z.number().finite().nonnegative().nullable(), nextActionAt: z.number().finite().nonnegative().nullable(), pauseReason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(), runId: z.string().min(1).max(128), executionDocumentRebind: VidsVideoExecutionRebindSchema.optional(), lastRunDiagnostic: VidsVideoQueueRunDiagnosticSchema.optional(), lastDispatchTrigger: z.enum(["automatic_start", "automatic_alarm", "manual_resume", "visibility_wakeup", "unknown"]).optional() }).strict().refine((queue) => queue.items.every((item, index) => item.order === index));

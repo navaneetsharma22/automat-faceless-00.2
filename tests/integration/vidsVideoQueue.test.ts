@@ -308,6 +308,28 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
   });
 
+  it("records the alarm entry and dispatch trigger separately from Pause then Resume", async () => {
+    const alarmRun = await setup();
+    const alarmQueue = await alarmRun.handler.start(batchId);
+    const firstSent = await alarmRun.waitForQueue(alarmQueue.queueId, (queue) => queue?.state === "cooldown");
+    const alarmDeadline = firstSent!.nextActionAt!;
+    alarmRun.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const alarmResult = await alarmRun.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${alarmQueue.queueId}`, alarmDeadline);
+    expect(alarmResult?.lastRunDiagnostic).toMatchObject({ trigger: "automatic_alarm", scheduledAt: alarmDeadline, alarmScheduledAt: alarmDeadline, stage: "sent_receipt", claim: "claimed", dispatchTrigger: "automatic_alarm", outcome: "sent" });
+    expect(alarmResult?.lastDispatchTrigger).toBe("automatic_alarm");
+
+    const resumedRun = await setup();
+    const resumedQueue = await resumedRun.handler.start(batchId);
+    const resumedFirstSent = await resumedRun.waitForQueue(resumedQueue.queueId, (queue) => queue?.state === "cooldown");
+    resumedRun.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const paused = await resumedRun.handler.pause(batchId, resumedFirstSent!.revision);
+    const resumed = await resumedRun.handler.resume(batchId, paused.revision);
+    const resumeResult = await resumedRun.waitForQueue(resumedQueue.queueId, (queue) => queue?.state === "all_sent");
+    expect(resumeResult?.lastRunDiagnostic).toMatchObject({ trigger: "manual_resume", alarmScheduledAt: null, stage: "sent_receipt", claim: "claimed", dispatchTrigger: "manual_resume", outcome: "sent" });
+    expect(resumeResult?.lastDispatchTrigger).toBe("manual_resume");
+    expect(resumeResult?.items[0]?.dispatchReceipt).toEqual(resumed.items[0]?.dispatchReceipt);
+  });
+
   it("persists an explicit review state when an alarm handoff throws and ignores duplicate wakeups", async () => {
     const f = await setup({ shotCount: 2 });
     const started = await f.handler.start(f.batch.id);
