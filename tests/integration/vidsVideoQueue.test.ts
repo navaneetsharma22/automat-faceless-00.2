@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createVidsVideoQueueHandler, VIDS_VIDEO_QUEUE_ALARM_PREFIX } from "../../src/background/handlers/vidsVideoQueue";
-import { VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS, type VidsCleanupDiagnostics } from "../../src/domain/jobs/vidsVideoQueue";
+import { VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS, VidsVideoQueueRecordSchema, type VidsCleanupDiagnostics } from "../../src/domain/jobs/vidsVideoQueue";
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import { ExtensionRepositories } from "../../src/storage/repositories";
@@ -442,6 +442,191 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(completed?.lastAutomaticAlarmTrace).toMatchObject({ reconciliation: "completed", handler: "reached", claim: "claimed", outcome: "sent" });
     expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
     expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+  });
+
+  it("preserves camelCase queue validation details through the production alarm and dashboard path", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`;
+    const invalidOtherQueue = {
+      ...sent!,
+      queueId: "vids-video:prepared:vids:camelcase-invalid",
+      preparedBatchId: "prepared:vids:camelcase-invalid",
+      readinessDeadlineAt: "invalid-deadline",
+    };
+    await f.db.vidsVideoQueues.add(invalidOtherQueue as unknown as VidsVideoQueueRecord);
+    const invalidDigest = (await sha256Hex(invalidOtherQueue.queueId)).slice(0, 16);
+    const readiness = createRetryableVidsReadiness(Promise.resolve(), () => f.handler.reconcileStartup());
+    const listener = createVidsAlarmLifecycle({
+      prefix: VIDS_VIDEO_QUEUE_ALARM_PREFIX,
+      now: () => f.now(),
+      ready: readiness,
+      recordReceived: f.handler.recordAutomaticAlarmReceived,
+      recordReconciliation: f.handler.recordAutomaticAlarmReconciliation,
+      dispatch: (name, scheduledTime) => f.handler.onAlarm(name, scheduledTime),
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    listener({ name: alarmName, scheduledTime: sent!.nextActionAt! });
+
+    const failed = await f.waitForQueue(started.queueId, (queue) =>
+      queue?.lastAutomaticAlarmTrace?.reconciliation === "failed" &&
+      queue.lastAutomaticAlarmTrace.reconciliationFieldPath !== undefined,
+    );
+    expect(failed).toMatchObject({
+      state: "cooldown",
+      items: [{ state: "sent", dispatchReceipt: firstReceipt }, { state: "pending" }],
+      lastAutomaticAlarmTrace: {
+        reconciliationStep: "queue_list",
+        reconciliationErrorCode: "vids_video_queue_invalid",
+        reconciliationRecordIndex: 1,
+        reconciliationRecordDigest: invalidDigest,
+        reconciliationFieldPath: "readinessDeadlineAt",
+        reconciliationValidationRule: "readinessDeadlineAt_type",
+        handler: "not_reached",
+        claim: "not_reached",
+        outcome: "waiting",
+      },
+    });
+    expect(warning).toHaveBeenCalledWith("[vids_queue_reconciliation_failed]", expect.objectContaining({
+      step: "queue_list",
+      errorCode: "vids_video_queue_invalid",
+      fieldPath: "readinessDeadlineAt",
+      validationRule: "readinessDeadlineAt_type",
+    }));
+
+    const rejectedTimedReady = Promise.reject(new Error("startup reconciliation failed"));
+    void rejectedTimedReady.catch(() => undefined);
+    const dashboardListener = createConnectionMessageListener("vids-dashboard-camelcase-diagnostic", {
+      repositories: f.repositories,
+      preferences: new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined }),
+      ready: Promise.resolve(),
+      timedQueueReady: rejectedTimedReady,
+      vidsVideoQueue: f.handler,
+    });
+    const request = makeRequest("vids.videoQueue.get", { preparedBatchId: f.batch.id }, "read-camelcase-validation-diagnostic");
+    const response = await new Promise<Record<string, unknown>>((resolve) =>
+      dashboardListener(JSON.parse(JSON.stringify(request)), { id: "vids-dashboard-camelcase-diagnostic", url: "chrome-extension://vids-dashboard-camelcase-diagnostic/index.html" }, (value) => resolve(value as unknown as Record<string, unknown>)),
+    );
+    expect(response).toMatchObject({
+      ok: true,
+      data: { lastAutomaticAlarmTrace: {
+        reconciliationFieldPath: "readinessDeadlineAt",
+        reconciliationValidationRule: "readinessDeadlineAt_type",
+      } },
+    });
+    warning.mockRestore();
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+  });
+
+  it("redacts unknown queue fields from validation paths and field-derived rules", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const unknownField = "unlistedCamelCaseField";
+    const invalidRecord = {
+      ...sent!,
+      queueId: "vids-video:prepared:vids:unknown-field",
+      preparedBatchId: "prepared:vids:unknown-field",
+      [unknownField]: true,
+    };
+    await f.db.vidsVideoQueues.add(invalidRecord as unknown as VidsVideoQueueRecord);
+
+    let failure: unknown;
+    try {
+      await f.repositories.listVidsVideoQueues();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      message: "vids_video_queue_invalid",
+      fieldPath: "unknown_fields",
+      validationRule: "strict_record_fields_only",
+    });
+    expect(JSON.stringify(failure)).not.toContain(unknownField);
+  });
+
+  it("reconciles an active due queue alongside a legacy observation missing candidateCount", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    const legacyBatchId = "prepared:vids:legacy-candidate-count";
+    const legacyQueueId = `vids-video:${legacyBatchId}`;
+    const legacyObservation = {
+      atMs: 1,
+      label: "Expand",
+      scope: "panel",
+      panelCount: 1,
+      editorCount: 1,
+      visibility: "visible",
+    };
+    const legacyQueue = {
+      ...sent!,
+      queueId: legacyQueueId,
+      preparedBatchId: legacyBatchId,
+      state: "paused" as const,
+      pauseReason: "legacy_paused",
+      nextActionAt: null,
+      items: sent!.items.map((item) => item.order === 1 ? {
+        ...item,
+        cleanupDiagnostics: {
+          stage: "readiness" as const,
+          handoffTrace: { composerToggleObservations: [legacyObservation] },
+        },
+      } : item),
+    };
+
+    expect(VidsVideoQueueRecordSchema.safeParse(legacyQueue).success).toBe(true);
+    const invalidCandidateCountQueue = {
+      ...legacyQueue,
+      items: legacyQueue.items.map((item) => item.order === 1 ? {
+        ...item,
+        cleanupDiagnostics: {
+          stage: "readiness" as const,
+          handoffTrace: { composerToggleObservations: [{ ...legacyObservation, candidateCount: 11 }] },
+        },
+      } : item),
+    };
+    const invalidCandidateCount = VidsVideoQueueRecordSchema.safeParse(invalidCandidateCountQueue);
+    expect(invalidCandidateCount.success).toBe(false);
+    if (!invalidCandidateCount.success) {
+      expect(invalidCandidateCount.error.issues.some((issue) => issue.path.join(".") === "items.1.cleanupDiagnostics.handoffTrace.composerToggleObservations.0.candidateCount")).toBe(true);
+    }
+
+    await f.db.vidsVideoQueues.add(legacyQueue as unknown as VidsVideoQueueRecord);
+    const readableLegacy = await f.repositories.getVidsVideoQueue(legacyQueueId);
+    expect(readableLegacy?.revision).toBe(legacyQueue.revision);
+    expect(readableLegacy?.items[1]?.cleanupDiagnostics?.handoffTrace?.composerToggleObservations?.[0]?.candidateCount).toBeUndefined();
+
+    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`;
+    const readiness = createRetryableVidsReadiness(Promise.resolve(), () => f.handler.reconcileStartup());
+    const listener = createVidsAlarmLifecycle({
+      prefix: VIDS_VIDEO_QUEUE_ALARM_PREFIX,
+      now: () => f.now(),
+      ready: readiness,
+      recordReceived: f.handler.recordAutomaticAlarmReceived,
+      recordReconciliation: f.handler.recordAutomaticAlarmReconciliation,
+      dispatch: (name, scheduledTime) => f.handler.onAlarm(name, scheduledTime),
+    });
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    listener({ name: alarmName, scheduledTime: sent!.nextActionAt! });
+
+    const completed = await f.waitForQueue(started.queueId, (queue) => queue?.state === "all_sent");
+    expect(completed?.items[0]?.dispatchReceipt).toEqual(firstReceipt);
+    expect(completed?.items[1]).toMatchObject({ state: "sent", dispatchReceipt: { attemptId: expect.any(String) } });
+    expect(completed?.lastAutomaticAlarmTrace).toMatchObject({ reconciliation: "completed", handler: "reached", claim: "claimed", outcome: "sent" });
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+
+    const stillReadableLegacy = await f.repositories.getVidsVideoQueue(legacyQueueId);
+    expect(stillReadableLegacy?.revision).toBe(legacyQueue.revision);
+    expect(stillReadableLegacy?.items[1]?.cleanupDiagnostics).toEqual(legacyQueue.items[1]?.cleanupDiagnostics);
+    expect(stillReadableLegacy?.items[1]?.cleanupDiagnostics?.handoffTrace?.composerToggleObservations?.[0]?.candidateCount).toBeUndefined();
   });
 
   it("retries cold startup queue_list failure without dispatch, restores the overdue alarm, then sends Shot 2 once", async () => {

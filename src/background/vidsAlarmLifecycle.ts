@@ -25,8 +25,8 @@ export class VidsStartupReconciliationError extends Error {
     const details = error && typeof error === "object" ? error as Record<string, unknown> : {};
     if (typeof details.recordIndex === "number" && Number.isInteger(details.recordIndex) && details.recordIndex >= 0 && details.recordIndex < 1_000_000) this.recordIndex = details.recordIndex;
     if (typeof details.recordDigest === "string" && /^[0-9a-f]{16}$/.test(details.recordDigest)) this.recordDigest = details.recordDigest;
-    if (typeof details.fieldPath === "string" && /^[a-z0-9_.\x5b\x5d-]{1,128}$/.test(details.fieldPath)) this.fieldPath = details.fieldPath;
-    if (typeof details.validationRule === "string" && /^[a-z0-9_]{1,64}$/.test(details.validationRule)) this.validationRule = details.validationRule;
+    if (typeof details.fieldPath === "string" && /^[a-zA-Z0-9_.\x5b\x5d-]{1,128}$/.test(details.fieldPath)) this.fieldPath = details.fieldPath;
+    if (typeof details.validationRule === "string" && /^[a-zA-Z0-9_]{1,64}$/.test(details.validationRule)) this.validationRule = details.validationRule;
   }
 }
 

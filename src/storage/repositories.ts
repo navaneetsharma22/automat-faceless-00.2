@@ -49,7 +49,8 @@ const VIDS_QUEUE_RECORD_FIELDS = new Set(["queueId", "preparedBatchId", "state",
 function safeVidsQueueValidationDetail(path: PropertyKey[], issueCode: string, recordIndex: number, recordDigest: string) {
   const safeParts = path.map((part) => typeof part === "number" ? `[${Math.max(0, Math.min(999, part))}]` : typeof part === "string" && VIDS_QUEUE_RECORD_FIELDS.has(part) ? part : "unknown_field");
   const fieldPath = safeParts.length ? safeParts.reduce((value, part, index) => `${value}${part.startsWith("[") ? part : index === 0 ? part : `.${part}`}`, "") : "unknown_fields";
-  const leaf = typeof path.at(-1) === "string" ? path.at(-1) as string : "record";
+  const rawLeaf = path.at(-1);
+  const leaf = typeof rawLeaf !== "string" ? "record" : VIDS_QUEUE_RECORD_FIELDS.has(rawLeaf) ? rawLeaf : "unknown_field";
   const validationRule = issueCode === "unrecognized_keys" ? "strict_record_fields_only"
     : path[0] === "items" && leaf === "state" ? "queue_item_state_enum"
     : leaf === "state" ? "queue_state_enum"
