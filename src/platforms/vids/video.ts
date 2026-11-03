@@ -17,6 +17,7 @@ export type VidsVideoPromptEntryResult = {
   generateCount?: number;
   generateDisabled?: boolean;
 };
+type VidsComposerToggleLabel = "Expand" | "Collapse" | "missing" | "ambiguous" | "unknown";
 
 /**
  * Runs in the bound Vids document. All selectors are scoped to its unique
@@ -196,7 +197,7 @@ export async function enterVidsPromptInPage(input: {
 export type VidsGenerateActivationResult = { href: string; ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1; referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256" };
 
 export type VidsComposerTransitionDiagnostics = {
-  stage: "sidebar" | "animate" | "editor" | "prompt" | "reference" | "ownership" | "mutation" | "reference_remove" | "prompt_clear" | "settlement" | "complete";
+  stage: "sidebar" | "readiness" | "animate" | "editor" | "prompt" | "reference" | "ownership" | "mutation" | "reference_remove" | "prompt_clear" | "settlement" | "complete";
   sidebar: "unique" | "missing" | "ambiguous";
   animateTab: "unique" | "missing" | "ambiguous";
   animatePanel: "unique" | "missing" | "ambiguous";
@@ -240,19 +241,24 @@ export type VidsComposerTransitionDiagnostics = {
   targetBound: boolean;
   documentBound: boolean;
   handoffTrace?: {
-    triggerSource?: "automatic_start" | "automatic_alarm" | "manual_resume" | "unknown";
+    triggerSource?: "automatic_start" | "automatic_alarm" | "manual_resume" | "visibility_wakeup" | "unknown";
     elapsedSinceReceiptToFirstReadMs?: number;
     visibilityStart?: "visible" | "hidden" | "prerender" | "unloaded" | "unknown";
     visibilityEnd?: "visible" | "hidden" | "prerender" | "unloaded" | "unknown";
     visibilityChanges?: Array<{ inspection: number; atMs: number; state: "visible" | "hidden" | "prerender" | "unloaded" | "unknown" }>;
     initialAnimateState?: "collapsed" | "expanded" | "missing" | "ambiguous" | "unknown";
     finalAnimateState?: "collapsed" | "expanded" | "missing" | "ambiguous" | "unknown";
-    composerToggleLabelBefore?: "Expand" | "Collapse" | "missing" | "ambiguous" | "unknown";
-    composerToggleLabelAfter?: "Expand" | "Collapse" | "missing" | "ambiguous" | "unknown";
+    composerToggleLabelBefore?: VidsComposerToggleLabel;
+    composerToggleLabelAfter?: VidsComposerToggleLabel;
     composerToggleClickAttempted?: boolean;
     composerToggleOutcome?: "already_expanded" | "expanded" | "missing" | "ambiguous" | "disabled" | "label_unrecognized" | "settlement_failed";
+    composerReadinessWaitMs?: number;
+    composerReadinessOutcome?: "ready" | "timeout_hidden" | "timeout_visible";
+    composerEditorReady?: boolean;
+    composerToggleScope?: "panel" | "tabpanel_sibling" | "missing" | "ambiguous" | "unknown";
+    composerToggleObservations?: Array<{ atMs: number; label: VidsComposerToggleLabel; scope: "panel" | "tabpanel_sibling" | "missing" | "ambiguous" | "unknown"; panelCount: number; editorCount: number; visibility: "visible" | "hidden" | "prerender" | "unloaded" | "unknown" }>;
     expansionAttempted?: boolean; panelReplaced?: boolean; editorReplaced?: boolean;
-    previewObservations?: Array<{ inspection: number; atMs: number; selectorMatches: number; visibleMatches: number; loadedMatches: number; composerToggleLabel?: "Expand" | "Collapse" | "missing" | "ambiguous" | "unknown" }>;
+    previewObservations?: Array<{ inspection: number; atMs: number; selectorMatches: number; visibleMatches: number; loadedMatches: number; composerToggleLabel?: VidsComposerToggleLabel }>;
   };
 };
 
@@ -267,7 +273,8 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   checkpointedOwnership?: boolean;
   phase?: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty" | "full";
   referenceByteSize: number; referenceWidth: number; referenceHeight: number; timeoutMs: number; inspectOnly?: boolean;
-  traceContext?: { triggerSource: "automatic_start" | "automatic_alarm" | "manual_resume" | "unknown"; elapsedSinceReceiptToFirstReadMs: number; priorTrace?: VidsComposerTransitionDiagnostics["handoffTrace"] };
+  readinessDeadlineAt?: number;
+  traceContext?: { triggerSource: "automatic_start" | "automatic_alarm" | "manual_resume" | "visibility_wakeup" | "unknown"; elapsedSinceReceiptToFirstReadMs: number; readinessDeadlineAt?: number; priorTrace?: VidsComposerTransitionDiagnostics["handoffTrace"] };
 }): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean; diagnostics: VidsComposerTransitionDiagnostics }> {
   const href = location.href;
   const diagnostic: VidsComposerTransitionDiagnostics = {
@@ -286,14 +293,20 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     if (labelled) return labelled.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? "").join(" ").trim();
     return element.getAttribute("title")?.trim() ?? "";
   };
-  const toggleLabelForPanel = (panel?: HTMLElement): "Expand" | "Collapse" | "missing" | "ambiguous" | "unknown" => {
-    if (!panel) return "unknown";
-    const toggles = [...panel.querySelectorAll<HTMLButtonElement>("button.collapsiblePromptBoxToggleExpansionButton")].filter(visible);
-    if (!toggles.length) return "missing";
-    if (toggles.length !== 1) return "ambiguous";
-    const label = toggles[0]!.getAttribute("aria-label")?.trim();
-    return label === "Expand" || label === "Collapse" ? label : "unknown";
+  const toggleForPanel = (panel?: HTMLElement) => {
+    if (!panel) return { label: "missing" as const, scope: "missing" as const, control: undefined as HTMLButtonElement | undefined, disabled: false };
+    const inPanel = [...panel.querySelectorAll<HTMLButtonElement>("button.collapsiblePromptBoxToggleExpansionButton")].filter(visible);
+    const siblings = panel.parentElement ? [...panel.parentElement.children].filter((element): element is HTMLButtonElement => element instanceof HTMLButtonElement && element.matches("button.collapsiblePromptBoxToggleExpansionButton") && visible(element)) : [];
+    const candidates = inPanel.length ? inPanel : siblings;
+    const scope = inPanel.length ? "panel" as const : siblings.length ? "tabpanel_sibling" as const : "missing" as const;
+    if (!candidates.length) return { label: "missing" as const, scope, control: undefined as HTMLButtonElement | undefined, disabled: false };
+    if (candidates.length !== 1) return { label: "ambiguous" as const, scope: "ambiguous" as const, control: undefined as HTMLButtonElement | undefined, disabled: false };
+    const control = candidates[0]!;
+    const raw = control.getAttribute("aria-label")?.trim();
+    const label: VidsComposerToggleLabel = raw === "Expand" || raw === "Collapse" ? raw as VidsComposerToggleLabel : "unknown";
+    return { label, scope, control, disabled: control.disabled || control.getAttribute("aria-disabled") === "true" };
   };
+  const toggleLabelForPanel = (panel?: HTMLElement): VidsComposerToggleLabel => toggleForPanel(panel).label;
   const priorTrace = input.traceContext?.priorTrace;
   const trace: NonNullable<VidsComposerTransitionDiagnostics["handoffTrace"]> = {
     ...(priorTrace ?? {}),
@@ -336,180 +349,119 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     if (animateState) trace.finalAnimateState = animateState;
     diagnostic.handoffTrace = trace;
   };
-  const sidebars = [...document.querySelectorAll<HTMLElement>("[role='complementary']")].filter(visible).filter((element) => name(element) === "AI video clip");
-  diagnostic.sidebar = sidebars.length === 1 ? "unique" : sidebars.length ? "ambiguous" : "missing";
-  if (sidebars.length !== 1) return blocked("sidebar", sidebars.length ? "ai_sidebar_ambiguous" : "ai_sidebar_missing");
-  const sidebar = sidebars[0]!;
-  const findTabs = () => [...sidebar.querySelectorAll<HTMLElement>("[role='tab'][aria-selected='true']")].filter(visible).filter((element) => name(element) === "Animate");
-  const findPanels = () => [...sidebar.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter(visible).filter((element) => name(element) === "Animate");
-  const composerToggleState = (panel: HTMLElement) => {
-    const controls = [...panel.querySelectorAll<HTMLButtonElement>("button.collapsiblePromptBoxToggleExpansionButton")];
-    if (!controls.length) return { label: "missing" as const, control: undefined, disabled: false };
-    if (controls.length !== 1) return { label: "ambiguous" as const, control: undefined, disabled: false };
-    const control = controls[0]!;
-    if (!visible(control)) return { label: "missing" as const, control, disabled: false };
-    const disabled = control.disabled || control.getAttribute("aria-disabled") === "true";
-    const label = control.getAttribute("aria-label")?.trim();
-    return { label: label === "Expand" || label === "Collapse" ? label : "unknown" as const, control, disabled };
-  };
   const resolveFreshComposer = () => {
     const freshSidebars = [...document.querySelectorAll<HTMLElement>("[role='complementary']")].filter(visible).filter((element) => name(element) === "AI video clip");
-    if (freshSidebars.length !== 1) return { sidebarCount: freshSidebars.length, tabCount: 0, panelCount: 0, editorCount: 0 };
+    if (freshSidebars.length !== 1) return { sidebarCount: freshSidebars.length, tabCount: 0, panelCount: 0, editorCount: 0, panel: undefined, editor: undefined, editorCandidate: undefined, toggle: undefined };
     const freshSidebar = freshSidebars[0]!;
     const freshTabs = [...freshSidebar.querySelectorAll<HTMLElement>("[role='tab'][aria-selected='true']")].filter(visible).filter((element) => name(element) === "Animate");
-    const freshPanels = [...freshSidebar.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter(visible).filter((element) => name(element) === "Animate");
+    const namedPanels = [...freshSidebar.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter((element) => name(element) === "Animate");
+    const controlledIds = freshTabs.length === 1 ? freshTabs[0]!.getAttribute("aria-controls")?.trim().split(/\s+/).filter(Boolean) ?? [] : [];
+    const controlledPanels = controlledIds.map((id) => document.getElementById(id)).filter((element): element is HTMLElement => element instanceof HTMLElement && freshSidebar.contains(element) && element.getAttribute("role") === "tabpanel");
+    const activePanels = controlledPanels.length ? controlledPanels : namedPanels.filter(visible).length ? namedPanels.filter(visible) : namedPanels.filter((element) => element.getAttribute("aria-hidden") !== "true");
+    const freshPanels = activePanels;
     const freshPanel = freshPanels.length === 1 ? freshPanels[0] : undefined;
-    const freshEditors = freshPanel ? [...freshPanel.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible) : [];
-    return { sidebarCount: freshSidebars.length, tabCount: freshTabs.length, panelCount: freshPanels.length, editorCount: freshEditors.length, sidebar: freshSidebar, tab: freshTabs.length === 1 ? freshTabs[0] : undefined, panel: freshPanel, editor: freshEditors.length === 1 ? freshEditors[0] : undefined, toggle: freshPanel ? composerToggleState(freshPanel) : undefined };
+    const editorSelector = "div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']";
+    const editorCandidates = freshPanel ? [...freshPanel.querySelectorAll<HTMLElement>(editorSelector)] : [];
+    const freshEditors = editorCandidates.filter(visible);
+    return { sidebarCount: freshSidebars.length, tabCount: freshTabs.length, panelCount: freshPanels.length, editorCount: freshEditors.length, sidebar: freshSidebar, tab: freshTabs.length === 1 ? freshTabs[0] : undefined, panel: freshPanel, editor: freshEditors.length === 1 ? freshEditors[0] : undefined, editorCandidate: editorCandidates.length === 1 ? editorCandidates[0] : undefined, toggle: freshPanel ? toggleForPanel(freshPanel) : undefined };
   };
-  const tabs = findTabs();
-  const panels = findPanels();
-  tracePanel = panels.length === 1 ? panels[0] : undefined;
-  diagnostic.animateTab = tabs.length === 1 ? "unique" : tabs.length ? "ambiguous" : "missing";
-  diagnostic.animatePanel = panels.length === 1 ? "unique" : panels.length ? "ambiguous" : "missing";
-  const initialToggle = panels.length === 1 ? composerToggleState(panels[0]!) : undefined;
-  trace.composerToggleLabelBefore ??= initialToggle?.label ?? (panels.length > 1 ? "ambiguous" : "missing");
-  trace.composerToggleLabelAfter ??= trace.composerToggleLabelBefore;
-  trace.initialAnimateState ??= initialToggle?.label === "Collapse" ? "expanded" : initialToggle?.label === "Expand" ? "collapsed" : panels.length === 1 ? "unknown" : panels.length === 0 ? "collapsed" : "ambiguous";
-  trace.finalAnimateState ??= trace.initialAnimateState;
-  if (tracePanel) recordPreviews(tracePanel);
-  else recordPreviews();
-  if (tabs.length !== 1) return blocked("animate", tabs.length ? "animate_tab_ambiguous" : "animate_tab_not_selected");
-  diagnostic.panelStateBeforeExpansion = panels.length === 1 ? "expanded" : panels.length === 0 ? "collapsed" : "unknown";
-  if (panels.length === 1 && initialToggle) {
-    if (initialToggle.label === "missing") { trace.composerToggleOutcome = "missing"; return blocked("animate", "vids_composer_toggle_missing"); }
-    if (initialToggle.label === "ambiguous") { trace.composerToggleOutcome = "ambiguous"; return blocked("animate", "vids_composer_toggle_ambiguous"); }
-    if (initialToggle.disabled) { trace.composerToggleOutcome = "disabled"; return blocked("animate", "vids_composer_toggle_disabled"); }
-    if (initialToggle.label === "unknown") { trace.composerToggleOutcome = "label_unrecognized"; return blocked("animate", "vids_composer_toggle_label_unrecognized"); }
-    if (initialToggle.label === "Collapse") {
-      trace.composerToggleLabelAfter = "Collapse";
-      trace.composerToggleOutcome ??= "already_expanded";
-      trace.initialAnimateState ??= "expanded";
-      trace.finalAnimateState = "expanded";
-    } else {
-      trace.composerToggleClickAttempted = true;
-      trace.expansionAttempted = true;
-      initialToggle.control!.click();
-      let priorPanel: HTMLElement | undefined;
-      let priorEditor: HTMLElement | undefined;
-      let stableReads = 0;
-      let finalToggleLabel: "Expand" | "Collapse" | "missing" | "ambiguous" | "unknown" = "unknown";
-      let finalPanel: HTMLElement | undefined;
-      let previewReady = false;
-      const deadline = Date.now() + Math.max(500, Math.min(input.timeoutMs, 5_000));
-      while (Date.now() < deadline) {
-        const fresh = resolveFreshComposer();
-        if (fresh.sidebarCount === 1 && fresh.tabCount === 1 && fresh.panelCount === 1 && fresh.editorCount === 1 && fresh.panel && fresh.editor && fresh.toggle) {
-          finalPanel = fresh.panel;
-          tracePanel = fresh.panel;
-          finalToggleLabel = fresh.toggle.label;
-          trace.composerToggleLabelAfter = finalToggleLabel;
-          recordPreviews(fresh.panel);
-          const previewsNow = [...fresh.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
-          previewReady = previewsNow.length === 1 && previewsNow[0]!.complete && previewsNow[0]!.naturalWidth > 0 && previewsNow[0]!.naturalHeight > 0;
-          const stable = finalToggleLabel === "Collapse" && !fresh.toggle.disabled;
-          stableReads = stable && fresh.panel === priorPanel && fresh.editor === priorEditor ? stableReads + 1 : stable ? 1 : 0;
-          trace.panelReplaced ||= fresh.panel !== panels[0];
-          const originalEditor = panels[0]!.querySelector<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.'"]);
-          trace.editorReplaced ||= fresh.editor !== originalEditor;
-          trace.finalAnimateState = stable ? "expanded" : finalToggleLabel === "Expand" ? "collapsed" : "unknown";
-          priorPanel = fresh.panel;
-          priorEditor = fresh.editor;
-          if (stableReads >= 3 && previewReady) break;
-        } else {
-          stableReads = 0;
-          finalToggleLabel = fresh.toggle?.label ?? (fresh.panelCount > 1 ? "ambiguous" : "missing");
-          trace.composerToggleLabelAfter = finalToggleLabel;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      trace.composerToggleLabelAfter = finalToggleLabel;
-      if (finalToggleLabel !== "Collapse" || stableReads < 3) {
-        trace.composerToggleOutcome = finalToggleLabel === "missing" ? "missing" : finalToggleLabel === "ambiguous" ? "ambiguous" : finalToggleLabel === "unknown" ? "label_unrecognized" : finalPanel && resolveFreshComposer().toggle?.disabled ? "disabled" : "settlement_failed";
-        diagnostic.panelStateAfterExpansion = finalPanel ? "unstable" : "missing";
-        finishTrace(finalPanel, trace.finalAnimateState);
-        const reason = trace.composerToggleOutcome === "missing" ? "vids_composer_toggle_missing" : trace.composerToggleOutcome === "ambiguous" ? "vids_composer_toggle_ambiguous" : trace.composerToggleOutcome === "disabled" ? "vids_composer_toggle_disabled" : trace.composerToggleOutcome === "label_unrecognized" ? "vids_composer_toggle_label_unrecognized" : "vids_composer_toggle_settlement_failed";
-        return { href, ok: false, reason, changed: false, diagnostics: { ...diagnostic, stage: "settlement" } };
-      }
-      trace.composerToggleOutcome = "expanded";
-      diagnostic.panelStateAfterExpansion = "settled";
-      diagnostic.freshPreviewDetection = previewReady ? "delayed_then_present" : "absent_after_settle";
-      finishTrace(finalPanel, "expanded");
-      return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "animate", previewCount: Math.min(1000, finalPanel?.querySelectorAll("img[alt='Uploaded image preview']").length ?? 0) } };
+  const startedAt = performance.now();
+  const readinessElapsedBefore = trace.composerReadinessWaitMs ?? 0;
+  const deadline = Math.min(input.readinessDeadlineAt ?? Date.now() + Math.min(30_000, Math.max(2_000, input.timeoutMs)), Date.now() + 30_000);
+  const initialComposer = resolveFreshComposer();
+  let fresh = resolveFreshComposer();
+  let priorPanel: HTMLElement | undefined;
+  let priorEditor: HTMLElement | undefined;
+  let stableReads = 0;
+  let expandClicked = false;
+  let observedMissingPreview = false;
+  let observedLoadedPreview = false;
+  let firstLabel: VidsComposerToggleLabel | undefined;
+  const observe = (current: typeof fresh) => {
+    const label = current.toggle?.label ?? (current.panelCount > 1 ? "ambiguous" : "missing");
+    const scope = current.toggle?.scope ?? "missing";
+    trace.composerToggleObservations ??= [];
+    const observation = { atMs: Math.min(30_000, Math.max(0, Math.trunc(performance.now() - startedAt))), label, scope, panelCount: Math.min(10, current.panelCount), editorCount: Math.min(10, current.editorCount), visibility: visibility() };
+    const last = trace.composerToggleObservations.at(-1);
+    if (!last || last.label !== label || last.scope !== scope || last.panelCount !== observation.panelCount || last.editorCount !== observation.editorCount || last.visibility !== observation.visibility || observation.atMs === 0) {
+      if (trace.composerToggleObservations.length >= 8) trace.composerToggleObservations.splice(1, 1);
+      trace.composerToggleObservations.push(observation);
     }
+    tracePanel = current.panel;
+    recordPreviews(current.panel);
+    if (!current.panel || ![...current.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].some(visible)) observedMissingPreview = true;
+    if (current.panel && [...current.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].some((preview) => visible(preview) && preview.complete && preview.naturalWidth > 0 && preview.naturalHeight > 0)) observedLoadedPreview = true;
+    if (current.panel) diagnostic.previewCount = Math.min(1000, [...current.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible).length);
+    if (initialComposer.panel && current.panel && current.panel !== initialComposer.panel) { trace.panelReplaced = true; diagnostic.panelRebound = true; }
+    if (initialComposer.editorCandidate && current.editor && current.editor !== initialComposer.editorCandidate) { trace.editorReplaced = true; diagnostic.editorRebound = true; }
+  };
+  let ready = false;
+  while (Date.now() < deadline) {
+    sampleVisibility();
+    fresh = resolveFreshComposer();
+    const toggle = fresh.toggle;
+    firstLabel ??= trace.composerToggleLabelBefore ?? toggle?.label ?? (fresh.panelCount > 1 ? "ambiguous" : "missing");
+    trace.composerToggleLabelBefore ??= toggle?.label ?? (fresh.panelCount > 1 ? "ambiguous" : "missing");
+    trace.composerToggleLabelAfter = toggle?.label ?? (fresh.panelCount > 1 ? "ambiguous" : "missing");
+    trace.initialAnimateState ??= toggle?.label === "Collapse" ? "expanded" : toggle?.label === "Expand" ? "collapsed" : toggle?.label === "ambiguous" ? "ambiguous" : "missing";
+    trace.composerToggleScope = toggle?.scope ?? "missing";
+    trace.initialAnimateState ??= toggle?.label === "Collapse" ? "expanded" : toggle?.label === "Expand" ? "collapsed" : "unknown";
+    diagnostic.sidebar = fresh.sidebarCount === 1 ? "unique" : fresh.sidebarCount ? "ambiguous" : "missing";
+    diagnostic.animateTab = fresh.tabCount === 1 ? "unique" : fresh.tabCount ? "ambiguous" : "missing";
+    diagnostic.animatePanel = fresh.panelCount === 1 ? "unique" : fresh.panelCount ? "ambiguous" : "missing";
+    observe(fresh);
+    const panelBound = fresh.sidebarCount === 1 && fresh.tabCount === 1 && fresh.panelCount === 1 && !!fresh.panel;
+    if (panelBound && toggle?.control && !toggle.disabled && (toggle.label === "Expand" || toggle.label === "Collapse")) {
+      if (toggle.label === "Expand" && !expandClicked) {
+        expandClicked = true;
+        trace.composerToggleClickAttempted = true;
+        trace.expansionAttempted = true;
+        trace.composerToggleOutcome = "expanded";
+        toggle.control.click();
+        stableReads = 0;
+        priorPanel = undefined;
+        priorEditor = undefined;
+      } else if (toggle.label === "Collapse" && fresh.editorCount === 1 && fresh.editor) {
+        stableReads = fresh.panel === priorPanel && fresh.editor === priorEditor ? stableReads + 1 : 1;
+        priorPanel = fresh.panel;
+        priorEditor = fresh.editor;
+        if (stableReads >= 3) { ready = true; break; }
+      } else stableReads = 0;
+    } else stableReads = 0;
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  if (panels.length !== 1) {
-    const expanders = [...sidebar.querySelectorAll<HTMLElement>("button[aria-expanded='false'], [role='button'][aria-expanded='false']")].filter(visible).filter((element) => name(element) === "Expand");
-    if (expanders.length === 1) {
-      trace.expansionAttempted = true;
-      expanders[0]!.click();
-      let previousPanel: HTMLElement | undefined;
-      let previousEditor: HTMLElement | undefined;
-      let stableReads = 0;
-      let stableSince = 0;
-      let sawMissingPreview = false;
-      let settledPreviewCount = 0;
-      const deadline = Date.now() + Math.max(500, Math.min(input.timeoutMs, 5_000));
-      while (Date.now() < deadline) {
-        const currentSidebars = [...document.querySelectorAll<HTMLElement>("[role='complementary']")].filter(visible).filter((element) => name(element) === "AI video clip");
-        const currentTabs = currentSidebars.length === 1 ? [...currentSidebars[0]!.querySelectorAll<HTMLElement>("[role='tab'][aria-selected='true']")].filter(visible).filter((element) => name(element) === "Animate") : [];
-        const currentPanels = currentSidebars.length === 1 ? [...currentSidebars[0]!.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter(visible).filter((element) => name(element) === "Animate") : [];
-        const currentEditors = currentPanels.length === 1 ? [...currentPanels[0]!.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible) : [];
-        if (currentSidebars.length === 1 && currentTabs.length === 1 && currentPanels.length === 1 && currentEditors.length === 1) {
-          const currentPanel = currentPanels[0]!;
-          const currentEditor = currentEditors[0]!;
-          tracePanel = currentPanel;
-          const previewsNow = [...currentPanel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
-          tracePanel = currentPanel;
-          recordPreviews(currentPanel);
-          const previewReady = previewsNow.length === 1 && previewsNow[0]!.complete && previewsNow[0]!.naturalWidth > 0 && previewsNow[0]!.naturalHeight > 0;
-          const addControls = [...currentPanel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Add image");
-          const files = [...currentPanel.querySelectorAll<HTMLInputElement>("input[type='file']")];
-          const emptyEditor = !currentEditor.textContent || currentEditor.textContent === "\n";
-          const cleanReady = input.phase === "inspect_clean" && !previewsNow.length && emptyEditor && addControls.length === 1 && files.length === 1;
-          if (previewsNow.length === 0) sawMissingPreview = true;
-          settledPreviewCount = previewsNow.length;
-          if (currentPanel === previousPanel && currentEditor === previousEditor) stableReads += 1;
-          else { stableReads = 1; stableSince = Date.now(); }
-          previousPanel = currentPanel;
-          previousEditor = currentEditor;
-          diagnostic.panelRebound = currentPanel !== panels[0];
-          diagnostic.editorRebound = true;
-          trace.panelReplaced ||= currentPanel !== panels[0];
-          trace.editorReplaced ||= currentEditor !== (panels[0]?.querySelector<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']") ?? undefined);
-          trace.finalAnimateState = "expanded";
-          if (stableReads >= 3 && (previewReady || (cleanReady && Date.now() - stableSince >= 500))) {
-            diagnostic.panelStateAfterExpansion = "settled";
-            diagnostic.freshPreviewDetection = previewReady ? (sawMissingPreview ? "delayed_then_present" : "present") : "absent_after_settle";
-            finishTrace(currentPanel, "expanded");
-            return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "animate", previewCount: Math.min(1000, settledPreviewCount) } };
-          }
-        } else {
-          stableReads = 0;
-          diagnostic.panelStateAfterExpansion = "missing";
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      if (previousPanel && stableReads >= 3) {
-        diagnostic.panelStateAfterExpansion = "settled";
-        diagnostic.freshPreviewDetection = settledPreviewCount === 0 ? "absent_after_settle" : "unknown";
-        finishTrace(previousPanel, "expanded");
-        return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "animate", previewCount: Math.min(1000, settledPreviewCount) } };
-      }
-      diagnostic.panelStateAfterExpansion = previousPanel ? "unstable" : "missing";
-      diagnostic.freshPreviewDetection = settledPreviewCount === 0 ? "absent_after_settle" : "unknown";
-      finishTrace(previousPanel, previousPanel ? "expanded" : "missing");
-      return { href, ok: false, reason: "vids_composer_expansion_settlement_failed", changed: false, diagnostics: { ...diagnostic, stage: "settlement", previewCount: Math.min(1000, settledPreviewCount) } };
-    }
+  trace.composerReadinessWaitMs = Math.min(30_000, readinessElapsedBefore + Math.max(0, Math.trunc(performance.now() - startedAt)));
+  if (!ready) {
+    const hidden = visibility() === "hidden";
+    const label = fresh.toggle?.label ?? (fresh.panelCount > 1 ? "ambiguous" : "missing");
+    trace.composerReadinessOutcome = hidden ? "timeout_hidden" : "timeout_visible";
+    trace.composerEditorReady = false;
+    trace.composerToggleLabelAfter = label;
+    trace.composerToggleOutcome ??= label === "ambiguous" ? "ambiguous" : fresh.toggle?.disabled ? "disabled" : label === "unknown" ? "label_unrecognized" : expandClicked ? "settlement_failed" : "missing";
+    trace.finalAnimateState = label === "Expand" ? "collapsed" : label === "Collapse" ? "expanded" : label === "ambiguous" ? "ambiguous" : "missing";
+    diagnostic.panelStateBeforeExpansion = firstLabel === "Expand" ? "collapsed" : firstLabel === "Collapse" ? "expanded" : "unknown";
+    diagnostic.panelStateAfterExpansion = expandClicked ? "unstable" : "not_attempted";
+    finishTrace(fresh.panel, trace.finalAnimateState);
+    const reason = hidden ? "vids_composer_waiting_for_tab" : trace.composerToggleOutcome === "ambiguous" ? "vids_composer_toggle_ambiguous" : trace.composerToggleOutcome === "disabled" ? "vids_composer_toggle_disabled" : trace.composerToggleOutcome === "label_unrecognized" ? "vids_composer_toggle_label_unrecognized" : expandClicked ? "vids_composer_toggle_settlement_failed" : "vids_composer_readiness_timeout";
+    return { href, ok: false, reason, changed: false, diagnostics: { ...diagnostic, stage: "readiness" } };
   }
-  if (tabs.length !== 1 || panels.length !== 1) return blocked("animate", panels.length > 1 ? "animate_panel_ambiguous" : "vids_composer_collapsed_or_changed");
-  let panel = panels[0]!;
-  tracePanel = panel;
+  trace.composerReadinessOutcome = "ready";
+  trace.composerEditorReady = true;
+  trace.composerToggleLabelAfter = "Collapse";
+  trace.composerToggleOutcome ??= expandClicked ? "expanded" : "already_expanded";
   trace.finalAnimateState = "expanded";
-  const editors = [...panel.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible);
-  diagnostic.editor = editors.length === 1 ? "unique" : editors.length ? "ambiguous" : "missing";
-  if (editors.length !== 1) return blocked("editor", editors.length ? "prompt_editor_ambiguous" : "prompt_editor_changed");
-  let editor = editors[0]!;
+  diagnostic.panelStateBeforeExpansion = firstLabel === "Expand" ? "collapsed" : firstLabel === "Collapse" ? "expanded" : "unknown";
+  diagnostic.panelStateAfterExpansion = expandClicked ? "settled" : "not_attempted";
+  diagnostic.freshPreviewDetection = observedLoadedPreview ? (observedMissingPreview ? "delayed_then_present" : "present") : "absent_after_settle";
+  if (expandClicked) {
+    finishTrace(fresh.panel, "expanded");
+    return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "readiness" } };
+  }
+  if (!fresh.panel || !fresh.editor) return blocked("editor", "prompt_editor_changed");
+  let panel = fresh.panel;
+  tracePanel = panel;
+  diagnostic.editor = "unique";
+  let editor = fresh.editor;
   const blocks = new Set(["DIV", "P"]);
   const walk = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
@@ -693,10 +645,10 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
         panel = current.panel; editor = current.editor; previews = [];
         tracePanel = current.panel;
         recordPreviews(current.panel, true);
-        trace.panelReplaced ||= current.panel !== panels[0];
-        trace.editorReplaced ||= current.editor !== editors[0];
+        trace.panelReplaced ||= current.panel !== panel;
+        trace.editorReplaced ||= current.editor !== editor;
         trace.finalAnimateState = "expanded";
-        diagnostic.panelRebound = current.panel !== panels[0];
+        diagnostic.panelRebound = current.panel !== panel;
         diagnostic.editorRebound = true;
         diagnostic.previewCount = 0;
         diagnostic.panelStateAfterExpansion = "settled";

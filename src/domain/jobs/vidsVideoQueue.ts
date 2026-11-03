@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const VIDS_VIDEO_DISPATCH_GAP_MS = 50_000 as const;
 export const VIDS_VIDEO_READINESS_TIMEOUT_MS = 60_000 as const;
-export const VIDS_VIDEO_QUEUE_STATES = ["ready", "cooldown", "preparing", "checking_generate", "paused", "stopped", "blocked", "all_sent"] as const;
+export const VIDS_VIDEO_QUEUE_STATES = ["ready", "cooldown", "preparing", "checking_generate", "waiting_for_tab", "paused", "stopped", "blocked", "all_sent"] as const;
 export const VIDS_VIDEO_QUEUE_ITEM_STATES = ["pending", "transitioning", "attaching", "entering_prompt", "checking_generate", "sending", "sent", "blocked", "uncertain"] as const;
 export const VidsVideoTransitionCheckpointSchema = z.object({
   // Optional only to read pre-mw01wgpj queue rows. A checkpoint without a
@@ -28,7 +28,7 @@ export const VidsCleanComposerRecoverySchema = z.object({
   verifiedAt: z.number().finite().nonnegative(),
 }).strict();
 export const VidsCleanupDiagnosticsSchema = z.object({
-  stage: z.enum(["ownership", "reference_remove", "prompt_clear", "settlement", "complete", "binding"]),
+  stage: z.enum(["readiness", "ownership", "reference_remove", "prompt_clear", "settlement", "complete", "binding"]),
   editorRebound: z.boolean().optional(), panelRebound: z.boolean().optional(),
   panelStateBeforeExpansion: z.enum(["collapsed", "expanded", "unknown"]).optional(),
   panelStateAfterExpansion: z.enum(["settled", "missing", "unstable", "not_attempted"]).optional(),
@@ -40,7 +40,7 @@ export const VidsCleanupDiagnosticsSchema = z.object({
   expectedPromptLength: z.number().int().min(0).max(10_000_000).optional(), currentPromptLength: z.number().int().min(0).max(10_000_000).optional(),
   clearAvailable: z.enum(["unique", "missing", "ambiguous", "not_checked"]).optional(), settledEmpty: z.boolean().optional(),
   handoffTrace: z.object({
-    triggerSource: z.enum(["automatic_start", "automatic_alarm", "manual_resume", "unknown"]).optional(),
+    triggerSource: z.enum(["automatic_start", "automatic_alarm", "manual_resume", "visibility_wakeup", "unknown"]).optional(),
     elapsedSinceReceiptToFirstReadMs: z.number().int().min(0).max(10_000_000).optional(),
     visibilityStart: z.enum(["visible", "hidden", "prerender", "unloaded", "unknown"]).optional(),
     visibilityEnd: z.enum(["visible", "hidden", "prerender", "unloaded", "unknown"]).optional(),
@@ -51,6 +51,11 @@ export const VidsCleanupDiagnosticsSchema = z.object({
     composerToggleLabelAfter: z.enum(["Expand", "Collapse", "missing", "ambiguous", "unknown"]).optional(),
     composerToggleClickAttempted: z.boolean().optional(),
     composerToggleOutcome: z.enum(["already_expanded", "expanded", "missing", "ambiguous", "disabled", "label_unrecognized", "settlement_failed"]).optional(),
+    composerReadinessWaitMs: z.number().int().min(0).max(30_000).optional(),
+    composerReadinessOutcome: z.enum(["ready", "timeout_hidden", "timeout_visible"]).optional(),
+    composerEditorReady: z.boolean().optional(),
+    composerToggleScope: z.enum(["panel", "tabpanel_sibling", "missing", "ambiguous", "unknown"]).optional(),
+    composerToggleObservations: z.array(z.object({ atMs: z.number().int().min(0).max(30_000), label: z.enum(["Expand", "Collapse", "missing", "ambiguous", "unknown"]), scope: z.enum(["panel", "tabpanel_sibling", "missing", "ambiguous", "unknown"]), panelCount: z.number().int().min(0).max(10), editorCount: z.number().int().min(0).max(10), visibility: z.enum(["visible", "hidden", "prerender", "unloaded", "unknown"]) }).strict()).max(8).optional(),
     expansionAttempted: z.boolean().optional(), panelReplaced: z.boolean().optional(), editorReplaced: z.boolean().optional(),
     previewObservations: z.array(z.object({ inspection: z.number().int().min(0).max(20), atMs: z.number().int().min(0).max(10_000_000), selectorMatches: z.number().int().min(0).max(10), visibleMatches: z.number().int().min(0).max(10), loadedMatches: z.number().int().min(0).max(10), composerToggleLabel: z.enum(["Expand", "Collapse", "missing", "ambiguous", "unknown"]).optional() }).strict()).max(8).optional(),
   }).strict().optional(),

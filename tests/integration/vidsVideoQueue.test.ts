@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createVidsVideoQueueHandler, VIDS_VIDEO_QUEUE_ALARM_PREFIX } from "../../src/background/handlers/vidsVideoQueue";
-import { VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS } from "../../src/domain/jobs/vidsVideoQueue";
+import { VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS, type VidsCleanupDiagnostics } from "../../src/domain/jobs/vidsVideoQueue";
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import { ExtensionRepositories } from "../../src/storage/repositories";
@@ -23,6 +23,7 @@ const batchId = "prepared:vids:two-shots";
 const fiveShotBatchId = "prepared:vids:prior-build-five-shots";
 const refs = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
 const prompts = ["{\n  \"shot_id\": \"1\",\n  \"prompt_type\": \"video\",\n  \"description\": \"first\"\n}", "{\n  \"shot_id\": \"2\",\n  \"prompt_type\": \"video\",\n  \"description\": \"second\",\n  \"long\": \"" + "x".repeat(3000) + "\"\n}"];
+type TestTraceContext = { triggerSource?: "automatic_start" | "automatic_alarm" | "manual_resume" | "visibility_wakeup" | "unknown"; elapsedSinceReceiptToFirstReadMs?: number; readinessDeadlineAt?: number; priorTrace?: VidsCleanupDiagnostics["handoffTrace"] };
 
 async function setup(options: { disabledAttempts?: number; uncertain?: boolean; blocked?: boolean; shotCount?: number; tabId?: number; revalidate?: () => Promise<unknown> } = {}) {
   const db = createMemoryRepositoryDatabase();
@@ -68,7 +69,7 @@ async function setup(options: { disabledAttempts?: number; uncertain?: boolean; 
     return { status: options.uncertain ? "uncertain" : "dispatched", operation: op };
   });
   const alarms = { create: vi.fn(async () => undefined), clear: vi.fn(async () => true) };
-  const transitionFromPrevious = vi.fn(async (...args: [string, string, boolean?, string?, boolean?, string?, unknown?]) => { void args; return { status: "ready" as const }; });
+  const transitionFromPrevious = vi.fn(async (...args: [string, string, boolean?, string?, boolean?, string?, TestTraceContext?]) => { void args; return { status: "ready" as const }; });
   const handler = createVidsVideoQueueHandler({ repositories, alarms, attach, getAttachment, generate, getGeneration, transitionFromPrevious, revalidate: options.revalidate, now: () => at, makeRunId: () => "run-1" });
   const flush = async () => new Promise((resolve) => setTimeout(resolve, 0));
   const waitForQueue = async (queueId: string, predicate: (queue: VidsVideoQueueRecord | undefined) => boolean) => {
@@ -194,6 +195,114 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(queue!.items[0]!.dispatchReceipt!.storedAt).toBe(firstReceiptAt);
     expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
     expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+  });
+
+  it("uses the inner composer toggle on the alarm handoff, preserves its trace, cleans up, and sends Shot 2 once", async () => {
+    const f = await setup({ shotCount: 2 });
+    const started = await f.handler.start(f.batch.id);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const shot1Receipt = sent!.items[0]!.dispatchReceipt;
+    let expandClicks = 0;
+    let inspections = 0;
+    f.transitionFromPrevious.mockImplementation(async (_batch, _previous, inspectOnly, _next, _checkpointed, phase, traceContext) => {
+      if (inspectOnly && phase === "inspect") {
+        inspections += 1;
+        if (inspections === 1) {
+          expandClicks += 1;
+          return { status: "blocked" as const, reason: "vids_composer_expanded_revalidate", diagnostics: { stage: "animate", handoffTrace: {
+            triggerSource: traceContext?.triggerSource, elapsedSinceReceiptToFirstReadMs: traceContext?.elapsedSinceReceiptToFirstReadMs, initialAnimateState: "collapsed", finalAnimateState: "expanded",
+            composerToggleLabelBefore: "Expand", composerToggleLabelAfter: "Collapse", composerToggleClickAttempted: true, composerToggleOutcome: "expanded", panelReplaced: true, editorReplaced: true,
+            previewObservations: [{ inspection: 0, atMs: 0, selectorMatches: 0, visibleMatches: 0, loadedMatches: 0, composerToggleLabel: "Expand" }, { inspection: 0, atMs: 500, selectorMatches: 1, visibleMatches: 1, loadedMatches: 1, composerToggleLabel: "Collapse" }],
+          } } };
+        }
+        expect(traceContext?.priorTrace?.composerToggleLabelBefore).toBe("Expand");
+        expect(traceContext?.priorTrace?.composerToggleLabelAfter).toBe("Collapse");
+        expect(traceContext?.priorTrace?.previewObservations).toHaveLength(2);
+        return { status: "ready" as const, diagnostics: { stage: "complete", promptMatches: true, referenceResult: "matched", handoffTrace: traceContext?.priorTrace } };
+      }
+      return { status: "ready" as const };
+    });
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const handedOff = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(handedOff?.state).toBe("all_sent");
+    expect(handedOff?.items.map((item) => item.state)).toEqual(["sent", "sent"]);
+    expect(handedOff?.items[0]?.dispatchReceipt).toEqual(shot1Receipt);
+    expect(expandClicks).toBe(1);
+    expect(inspections).toBe(2);
+    expect(f.transitionFromPrevious.mock.calls.map((call) => call[5])).toEqual(["inspect", "inspect", "remove_reference", "clear_prompt"]);
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+    expect(f.operations.get("item-2")).toMatchObject({ promptHash: f.batch.items[1]!.contentHash, referenceId: f.batch.items[1]!.reference.referenceId, referenceSha256: f.batch.items[1]!.reference.sha256, activationAttempted: true, activationCount: 1 });
+  });
+
+  it("blocks visible readiness timeouts or ambiguous toggles on alarm without preparing Shot 2", async () => {
+    for (const [reason, label] of [["vids_composer_readiness_timeout", "missing"], ["vids_composer_toggle_ambiguous", "ambiguous"]] as const) {
+      const f = await setup({ shotCount: 2 });
+      const started = await f.handler.start(f.batch.id);
+      const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+      const receipt = sent!.items[0]!.dispatchReceipt;
+      f.transitionFromPrevious.mockImplementation(async (_batch, _previous, inspectOnly, _next, _checkpointed, phase, traceContext) => inspectOnly && phase === "inspect"
+        ? { status: "blocked" as const, reason, diagnostics: { stage: "readiness", handoffTrace: { triggerSource: traceContext?.triggerSource, elapsedSinceReceiptToFirstReadMs: traceContext?.elapsedSinceReceiptToFirstReadMs, composerReadinessOutcome: "timeout_visible", composerReadinessWaitMs: 30_000, composerEditorReady: false, composerToggleLabelBefore: label === "missing" ? "missing" : "ambiguous", composerToggleLabelAfter: label === "missing" ? "missing" : "ambiguous", composerToggleClickAttempted: false, composerToggleOutcome: label, previewObservations: [{ inspection: 0, atMs: 0, selectorMatches: 0, visibleMatches: 0, loadedMatches: 0, composerToggleLabel: label }] } } }
+        : { status: "ready" as const });
+      f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+      const blocked = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+      expect(blocked).toMatchObject({ state: "paused", items: [{ state: "sent", dispatchReceipt: receipt }, { state: "blocked", reason, cleanupDiagnostics: { handoffTrace: { composerToggleClickAttempted: false } } }] });
+      expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+      expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    }
+  });
+
+  it("shows Waiting for Vids tab after hidden composer timeout and resumes only when the bound target tab is activated", async () => {
+    const f = await setup({ shotCount: 2 });
+    const started = await f.handler.start(f.batch.id);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const receipt = sent!.items[0]!.dispatchReceipt;
+    let reads = 0;
+    f.transitionFromPrevious.mockImplementation(async (_batch, _previous, inspectOnly, _next, _checkpointed, phase, traceContext) => {
+      if (inspectOnly && phase === "inspect" && reads++ === 0) return { status: "blocked" as const, reason: "vids_composer_waiting_for_tab", diagnostics: { stage: "readiness", handoffTrace: { triggerSource: traceContext?.triggerSource, elapsedSinceReceiptToFirstReadMs: traceContext?.elapsedSinceReceiptToFirstReadMs, composerReadinessWaitMs: 30_000, composerReadinessOutcome: "timeout_hidden", composerEditorReady: false, composerToggleLabelBefore: "missing", composerToggleLabelAfter: "missing", composerToggleClickAttempted: false, composerToggleOutcome: "missing", composerToggleObservations: [{ atMs: 30_000, label: "missing", scope: "missing", panelCount: 1, editorCount: 0, visibility: "hidden" }] } } };
+      return { status: "ready" as const };
+    });
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const waiting = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(waiting).toMatchObject({ state: "waiting_for_tab", pauseReason: "vids_waiting_for_tab", items: [{ state: "sent", dispatchReceipt: receipt }, { state: "transitioning", cleanupDiagnostics: { stage: "readiness", handoffTrace: { composerReadinessOutcome: "timeout_hidden", composerReadinessWaitMs: 30_000 } } }] });
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    await f.handler.onTargetVisible(99);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reads).toBe(1);
+    await f.handler.onTargetVisible(9);
+    const recovered = await f.waitForQueue(started.queueId, (value) => value?.state === "all_sent");
+    expect(recovered?.items).toMatchObject([{ state: "sent", dispatchReceipt: receipt }, { state: "sent" }]);
+    expect(reads).toBeGreaterThan(1);
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+  });
+
+  it.each(["pause", "stop"] as const)("honors %s while waiting for the Vids tab without replaying Shot 1", async (action) => {
+    const f = await setup({ shotCount: 2 });
+    const started = await f.handler.start(f.batch.id);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const receipt = sent!.items[0]!.dispatchReceipt;
+    let finishWait!: (result: { status: "blocked"; reason: string; diagnostics: unknown }) => void;
+    const waitResult = new Promise<{ status: "blocked"; reason: string; diagnostics: unknown }>((resolve) => { finishWait = resolve; });
+    f.transitionFromPrevious.mockImplementation(async (_batch, _previous, inspectOnly, _next, _checkpointed, phase) => inspectOnly && phase === "inspect" ? waitResult : { status: "ready" as const });
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const alarm = f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    for (let attempt = 0; attempt < 10 && f.transitionFromPrevious.mock.calls.length === 0; attempt += 1) await f.flush();
+    const duringWait = await f.repositories.getVidsVideoQueue(started.queueId);
+    expect(duringWait).toMatchObject({ state: "preparing", items: [{ state: "sent" }, { state: "transitioning" }] });
+    const changed = await f.handler[action](f.batch.id, duringWait!.revision);
+    finishWait({ status: "blocked", reason: "vids_composer_waiting_for_tab", diagnostics: { stage: "readiness", handoffTrace: { composerReadinessOutcome: "timeout_hidden", composerReadinessWaitMs: 30_000 } } });
+    const completedRun = await alarm;
+    await f.handler.onTargetVisible(9);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(changed.state).toBe(action === "pause" ? "paused" : "stopped");
+    expect(completedRun?.state).toBe(action === "pause" ? "paused" : "stopped");
+    expect(f.transitionFromPrevious).toHaveBeenCalledTimes(1);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    const final = await f.repositories.getVidsVideoQueue(started.queueId);
+    expect(final?.items[0]).toMatchObject({ state: "sent", dispatchReceipt: receipt });
+    expect(final?.items[1]?.state).toBe("transitioning");
   });
 
   it("recovers the persisted 3/5 checkpoint blocker at Shot 4 and preserves the first three receipts", async () => {

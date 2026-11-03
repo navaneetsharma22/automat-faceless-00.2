@@ -18,6 +18,9 @@ function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanu
   const safeState = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["visibilityStart"] => value === "visible" || value === "hidden" || value === "prerender" || value === "unloaded" || value === "unknown" ? value : undefined;
   const safePanel = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["initialAnimateState"] => value === "collapsed" || value === "expanded" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
   const safeToggleLabel = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleLabelBefore"] => value === "Expand" || value === "Collapse" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
+  const safeToggleOutcome = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleOutcome"] => value === "already_expanded" || value === "expanded" || value === "missing" || value === "ambiguous" || value === "disabled" || value === "label_unrecognized" || value === "settlement_failed" ? value : undefined;
+  const safeToggleScope = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleScope"] => value === "panel" || value === "tabpanel_sibling" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
+  const safeReadinessOutcome = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerReadinessOutcome"] => value === "ready" || value === "timeout_hidden" || value === "timeout_visible" ? value : undefined;
   const traceArray = <T extends Record<string, unknown>>(value: unknown, parse: (item: unknown, index: number) => T | undefined): T[] | undefined => Array.isArray(value) ? value.slice(0, 8).flatMap((item, index) => { const parsed = parse(item, index); return parsed ? [parsed] : []; }) : undefined;
   const visibilityChanges = traceArray(rawTrace.visibilityChanges, (item) => {
     if (!item || typeof item !== "object") return undefined;
@@ -29,7 +32,12 @@ function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanu
     const entry = item as Record<string, unknown>;
     return typeof entry.atMs === "number" && Number.isFinite(entry.atMs) ? { inspection: Math.min(20, Math.max(0, Math.trunc(Number(entry.inspection) || 0))), atMs: Math.min(10_000_000, Math.max(0, Math.trunc(entry.atMs))), selectorMatches: Math.min(10, Math.max(0, Math.trunc(Number(entry.selectorMatches) || 0))), visibleMatches: Math.min(10, Math.max(0, Math.trunc(Number(entry.visibleMatches) || 0))), loadedMatches: Math.min(10, Math.max(0, Math.trunc(Number(entry.loadedMatches) || 0))), ...(safeToggleLabel(entry.composerToggleLabel) ? { composerToggleLabel: safeToggleLabel(entry.composerToggleLabel) } : {}) } : undefined;
   });
-  const selectedTriggerSource = triggerSource ?? (rawTrace.triggerSource === "automatic_start" || rawTrace.triggerSource === "automatic_alarm" || rawTrace.triggerSource === "manual_resume" || rawTrace.triggerSource === "unknown" ? rawTrace.triggerSource : undefined);
+  const composerToggleObservations = traceArray(rawTrace.composerToggleObservations, (item) => {
+    if (!item || typeof item !== "object") return undefined;
+    const entry = item as Record<string, unknown>, label = safeToggleLabel(entry.label), scope = safeToggleScope(entry.scope), state = safeState(entry.visibility);
+    return typeof entry.atMs === "number" && Number.isFinite(entry.atMs) && label && scope && state ? { atMs: Math.min(30_000, Math.max(0, Math.trunc(entry.atMs))), label, scope, panelCount: Math.min(10, Math.max(0, Math.trunc(Number(entry.panelCount) || 0))), editorCount: Math.min(10, Math.max(0, Math.trunc(Number(entry.editorCount) || 0))), visibility: state } : undefined;
+  });
+  const selectedTriggerSource = triggerSource ?? (rawTrace.triggerSource === "automatic_start" || rawTrace.triggerSource === "automatic_alarm" || rawTrace.triggerSource === "manual_resume" || rawTrace.triggerSource === "visibility_wakeup" || rawTrace.triggerSource === "unknown" ? rawTrace.triggerSource : undefined);
   const trace = {
     ...(selectedTriggerSource ? { triggerSource: selectedTriggerSource } : {}),
     ...(typeof rawTrace.elapsedSinceReceiptToFirstReadMs === "number" ? { elapsedSinceReceiptToFirstReadMs: Math.min(10_000_000, Math.max(0, Math.trunc(rawTrace.elapsedSinceReceiptToFirstReadMs))) } : elapsedSinceReceiptToFirstReadMs !== undefined ? { elapsedSinceReceiptToFirstReadMs: Math.min(10_000_000, Math.max(0, Math.trunc(elapsedSinceReceiptToFirstReadMs))) } : {}),
@@ -38,11 +46,16 @@ function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanu
     ...(safePanel(rawTrace.initialAnimateState) ? { initialAnimateState: safePanel(rawTrace.initialAnimateState) } : {}), ...(safePanel(rawTrace.finalAnimateState) ? { finalAnimateState: safePanel(rawTrace.finalAnimateState) } : {}),
     ...(safeToggleLabel(rawTrace.composerToggleLabelBefore) ? { composerToggleLabelBefore: safeToggleLabel(rawTrace.composerToggleLabelBefore) } : {}), ...(safeToggleLabel(rawTrace.composerToggleLabelAfter) ? { composerToggleLabelAfter: safeToggleLabel(rawTrace.composerToggleLabelAfter) } : {}),
     ...(typeof rawTrace.composerToggleClickAttempted === "boolean" ? { composerToggleClickAttempted: rawTrace.composerToggleClickAttempted } : {}),
-    ...(rawTrace.composerToggleOutcome === "already_expanded" || rawTrace.composerToggleOutcome === "expanded" || rawTrace.composerToggleOutcome === "missing" || rawTrace.composerToggleOutcome === "ambiguous" || rawTrace.composerToggleOutcome === "disabled" || rawTrace.composerToggleOutcome === "label_unrecognized" || rawTrace.composerToggleOutcome === "settlement_failed" ? { composerToggleOutcome: rawTrace.composerToggleOutcome } : {}),
+    ...(safeToggleOutcome(rawTrace.composerToggleOutcome) ? { composerToggleOutcome: safeToggleOutcome(rawTrace.composerToggleOutcome) } : {}),
+    ...(typeof rawTrace.composerReadinessWaitMs === "number" ? { composerReadinessWaitMs: Math.min(30_000, Math.max(0, Math.trunc(rawTrace.composerReadinessWaitMs))) } : {}),
+    ...(safeReadinessOutcome(rawTrace.composerReadinessOutcome) ? { composerReadinessOutcome: safeReadinessOutcome(rawTrace.composerReadinessOutcome) } : {}),
+    ...(typeof rawTrace.composerEditorReady === "boolean" ? { composerEditorReady: rawTrace.composerEditorReady } : {}),
+    ...(safeToggleScope(rawTrace.composerToggleScope) ? { composerToggleScope: safeToggleScope(rawTrace.composerToggleScope) } : {}),
+    ...(composerToggleObservations ? { composerToggleObservations } : {}),
     ...(typeof rawTrace.expansionAttempted === "boolean" ? { expansionAttempted: rawTrace.expansionAttempted } : {}), ...(typeof rawTrace.panelReplaced === "boolean" ? { panelReplaced: rawTrace.panelReplaced } : {}), ...(typeof rawTrace.editorReplaced === "boolean" ? { editorReplaced: rawTrace.editorReplaced } : {}),
     ...(previewObservations ? { previewObservations } : {}),
   };
-  const stage = raw.stage === "reference_remove" ? "reference_remove" : raw.stage === "prompt_clear" || raw.stage === "mutation" ? "prompt_clear" : raw.stage === "settlement" ? "settlement" : raw.stage === "binding" ? "binding" : raw.stage === "complete" ? "complete" : "ownership";
+  const stage = raw.stage === "readiness" ? "readiness" : raw.stage === "reference_remove" ? "reference_remove" : raw.stage === "prompt_clear" || raw.stage === "mutation" ? "prompt_clear" : raw.stage === "settlement" ? "settlement" : raw.stage === "binding" ? "binding" : raw.stage === "complete" ? "complete" : "ownership";
   const clearAvailable = raw.clearAvailable === "unique" || raw.clearAvailable === "ambiguous" || raw.clearAvailable === "missing" ? raw.clearAvailable : "not_checked";
   const enumValue = <T extends string>(value: unknown, allowed: readonly T[]) => typeof value === "string" && allowed.includes(value as T) ? value as T : undefined;
   return {
@@ -73,7 +86,7 @@ export function createVidsVideoQueueHandler(input: {
   getAttachment: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string }>;
   generate: (batchId: string, itemId: string, fromQueue: true) => Promise<{ status: string; reason?: string; operation?: unknown }>;
   getGeneration: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string; operation?: unknown }>;
-  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean, nextItemId?: string, checkpointedOwnership?: boolean, phase?: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty", traceContext?: { triggerSource: "automatic_start" | "automatic_alarm" | "manual_resume" | "unknown"; elapsedSinceReceiptToFirstReadMs: number; priorTrace?: VidsCleanupDiagnostics["handoffTrace"] }) => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
+  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean, nextItemId?: string, checkpointedOwnership?: boolean, phase?: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty", traceContext?: { triggerSource: "automatic_start" | "automatic_alarm" | "manual_resume" | "visibility_wakeup" | "unknown"; elapsedSinceReceiptToFirstReadMs: number; readinessDeadlineAt?: number; priorTrace?: VidsCleanupDiagnostics["handoffTrace"] }) => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
   revalidate?: () => Promise<unknown>;
   now?: () => number;
   makeRunId?: () => string;
@@ -160,12 +173,22 @@ export function createVidsVideoQueueHandler(input: {
         await schedule(queue); return queue;
       }
       let cleanComposerVerified = false;
+      const waitForVidsTab = async (result: { diagnostics?: unknown }, elapsedMs: number, checkpointRead: VidsCleanupDiagnostics["checkpointRead"] = "absent", checkpointWrite: VidsCleanupDiagnostics["checkpointWrite"] = "not_attempted") => {
+        const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue!;
+        if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== queue!.runId) return latest;
+        const diagnostics = boundedCleanupDiagnostics(result.diagnostics, checkpointRead, checkpointWrite, triggerSource, elapsedMs);
+        const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, cleanupDiagnostics: diagnostics } : item);
+        const waiting = await save(latest, { state: "waiting_for_tab", items, pauseReason: "vids_waiting_for_tab", nextActionAt: null });
+        await schedule(waiting);
+        return waiting;
+      };
       if (queue.executionDocumentRebind && next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
         const previous = queue.items[next.order - 1]!;
         const elapsedSinceReceiptToFirstReadMs = previous.dispatchReceipt ? Math.max(0, now() - previous.dispatchReceipt.storedAt) : 0;
         let priorHandoffTrace: VidsCleanupDiagnostics["handoffTrace"];
+        let composerReadinessDeadlineAt: number | undefined;
         const transition = async (inspectOnly: boolean, checkpointedOwnership: boolean, phase: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty") => {
-          const result = await input.transitionFromPrevious(queue!.preparedBatchId, previous.itemId, inspectOnly, next.itemId, checkpointedOwnership, phase, { triggerSource, elapsedSinceReceiptToFirstReadMs, ...(priorHandoffTrace ? { priorTrace: priorHandoffTrace } : {}) });
+          const result = await input.transitionFromPrevious(queue!.preparedBatchId, previous.itemId, inspectOnly, next.itemId, checkpointedOwnership, phase, { triggerSource, elapsedSinceReceiptToFirstReadMs, readinessDeadlineAt: composerReadinessDeadlineAt ??= now() + 30_000, ...(priorHandoffTrace ? { priorTrace: priorHandoffTrace } : {}) });
           const raw = result.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics as Record<string, unknown> : undefined;
           const trace = raw?.handoffTrace;
           if (trace && typeof trace === "object") priorHandoffTrace = trace as VidsCleanupDiagnostics["handoffTrace"];
@@ -188,6 +211,7 @@ export function createVidsVideoQueueHandler(input: {
           }
         }
         if (clean.status !== "ready") {
+          if (clean.reason === "vids_composer_waiting_for_tab") return waitForVidsTab(clean, elapsedSinceReceiptToFirstReadMs, next.transitionCheckpoint ? "valid" : "absent", "not_attempted");
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           const reason = clean.reason ?? "vids_refreshed_composer_not_clean";
           const diagnostics = boundedCleanupDiagnostics(clean.diagnostics, next.transitionCheckpoint ? "valid" : "absent", "not_attempted", triggerSource, elapsedSinceReceiptToFirstReadMs);
@@ -208,8 +232,9 @@ export function createVidsVideoQueueHandler(input: {
         const previous = queue.items[next.order - 1]!;
         const elapsedSinceReceiptToFirstReadMs = previous.dispatchReceipt ? Math.max(0, now() - previous.dispatchReceipt.storedAt) : 0;
         let priorHandoffTrace: VidsCleanupDiagnostics["handoffTrace"];
+        let composerReadinessDeadlineAt: number | undefined;
         const transition = async (inspectOnly: boolean, checkpointedOwnership: boolean, phase: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty") => {
-          const result = await input.transitionFromPrevious(queue!.preparedBatchId, previous.itemId, inspectOnly, next.itemId, checkpointedOwnership, phase, { triggerSource, elapsedSinceReceiptToFirstReadMs, ...(priorHandoffTrace ? { priorTrace: priorHandoffTrace } : {}) });
+          const result = await input.transitionFromPrevious(queue!.preparedBatchId, previous.itemId, inspectOnly, next.itemId, checkpointedOwnership, phase, { triggerSource, elapsedSinceReceiptToFirstReadMs, readinessDeadlineAt: composerReadinessDeadlineAt ??= now() + 30_000, ...(priorHandoffTrace ? { priorTrace: priorHandoffTrace } : {}) });
           const raw = result.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics as Record<string, unknown> : undefined;
           if (raw?.handoffTrace && typeof raw.handoffTrace === "object") priorHandoffTrace = raw.handoffTrace as VidsCleanupDiagnostics["handoffTrace"];
           return result;
@@ -250,6 +275,7 @@ export function createVidsVideoQueueHandler(input: {
             const clean = await transition(true, false, "inspect_clean");
             if (clean.status === "ready") { inspected = clean; alreadyClean = true; }
           }
+          if (inspected.reason === "vids_composer_waiting_for_tab") return waitForVidsTab(inspected, elapsedSinceReceiptToFirstReadMs, checkpointRead, checkpointWrite);
           let latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
           if (inspected.status !== "ready") {
@@ -269,6 +295,7 @@ export function createVidsVideoQueueHandler(input: {
           checkpointWrite = "persisted";
         }
         const failCleanup = async (result: { reason?: string; diagnostics?: unknown }) => {
+          if (result.reason === "vids_composer_waiting_for_tab") return waitForVidsTab(result, elapsedSinceReceiptToFirstReadMs, checkpointRead, checkpointWrite);
           const fallbackQueue: VidsVideoQueueRecord = queue!;
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? fallbackQueue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
@@ -461,6 +488,16 @@ export function createVidsVideoQueueHandler(input: {
       void run(resumed.queueId, "manual_resume").catch(() => undefined); return resumed;
     },
     onAlarm: (name: string) => { const id = runtime.queueIdFromAlarm(name); return id ? run(id, "automatic_alarm") : Promise.resolve(undefined); },
+    onTargetVisible: async (tabId: number) => {
+      const queues = await input.repositories.listVidsVideoQueues();
+      for (const candidate of queues) {
+        if (candidate.state !== "waiting_for_tab") continue;
+        const prepared = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(candidate.preparedBatchId));
+        if (!prepared.success) continue;
+        const expectedTabId = candidate.executionDocumentRebind?.toTabId ?? prepared.data.target.tabId;
+        if (expectedTabId === tabId) void run(candidate.queueId, "visibility_wakeup").catch(() => undefined);
+      }
+    },
     reconcileStartup: async () => {
       const queues = await input.repositories.listVidsVideoQueues();
       for (const queue of queues) {

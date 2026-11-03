@@ -319,6 +319,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     ]))
     .catch(() => undefined);
 });
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  void timedQueueReady.then(() => vidsVideoQueue.onTargetVisible(tabId)).catch(() => undefined);
+});
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  void timedQueueReady.then(async () => {
+    const tabs = await chrome.tabs.query({ active: true, windowId });
+    const tab = tabs[0];
+    if (tab?.id !== undefined) await vidsVideoQueue.onTargetVisible(tab.id);
+  }).catch(() => undefined);
+});
 void timedQueueReady.catch(() => undefined);
 
 // Persist only bounded lifecycle categories. URLs, titles and account data are
