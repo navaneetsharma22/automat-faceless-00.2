@@ -419,6 +419,16 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(warning).toHaveBeenCalledWith("[vids_queue_reconciliation_failed]", expect.objectContaining({ step: "queue_list", errorCode: "vids_video_queue_invalid", recordIndex: 1, recordDigest: invalidDigest, fieldPath: "state", validationRule: "queue_state_enum" }));
     expect(JSON.stringify(warning.mock.calls)).not.toContain(invalidOtherQueue.queueId);
     warning.mockRestore();
+    const rejectedTimedReady = Promise.reject(new Error("startup reconciliation failed"));
+    void rejectedTimedReady.catch(() => undefined);
+    const dashboardListener = createConnectionMessageListener("vids-dashboard-record-diagnostic", {
+      repositories: f.repositories,
+      preferences: new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined }),
+      ready: Promise.resolve(), timedQueueReady: rejectedTimedReady, vidsVideoQueue: f.handler,
+    });
+    const dashboardRequest = makeRequest("vids.videoQueue.get", { preparedBatchId: f.batch.id }, "read-validation-diagnostic");
+    const dashboardResponse = await new Promise<Record<string, unknown>>((resolve) => dashboardListener(JSON.parse(JSON.stringify(dashboardRequest)), { id: "vids-dashboard-record-diagnostic", url: "chrome-extension://vids-dashboard-record-diagnostic/index.html" }, (value) => resolve(value as unknown as Record<string, unknown>)));
+    expect(dashboardResponse).toMatchObject({ ok: true, data: { lastAutomaticAlarmTrace: { reconciliationRecordIndex: 1, reconciliationRecordDigest: invalidDigest, reconciliationFieldPath: "state", reconciliationValidationRule: "queue_state_enum" } } });
     expect(failed).toMatchObject({ state: "cooldown", items: [{ state: "sent", dispatchReceipt: firstReceipt }, { state: "pending" }] });
     expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
     expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
@@ -432,32 +442,6 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(completed?.lastAutomaticAlarmTrace).toMatchObject({ reconciliation: "completed", handler: "reached", claim: "claimed", outcome: "sent" });
     expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
     expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
-  });
-
-  it("serves the persisted sanitized reconciliation failure to the dashboard while timed startup readiness is rejected", async () => {
-    const f = await setup();
-    const started = await f.handler.start(batchId);
-    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
-    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`;
-    const receivedAt = f.now();
-    f.handler.recordAutomaticAlarmReceived(alarmName, sent!.nextActionAt!, receivedAt);
-    await f.waitForQueue(started.queueId, (queue) => queue?.lastAutomaticAlarmTrace?.receivedAt === receivedAt);
-    f.handler.recordAutomaticAlarmReconciliation(alarmName, "failed", f.now(), receivedAt, { step: "queue_list", errorCode: "vids_video_queue_invalid", recordIndex: 1, recordDigest: "0123456789abcdef", fieldPath: "state", validationRule: "queue_state_enum" });
-    const queue = await f.waitForQueue(started.queueId, (value) => value?.lastAutomaticAlarmTrace?.reconciliationFieldPath === "state");
-    const rejectedTimedReady = Promise.reject(new Error("Vids startup reconciliation failed"));
-    void rejectedTimedReady.catch(() => undefined);
-    const listener = createConnectionMessageListener("vids-dashboard-diagnostics", {
-      repositories: f.repositories,
-      preferences: new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined }),
-      ready: Promise.resolve(),
-      timedQueueReady: rejectedTimedReady,
-      vidsVideoQueue: f.handler,
-    });
-    const request = makeRequest("vids.videoQueue.get", { preparedBatchId: f.batch.id }, "get-queue-with-reconcile-error");
-    const response = await new Promise<Record<string, unknown>>((resolve) => listener(JSON.parse(JSON.stringify(request)), { id: "vids-dashboard-diagnostics", url: "chrome-extension://vids-dashboard-diagnostics/index.html" }, (value) => resolve(value as unknown as Record<string, unknown>)));
-    expect(response).toMatchObject({ ok: true, data: { lastAutomaticAlarmTrace: { reconciliation: "failed", reconciliationFieldPath: "state", reconciliationValidationRule: "queue_state_enum" } } });
-    expect((response.data as VidsVideoQueueRecord).lastAutomaticAlarmTrace).toMatchObject({ reconciliationRecordIndex: 1, reconciliationRecordDigest: "0123456789abcdef", reconciliationErrorCode: "vids_video_queue_invalid" });
-    expect(queue?.lastAutomaticAlarmTrace?.reconciliationFieldPath).toBe("state");
   });
 
   it("retries cold startup queue_list failure without dispatch, restores the overdue alarm, then sends Shot 2 once", async () => {
