@@ -143,7 +143,7 @@ export type FoundationDependencies = {
     get: (preparedBatchId: string) => Promise<unknown>;
     start: (preparedBatchId: string) => Promise<unknown>;
     pause: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
-    resume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+    resume: (preparedBatchId: string, expectedRevision: number, confirmSameAccount?: boolean) => Promise<unknown>;
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     inspectTransition: (preparedBatchId: string, itemId: string) => Promise<unknown>;
   };
@@ -826,7 +826,8 @@ async function dispatch(
     case "vids.videoQueue.resume":
     case "vids.videoQueue.stop":
       if (!dependencies.vidsVideoQueue) throw new FoundationOperationError("worker_error", "vids_video_queue_unavailable", "Vids queue is unavailable.");
-      return await dependencies.vidsVideoQueue[request.type.slice("vids.videoQueue.".length) as "pause" | "resume" | "stop"](request.payload.preparedBatchId, request.payload.expectedRevision);
+      if (request.type === "vids.videoQueue.resume") return await dependencies.vidsVideoQueue.resume(request.payload.preparedBatchId, request.payload.expectedRevision, request.payload.confirmSameAccount);
+      return await dependencies.vidsVideoQueue[request.type.slice("vids.videoQueue.".length) as "pause" | "stop"](request.payload.preparedBatchId, request.payload.expectedRevision);
     case "vids.videoQueue.inspectTransition":
       if (!dependencies.vidsVideoQueue) throw new FoundationOperationError("worker_error", "vids_video_queue_unavailable", "Vids queue is unavailable.");
       return await dependencies.vidsVideoQueue.inspectTransition(request.payload.preparedBatchId, request.payload.itemId);
@@ -1091,6 +1092,13 @@ export function createConnectionMessageListener(
               error.stage,
             ),
           );
+          return;
+        }
+        if (request.type.startsWith("vids.videoQueue.")) {
+          const rawCode = error instanceof Error ? error.message : "";
+          const code = /^[a-z0-9_]{1,64}$/.test(rawCode) ? rawCode : "vids_video_queue_operation_failed";
+          const stage = request.type.endsWith(".resume") ? "resume_validation" : "queue_operation";
+          sendResponse(failure(request.requestId, "storage_failure", code, "The Vids queue could not safely continue. Review the queue stage and reconnect requirements before retrying.", stage));
           return;
         }
         if (request.type.startsWith("imageQueue.")) {

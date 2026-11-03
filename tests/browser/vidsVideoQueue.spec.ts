@@ -24,6 +24,18 @@ test("production transition removes only exact previous content, then leaves the
   expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 0 });
 });
 
+test("refreshed clean composer recovery is read-only and requires settled empty Animate controls", async ({ page }) => {
+  await install(page);
+  await page.locator("img[alt='Uploaded image preview'], button[aria-label='Remove image']").evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+  await page.locator("[role=textbox]").evaluate((node) => { node.textContent = ""; });
+  await page.locator("[role=tabpanel]").evaluate((panel) => panel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file" accept="image/jpeg,image/png">'));
+  await page.locator("body").evaluate((body) => body.insertAdjacentHTML("beforeend", '<button id="unrelated">Keep user control</button>'));
+  const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, inspectOnly: true, phase: "inspect_clean" });
+  expect(result).toMatchObject({ ok: true, changed: false, diagnostics: { stage: "complete", previewCount: 0, settledPromptEmpty: true } });
+  expect(await page.locator("#unrelated").count()).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 });
+});
+
 test("four-shot production chain verifies the immediately preceding reference at every transition", async ({ page }) => {
   const shot1Bytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOo1nX+DwAD/QHrf7yFWAAAAABJRU5ErkJggg=="), (value) => value.charCodeAt(0));
   const shot1Prompt = previousPrompt;

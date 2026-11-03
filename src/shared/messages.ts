@@ -179,7 +179,7 @@ export type RequestPayloads = {
   "vids.videoQueue.get": { preparedBatchId: string };
   "vids.videoQueue.start": { preparedBatchId: string };
   "vids.videoQueue.pause": { preparedBatchId: string; expectedRevision: number };
-  "vids.videoQueue.resume": { preparedBatchId: string; expectedRevision: number };
+  "vids.videoQueue.resume": { preparedBatchId: string; expectedRevision: number; confirmSameAccount?: boolean };
   "vids.videoQueue.stop": { preparedBatchId: string; expectedRevision: number };
   "vids.videoQueue.inspectTransition": { preparedBatchId: string; itemId: string };
   "flow.video.inspectReferenceBytes": { preparedBatchId: string; itemId: string };

@@ -247,7 +247,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   referenceId?: string;
   referenceCandidates?: Array<{ referenceId: string; sha256: string; mimeType: "image/png" | "image/jpeg"; byteSize: number; width: number; height: number }>;
   checkpointedOwnership?: boolean;
-  phase?: "inspect" | "remove_reference" | "clear_prompt" | "verify_empty" | "full";
+  phase?: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty" | "full";
   referenceByteSize: number; referenceWidth: number; referenceHeight: number; timeoutMs: number; inspectOnly?: boolean;
 }): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean; diagnostics: VidsComposerTransitionDiagnostics }> {
   const href = location.href;
@@ -320,6 +320,34 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     const currentPreviews = [...context.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
     return currentPreviews.length === 0 && editorIsEmpty(context.editor) && addControls.length === 1 && fileInputs.length === 1;
   };
+  if (input.phase === "inspect_clean") {
+    const initial = resolveFreshContext();
+    if (!initial) return blocked("editor", "vids_refreshed_composer_not_clean");
+    diagnostic.previewCount = Math.min(1000, [...initial.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible).length);
+    diagnostic.fileInputCount = Math.min(1000, initial.panel.querySelectorAll("input[type='file']").length);
+    diagnostic.expectedPromptLength = 0;
+    diagnostic.actualPromptLength = Math.min(serialize(initial.editor).length, 10_000_000);
+    const hashText = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    diagnostic.promptExpectedSha256 = await hashText("");
+    diagnostic.promptActualSha256 = await hashText(serialize(initial.editor));
+    diagnostic.clearAvailable = "not_checked";
+    if (!contextIsEmptyAndReady(initial)) return blocked("ownership", "vids_refreshed_composer_not_clean");
+    let stableReads = 0;
+    let last: NonNullable<ReturnType<typeof resolveFreshContext>> | undefined;
+    const deadline = Date.now() + input.timeoutMs;
+    while (Date.now() < deadline && stableReads < 3) {
+      const current = resolveFreshContext();
+      if (current && contextIsEmptyAndReady(current)) {
+        stableReads += 1;
+        diagnostic.editorRebound = diagnostic.editorRebound === true || current.editor !== initial.editor;
+        diagnostic.panelRebound = diagnostic.panelRebound === true || current.panel !== initial.panel;
+        last = current;
+      } else stableReads = 0;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (stableReads < 3 || !last) return blocked("settlement", "vids_refreshed_composer_not_clean");
+    return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete", settledPromptEmpty: true, cleanupState: "already_empty" } };
+  }
   const waitForEmptyComposer = async () => {
     const deadline = Date.now() + input.timeoutMs;
     while (Date.now() < deadline) { const context = resolveFreshContext(); if (context && contextIsEmptyAndReady(context)) { diagnostic.editorRebound = true; return true; } await new Promise((resolve) => setTimeout(resolve, 50)); }

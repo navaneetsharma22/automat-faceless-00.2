@@ -17,7 +17,7 @@ export function createVidsVideoQueueHandler(input: {
   getAttachment: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string }>;
   generate: (batchId: string, itemId: string, fromQueue: true) => Promise<{ status: string; reason?: string; operation?: unknown }>;
   getGeneration: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string; operation?: unknown }>;
-  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean, nextItemId?: string, checkpointedOwnership?: boolean, phase?: "inspect" | "remove_reference" | "clear_prompt" | "verify_empty") => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
+  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean, nextItemId?: string, checkpointedOwnership?: boolean, phase?: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty") => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
   now?: () => number;
   makeRunId?: () => string;
 }) {
@@ -102,7 +102,29 @@ export function createVidsVideoQueueHandler(input: {
         queue = await save(queue, { state: "cooldown", cooldownDeadlineAt: queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS, nextActionAt: queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS, readinessDeadlineAt: null, readinessStartedAt: null });
         await schedule(queue); return queue;
       }
-      if (next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
+      let cleanComposerVerified = false;
+      if (queue.executionDocumentRebind && next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
+        const previous = queue.items[next.order - 1]!;
+        const generation = await input.getGeneration(queue.preparedBatchId, next.itemId);
+        const attachment = await input.getAttachment(queue.preparedBatchId, next.itemId);
+        if (generation.status !== "not_started") throw new Error("vids_generation_attempt_requires_review");
+        if (attachment.status !== "not_started") throw new Error("vids_attachment_attempt_requires_review");
+        const clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect_clean");
+        if (clean.status !== "ready") {
+          const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+          const reason = clean.reason ?? "vids_refreshed_composer_not_clean";
+          const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason } : item);
+          const failed = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(failed); return failed;
+        }
+        const currentQueue = queue!;
+        const latest = await input.repositories.getVidsVideoQueue(queueId) ?? currentQueue;
+        if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== currentQueue.runId) return latest;
+        const rebound = currentQueue.executionDocumentRebind!;
+        const updated = latest.items.map((item) => item.itemId === next.itemId ? { ...item, cleanComposerRecovery: { documentId: rebound.toDocumentId, canonicalTarget: rebound.canonicalTarget, referenceId: item.referenceId, referenceSha256: item.referenceSha256, promptHash: item.promptHash, verifiedAt: now() }, transitionCheckpoint: undefined } : item);
+        queue = await save(latest, { items: updated });
+        cleanComposerVerified = true;
+      }
+      if (!cleanComposerVerified && next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
         const previous = queue.items[next.order - 1]!;
         const currentAttachment = next.state === "transitioning" ? await input.getAttachment(queue.preparedBatchId, next.itemId) : undefined;
         const cleanupAlreadyPassed = next.state === "transitioning" && currentAttachment?.status === "attached";
@@ -202,7 +224,7 @@ export function createVidsVideoQueueHandler(input: {
       queue = await save(queue, { items: queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "sending" as const } : item) });
       const result = await input.generate(queue.preparedBatchId, next.itemId, true);
       const operation = VidsVideoGenerationOperationSchema.safeParse(result.operation);
-      if ((result.status === "dispatched" || result.status === "already_dispatched") && operation.success && operation.data.status === "dispatched" && operation.data.preparedBatchId === queue.preparedBatchId && operation.data.workspaceId === prepared.data.workspaceId && operation.data.itemId === next.itemId && operation.data.canonicalShotId === currentItem.shotId && operation.data.promptHash === currentItem.promptHash && operation.data.referenceId === currentItem.referenceId && operation.data.referenceSha256 === currentItem.referenceSha256 && operation.data.tabId === prepared.data.target.tabId && operation.data.canonicalTarget === prepared.data.target.canonicalTarget && operation.data.documentId === prepared.data.target.documentId && operation.data.activationAttempted === true && operation.data.activationCount === 1 && operation.data.dispatchedAt !== undefined) {
+      if ((result.status === "dispatched" || result.status === "already_dispatched") && operation.success && operation.data.status === "dispatched" && operation.data.preparedBatchId === queue.preparedBatchId && operation.data.workspaceId === prepared.data.workspaceId && operation.data.itemId === next.itemId && operation.data.canonicalShotId === currentItem.shotId && operation.data.promptHash === currentItem.promptHash && operation.data.referenceId === currentItem.referenceId && operation.data.referenceSha256 === currentItem.referenceSha256 && operation.data.tabId === prepared.data.target.tabId && operation.data.canonicalTarget === prepared.data.target.canonicalTarget && operation.data.documentId === (queue.executionDocumentRebind?.toDocumentId ?? prepared.data.target.documentId) && operation.data.activationAttempted === true && operation.data.activationCount === 1 && operation.data.dispatchedAt !== undefined) {
         const storedAt = operation.data.dispatchedAt;
         const sentItems = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "sent" as const, attemptId: operation.data!.attemptId, dispatchReceipt: { attemptId: operation.data!.attemptId, storedAt } } : item);
         const allSent = sentItems.every((item) => item.state === "sent");
@@ -260,9 +282,20 @@ export function createVidsVideoQueueHandler(input: {
       const stopped = await save(queue, { state: "stopped", nextActionAt: null, pauseReason: "stopped_by_user" });
       await runtime.clear(stopped.queueId); return stopped;
     },
-    resume: async (preparedBatchId: string, expectedRevision: number) => {
+    resume: async (preparedBatchId: string, expectedRevision: number, confirmSameAccount = false) => {
       const queue = await input.repositories.getVidsVideoQueue(queueIdFor(preparedBatchId));
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("vids_video_queue_revision_changed");
+      const prepared = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(preparedBatchId));
+      if (!prepared.success || prepared.data.destination !== "Vids") throw new Error("prepared_vids_batch_invalid");
+      const selected = await input.repositories.getSelectedTarget("Vids");
+      const binding = selected?.verificationBinding;
+      const priorDocumentId = queue.executionDocumentRebind?.toDocumentId ?? prepared.data.target.documentId;
+      if (!selected && priorDocumentId === prepared.data.target.documentId) {
+        // Legacy same-document queue fixtures and records may not yet have a live
+        // selected-target snapshot. They remain bound to their original document.
+      } else if (!selected || selected.provider !== "Vids" || selected.verification !== "verified" || selected.connectionState !== "verified" || selected.tabId !== prepared.data.target.tabId || selected.canonicalTarget !== prepared.data.target.canonicalTarget || !binding || binding.provider !== "Vids" || binding.tabId !== selected.tabId || binding.canonicalTarget !== selected.canonicalTarget || binding.projectId !== prepared.data.target.projectId || binding.extensionBuildId === "" || binding.documentId === "") throw new Error("vids_reconnect_required");
+      const rebind = Boolean(binding && binding.documentId !== priorDocumentId);
+      if (rebind && !confirmSameAccount) throw new Error("vids_same_account_confirmation_required");
       const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "worker_restart_during_composer_transition", "worker_restart_before_generate"]);
       if (queue.items.some((item) => item.state === "uncertain" || (item.state === "blocked" && !retryablePreIntentReasons.has(item.reason ?? "")))) throw new Error("vids_video_queue_requires_review");
       for (const item of queue.items.filter((candidate) => (candidate.state === "blocked" && ["vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "worker_restart_during_composer_transition", "worker_restart_before_generate"].includes(candidate.reason ?? "")) || candidate.reason === "worker_restart_before_generate")) {
@@ -272,7 +305,7 @@ export function createVidsVideoQueueHandler(input: {
       }
       const resumedItems = queue.items.map((item) => item.state === "blocked" && retryablePreIntentReasons.has(item.reason ?? "") ? { ...item, state: "pending" as const, reason: undefined } : item.reason === "worker_restart_before_generate" ? { ...item, reason: undefined } : item);
       const stillChecking = queue.items.some((item) => item.state === "checking_generate");
-      const resumed = await save(queue, { state: stillChecking ? "checking_generate" : queue.lastDispatchAt !== null && now() < queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS ? "cooldown" : "ready", items: resumedItems, nextActionAt: stillChecking ? Math.min(now() + CHROME_MIN_ALARM_DELAY_MS, queue.readinessDeadlineAt ?? now()) : queue.lastDispatchAt !== null ? Math.max(now(), queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS) : now(), pauseReason: undefined, readinessStartedAt: stillChecking ? queue.readinessStartedAt : null, readinessDeadlineAt: stillChecking ? queue.readinessDeadlineAt : null, runId: input.makeRunId?.() ?? crypto.randomUUID() });
+      const resumed = await save(queue, { ...(rebind ? { executionDocumentRebind: { fromDocumentId: queue.executionDocumentRebind?.fromDocumentId ?? prepared.data.target.documentId!, toDocumentId: binding!.documentId, projectId: binding!.projectId, canonicalTarget: binding!.canonicalTarget, verifiedAt: binding!.verifiedAt, sameAccountConfirmedAt: now() } } : {}), state: stillChecking ? "checking_generate" : queue.lastDispatchAt !== null && now() < queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS ? "cooldown" : "ready", items: resumedItems, nextActionAt: stillChecking ? Math.min(now() + CHROME_MIN_ALARM_DELAY_MS, queue.readinessDeadlineAt ?? now()) : queue.lastDispatchAt !== null ? Math.max(now(), queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS) : now(), pauseReason: undefined, readinessStartedAt: stillChecking ? queue.readinessStartedAt : null, readinessDeadlineAt: stillChecking ? queue.readinessDeadlineAt : null, runId: input.makeRunId?.() ?? crypto.randomUUID() });
       void run(resumed.queueId).catch(() => undefined); return resumed;
     },
     onAlarm: (name: string) => { const id = runtime.queueIdFromAlarm(name); return id ? run(id) : Promise.resolve(undefined); },

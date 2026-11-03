@@ -36,6 +36,8 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
   const [queue, setQueue] = useState<VidsQueueSnapshot | null>(null);
   const [queueBusy, setQueueBusy] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
+  const [queueErrorStage, setQueueErrorStage] = useState<string | null>(null);
+  const [sameAccountConfirmed, setSameAccountConfirmed] = useState(false);
   const [transitionInspection, setTransitionInspection] = useState<{ itemId: string; result: TransitionInspection } | null>(null);
   const [inspectingItemId, setInspectingItemId] = useState<string | null>(null);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -67,11 +69,12 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
     setQueueError(null);
     try {
       const type = `vids.videoQueue.${action}` as const;
-      const payload = action === "start" ? { preparedBatchId: preparedBatch.id } : { preparedBatchId: preparedBatch.id, expectedRevision: queue?.revision ?? 0 };
+      const payload = action === "start" ? { preparedBatchId: preparedBatch.id } : { preparedBatchId: preparedBatch.id, expectedRevision: queue?.revision ?? 0, ...(action === "resume" && sameAccountConfirmed ? { confirmSameAccount: true } : {}) };
       const value = await persistenceClient.request(type, payload) as VidsQueueSnapshot;
       if (value) setQueue(value);
     } catch (error) {
       setQueueError(error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "vids_queue_action_failed");
+      setQueueErrorStage(error instanceof FoundationClientError && error.stage ? error.stage : null);
     } finally { setQueueBusy(false); }
   };
   const inspectTransition = async (itemId: string) => {
@@ -113,12 +116,13 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
         {allSent ? <p className={styles.note}>Video completion can be checked in Google Vids.</p> : null}
         {queue && !["paused", "stopped", "blocked", "all_sent"].includes(queue.state) ? <QueueClock queue={queue} now={clockNow} /> : null}
         {queue?.pauseReason && ["paused", "stopped", "blocked"].includes(queue.state) ? <p className={queue.state === "blocked" ? styles.error : styles.note} role="status">{queueStateLabel(queue.state)} · {queue.pauseReason.replaceAll("_", " ")}{queue.pauseReason === "vids_composer_collapsed_or_changed" ? " — open the same Vids target’s Animate composer, then use Resume. The queue will only replace content that still exactly matches the previously sent Shot." : queue.pauseReason === "vids_previous_composer_content_conflict" ? " — review the current composer text and image in Vids; the queue preserved them. Resolve the conflict, then use Resume." : ""}</p> : null}
-        {queueError ? <p className={styles.error} role="alert">Vids queue action failed: <code>{queueError}</code></p> : null}
+        {queueError ? <p className={styles.error} role="alert">Vids queue action failed{queueErrorStage ? ` at ${queueErrorStage}` : ""}: <code>{queueError}</code>{queueError === "vids_reconnect_required" ? " — reconnect Vids from the Connections section and verify the same project is selected, then retry Resume." : queueError === "vids_same_account_confirmation_required" ? " — after reconnecting, confirm the authorized Google account below before rebinding future work." : queueError === "vids_video_queue_requires_review" ? " — inspect the blocked item and its generation or attachment record; uncertain actions cannot be replayed." : ""}</p> : null}
+        {queueError === "vids_same_account_confirmation_required" ? <label><input type="checkbox" checked={sameAccountConfirmed} onChange={(event) => setSameAccountConfirmed(event.currentTarget.checked)} /> I verified the same authorized Google account is open in this Vids project.</label> : null}
         <div className={styles.action}>
           {!queue ? <Button variant="primary" disabled={queueBusy} loading={queueBusy} loadingLabel="Starting queue" onClick={() => void queueAction("start")}>Start Vids queue</Button> : null}
           {queue?.state === "ready" ? <Button variant="primary" disabled={queueBusy} loading={queueBusy} loadingLabel="Starting queue" onClick={() => void queueAction("start")}>Start Vids queue</Button> : null}
           {queue && ["ready", "cooldown", "preparing", "checking_generate"].includes(queue.state) ? <><Button variant="secondary" disabled={queueBusy} loading={queueBusy} loadingLabel="Pausing" onClick={() => void queueAction("pause")}>Pause</Button><Button variant="quiet" disabled={queueBusy} onClick={() => void queueAction("stop")}>Stop queue</Button></> : null}
-          {queue?.state === "paused" ? <><Button variant="primary" disabled={queueBusy} loading={queueBusy} loadingLabel="Resuming" onClick={() => void queueAction("resume")}>Resume</Button><Button variant="quiet" disabled={queueBusy} onClick={() => void queueAction("stop")}>Stop queue</Button></> : null}
+          {queue?.state === "paused" ? <><Button variant="primary" disabled={queueBusy || (queueError === "vids_same_account_confirmation_required" && !sameAccountConfirmed)} loading={queueBusy} loadingLabel="Resuming" onClick={() => void queueAction("resume")}>Resume</Button><Button variant="quiet" disabled={queueBusy} onClick={() => void queueAction("stop")}>Stop queue</Button></> : null}
           {queue?.state === "stopped" ? <span>The queue is stopped. Sent items remain protected from replay.</span> : null}
         </div>
         {queue?.items.map((entry) => <div key={entry.itemId}>

@@ -120,7 +120,11 @@ export function createVidsVideoAttachmentHandler(deps: {
 
     const parsedBatch = PreparedVideoBatchRecordSchema.safeParse(await deps.repositories.getPreparedVideoBatchById(preparedBatchId));
     if (!parsedBatch.success || parsedBatch.data.destination !== "Vids") return resultError("prepared_vids_batch_required");
-    const batch = parsedBatch.data;
+    let batch = parsedBatch.data;
+    if (fromQueue) {
+      const rebound = (await deps.repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`))?.executionDocumentRebind;
+      if (rebound) batch = { ...batch, target: { ...batch.target, documentId: rebound.toDocumentId }, manualSettingsDeclaration: { ...batch.manualSettingsDeclaration, documentId: rebound.toDocumentId } };
+    }
     const item = batch.items.find((candidate) => candidate.itemId === itemId);
     if (!item || !/^[1-9][0-9]*$/.test(item.canonicalShotId)) return resultError("prepared_vids_item_missing");
     const pinned = await deps.repositories.getReferenceById(item.reference.referenceId);
