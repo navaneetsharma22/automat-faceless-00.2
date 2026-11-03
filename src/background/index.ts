@@ -162,7 +162,11 @@ const vidsVideoGenerate = createVidsVideoGenerateHandler({
   scripting: { executeScript: (input) => chrome.scripting.executeScript(input as never) },
   getTab: async (tabId) => chrome.tabs.get(tabId),
   revalidate: () => connectionLifecycle.revalidate("Vids", false),
-  queueCanContinue: async (preparedBatchId) => (await repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`))?.state === "checking_generate",
+  queueCanContinue: async (preparedBatchId, itemId, promptHash, referenceId, referenceSha256) => {
+    const queue = await repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`);
+    const item = queue?.items.find((candidate) => candidate.itemId === itemId);
+    return queue?.preparedBatchId === preparedBatchId && queue.state === "checking_generate" && item?.state === "sending" && item.promptHash === promptHash && item.referenceId === referenceId && item.referenceSha256 === referenceSha256;
+  },
 });
 const vidsVideoQueue = createVidsVideoQueueHandler({
   repositories,

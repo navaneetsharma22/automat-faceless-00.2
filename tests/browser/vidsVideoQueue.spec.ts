@@ -114,6 +114,67 @@ test("four-shot production chain verifies the immediately preceding reference at
   expect(await page.evaluate(() => (window as unknown as { queueFixture: { removes: number; generates: number } }).queueFixture)).toEqual({ removes: 3, generates: 4 });
 });
 
+test("five production-injected Shots survive post-dispatch collapse and bind every click to its exact saved pair", async ({ page }) => {
+  const shotPrompts = Array.from({ length: 5 }, (_, index) => JSON.stringify({ shot_id: String(index + 1), prompt_type: "video", direction: `saved shot ${index + 1}`, frames: ["opening", `detail ${index + 1}`, "closing"] }, null, 2));
+  const shotBytes = await page.evaluate(() => Array.from({ length: 5 }, (_, index) => {
+    const canvas = document.createElement("canvas"); canvas.width = 2; canvas.height = 2;
+    const context = canvas.getContext("2d")!; context.fillStyle = `rgb(${30 + index * 35},${80 + index * 17},${180 - index * 21})`; context.fillRect(0, 0, 2, 2);
+    return canvas.toDataURL("image/png").split(",")[1]!;
+  }));
+  const ids = shotPrompts.map((_, index) => `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`);
+  await page.goto("http://127.0.0.1:5173/");
+  await page.setContent(`<aside role="complementary" aria-label="AI video clip"><button role="tab" aria-label="Animate" aria-selected="true">Animate</button><section role="tabpanel" aria-label="Animate"><button aria-label="Add image">Add image</button><input type="file" accept="image/jpeg,image/png"><div role="textbox" contenteditable="true" aria-label="Add your image, then describe what should happen in your video."></div><button aria-label="Generate">Generate</button></section></aside>`);
+  await page.evaluate(() => {
+    Object.assign(window, { shotRun: { generateClicks: [] as Array<{ prompt: string; src: string }> } });
+    document.addEventListener("change", (event) => { const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file) return; const panel = input.closest("[role=tabpanel]")!; const image = document.createElement("img"); image.alt = "Uploaded image preview"; image.src = URL.createObjectURL(file); const remove = document.createElement("button"); remove.setAttribute("aria-label", "Remove image"); remove.textContent = "Remove"; panel.insertBefore(image, panel.querySelector("[role=textbox]")); panel.insertBefore(remove, panel.querySelector("[role=textbox]")); panel.querySelector("button[aria-label='Add image']")?.remove(); input.remove(); });
+    document.addEventListener("click", (event) => { const button = (event.target as Element | null)?.closest("button"); if (button?.matches("[aria-label='Remove image']")) { const panel = button.closest("[role=tabpanel]")!; button.remove(); panel.querySelector("img[alt='Uploaded image preview']")?.remove(); panel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file" accept="image/jpeg,image/png">'); } if (button?.matches("[aria-label='Generate']")) { const panel = button.closest("[role=tabpanel]")!; const editor = panel.querySelector("[role=textbox]")!; (window as unknown as { shotRun: { generateClicks: Array<{ prompt: string; src: string }> } }).shotRun.generateClicks.push({ prompt: [...editor.children].map((line) => line.textContent ?? "").join("\n"), src: panel.querySelector("img[alt='Uploaded image preview']")!.src }); } });
+    const sidebar = document.querySelector("[role=complementary]")!;
+    const expand = document.createElement("button"); expand.setAttribute("aria-label", "Expand"); expand.setAttribute("aria-expanded", "false"); expand.textContent = "Expand"; expand.addEventListener("click", () => { sidebar.querySelector<HTMLElement>("[role=tabpanel]")!.style.display = "block"; expand.setAttribute("aria-expanded", "true"); }); sidebar.append(expand);
+  });
+  const refs = await Promise.all(shotBytes.map(async (encoded) => Uint8Array.from(atob(encoded), (ch) => ch.charCodeAt(0))));
+  const hashes = await Promise.all(shotPrompts.map(sha256Hex));
+  const refHashes = await Promise.all(refs.map(sha256Bytes));
+  for (let index = 0; index < 5; index += 1) {
+    if (index > 0) {
+      const firstRead = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: shotPrompts[index - 1]!, promptSha256: hashes[index - 1]!, referenceSha256: refHashes[index - 1]!, referenceMimeType: "image/png", referenceByteSize: refs[index - 1]!.length, referenceWidth: 2, referenceHeight: 2, timeoutMs: 800, inspectOnly: true, phase: "inspect" });
+      expect(firstRead).toMatchObject({ ok: false, reason: "vids_composer_expanded_revalidate", changed: false });
+      const inspected = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: shotPrompts[index - 1]!, promptSha256: hashes[index - 1]!, referenceId: ids[index - 1]!, referenceCandidates: [{ referenceId: ids[index - 1]!, sha256: refHashes[index - 1]!, mimeType: "image/png" as const, byteSize: refs[index - 1]!.length, width: 2, height: 2 }], referenceSha256: refHashes[index - 1]!, referenceMimeType: "image/png", referenceByteSize: refs[index - 1]!.length, referenceWidth: 2, referenceHeight: 2, timeoutMs: 800, inspectOnly: true, phase: "inspect" });
+      expect(inspected).toMatchObject({ ok: true, changed: false, diagnostics: { promptMatches: true, referenceResult: "matched" } });
+      const cleaned = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: shotPrompts[index - 1]!, promptSha256: hashes[index - 1]!, referenceId: ids[index - 1]!, referenceCandidates: [{ referenceId: ids[index - 1]!, sha256: refHashes[index - 1]!, mimeType: "image/png" as const, byteSize: refs[index - 1]!.length, width: 2, height: 2 }], referenceSha256: refHashes[index - 1]!, referenceMimeType: "image/png", referenceByteSize: refs[index - 1]!.length, referenceWidth: 2, referenceHeight: 2, timeoutMs: 800, checkpointedOwnership: true, phase: "full" });
+      expect(cleaned).toMatchObject({ ok: true, changed: true, diagnostics: { promptMatches: true, referenceResult: "matched", settledPromptEmpty: true } });
+    }
+    const uploaded = await page.evaluate(uploadVidsReferenceInPage, { base64: shotBytes[index]!, mimeType: "image/png", byteSize: refs[index]!.length, width: 2, height: 2, sha256: refHashes[index]!, timeoutMs: 1000 });
+    expect(uploaded).toMatchObject({ ok: true, submitted: true });
+    const entered = await page.evaluate(enterVidsPromptInPage, { prompt: shotPrompts[index]!, expectedSha256: hashes[index]!, referenceSha256: refHashes[index]!, referenceMimeType: "image/png", referenceByteSize: refs[index]!.length, referenceWidth: 2, referenceHeight: 2, timeoutMs: 1000 });
+    expect(entered).toMatchObject({ ok: true, immediateMatch: true, settledMatch: true, stableReads: 3, referenceSha256: refHashes[index]! });
+    const activated = await page.evaluate(activateVidsGenerateInPage, { prompt: shotPrompts[index]!, promptSha256: hashes[index]!, referenceSha256: refHashes[index]!, referenceMimeType: "image/png", referenceByteSize: refs[index]!.length, referenceWidth: 2, referenceHeight: 2 });
+    expect(activated).toMatchObject({ ok: true, activationAttempted: true, activationCount: 1 });
+    if (index < 4) await page.locator("[role=tabpanel]").evaluate((panel) => { (panel as HTMLElement).style.display = "none"; document.querySelector("button[aria-label='Expand']")?.setAttribute("aria-expanded", "false"); });
+  }
+  const observed = await page.evaluate(() => (window as unknown as { shotRun: { generateClicks: Array<{ prompt: string; src: string }> } }).shotRun.generateClicks);
+  expect(observed.map((click) => click.prompt)).toEqual(shotPrompts);
+  const clickedHashes = await page.evaluate(async (sources) => Promise.all(sources.map(async (src) => { const blob = await (await fetch(src)).blob(); const bytes = await blob.arrayBuffer(); const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)); return [...digest].map((value) => value.toString(16).padStart(2, "0")).join(""); })), observed.map((click) => click.src));
+  expect(clickedHashes).toEqual(refHashes);
+  expect(observed).toHaveLength(5);
+});
+
+test("wrong reference bytes and a prompt changed before activation produce zero Generate clicks", async ({ page }) => {
+  await install(page);
+  await page.locator("[role=tabpanel]").evaluate((panel) => { const canvas = document.createElement("canvas"); canvas.width = 1; canvas.height = 1; canvas.getContext("2d")!.fillRect(0, 0, 1, 1); const image = panel.querySelector("img[alt='Uploaded image preview']")!; canvas.toBlob((blob) => { if (blob) image.src = URL.createObjectURL(blob); }, "image/png"); });
+  await expect.poll(() => page.locator("img[alt='Uploaded image preview']").evaluate((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth === 1)).toBe(true);
+  const wrongReference = await page.evaluate(enterVidsPromptInPage, { prompt: previousPrompt, expectedSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 300 });
+  expect(wrongReference).toMatchObject({ ok: false, reason: "reference_preview_blob_metadata_mismatch" });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { generateClicks: number } }).queueFixture.generateClicks)).toBe(0);
+
+  await install(page);
+  const entered = await page.evaluate(enterVidsPromptInPage, { prompt: previousPrompt, expectedSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500 });
+  expect(entered.ok).toBe(true);
+  await page.locator("[role=textbox]").evaluate((editor) => { editor.textContent = "changed after settled readback"; });
+  const activation = await page.evaluate(activateVidsGenerateInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1 });
+  expect(activation).toMatchObject({ ok: false, reason: "prompt_readback_changed", activationAttempted: false, activationCount: 0 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { generateClicks: number } }).queueFixture.generateClicks)).toBe(0);
+});
+
 test("transition rejects different current bytes and reports the uniquely matching prepared reference ID", async ({ page }) => {
   await install(page);
   await page.locator("[role=tabpanel]").evaluate((panel) => panel.insertAdjacentHTML("afterbegin", '<input type="file">'));
@@ -256,4 +317,20 @@ test("a uniquely scoped Expand control opens Animate, then the transition repeat
   const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500 });
   expect(result).toMatchObject({ ok: true, changed: true, diagnostics: { animatePanel: "unique", promptMatches: true, referenceResult: "matched" } });
   expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 1 });
+});
+
+test("read-only worker inspection expands a verified Animate panel and rechecks before cleanup", async ({ page }) => {
+  await install(page, true);
+  await page.locator("[role=complementary]").evaluate((sidebar) => {
+    const expand = document.createElement("button"); expand.setAttribute("aria-label", "Expand"); expand.setAttribute("aria-expanded", "false"); expand.textContent = "Expand";
+    expand.addEventListener("click", () => { sidebar.querySelector<HTMLElement>("[role=tabpanel]")!.style.display = "block"; }); sidebar.append(expand);
+  });
+  const args = { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png" as const, referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, inspectOnly: true, phase: "inspect" as const };
+  const expanded = await page.evaluate(transitionVidsComposerFromPreviousInPage, args);
+  expect(expanded).toMatchObject({ ok: false, reason: "vids_composer_expanded_revalidate", changed: false });
+  const inspected = await page.evaluate(transitionVidsComposerFromPreviousInPage, args);
+  expect(inspected).toMatchObject({ ok: true, changed: false, diagnostics: { promptMatches: true, referenceResult: "matched" } });
+  expect(await page.locator("[role=textbox]").textContent()).toBe(previousPrompt);
+  expect(await page.locator("img[alt='Uploaded image preview']").count()).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 0, generateClicks: 0 });
 });

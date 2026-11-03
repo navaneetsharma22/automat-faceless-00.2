@@ -13,6 +13,6 @@ export type PreparedBatchReviewProps = {
 /** Routes each prepared batch to its platform-specific review and operation path. */
 export function PreparedBatchReview(props: PreparedBatchReviewProps) {
   return props.preparedBatch.destination === "Vids"
-    ? <VidsPreparedBatchReview preparedBatch={props.preparedBatch} persistenceClient={props.persistenceClient} />
+    ? <VidsPreparedBatchReview key={props.preparedBatch.id} preparedBatch={props.preparedBatch} persistenceClient={props.persistenceClient} />
     : <FlowPreparedBatchReview {...props} />;
 }

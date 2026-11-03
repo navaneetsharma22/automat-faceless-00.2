@@ -803,6 +803,65 @@ export function VideosView({
     }
   };
 
+  const handleStartNewVidsBatch = async () => {
+    if (!canPrepare || destination !== "Vids" || !connectedTarget || !pairingResult || !imageSourceBatchId || !imageSourceHash || !videoBatchHash) return;
+    setPreparePending(true);
+    setPrepareError(null);
+    try {
+      const identityHash = await sha256Hex(JSON.stringify({
+        workspaceId: "default",
+        destination: "Vids",
+        videoSourceHash: videoBatchHash,
+        imageSourceBatchId,
+        imageSourceHash,
+        canonicalTarget: connectedTarget.canonicalTarget,
+        tabId: connectedTarget.tabId,
+        projectId: connectedTarget.verificationBinding?.projectId,
+        documentId: connectedTarget.verificationBinding?.documentId,
+        declaredDurationSeconds: parsedDuration,
+        pairs: pairingResult.pairs.map((pair) => ({
+          canonicalShotId: pair.canonicalShotId,
+          promptHash: pair.contentHash,
+          referenceId: pair.reference?.referenceId,
+          assignmentVersion: pair.reference?.assignmentVersion,
+          referenceSha256: pair.reference?.sha256,
+        })),
+      }));
+      const uuidChars = identityHash.slice(0, 32).split("");
+      uuidChars[12] = "5";
+      uuidChars[16] = ((Number.parseInt(uuidChars[16]!, 16) & 0x3) | 0x8).toString(16);
+      const requestId = `${uuidChars.slice(0, 8).join("")}-${uuidChars.slice(8, 12).join("")}-${uuidChars.slice(12, 16).join("")}-${uuidChars.slice(16, 20).join("")}-${uuidChars.slice(20, 32).join("")}`;
+      const result = (await persistenceClient.request("videoBatch.prepare", {
+        workspaceId: "default",
+        requestId,
+        destination: "Vids",
+        imageSourceBatchId,
+        manualSettingsDeclaration: {
+          confirmationId: crypto.randomUUID(),
+          confirmedAt: Date.now(),
+          destination: "Vids",
+          declaredDurationSeconds: parsedDuration,
+          tabId: connectedTarget.tabId,
+          canonicalTarget: connectedTarget.canonicalTarget,
+          projectId: connectedTarget.verificationBinding?.projectId,
+          documentId: connectedTarget.verificationBinding?.documentId,
+        },
+        expectedVideoSourceHash: videoBatchHash,
+        expectedImageSourceHash: imageSourceHash,
+        expectedReferenceVersions: pairingResult.pairs.map((pair) => ({
+          canonicalShotId: pair.canonicalShotId!,
+          referenceId: pair.reference!.referenceId,
+          assignmentVersion: pair.reference!.assignmentVersion,
+        })),
+      })) as PreparedVideoBatchRecord;
+      setPreparedBatch(result);
+    } catch (err) {
+      setPrepareError(err instanceof Error ? err.message : "Failed to prepare video batch snapshot.");
+    } finally {
+      setPreparePending(false);
+    }
+  };
+
   return (
     <div className={styles.workspaceGrid}>
       <section
@@ -850,6 +909,15 @@ export function VideosView({
           >
             {preparePending ? "Preparing batch..." : "Prepare video batch"}
           </Button>
+          {destination === "Vids" ? (
+            <Button
+              disabled={!canPrepare}
+              onClick={() => void handleStartNewVidsBatch()}
+              aria-describedby="video-disabled-reason"
+            >
+              Start new batch
+            </Button>
+          ) : null}
           <p id="video-disabled-reason" className={styles.disabledReason}>
             {disabledReason}
           </p>

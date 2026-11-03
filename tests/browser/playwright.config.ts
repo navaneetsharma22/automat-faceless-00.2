@@ -41,6 +41,7 @@ export default defineConfig({
     "vidsVideoReference.spec.ts",
     "vidsVideoGenerate.spec.ts",
     "vidsVideoQueue.spec.ts",
+    "vidsPreparedBatchIdentity.spec.ts",
     "imageQueueCreateTransition.spec.ts",
     "referenceCaptureStorage.spec.ts",
     "flowVideoAttachmentStorage.spec.ts",

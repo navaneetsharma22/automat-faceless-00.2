@@ -239,8 +239,8 @@ export type VidsComposerTransitionDiagnostics = {
 };
 
 /**
- * P10.3 ownership check. Inspection mode is read-only. Transition mode can
- * expand only the unique scoped Expand control, then repeats all identity checks.
+ * P10.3 ownership check. Inspection can only expand the unique scoped Animate
+ * control; callers must rebind and inspect again before cleanup is authorized.
  */
 export async function transitionVidsComposerFromPreviousInPage(input: {
   prompt: string; promptSha256: string; referenceSha256: string; referenceMimeType: "image/png" | "image/jpeg";
@@ -276,7 +276,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   diagnostic.animateTab = tabs.length === 1 ? "unique" : tabs.length ? "ambiguous" : "missing";
   diagnostic.animatePanel = panels.length === 1 ? "unique" : panels.length ? "ambiguous" : "missing";
   if (tabs.length !== 1) return blocked("animate", tabs.length ? "animate_tab_ambiguous" : "animate_tab_not_selected");
-  if (panels.length !== 1 && !input.inspectOnly) {
+  if (panels.length !== 1) {
     const expanders = [...sidebar.querySelectorAll<HTMLElement>("button[aria-expanded='false'], [role='button'][aria-expanded='false']")].filter(visible).filter((element) => name(element) === "Expand");
     if (expanders.length === 1) {
       expanders[0]!.click();

@@ -10,6 +10,7 @@ import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createConnectionMessageListener } from "../../src/background/handlers/connections";
 import { makeRequest } from "../../src/shared/messages";
 import { ChromePreferenceRepository } from "../../src/storage/repositories";
+import type { VidsVideoQueueRecord } from "../../src/domain/jobs/vidsVideoQueue";
 
 const preparedBatchId = "prepared:vids-workspace:volcano";
 const itemId = "video-item-1";
@@ -28,6 +29,8 @@ async function setup(options: {
   activationResult?: { ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1 };
   injectedDocumentId?: string;
   wrongPromptHash?: boolean;
+  referenceMismatch?: boolean;
+  changePromptBeforeIntent?: boolean;
 } = {}) {
   const database = createMemoryRepositoryDatabase();
   const repositories = new ExtensionRepositories(database, () => 1000);
@@ -77,10 +80,11 @@ async function setup(options: {
     calls.push(input);
     if (input.func === enterVidsPromptInPage) {
       if (options.changeTargetBeforeIntent && calls.length === 2) await database.selectedTargets.put({ ...target, verificationBinding: { ...target.verificationBinding, documentId: "replaced-doc" } });
+      const entryCount = calls.filter((call) => call.func === enterVidsPromptInPage).length;
       return [{ documentId: options.injectedDocumentId ?? documentId, result: {
         href: canonicalTarget, ok: !options.entryReason, ...(options.entryReason ? { reason: options.entryReason } : {}),
-        promptState: "empty", expectedSha256: promptHash, actualSha256: promptHash, immediateMatch: true, settledMatch: true, stableReads: 3,
-        referenceSha256, referenceProofSource: "selected_file_sha256", referenceByteSize: png.length, generateCount: options.generateCount ?? 1, generateDisabled: options.generateDisabled ?? false,
+        promptState: "empty", expectedSha256: promptHash, actualSha256: options.changePromptBeforeIntent && entryCount === 2 ? "f".repeat(64) : promptHash, immediateMatch: !(options.changePromptBeforeIntent && entryCount === 2), settledMatch: !(options.changePromptBeforeIntent && entryCount === 2), stableReads: 3,
+        referenceSha256: options.referenceMismatch ? "d".repeat(64) : referenceSha256, referenceProofSource: "selected_file_sha256", referenceByteSize: png.length, generateCount: options.generateCount ?? 1, generateDisabled: options.generateDisabled ?? false,
       } }];
     }
     const activationCall = calls.filter((call) => call.func === activateVidsGenerateInPage).length;
@@ -93,6 +97,11 @@ async function setup(options: {
   const handler = createVidsVideoGenerateHandler({
     repositories, scripting, getTab: async (tabId) => ({ id: tabId, url: canonicalTarget }), revalidate: async () => undefined,
     now: () => 5000, createAttemptId: () => attemptNumber++ === 0 ? "66666666-6666-4666-8666-666666666666" : "77777777-7777-4777-8777-777777777777",
+    queueCanContinue: async (batchId, activeItemId, activePromptHash, activeReferenceId, activeReferenceSha256) => {
+      const queue = await repositories.getVidsVideoQueue(`vids-video:${batchId}`);
+      const active = queue?.items.find((value) => value.itemId === activeItemId);
+      return queue?.preparedBatchId === batchId && queue.state === "checking_generate" && active?.state === "sending" && active.promptHash === activePromptHash && active.referenceId === activeReferenceId && active.referenceSha256 === activeReferenceSha256;
+    },
   });
   return { database, repositories, prepared, handler, calls, scripting, promptHash, referenceSha256, target, attachment };
 }
@@ -112,6 +121,20 @@ describe("P10.2 Google Vids exact prompt and one-shot generation", () => {
     expect(await fixture.database.vidsVideoGenerationOperations.toArray()).toHaveLength(1);
   });
 
+  it("requires the persisted queue to own this exact sending Shot before intent or Generate", async () => {
+    const fixture = await setup();
+    const paused = await fixture.handler.generateOnce(preparedBatchId, itemId, true);
+    expect(paused).toMatchObject({ status: "blocked", stage: "queue_ownership", reason: "vids_queue_paused_before_generation_intent" });
+    expect(fixture.calls).toHaveLength(0);
+    expect(await fixture.database.vidsVideoGenerationOperations.toArray()).toEqual([]);
+    const item = fixture.prepared.items[0]!;
+    const queue: VidsVideoQueueRecord = { queueId: `vids-video:${preparedBatchId}`, preparedBatchId, state: "checking_generate", items: [{ itemId, order: 0, shotId: item.canonicalShotId, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, promptHash: item.contentHash, state: "sending" }], revision: 1, createdAt: 1, updatedAt: 1, lastDispatchAt: null, cooldownDeadlineAt: null, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: null, runId: "queue-run" };
+    await fixture.repositories.createVidsVideoQueue(queue);
+    const dispatched = await fixture.handler.generateOnce(preparedBatchId, itemId, true);
+    expect(dispatched.status).toBe("dispatched");
+    expect(fixture.calls.filter((call) => call.func === activateVidsGenerateInPage)).toHaveLength(1);
+  });
+
   it.each([
     ["prepared pair or hash mismatch", { wrongPromptHash: true }, "prepared_item_pairing_or_hash_mismatch"],
     ["conflicting text", { entryReason: "prompt_editor_contains_conflicting_text" }, "prompt_editor_contains_conflicting_text"],
@@ -120,6 +143,8 @@ describe("P10.2 Google Vids exact prompt and one-shot generation", () => {
     ["ambiguous Generate control", { generateCount: 2 }, "vids_generate_control_ambiguous"],
     ["wrong injected document", { injectedDocumentId: "replacement-document" }, "vids_document_changed"],
     ["target changes after prompt preflight", { changeTargetBeforeIntent: true }, "vids_target_changed_before_intent"],
+    ["wrong uploaded image", { referenceMismatch: true }, "vids_reference_identity_mismatch"],
+    ["prompt changes before intent", { changePromptBeforeIntent: true }, "vids_exact_prompt_readback_failed"],
   ])("blocks %s before intent and activation", async (_name, options, reason) => {
     const fixture = await setup(options);
     const result = await fixture.handler.generateOnce(preparedBatchId, itemId);

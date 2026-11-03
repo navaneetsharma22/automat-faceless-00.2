@@ -40,7 +40,7 @@ export function createVidsVideoGenerateHandler(deps: {
   revalidate: () => Promise<unknown>;
   now?: () => number;
   createAttemptId?: () => string;
-  queueCanContinue?: (preparedBatchId: string) => Promise<boolean>;
+  queueCanContinue?: (preparedBatchId: string, itemId: string, promptHash: string, referenceId: string, referenceSha256: string) => Promise<boolean>;
 }) {
   const now = deps.now ?? Date.now;
   const makeId = async (batchId: string, itemId: string) => `vids-generation:${await sha256Hex(`${batchId}\u0000${itemId}`)}`;
@@ -105,7 +105,6 @@ export function createVidsVideoGenerateHandler(deps: {
   async function generateOnce(preparedBatchId: string, itemId: string, fromQueue = false): Promise<VidsVideoGenerateResult> {
     const existingQueue = await deps.repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`);
     if (existingQueue && !fromQueue) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_owns_prepared_batch" };
-    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId))) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_paused_before_generation_intent" };
     const id = await makeId(preparedBatchId, itemId);
     const existing = await deps.repositories.getVidsVideoGenerationOperation(id);
     const retrySource = existing?.status === "retry_ready" && existing.preActivationRecovery ? existing : undefined;
@@ -126,6 +125,7 @@ export function createVidsVideoGenerateHandler(deps: {
     const item = batch.items.find((candidate) => candidate.itemId === itemId);
     if (!item || !imported.ok || imported.items[item.order]?.rawBody !== item.rawJsonBody || imported.items[item.order]?.shotId !== (item.shotId ?? item.canonicalShotId) || canonicalizeShotId(imported.items[item.order]?.shotId) !== item.canonicalShotId || await sha256Hex(item.rawJsonBody) !== item.contentHash)
       return { status: "blocked", stage: "preflight", reason: "prepared_item_pairing_or_hash_mismatch" };
+    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId, item.itemId, item.contentHash, item.reference.referenceId, item.reference.sha256))) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_paused_before_generation_intent" };
 
     const attachment = await deps.repositories.getVidsVideoAttachmentOperation(`vids:${await sha256Hex(`${batch.id}\u0000${item.itemId}`)}`);
     const parsedAttachment = VidsVideoAttachmentOperationSchema.safeParse(attachment);
@@ -168,7 +168,7 @@ export function createVidsVideoGenerateHandler(deps: {
         immediateMatch: true, settledMatch: true, stableReads: exactAgain.result.stableReads!, verifiedAt: timestamp,
       }, activationAttempted: false, activationCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
-    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId))) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_paused_before_generation_intent" };
+    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId, itemId, item.contentHash, item.reference.referenceId, item.reference.sha256))) return { status: "blocked", stage: "queue_ownership", reason: "vids_queue_paused_before_generation_intent" };
     try {
       const claimed = retrySource
         ? await deps.repositories.claimVidsVideoGenerationRetry(intent, retrySource, attachment!)
@@ -194,7 +194,7 @@ export function createVidsVideoGenerateHandler(deps: {
       const operation = await saveOutcome("blocked", "generate_preflight", "vids_target_changed_before_activation", false, 0);
       return { status: "blocked", stage: "generate_preflight", reason: operation.reason, operation };
     }
-    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId))) {
+    if (fromQueue && !(await deps.queueCanContinue?.(preparedBatchId, itemId, item.contentHash, item.reference.referenceId, item.reference.sha256))) {
       const operation = await saveOutcome("blocked", "generate_preflight", "vids_queue_paused_before_activation", false, 0);
       return { status: "blocked", stage: "generate_preflight", reason: operation.reason, operation };
     }
