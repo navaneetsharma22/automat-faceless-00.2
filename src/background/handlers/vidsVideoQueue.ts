@@ -109,7 +109,17 @@ export function createVidsVideoQueueHandler(input: {
         const attachment = await input.getAttachment(queue.preparedBatchId, next.itemId);
         if (generation.status !== "not_started") throw new Error("vids_generation_attempt_requires_review");
         if (attachment.status !== "not_started") throw new Error("vids_attachment_attempt_requires_review");
-        const clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect_clean");
+        let clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect_clean");
+        if (clean.status !== "ready" && clean.reason === "vids_refreshed_composer_not_clean") {
+          // Populated composers may still be the exact prior pair. Establish fresh
+          // ownership on the rebound document before allowing cleanup below.
+          clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect");
+          if (clean.status === "ready") {
+            const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+            const updated = latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: undefined, cleanComposerRecovery: undefined } : item);
+            queue = await save(latest, { items: updated });
+          }
+        }
         if (clean.status !== "ready") {
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           const reason = clean.reason ?? "vids_refreshed_composer_not_clean";
@@ -133,9 +143,10 @@ export function createVidsVideoQueueHandler(input: {
           queue = await save(queue, { state: "preparing", items: transitioning, nextActionAt: null });
         }
         const transitionRunId = queue.runId;
+        const executionDocumentId = queue.executionDocumentRebind?.toDocumentId ?? prepared.data.target.documentId;
         const isBoundCheckpoint = (candidate: unknown) => {
           const parsed = VidsVideoTransitionCheckpointSchema.safeParse(candidate);
-          return parsed.success && parsed.data.previousItemId === previous.itemId && parsed.data.previousAttemptId === previous.dispatchReceipt?.attemptId && parsed.data.previousReferenceId === previous.referenceId && parsed.data.previousReferenceSha256 === previous.referenceSha256 && parsed.data.previousPromptHash === previous.promptHash && parsed.data.nextItemId === next.itemId && parsed.data.nextReferenceId === next.referenceId && parsed.data.nextReferenceSha256 === next.referenceSha256 && parsed.data.nextPromptHash === next.promptHash && parsed.data.tabId === prepared.data.target.tabId && parsed.data.canonicalTarget === prepared.data.target.canonicalTarget && parsed.data.documentId === prepared.data.target.documentId;
+          return parsed.success && parsed.data.stage !== undefined && parsed.data.previousItemId === previous.itemId && parsed.data.previousAttemptId === previous.dispatchReceipt?.attemptId && parsed.data.previousReferenceId === previous.referenceId && parsed.data.previousReferenceSha256 === previous.referenceSha256 && parsed.data.previousPromptHash === previous.promptHash && parsed.data.nextItemId === next.itemId && parsed.data.nextReferenceId === next.referenceId && parsed.data.nextReferenceSha256 === next.referenceSha256 && parsed.data.nextPromptHash === next.promptHash && parsed.data.tabId === prepared.data.target.tabId && parsed.data.canonicalTarget === prepared.data.target.canonicalTarget && parsed.data.documentId === executionDocumentId;
         };
         const itemNow = queue.items.find((item) => item.itemId === next.itemId)!;
         let checkpoint = itemNow.transitionCheckpoint;
@@ -156,7 +167,7 @@ export function createVidsVideoQueueHandler(input: {
           const generation = await input.getGeneration(queue.preparedBatchId, previous.itemId);
           const operation = VidsVideoGenerationOperationSchema.safeParse(generation.operation);
           if (!operation.success || !previous.dispatchReceipt || operation.data.attemptId !== previous.dispatchReceipt!.attemptId) return latest;
-          checkpoint = { stage: cleanupAlreadyPassed ? "prompt_cleared" : "ownership_verified", previousItemId: previous.itemId, previousAttemptId: previous.dispatchReceipt!.attemptId, previousReferenceId: previous.referenceId, previousReferenceSha256: previous.referenceSha256, previousPromptHash: previous.promptHash, nextItemId: next.itemId, nextReferenceId: next.referenceId, nextReferenceSha256: next.referenceSha256, nextPromptHash: next.promptHash, tabId: prepared.data.target.tabId, canonicalTarget: prepared.data.target.canonicalTarget, documentId: prepared.data.target.documentId!, verifiedAt: now() };
+          checkpoint = { stage: cleanupAlreadyPassed ? "prompt_cleared" : "ownership_verified", previousItemId: previous.itemId, previousAttemptId: previous.dispatchReceipt!.attemptId, previousReferenceId: previous.referenceId, previousReferenceSha256: previous.referenceSha256, previousPromptHash: previous.promptHash, nextItemId: next.itemId, nextReferenceId: next.referenceId, nextReferenceSha256: next.referenceSha256, nextPromptHash: next.promptHash, tabId: prepared.data.target.tabId, canonicalTarget: prepared.data.target.canonicalTarget, documentId: queue.executionDocumentRebind?.toDocumentId ?? prepared.data.target.documentId!, verifiedAt: now() };
           const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint } : item);
           queue = await save(latest, { state: "preparing", items, nextActionAt: null });
         }
