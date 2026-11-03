@@ -15,13 +15,15 @@ export const VidsVideoTransitionCheckpointSchema = z.object({
 }).strict();
 export type VidsVideoTransitionCheckpoint = z.infer<typeof VidsVideoTransitionCheckpointSchema>;
 export const VidsVideoExecutionRebindSchema = z.object({
+  // Optional on read for queues persisted before cross-tab recovery existed.
+  fromTabId: z.number().int().nonnegative().optional(), toTabId: z.number().int().nonnegative().optional(),
   fromDocumentId: z.string().min(1).max(256), toDocumentId: z.string().min(1).max(256),
   projectId: z.string().min(1).max(256), canonicalTarget: z.string().min(1).max(2048),
   verifiedAt: z.number().finite().nonnegative(), sameAccountConfirmedAt: z.number().finite().nonnegative(),
 }).strict();
 export type VidsVideoExecutionRebind = z.infer<typeof VidsVideoExecutionRebindSchema>;
 export const VidsCleanComposerRecoverySchema = z.object({
-  documentId: z.string().min(1).max(256), canonicalTarget: z.string().min(1).max(2048),
+  tabId: z.number().int().nonnegative(), documentId: z.string().min(1).max(256), canonicalTarget: z.string().min(1).max(2048),
   referenceId: z.string().uuid(), referenceSha256: z.string().regex(/^[0-9a-f]{64}$/), promptHash: z.string().regex(/^[0-9a-f]{64}$/),
   verifiedAt: z.number().finite().nonnegative(),
 }).strict();
@@ -34,11 +36,15 @@ export const VidsCleanupDiagnosticsSchema = z.object({
   clearAvailable: z.enum(["unique", "missing", "ambiguous", "not_checked"]).optional(), settledEmpty: z.boolean().optional(),
 }).strict();
 export type VidsCleanupDiagnostics = z.infer<typeof VidsCleanupDiagnosticsSchema>;
+export const VidsResumeRecoveryEvidenceSchema = z.object({
+  priorReason: z.string().regex(/^[a-z0-9_]{1,64}$/), verifiedAt: z.number().finite().nonnegative(),
+}).strict();
 export type VidsVideoQueueItem = {
   itemId: string; order: number; shotId: string; referenceId: string; referenceSha256: string; promptHash: string;
   state: typeof VIDS_VIDEO_QUEUE_ITEM_STATES[number]; reason?: string; attemptId?: string;
   transitionCheckpoint?: VidsVideoTransitionCheckpoint;
   cleanupDiagnostics?: VidsCleanupDiagnostics;
+  resumeRecoveryEvidence?: z.infer<typeof VidsResumeRecoveryEvidenceSchema>;
   cleanComposerRecovery?: z.infer<typeof VidsCleanComposerRecoverySchema>;
   dispatchReceipt?: { attemptId: string; storedAt: number };
 };
@@ -49,5 +55,5 @@ export type VidsVideoQueueRecord = {
   nextActionAt: number | null; pauseReason?: string; runId: string;
   executionDocumentRebind?: VidsVideoExecutionRebind;
 };
-const itemSchema = z.object({ itemId: z.string().min(1).max(256), order: z.number().int().nonnegative(), shotId: z.string().regex(/^[1-9][0-9]*$/), referenceId: z.string().uuid(), referenceSha256: z.string().regex(/^[0-9a-f]{64}$/), promptHash: z.string().regex(/^[0-9a-f]{64}$/), state: z.enum(VIDS_VIDEO_QUEUE_ITEM_STATES), reason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(), attemptId: z.string().min(1).max(128).optional(), transitionCheckpoint: VidsVideoTransitionCheckpointSchema.optional(), cleanComposerRecovery: VidsCleanComposerRecoverySchema.optional(), cleanupDiagnostics: VidsCleanupDiagnosticsSchema.optional(), dispatchReceipt: z.object({ attemptId: z.string().min(1).max(128), storedAt: z.number().finite().nonnegative() }).strict().optional() }).strict();
+const itemSchema = z.object({ itemId: z.string().min(1).max(256), order: z.number().int().nonnegative(), shotId: z.string().regex(/^[1-9][0-9]*$/), referenceId: z.string().uuid(), referenceSha256: z.string().regex(/^[0-9a-f]{64}$/), promptHash: z.string().regex(/^[0-9a-f]{64}$/), state: z.enum(VIDS_VIDEO_QUEUE_ITEM_STATES), reason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(), attemptId: z.string().min(1).max(128).optional(), transitionCheckpoint: VidsVideoTransitionCheckpointSchema.optional(), cleanComposerRecovery: VidsCleanComposerRecoverySchema.optional(), cleanupDiagnostics: VidsCleanupDiagnosticsSchema.optional(), resumeRecoveryEvidence: VidsResumeRecoveryEvidenceSchema.optional(), dispatchReceipt: z.object({ attemptId: z.string().min(1).max(128), storedAt: z.number().finite().nonnegative() }).strict().optional() }).strict();
 export const VidsVideoQueueRecordSchema = z.object({ queueId: z.string().min(1).max(512), preparedBatchId: z.string().min(1).max(512), state: z.enum(VIDS_VIDEO_QUEUE_STATES), items: z.array(itemSchema).nonempty().max(100), revision: z.number().int().nonnegative(), createdAt: z.number().finite().nonnegative(), updatedAt: z.number().finite().nonnegative(), lastDispatchAt: z.number().finite().nonnegative().nullable(), cooldownDeadlineAt: z.number().finite().nonnegative().nullable(), readinessDeadlineAt: z.number().finite().nonnegative().nullable(), readinessStartedAt: z.number().finite().nonnegative().nullable(), nextActionAt: z.number().finite().nonnegative().nullable(), pauseReason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(), runId: z.string().min(1).max(128), executionDocumentRebind: VidsVideoExecutionRebindSchema.optional() }).strict().refine((queue) => queue.items.every((item, index) => item.order === index));

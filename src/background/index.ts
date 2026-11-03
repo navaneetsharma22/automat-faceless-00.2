@@ -167,6 +167,7 @@ const vidsVideoGenerate = createVidsVideoGenerateHandler({
 const vidsVideoQueue = createVidsVideoQueueHandler({
   repositories,
   alarms: chrome.alarms,
+  revalidate: () => connectionLifecycle.revalidate("Vids", false),
   attach: (preparedBatchId, itemId, fromQueue) => vidsVideoAttachment.attach(preparedBatchId, itemId, fromQueue),
   getAttachment: (preparedBatchId, itemId) => vidsVideoAttachment.get(preparedBatchId, itemId),
   generate: (preparedBatchId, itemId, fromQueue) => vidsVideoGenerate.generateOnce(preparedBatchId, itemId, fromQueue),

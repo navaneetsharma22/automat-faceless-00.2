@@ -127,6 +127,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
         </div>
         {queue?.items.map((entry) => <div key={entry.itemId}>
           <p className={styles.queueItem}><strong>Shot {entry.shotId}</strong><span>{queueItemLabel(entry.state)}</span>{entry.reason ? <details><summary>Details</summary><code>{entry.reason}</code></details> : null}</p>
+          {entry.resumeRecoveryEvidence ? <p className={styles.note}>Prior Resume blocker retained as evidence: <code>{entry.resumeRecoveryEvidence.priorReason}</code> · verified {new Date(entry.resumeRecoveryEvidence.verifiedAt).toLocaleString()}</p> : null}
           {entry.cleanupDiagnostics ? <details className={styles.prompt}><summary>Cleanup readback diagnostics</summary><dl className={styles.diagnostics}>
             <div><dt>Failing stage</dt><dd>{entry.cleanupDiagnostics.stage}</dd></div>
             <div><dt>Editor / panel rebound</dt><dd>{entry.cleanupDiagnostics.editorRebound === undefined ? "unknown" : entry.cleanupDiagnostics.editorRebound ? "yes" : "no"} / {entry.cleanupDiagnostics.panelRebound === undefined ? "unknown" : entry.cleanupDiagnostics.panelRebound ? "yes" : "no"}</dd></div>

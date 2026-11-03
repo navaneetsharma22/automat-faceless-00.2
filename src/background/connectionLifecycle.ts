@@ -63,13 +63,14 @@ export function createConnectionLifecycleService(
   const revalidate = (
     provider: ProviderName,
     enableReconnect = false,
+    explicitReconnect = false,
   ): Promise<ConnectionRevalidationResult> => {
     if (enableReconnect) {
       return repositories
         .setReconnectIntent(provider, true)
         .then((updated) =>
           updated
-            ? revalidate(provider)
+            ? revalidate(provider, false, true)
             : { ok: false, state: "disconnected", reason: "target_missing" },
         );
     }
@@ -173,7 +174,7 @@ export function createConnectionLifecycleService(
             // A saved document ID is a guard only when that old verification
             // belongs to the currently selected target. Obsolete verification
             // metadata must not veto a fresh explicit Connect handshake.
-            expectedDocumentId: previousBindingMatchesSelectedTarget
+            expectedDocumentId: previousBindingMatchesSelectedTarget && !(provider === "Vids" && explicitReconnect)
               ? previousBinding?.documentId
               : undefined,
             decideStaleConnectorReplacement: async () => {

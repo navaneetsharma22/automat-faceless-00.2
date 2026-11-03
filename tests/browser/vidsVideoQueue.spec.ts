@@ -13,7 +13,7 @@ async function install(page: import("@playwright/test").Page, collapsed = false)
   await page.locator("input[type=file]").setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: Buffer.from(bytes) });
   await page.locator("input[type=file]").evaluate((input) => { const file = (input as HTMLInputElement).files![0]!; const panel = input.closest("[role=tabpanel]")!; panel.querySelector("img[alt='Uploaded image preview']")!.setAttribute("src", URL.createObjectURL(file)); input.remove(); panel.querySelector("button[aria-label='Add image']")?.remove(); });
   await page.locator("[role=textbox]").evaluate((node, text) => { node.textContent = text; }, previousPrompt);
-  await page.evaluate(() => { Object.assign(window, { queueFixture: { removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 } }); document.addEventListener("click", (event) => { const button = (event.target as Element | null)?.closest("button"); if (!button) return; const fixture = (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture; if (button.matches("[aria-label='Remove image']")) { fixture.removeClicks += 1; button.remove(); document.querySelector("img[alt='Uploaded image preview']")?.remove(); const panel = document.querySelector("[role=tabpanel]")!; panel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file">'); } else if (button.matches("[aria-label='Generate']")) fixture.generateClicks += 1; else fixture.unrelatedClicks += 1; }); });
+  await page.evaluate(() => { Object.assign(window, { queueFixture: { removeClicks: 0, generateClicks: 0, unrelatedClicks: 0, rerenderOnRemove: false, replacementBeforeInput: 0, replacementInput: 0, selectionInsideEditor: false } }); document.addEventListener("click", (event) => { const button = (event.target as Element | null)?.closest("button"); if (!button) return; const fixture = (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number; rerenderOnRemove: boolean } }).queueFixture; if (button.matches("[aria-label='Remove image']")) { fixture.removeClicks += 1; if (fixture.rerenderOnRemove) { const oldPanel = button.closest<HTMLElement>("[role=tabpanel]")!; const newPanel = oldPanel.cloneNode(true) as HTMLElement; newPanel.querySelector("img[alt='Uploaded image preview']")?.remove(); newPanel.querySelector("button[aria-label='Remove image']")?.remove(); newPanel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file">'); const newEditor = newPanel.querySelector<HTMLElement>("[role=textbox]")!; newEditor.addEventListener("beforeinput", () => { const selection = window.getSelection(); fixture.replacementBeforeInput += 1; fixture.selectionInsideEditor = Boolean(selection && selection.rangeCount === 1 && newEditor.contains(selection.anchorNode) && newEditor.contains(selection.focusNode) && newEditor.contains(selection.getRangeAt(0).commonAncestorContainer)); }); newEditor.addEventListener("input", () => { fixture.replacementInput += 1; }); oldPanel.replaceWith(newPanel); return; } button.remove(); document.querySelector("img[alt='Uploaded image preview']")?.remove(); const panel = document.querySelector("[role=tabpanel]")!; panel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file">'); } else if (button.matches("[aria-label='Generate']")) fixture.generateClicks += 1; else fixture.unrelatedClicks += 1; }); });
 }
 
 test("production transition removes only exact previous content, then leaves the composer empty", async ({ page }) => {
@@ -21,7 +21,45 @@ test("production transition removes only exact previous content, then leaves the
   const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500 });
   expect(result).toMatchObject({ ok: true, changed: true });
   expect(await page.locator("[role=textbox]").evaluate((node) => node.textContent)).toBe("");
-  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 0 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 0 });
+});
+
+test("rebound transition replaces only the owned Shot 4 prompt with exact Shot 5 JSON before validating its reference and one Generate", async ({ page }) => {
+  await install(page);
+  const nextPrompt = JSON.stringify({ shot_id: "5", prompt_type: "video", scene: "saved Shot 5", multiline: ["first line", "second line"], opaque: "x".repeat(1200) }, null, 2);
+  const nextBytes = Uint8Array.from(bytes); nextBytes[nextBytes.length - 1] ^= 1;
+  const priorSha = await sha256Hex(previousPrompt), nextSha = await sha256Hex(nextPrompt), priorReferenceSha = await sha256Bytes(bytes);
+  await page.evaluate(() => { (window as unknown as { queueFixture: { rerenderOnRemove: boolean } }).queueFixture.rerenderOnRemove = true; });
+  const removed = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: priorSha, nextPrompt, nextPromptSha256: nextSha, referenceSha256: priorReferenceSha, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 700, checkpointedOwnership: true, phase: "remove_reference" });
+  expect(removed).toMatchObject({ ok: true, changed: true });
+  const replaced = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: priorSha, nextPrompt, nextPromptSha256: nextSha, referenceSha256: priorReferenceSha, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1000, checkpointedOwnership: true, phase: "clear_prompt" });
+  expect(removed).toMatchObject({ ok: true, diagnostics: { editorRebound: true, panelRebound: true } });
+  expect(replaced).toMatchObject({ ok: true, changed: true, diagnostics: { cleanupState: "prompt_replaced", promptTextMatches: true, promptHashMatches: true, settledPromptMatch: true } });
+  expect(await page.evaluate(() => { const fixture = (window as unknown as { queueFixture: { replacementBeforeInput: number; replacementInput: number; selectionInsideEditor: boolean } }).queueFixture; return fixture; })).toMatchObject({ replacementBeforeInput: 1, replacementInput: 1, selectionInsideEditor: true });
+  const interrupted = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: priorSha, nextPrompt, nextPromptSha256: nextSha, referenceSha256: priorReferenceSha, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, checkpointedOwnership: true, phase: "clear_prompt" });
+  expect(interrupted).toMatchObject({ ok: true, changed: false, diagnostics: { cleanupState: "prompt_replaced", settledPromptMatch: true } });
+  expect(await page.evaluate(() => { const fixture = (window as unknown as { queueFixture: { replacementBeforeInput: number; replacementInput: number } }).queueFixture; return fixture; })).toMatchObject({ replacementBeforeInput: 1, replacementInput: 1 });
+  const recovered = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: priorSha, nextPrompt, nextPromptSha256: nextSha, referenceSha256: priorReferenceSha, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, checkpointedOwnership: true, phase: "verify_replaced" });
+  expect(recovered).toMatchObject({ ok: true, changed: false, diagnostics: { settledPromptMatch: true } });
+  await page.locator("input[type=file]").setInputFiles({ name: "shot-5.png", mimeType: "image/png", buffer: Buffer.from(nextBytes) });
+  await page.locator("[role=tabpanel]").evaluate((panel) => panel.insertAdjacentHTML("afterbegin", '<img alt="Uploaded image preview" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL4WQAAAABJRU5ErkJggg=="><button aria-label="Remove image">Remove</button>'));
+  const promptReady = await page.evaluate(enterVidsPromptInPage, { prompt: nextPrompt, expectedSha256: nextSha, referenceSha256: await sha256Bytes(nextBytes), referenceMimeType: "image/png", referenceByteSize: nextBytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500 });
+  expect(promptReady).toMatchObject({ ok: true, promptState: "already_exact", immediateMatch: true, settledMatch: true, referenceSha256: await sha256Bytes(nextBytes) });
+  expect(await page.evaluate(activateVidsGenerateInPage, { prompt: nextPrompt, promptSha256: nextSha, referenceSha256: await sha256Bytes(nextBytes), referenceMimeType: "image/png", referenceByteSize: nextBytes.length, referenceWidth: 1, referenceHeight: 1 })).toMatchObject({ ok: true, activationCount: 1 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 1, unrelatedClicks: 0 });
+});
+
+test("preserves a user edit made after image removal and before the checkpointed Shot 5 prompt replacement", async ({ page }) => {
+  await install(page);
+  const nextPrompt = JSON.stringify({ shot_id: "5", prompt_type: "video", scene: "exact saved Shot 5" }, null, 2);
+  const priorSha = await sha256Hex(previousPrompt), nextSha = await sha256Hex(nextPrompt), referenceSha = await sha256Bytes(bytes);
+  const removed = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: priorSha, nextPrompt, nextPromptSha256: nextSha, referenceSha256: referenceSha, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, checkpointedOwnership: true, phase: "remove_reference" });
+  expect(removed).toMatchObject({ ok: true });
+  await page.locator("[role=textbox]").evaluate((editor) => { editor.textContent = "user's newer draft"; });
+  const conflict = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: priorSha, nextPrompt, nextPromptSha256: nextSha, referenceSha256: referenceSha, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, checkpointedOwnership: true, phase: "clear_prompt" });
+  expect(conflict).toMatchObject({ ok: false, reason: "vids_previous_composer_content_conflict", changed: false });
+  expect(await page.locator("[role=textbox]").textContent()).toBe("user's newer draft");
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { replacementBeforeInput: number; replacementInput: number; generateClicks: number } }).queueFixture)).toMatchObject({ replacementBeforeInput: 0, replacementInput: 0, generateClicks: 0 });
 });
 
 test("refreshed clean composer recovery is read-only and requires settled empty Animate controls", async ({ page }) => {
@@ -33,7 +71,7 @@ test("refreshed clean composer recovery is read-only and requires settled empty 
   const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, inspectOnly: true, phase: "inspect_clean" });
   expect(result).toMatchObject({ ok: true, changed: false, diagnostics: { stage: "complete", previewCount: 0, settledPromptEmpty: true } });
   expect(await page.locator("#unrelated").count()).toBe(1);
-  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 });
 });
 
 test("four-shot production chain verifies the immediately preceding reference at every transition", async ({ page }) => {
@@ -200,7 +238,7 @@ test("cleanup resumes at each persisted mutation boundary and refuses uncheckpoi
   expect(afterRemove.ok).toBe(true);
   const afterClearBeforeCheckpoint = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, phase: "verify_empty", checkpointedOwnership: true });
   expect(afterClearBeforeCheckpoint).toMatchObject({ ok: true, diagnostics: { settledPromptEmpty: true } });
-  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 0 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 0 });
   await install(page);
   await page.locator("img[alt='Uploaded image preview']").evaluate((preview) => preview.remove());
   const uncheckpointed = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 300, phase: "clear_prompt" });
@@ -241,7 +279,7 @@ test("read-only transition diagnostics distinguish prompt conflict from matched 
   await page.locator("[role=textbox]").evaluate((node) => { node.textContent = "unrelated user text"; });
   const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 100, inspectOnly: true });
   expect(result).toMatchObject({ ok: false, reason: "vids_previous_composer_content_conflict", changed: false, diagnostics: { stage: "prompt", promptMatches: false, referenceResult: "matched", referenceProofSource: "preview_blob_sha256" } });
-  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 });
 });
 
 test("a uniquely scoped Expand control opens Animate, then the transition repeats identity checks", async ({ page }) => {
@@ -255,5 +293,5 @@ test("a uniquely scoped Expand control opens Animate, then the transition repeat
   expect(expanded).toMatchObject({ ok: false, reason: "vids_composer_expanded_revalidate", changed: false });
   const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500 });
   expect(result).toMatchObject({ ok: true, changed: true, diagnostics: { animatePanel: "unique", promptMatches: true, referenceResult: "matched" } });
-  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 1 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 1 });
 });

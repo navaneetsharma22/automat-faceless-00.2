@@ -123,7 +123,7 @@ export function createVidsVideoAttachmentHandler(deps: {
     let batch = parsedBatch.data;
     if (fromQueue) {
       const rebound = (await deps.repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`))?.executionDocumentRebind;
-      if (rebound) batch = { ...batch, target: { ...batch.target, documentId: rebound.toDocumentId }, manualSettingsDeclaration: { ...batch.manualSettingsDeclaration, documentId: rebound.toDocumentId } };
+      if (rebound) batch = { ...batch, target: { ...batch.target, tabId: rebound.toTabId ?? batch.target.tabId, documentId: rebound.toDocumentId }, manualSettingsDeclaration: { ...batch.manualSettingsDeclaration, tabId: rebound.toTabId ?? batch.manualSettingsDeclaration.tabId, documentId: rebound.toDocumentId } };
     }
     const item = batch.items.find((candidate) => candidate.itemId === itemId);
     if (!item || !/^[1-9][0-9]*$/.test(item.canonicalShotId)) return resultError("prepared_vids_item_missing");

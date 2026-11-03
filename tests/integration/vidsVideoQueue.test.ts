@@ -14,13 +14,17 @@ import { ChromePreferenceRepository } from "../../src/storage/repositories";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import { CONNECTION_CAPABILITY, CONNECTOR_PROTOCOL_VERSION } from "../../src/platforms/shared/contracts";
 import type { SelectedTargetRecord } from "../../src/storage/db";
+import { createConnectionLifecycleService } from "../../src/background/connectionLifecycle";
+import { createVidsVideoGenerateHandler } from "../../src/background/handlers/vidsVideo";
+import { providerTabFromUrl } from "../../src/platforms/shared/connection";
+import type { ConnectionPort } from "../../src/platforms/shared/contracts";
 
 const batchId = "prepared:vids:two-shots";
 const fiveShotBatchId = "prepared:vids:prior-build-five-shots";
 const refs = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
 const prompts = ["{\n  \"shot_id\": \"1\",\n  \"prompt_type\": \"video\",\n  \"description\": \"first\"\n}", "{\n  \"shot_id\": \"2\",\n  \"prompt_type\": \"video\",\n  \"description\": \"second\",\n  \"long\": \"" + "x".repeat(3000) + "\"\n}"];
 
-async function setup(options: { disabledAttempts?: number; uncertain?: boolean; blocked?: boolean; shotCount?: number } = {}) {
+async function setup(options: { disabledAttempts?: number; uncertain?: boolean; blocked?: boolean; shotCount?: number; tabId?: number; revalidate?: () => Promise<unknown> } = {}) {
   const db = createMemoryRepositoryDatabase();
   const repositories = new ExtensionRepositories(db);
   const preparedId = options.shotCount ? fiveShotBatchId : batchId;
@@ -32,14 +36,23 @@ async function setup(options: { disabledAttempts?: number; uncertain?: boolean; 
   const batch: PreparedVideoBatchRecord = {
     id: preparedId, requestId: "33333333-3333-4333-8333-333333333333", workspaceId: "workspace", preparedAt: 1,
     videoBatchId: "video", videoSourceHash, videoSourceText, imageSourceBatchId: "images", imageSourceBatchHash: "b".repeat(64), destination: "Vids",
-    target: { provider: "Vids", tabId: 9, canonicalTarget: "https://docs.google.com/videos/d/project/edit", projectId: "project", documentId: "doc", verification: "verified", verifiedAt: 1 },
-    manualSettingsDeclaration: { confirmationId: "confirmation", confirmedAt: 1, destination: "Vids", declaredDurationSeconds: 8, tabId: 9, canonicalTarget: "https://docs.google.com/videos/d/project/edit", projectId: "project", documentId: "doc" },
+    target: { provider: "Vids", tabId: options.tabId ?? 9, canonicalTarget: "https://docs.google.com/videos/d/project/edit", projectId: "project", documentId: "doc", verification: "verified", verifiedAt: 1 },
+    manualSettingsDeclaration: { confirmationId: "confirmation", confirmedAt: 1, destination: "Vids", declaredDurationSeconds: 8, tabId: options.tabId ?? 9, canonicalTarget: "https://docs.google.com/videos/d/project/edit", projectId: "project", documentId: "doc" },
     status: "prepared", itemCount: 2,
     items: shotPrompts.map((rawJsonBody, order) => ({ itemId: `item-${order + 1}`, order, shotId: String(order + 1), canonicalShotId: String(order + 1), rawJsonBody, contentHash: hashes[order]!, sourceSpan: { start: 0, end: rawJsonBody.length }, reference: { referenceId: shotRefs[order]!, assignmentVersion: 1, sha256: String(order + 1).repeat(64), mimeType: "image/png", byteSize: 4, width: 1, height: 1, capturedAt: 1 } })), createdAt: 1, updatedAt: 1,
   };
   await db.preparedVideoBatches.put(batch);
   let at = 1_000;
-  const attach = vi.fn(async () => ({ status: "attached" }));
+  const attach = vi.fn(async (preparedBatchId: string, _itemId: string, fromQueue?: true) => {
+    if (fromQueue) {
+      const activeQueue = await repositories.getVidsVideoQueue(`vids-video:${preparedBatchId}`);
+      const selectedTarget = await repositories.getSelectedTarget("Vids");
+      const binding = selectedTarget?.verificationBinding;
+      const rebind = activeQueue?.executionDocumentRebind;
+      if (rebind && (!selectedTarget || selectedTarget.tabId !== (rebind.toTabId ?? batch.target.tabId) || selectedTarget.canonicalTarget !== rebind.canonicalTarget || binding?.tabId !== (rebind.toTabId ?? batch.target.tabId) || binding.documentId !== rebind.toDocumentId)) return { status: "blocked", reason: "vids_target_or_confirmation_mismatch" };
+    }
+    return { status: "attached" };
+  });
   const getAttachment = vi.fn(async () => ({ status: "not_started" }));
   let generationCalls = 0;
   const operations = new Map<string, VidsVideoGenerationOperation>();
@@ -50,13 +63,13 @@ async function setup(options: { disabledAttempts?: number; uncertain?: boolean; 
     if (options.blocked) return { status: "blocked", reason: "exact_prompt_readback_failed" };
     const item = batch.items.find((candidate) => candidate.itemId === itemId)!;
     const activeQueue = await repositories.getVidsVideoQueue(`vids-video:${batch.id}`);
-    const op: VidsVideoGenerationOperation = { id: `gen:${itemId}`, preparedBatchId: batch.id, workspaceId: batch.workspaceId, itemId, canonicalShotId: item.canonicalShotId, promptHash: item.contentHash, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, preIntentReferenceProofSource: "preview_blob_sha256", activationReferenceProofSource: "preview_blob_sha256", tabId: 9, canonicalTarget: batch.target.canonicalTarget, documentId: activeQueue?.executionDocumentRebind?.toDocumentId ?? "doc", attemptId: crypto.randomUUID(), status: options.uncertain ? "uncertain" : "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: item.contentHash, actualSha256: item.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: at }, activationAttempted: true, activationCount: 1, ...(!options.uncertain ? { dispatchedAt: at } : {}), createdAt: at, updatedAt: at };
+    const op: VidsVideoGenerationOperation = { id: `gen:${itemId}`, preparedBatchId: batch.id, workspaceId: batch.workspaceId, itemId, canonicalShotId: item.canonicalShotId, promptHash: item.contentHash, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, preIntentReferenceProofSource: "preview_blob_sha256", activationReferenceProofSource: "preview_blob_sha256", tabId: activeQueue?.executionDocumentRebind?.toTabId ?? batch.target.tabId, canonicalTarget: batch.target.canonicalTarget, documentId: activeQueue?.executionDocumentRebind?.toDocumentId ?? "doc", attemptId: crypto.randomUUID(), status: options.uncertain ? "uncertain" : "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: item.contentHash, actualSha256: item.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: at }, activationAttempted: true, activationCount: 1, ...(!options.uncertain ? { dispatchedAt: at } : {}), createdAt: at, updatedAt: at };
     operations.set(itemId, op);
     return { status: options.uncertain ? "uncertain" : "dispatched", operation: op };
   });
   const alarms = { create: vi.fn(async () => undefined), clear: vi.fn(async () => true) };
   const transitionFromPrevious = vi.fn(async () => ({ status: "ready" as const }));
-  const handler = createVidsVideoQueueHandler({ repositories, alarms, attach, getAttachment, generate, getGeneration, transitionFromPrevious, now: () => at, makeRunId: () => "run-1" });
+  const handler = createVidsVideoQueueHandler({ repositories, alarms, attach, getAttachment, generate, getGeneration, transitionFromPrevious, revalidate: options.revalidate, now: () => at, makeRunId: () => "run-1" });
   const flush = async () => new Promise((resolve) => setTimeout(resolve, 0));
   const waitForQueue = async (queueId: string, predicate: (queue: VidsVideoQueueRecord | undefined) => boolean) => {
     let queue = await repositories.getVidsVideoQueue(queueId);
@@ -69,26 +82,47 @@ async function setup(options: { disabledAttempts?: number; uncertain?: boolean; 
   return { db, batch, repositories, handler, attach, generate, getGeneration, getAttachment, alarms, transitionFromPrevious, now: () => at, advance: (ms: number) => { at += ms; }, flush, waitForQueue, operations };
 }
 
-function verifiedVidsTarget(documentId: string, canonicalTarget = "https://docs.google.com/videos/d/project/edit"): SelectedTargetRecord {
-  return { provider: "Vids", tabId: 9, canonicalTarget, verification: "verified", connectionState: "verified", updatedAt: 10,
-    verificationBinding: { provider: "Vids", tabId: 9, canonicalTarget, projectId: "project", frameId: 0, documentId, documentToken: `token-${documentId}`, extensionBuildId: BUILD_ID, extensionProtocolVersion: PROTOCOL_VERSION, connectorBuildId: BUILD_ID, connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION, capability: CONNECTION_CAPABILITY, verifiedAt: 100 } };
+function verifiedVidsTarget(documentId: string, canonicalTarget = "https://docs.google.com/videos/d/project/edit", tabId = 9): SelectedTargetRecord {
+  return { provider: "Vids", tabId, canonicalTarget, verification: "verified", connectionState: "verified", updatedAt: 10,
+    verificationBinding: { provider: "Vids", tabId, canonicalTarget, projectId: "project", frameId: 0, documentId, documentToken: `token-${documentId}`, extensionBuildId: BUILD_ID, extensionProtocolVersion: PROTOCOL_VERSION, connectorBuildId: BUILD_ID, connectorProtocolVersion: CONNECTOR_PROTOCOL_VERSION, capability: CONNECTION_CAPABILITY, verifiedAt: 100 } };
 }
 
-async function invokeQueueResume(f: Awaited<ReturnType<typeof setup>>, preparedId: string, revision: number, confirmSameAccount?: boolean) {
+async function invokeQueueResume(f: Awaited<ReturnType<typeof setup>>, preparedId: string, revision: number, confirmSameAccount?: boolean, revalidateConnection?: (provider: "Flow" | "Vids", enableReconnect?: boolean) => Promise<unknown>) {
   const preferences = new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined });
   const listener = createConnectionMessageListener("vids-resume-test", { repositories: f.repositories, preferences,
     vidsVideoQueue: f.handler,
+    revalidateConnection,
     flowVideoQueue: { get: vi.fn(), start: vi.fn(), pause: vi.fn(), resume: vi.fn(), stop: vi.fn(), recheckAndResume: vi.fn(), reconcilePreAddFailure: vi.fn() },
   });
   const request = makeRequest("vids.videoQueue.resume", { preparedBatchId: preparedId, expectedRevision: revision, ...(confirmSameAccount === undefined ? {} : { confirmSameAccount }) }, "resume-prior-build");
   return await new Promise<Record<string, unknown>>((resolve) => listener(JSON.parse(JSON.stringify(request)), { id: "vids-resume-test", url: "chrome-extension://vids-resume-test/index.html" }, (response) => resolve(response as unknown as Record<string, unknown>)));
 }
 
-async function seedPriorBuildPausedFiveShotQueue(f: Awaited<ReturnType<typeof setup>>, checkpoint: "absent" | "stale" = "absent", fourthGeneration?: VidsVideoGenerationOperation) {
+async function invokeConnectionsRevalidate(f: Awaited<ReturnType<typeof setup>>, revalidateConnection: (provider: "Flow" | "Vids", enableReconnect?: boolean) => Promise<unknown>) {
+  const preferences = new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined });
+  const listener = createConnectionMessageListener("vids-resume-test", { repositories: f.repositories, preferences, revalidateConnection,
+    vidsVideoQueue: f.handler,
+    flowVideoQueue: { get: vi.fn(), start: vi.fn(), pause: vi.fn(), resume: vi.fn(), stop: vi.fn(), recheckAndResume: vi.fn(), reconcilePreAddFailure: vi.fn() },
+  });
+  const request = makeRequest("connections.revalidate", { provider: "Vids", enableReconnect: true }, "connect-vids");
+  return await new Promise<Record<string, unknown>>((resolve) => listener(JSON.parse(JSON.stringify(request)), { id: "vids-resume-test", url: "chrome-extension://vids-resume-test/index.html" }, (response) => resolve(response as unknown as Record<string, unknown>)));
+}
+
+async function invokeConnectionsRecordSelection(f: Awaited<ReturnType<typeof setup>>, tabId: number, canonicalTarget: string) {
+  const preferences = new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined });
+  const listener = createConnectionMessageListener("vids-resume-test", { repositories: f.repositories, preferences,
+    vidsVideoQueue: f.handler,
+    flowVideoQueue: { get: vi.fn(), start: vi.fn(), pause: vi.fn(), resume: vi.fn(), stop: vi.fn(), recheckAndResume: vi.fn(), reconcilePreAddFailure: vi.fn() },
+  });
+  const request = makeRequest("connections.recordSelection", { provider: "Vids", tabId, canonicalTarget }, "select-new-vids-tab");
+  return await new Promise<Record<string, unknown>>((resolve) => listener(JSON.parse(JSON.stringify(request)), { id: "vids-resume-test", url: "chrome-extension://vids-resume-test/index.html" }, (response) => resolve(response as unknown as Record<string, unknown>)));
+}
+
+async function seedPriorBuildPausedFiveShotQueue(f: Awaited<ReturnType<typeof setup>>, checkpoint: "absent" | "stale" = "absent", fourthGeneration?: VidsVideoGenerationOperation, fourthReason = "vids_previous_prompt_clear_failed") {
   const sent = f.batch.items.slice(0, 3);
   const receipts = sent.map((item, index) => {
     const at = 500 + index * VIDS_VIDEO_DISPATCH_GAP_MS;
-    const operation: VidsVideoGenerationOperation = { id: `prior-${item.itemId}`, preparedBatchId: fiveShotBatchId, workspaceId: f.batch.workspaceId, itemId: item.itemId, canonicalShotId: item.canonicalShotId, promptHash: item.contentHash, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, preIntentReferenceProofSource: "preview_blob_sha256", activationReferenceProofSource: "preview_blob_sha256", tabId: 9, canonicalTarget: f.batch.target.canonicalTarget, documentId: "doc", attemptId: `prior-attempt-${index + 1}`, status: "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: item.contentHash, actualSha256: item.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: at }, activationAttempted: true, activationCount: 1, dispatchedAt: at, createdAt: at - 1, updatedAt: at };
+    const operation: VidsVideoGenerationOperation = { id: `prior-${item.itemId}`, preparedBatchId: fiveShotBatchId, workspaceId: f.batch.workspaceId, itemId: item.itemId, canonicalShotId: item.canonicalShotId, promptHash: item.contentHash, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, preIntentReferenceProofSource: "preview_blob_sha256", activationReferenceProofSource: "preview_blob_sha256", tabId: f.batch.target.tabId, canonicalTarget: f.batch.target.canonicalTarget, documentId: "doc", attemptId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`, status: "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: item.contentHash, actualSha256: item.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: at }, activationAttempted: true, activationCount: 1, dispatchedAt: at, createdAt: at - 1, updatedAt: at };
     f.operations.set(item.itemId, operation);
     return { operation, receipt: { attemptId: operation.attemptId, storedAt: at } };
   });
@@ -98,8 +132,8 @@ async function seedPriorBuildPausedFiveShotQueue(f: Awaited<ReturnType<typeof se
     const base = { itemId: item.itemId, order, shotId: item.canonicalShotId, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, promptHash: item.contentHash };
     if (order < 3) return { ...base, state: "sent" as const, attemptId: receipts[order]!.receipt.attemptId, dispatchReceipt: receipts[order]!.receipt };
     if (order > 3) return { ...base, state: "pending" as const };
-    const staleCheckpoint = checkpoint === "stale" ? { stage: "image_removed" as const, previousItemId: "item-3", previousAttemptId: receipts[2]!.receipt.attemptId, previousReferenceId: f.batch.items[2]!.reference.referenceId, previousReferenceSha256: f.batch.items[2]!.reference.sha256, previousPromptHash: f.batch.items[2]!.contentHash, nextItemId: "item-4", nextReferenceId: item.reference.referenceId, nextReferenceSha256: item.reference.sha256, nextPromptHash: item.contentHash, tabId: 9, canonicalTarget: f.batch.target.canonicalTarget, documentId: "old-refresh-doc", verifiedAt: 77 } : undefined;
-    return { ...base, state: "blocked" as const, reason: "vids_previous_prompt_clear_failed", ...(staleCheckpoint ? { transitionCheckpoint: staleCheckpoint } : {}) };
+    const staleCheckpoint = checkpoint === "stale" ? { stage: "image_removed" as const, previousItemId: "item-3", previousAttemptId: receipts[2]!.receipt.attemptId, previousReferenceId: f.batch.items[2]!.reference.referenceId, previousReferenceSha256: f.batch.items[2]!.reference.sha256, previousPromptHash: f.batch.items[2]!.contentHash, nextItemId: "item-4", nextReferenceId: item.reference.referenceId, nextReferenceSha256: item.reference.sha256, nextPromptHash: item.contentHash, tabId: f.batch.target.tabId, canonicalTarget: f.batch.target.canonicalTarget, documentId: "old-refresh-doc", verifiedAt: 77 } : undefined;
+    return { ...base, state: "blocked" as const, reason: fourthReason, ...(staleCheckpoint ? { transitionCheckpoint: staleCheckpoint } : {}) };
   });
   const queue: VidsVideoQueueRecord = { queueId: `vids-video:${fiveShotBatchId}`, preparedBatchId: fiveShotBatchId, state: "paused", items: queueItems, revision: 12, createdAt: 1, updatedAt: 900, lastDispatchAt: 500 + 2 * VIDS_VIDEO_DISPATCH_GAP_MS, cooldownDeadlineAt: 500 + 3 * VIDS_VIDEO_DISPATCH_GAP_MS, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: null, pauseReason: "vids_previous_prompt_clear_failed", runId: "prior-build-run" };
   await f.repositories.createVidsVideoQueue(queue);
@@ -107,6 +141,120 @@ async function seedPriorBuildPausedFiveShotQueue(f: Awaited<ReturnType<typeof se
 }
 
 describe("P10.3 isolated Vids timed queue", () => {
+  it("revalidates a Connected-session/stale-storage mismatch through Connections, then resumes the same queue on the new document", async () => {
+    const oldTabId = 1957329050, newTabId = 1957329423;
+    let performRevalidation: () => Promise<unknown> = async () => ({ ok: true });
+    const f = await setup({ shotCount: 5, tabId: oldTabId, revalidate: () => performRevalidation() });
+    const { queue: prior, receipts } = await seedPriorBuildPausedFiveShotQueue(f, "absent");
+    const canonicalTarget = f.batch.target.canonicalTarget;
+    const url = canonicalTarget;
+    const selectedTab = providerTabFromUrl(newTabId, "vids test", url)!;
+    const port: ConnectionPort = {
+      getMissingAccess: async () => ({}),
+      getTab: vi.fn(async (tabId) => tabId === newTabId ? selectedTab : undefined),
+      pingTopFrame: async (_tabId, request) => ({ ok: true, provider: "Vids", canonicalTarget, projectId: "project", protocolVersion: CONNECTOR_PROTOCOL_VERSION, buildId: BUILD_ID, attemptId: request.attemptId, documentToken: "new-token", capabilities: [CONNECTION_CAPABILITY] }),
+      identifyDocument: async () => ({ documentId: "refreshed-doc", frameId: 0, url }),
+      injectConnector: async () => ({ documentId: "refreshed-doc", frameId: 0, url }),
+      probeTopFrame: async (_tabId, _documentId, request) => ({ ok: true, provider: "Vids", canonicalTarget, projectId: "project", protocolVersion: CONNECTOR_PROTOCOL_VERSION, buildId: BUILD_ID, attemptId: request.attemptId, documentToken: "new-token", capabilities: [CONNECTION_CAPABILITY] }),
+      releaseConnector: async () => undefined,
+      makeAttemptId: () => "reconnect-attempt",
+    };
+    const lifecycle = createConnectionLifecycleService(f.repositories, () => port);
+    performRevalidation = () => lifecycle.revalidate("Vids", false);
+    await f.db.selectedTargets.put({ ...verifiedVidsTarget("old-document", canonicalTarget, oldTabId), reconnectEnabled: true });
+    expect(await invokeConnectionsRecordSelection(f, newTabId, canonicalTarget)).toMatchObject({ ok: true, data: { tabId: newTabId, verification: "unverified" } });
+    await f.repositories.markTargetsUnverified(); // worker restart can invalidate storage while the dashboard still has a Connected session snapshot
+    const reconnected = await invokeConnectionsRevalidate(f, (provider, allowReconnect) => lifecycle.revalidate(provider, allowReconnect));
+    expect(reconnected).toMatchObject({ ok: true, data: { ok: true, state: "verified", documentId: "refreshed-doc" } });
+    expect(await f.repositories.getSelectedTarget("Vids")).toMatchObject({ tabId: newTabId, verification: "verified", connectionState: "verified", verificationBinding: { tabId: newTabId, canonicalTarget, projectId: "project", documentId: "refreshed-doc" } });
+    expect(port.getTab).toHaveBeenCalledWith(newTabId);
+    expect(port.getTab).not.toHaveBeenCalledWith(oldTabId);
+
+    f.advance(3 * VIDS_VIDEO_DISPATCH_GAP_MS);
+    f.transitionFromPrevious.mockImplementation(async (_batchId, _previousId, inspectOnly, nextItemId, _checkpointed, phase) => phase === "inspect_clean" && inspectOnly && nextItemId === "item-4" ? { status: "ready" as const, diagnostics: { stage: "complete", settledEmpty: true } } : { status: "blocked" as const, reason: "unexpected_transition_phase" });
+    const resumed = await invokeQueueResume(f, fiveShotBatchId, prior.revision, true, (provider, allowReconnect) => lifecycle.revalidate(provider, allowReconnect));
+    expect(resumed).toMatchObject({ ok: true });
+    const continued = await f.waitForQueue(prior.queueId, (value) => value?.items[3]?.state === "sent");
+    expect(continued?.items.map((item) => item.state)).toEqual(["sent", "sent", "sent", "sent", "pending"]);
+    expect(continued?.items.slice(0, 3).map((item) => item.dispatchReceipt)).toEqual(receipts.map((entry) => entry.receipt));
+    expect(continued?.executionDocumentRebind).toMatchObject({ fromTabId: oldTabId, toTabId: newTabId, fromDocumentId: "doc", toDocumentId: "refreshed-doc", canonicalTarget });
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-4"]);
+    expect(f.operations.get("item-4")).toMatchObject({ tabId: newTabId, documentId: "refreshed-doc", referenceId: f.batch.items[3]!.reference.referenceId, promptHash: f.batch.items[3]!.contentHash });
+  });
+
+  it("runs the cleanup worker on the rebound tab/document while historical Shot 3 stays on its original binding", async () => {
+    const oldTabId = 1957329050, newTabId = 1957329423;
+    const f = await setup({ shotCount: 5, tabId: oldTabId });
+    const { queue: prior, receipts } = await seedPriorBuildPausedFiveShotQueue(f, "absent");
+    const reboundQueue: VidsVideoQueueRecord = { ...prior, state: "preparing", revision: prior.revision + 1, executionDocumentRebind: { fromTabId: oldTabId, toTabId: newTabId, fromDocumentId: "doc", toDocumentId: "new-document", projectId: "project", canonicalTarget: f.batch.target.canonicalTarget, verifiedAt: 100, sameAccountConfirmedAt: 101 }, items: prior.items.map((item) => item.order === 3 ? { ...item, state: "transitioning" as const } : item) };
+    await f.repositories.updateVidsVideoQueue({ expectedRevision: prior.revision, next: reboundQueue });
+    const previous = f.batch.items[2]!;
+    const priorOperationId = `vids-generation:${await sha256Hex(`${fiveShotBatchId}\u0000${previous.itemId}`)}`;
+    const generation: VidsVideoGenerationOperation = { id: priorOperationId, preparedBatchId: fiveShotBatchId, workspaceId: f.batch.workspaceId, itemId: previous.itemId, canonicalShotId: previous.canonicalShotId, promptHash: previous.contentHash, referenceId: previous.reference.referenceId, referenceSha256: previous.reference.sha256, tabId: oldTabId, canonicalTarget: f.batch.target.canonicalTarget, documentId: "doc", attemptId: receipts[2]!.receipt.attemptId, status: "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: previous.contentHash, actualSha256: previous.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: 100 }, activationAttempted: true, activationCount: 1, dispatchedAt: receipts[2]!.receipt.storedAt, createdAt: 99, updatedAt: 100 };
+    await f.db.vidsVideoGenerationOperations.put(generation);
+    const attachmentId = `vids:${await sha256Hex(`${fiveShotBatchId}\u0000${previous.itemId}`)}`;
+    const attachment: VidsVideoAttachmentOperation = { id: attachmentId, preparedBatchId: fiveShotBatchId, workspaceId: f.batch.workspaceId, itemId: previous.itemId, shotId: previous.canonicalShotId, referenceId: previous.reference.referenceId, assignmentVersion: previous.reference.assignmentVersion, referenceSha256: previous.reference.sha256, mimeType: "image/png", byteSize: 4, width: 1, height: 1, tabId: oldTabId, canonicalTarget: f.batch.target.canonicalTarget, documentId: "doc", status: "attached", uploadEvidence: { mechanism: "verified_document_file_input", exactBytesSha256: previous.reference.sha256, byteSize: 4, mimeType: "image/png", fileInputCount: 1, inputChangeDispatched: true, previewLoaded: true, previewWidth: 1, previewHeight: 1, removalControlPresent: true, uploadOperationId: "44444444-4444-4444-8444-444444444444", uploadedAt: 100 }, createdAt: 99, updatedAt: 100 };
+    await f.db.vidsVideoAttachmentOperations.put(attachment);
+    await f.db.selectedTargets.put(verifiedVidsTarget("new-document", f.batch.target.canonicalTarget, newTabId));
+    const script = vi.fn(async () => [{ documentId: "new-document", result: { href: f.batch.target.canonicalTarget, ok: true, changed: false, diagnostics: { stage: "complete", settledPromptEmpty: true } } }]);
+    const worker = createVidsVideoGenerateHandler({ repositories: f.repositories, scripting: { executeScript: script }, getTab: async (tabId) => tabId === newTabId ? { id: newTabId, url: f.batch.target.canonicalTarget } : undefined, revalidate: async () => undefined });
+    const result = await worker.transitionFromPrevious(fiveShotBatchId, previous.itemId, true, "item-4", false, "inspect_clean");
+    expect(result.status).toBe("ready");
+    expect(script).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: newTabId, documentIds: ["new-document"] } }));
+    expect(generation).toMatchObject({ tabId: oldTabId, documentId: "doc" });
+    expect(attachment).toMatchObject({ tabId: oldTabId, documentId: "doc" });
+    await f.db.selectedTargets.put(verifiedVidsTarget("new-document", f.batch.target.canonicalTarget, newTabId));
+    script.mockImplementationOnce(async () => {
+      await f.db.selectedTargets.put(verifiedVidsTarget("switched-document", f.batch.target.canonicalTarget, 1957329555));
+      return [{ documentId: "new-document", result: { href: f.batch.target.canonicalTarget, ok: true, changed: false, diagnostics: { stage: "complete", settledPromptEmpty: true } } }];
+    });
+    const switched = await worker.transitionFromPrevious(fiveShotBatchId, previous.itemId, true, "item-4", false, "inspect_clean");
+    expect(switched).toMatchObject({ status: "blocked", reason: "vids_target_changed_after_composer_transition" });
+  });
+
+  it("proves Shot 4 receipt, generation, attachment, and active binding agree after refreshed-tab Resume", async () => {
+    const oldTabId = 1957329050, newTabId = 1957329423;
+    const f = await setup({ shotCount: 5, tabId: oldTabId });
+    const { queue: prior, receipts } = await seedPriorBuildPausedFiveShotQueue(f);
+    const shot4 = f.batch.items[3]!, shot5 = f.batch.items[4]!;
+    const shot4Receipt = { attemptId: "44444444-4444-4444-8444-444444444444", storedAt: 500 + 3 * VIDS_VIDEO_DISPATCH_GAP_MS };
+    const rebound = { fromTabId: oldTabId, toTabId: newTabId, fromDocumentId: "old-doc", toDocumentId: "refreshed-doc", projectId: "project", canonicalTarget: f.batch.target.canonicalTarget, verifiedAt: 600, sameAccountConfirmedAt: 601 };
+    const shot4SentQueue: VidsVideoQueueRecord = { ...prior, state: "preparing", revision: prior.revision + 1, executionDocumentRebind: rebound, lastDispatchAt: shot4Receipt.storedAt, cooldownDeadlineAt: shot4Receipt.storedAt + VIDS_VIDEO_DISPATCH_GAP_MS, items: prior.items.map((item) => item.itemId === shot4.itemId ? { ...item, state: "sent" as const, attemptId: shot4Receipt.attemptId, dispatchReceipt: shot4Receipt } : item.itemId === shot5.itemId ? { ...item, state: "transitioning" as const } : item) };
+    await f.repositories.updateVidsVideoQueue({ expectedRevision: prior.revision, next: shot4SentQueue });
+    const shot4OperationId = `vids-generation:${await sha256Hex(`${fiveShotBatchId}\u0000${shot4.itemId}`)}`;
+    await f.db.vidsVideoGenerationOperations.put({ id: shot4OperationId, preparedBatchId: fiveShotBatchId, workspaceId: f.batch.workspaceId, itemId: shot4.itemId, canonicalShotId: shot4.canonicalShotId, promptHash: shot4.contentHash, referenceId: shot4.reference.referenceId, referenceSha256: shot4.reference.sha256, tabId: newTabId, canonicalTarget: f.batch.target.canonicalTarget, documentId: "refreshed-doc", attemptId: shot4Receipt.attemptId, status: "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: shot4.contentHash, actualSha256: shot4.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: shot4Receipt.storedAt }, activationAttempted: true, activationCount: 1, dispatchedAt: shot4Receipt.storedAt, createdAt: shot4Receipt.storedAt - 1, updatedAt: shot4Receipt.storedAt });
+    const attachmentId = `vids:${await sha256Hex(`${fiveShotBatchId}\u0000${shot4.itemId}`)}`;
+    await f.db.vidsVideoAttachmentOperations.put({ id: attachmentId, preparedBatchId: fiveShotBatchId, workspaceId: f.batch.workspaceId, itemId: shot4.itemId, shotId: shot4.canonicalShotId, referenceId: shot4.reference.referenceId, assignmentVersion: shot4.reference.assignmentVersion, referenceSha256: shot4.reference.sha256, mimeType: "image/png", byteSize: shot4.reference.byteSize, width: shot4.reference.width, height: shot4.reference.height, tabId: newTabId, canonicalTarget: f.batch.target.canonicalTarget, documentId: "refreshed-doc", status: "attached", uploadEvidence: { mechanism: "verified_document_file_input", exactBytesSha256: shot4.reference.sha256, byteSize: shot4.reference.byteSize, mimeType: "image/png", fileInputCount: 1, inputChangeDispatched: true, previewLoaded: true, previewWidth: shot4.reference.width, previewHeight: shot4.reference.height, removalControlPresent: true, uploadOperationId: "44444444-4444-4444-8444-444444444445", uploadedAt: shot4Receipt.storedAt - 2 }, createdAt: shot4Receipt.storedAt - 2, updatedAt: shot4Receipt.storedAt - 2 });
+    await f.db.selectedTargets.put(verifiedVidsTarget("refreshed-doc", f.batch.target.canonicalTarget, newTabId));
+    const script = vi.fn(async () => [{ documentId: "refreshed-doc", result: { href: f.batch.target.canonicalTarget, ok: true, changed: false, diagnostics: { stage: "complete", settledPromptEmpty: true } } }]);
+    const worker = createVidsVideoGenerateHandler({ repositories: f.repositories, scripting: { executeScript: script }, getTab: async (tabId) => tabId === newTabId ? { id: newTabId, url: f.batch.target.canonicalTarget } : undefined, revalidate: async () => undefined });
+    const result = await worker.transitionFromPrevious(fiveShotBatchId, shot4.itemId, true, shot5.itemId, false, "inspect_clean");
+    expect(result).toMatchObject({ status: "ready", diagnostics: { operationBound: true, attachmentBound: true, targetBound: true, documentBound: true } });
+    expect(script).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: newTabId, documentIds: ["refreshed-doc"] }, args: [expect.objectContaining({ prompt: shot4.rawJsonBody, nextPrompt: shot5.rawJsonBody, nextPromptSha256: shot5.contentHash })] }));
+    expect(await f.repositories.getVidsVideoQueue(prior.queueId)).toMatchObject({ executionDocumentRebind: rebound, items: expect.arrayContaining([expect.objectContaining({ itemId: shot4.itemId, state: "sent", dispatchReceipt: shot4Receipt })]) });
+    for (let index = 0; index < 3; index += 1) expect(await f.repositories.getVidsVideoGenerationOperation(`prior-${f.batch.items[index]!.itemId}`)).toMatchObject({ tabId: oldTabId, documentId: "doc", attemptId: receipts[index]!.receipt.attemptId });
+  });
+
+  it("blocks pending dispatch when the selected Vids tab or document changes after Resume verification", async () => {
+    const f = await setup({ shotCount: 5, tabId: 1957329050, revalidate: async () => ({ ok: true }) });
+    const { queue } = await seedPriorBuildPausedFiveShotQueue(f, "absent");
+    await f.db.selectedTargets.put(verifiedVidsTarget("verified-doc", f.batch.target.canonicalTarget, 1957329423));
+    f.advance(3 * VIDS_VIDEO_DISPATCH_GAP_MS);
+    f.transitionFromPrevious.mockImplementation(async (_batchId, _previousId, inspectOnly, nextItemId, _checkpointed, phase) => {
+      if (phase === "inspect_clean" && inspectOnly && nextItemId === "item-4") {
+        await f.db.selectedTargets.put(verifiedVidsTarget("switched-doc", f.batch.target.canonicalTarget, 1957329555));
+        return { status: "ready" as const, diagnostics: { stage: "complete", settledEmpty: true } };
+      }
+      return { status: "blocked" as const, reason: "unexpected_transition_phase" };
+    });
+    const response = await invokeQueueResume(f, fiveShotBatchId, queue.revision, true);
+    expect(response).toMatchObject({ ok: true });
+    const stopped = await f.waitForQueue(queue.queueId, (value) => value?.state === "paused" && value.items[3]?.reason === "vids_target_or_confirmation_mismatch");
+    expect(stopped?.items[3]).toMatchObject({ state: "blocked", reason: "vids_target_or_confirmation_mismatch" });
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).not.toHaveBeenCalled();
+  });
+
   it.each(["absent", "stale"] as const)("resumes a prior-build five-shot queue on a refreshed empty composer with a %s cleanup checkpoint", async (checkpointKind) => {
     const f = await setup({ shotCount: 5 });
     const { queue: prior, receipts } = await seedPriorBuildPausedFiveShotQueue(f, checkpointKind);
@@ -134,7 +282,7 @@ describe("P10.3 isolated Vids timed queue", () => {
   });
 
   it.each([
-    ["wrong target", "wrong_target", false, "vids_reconnect_required"],
+    ["wrong target", "wrong_target", false, "vids_resume_canonical_target_mismatch"],
     ["missing same-account attestation", "same_target", false, "vids_same_account_confirmation_required"],
   ] as const)("rejects refreshed Resume for %s with a specific code and no Generate", async (_label, targetKind, attest, expectedCode) => {
     const f = await setup({ shotCount: 5 });
@@ -166,6 +314,53 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(uncertain.attach).not.toHaveBeenCalled();
   });
 
+  it("recovers the exact pre-transition target-change failure after clean-composer revalidation and keeps the original error evidence", async () => {
+    const oldTabId = 1957329050, newTabId = 1957329423;
+    const f = await setup({ shotCount: 5, tabId: oldTabId, revalidate: async () => ({ ok: true }) });
+    const { queue: prior, receipts } = await seedPriorBuildPausedFiveShotQueue(f, "absent", undefined, "vids_target_changed_before_composer_transition");
+    await f.db.selectedTargets.put(verifiedVidsTarget("rebound-doc", f.batch.target.canonicalTarget, newTabId));
+    f.advance(3 * VIDS_VIDEO_DISPATCH_GAP_MS);
+    f.transitionFromPrevious.mockImplementation(async (_batchId, previousItemId, inspectOnly, nextItemId, _checkpointed, phase) => {
+      if (inspectOnly && phase === "inspect_clean" && ((previousItemId === "item-3" && nextItemId === "item-4") || (previousItemId === "item-4" && nextItemId === "item-5"))) return { status: "ready" as const, diagnostics: { stage: "complete", settledEmpty: true } };
+      return { status: "blocked" as const, reason: "unexpected_transition_phase" };
+    });
+    const response = await invokeQueueResume(f, fiveShotBatchId, prior.revision, true);
+    expect(response).toMatchObject({ ok: true });
+    const shot4Sent = await f.waitForQueue(prior.queueId, (value) => value?.items[3]?.state === "sent");
+    expect(shot4Sent?.items.map((item) => item.state)).toEqual(["sent", "sent", "sent", "sent", "pending"]);
+    expect(shot4Sent?.items.slice(0, 3).map((item) => item.dispatchReceipt)).toEqual(receipts.map((entry) => entry.receipt));
+    expect(shot4Sent?.items[3]?.resumeRecoveryEvidence).toMatchObject({ priorReason: "vids_target_changed_before_composer_transition" });
+    expect(shot4Sent?.executionDocumentRebind).toMatchObject({ fromTabId: oldTabId, toTabId: newTabId, toDocumentId: "rebound-doc" });
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-4"]);
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-4"]);
+    expect(f.operations.get("item-4")).toMatchObject({ tabId: newTabId, documentId: "rebound-doc", promptHash: f.batch.items[3]!.contentHash, referenceId: f.batch.items[3]!.reference.referenceId });
+
+    const dispatchAt = f.operations.get("item-4")!.dispatchedAt!;
+    const waitingShot5 = await f.waitForQueue(prior.queueId, (value) => value?.state === "cooldown");
+    expect(waitingShot5?.nextActionAt).toBe(dispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-4"]);
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS - 1);
+    await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${prior.queueId}`);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-4"]);
+    f.advance(1);
+    const shot5Sent = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${prior.queueId}`);
+    expect(shot5Sent?.items.map((item) => item.state)).toEqual(["sent", "sent", "sent", "sent", "sent"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-4", "item-5"]);
+    expect(f.operations.get("item-5")!.dispatchedAt).toBe(dispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS);
+  });
+
+  it("keeps attachment-attempted Shot 4 at review when recovering the historical transition error", async () => {
+    const f = await setup({ shotCount: 5 });
+    const { queue } = await seedPriorBuildPausedFiveShotQueue(f, "absent", undefined, "vids_target_changed_before_composer_transition");
+    await f.db.selectedTargets.put(verifiedVidsTarget("rebound-doc"));
+    f.getAttachment.mockResolvedValue({ status: "action_intent", reason: "upload_intent" });
+    const response = await invokeQueueResume(f, fiveShotBatchId, queue.revision, true);
+    expect(response).toMatchObject({ ok: false, error: { code: "vids_attachment_attempt_requires_review", stage: "resume_validation" } });
+    expect(f.attach).not.toHaveBeenCalled();
+    expect(f.generate).not.toHaveBeenCalled();
+    expect((await f.repositories.getVidsVideoQueue(queue.queueId))?.items[3]).toMatchObject({ state: "blocked", reason: "vids_target_changed_before_composer_transition" });
+  });
+
   it("adopts only the exact durable Shot 1 receipt, observes the 50-second gap, then dispatches Shot 2 once", async () => {
     const f = await setup();
     const first = f.batch.items[0]!;
@@ -183,7 +378,7 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(1, batchId, "item-1", true, "item-2", false, "inspect");
     expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(2, batchId, "item-1", false, "item-2", true, "remove_reference");
     expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(3, batchId, "item-1", false, "item-2", true, "clear_prompt");
-    expect(after?.items[1]?.transitionCheckpoint).toMatchObject({ stage: "prompt_cleared", previousItemId: "item-1", nextItemId: "item-2", documentId: "doc" });
+    expect(after?.items[1]?.transitionCheckpoint).toMatchObject({ stage: "prompt_replaced", previousItemId: "item-1", nextItemId: "item-2", documentId: "doc" });
     expect(after?.state).toBe("all_sent");
   });
 
