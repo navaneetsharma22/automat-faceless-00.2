@@ -230,7 +230,7 @@ describe("P10.3 isolated Vids timed queue", () => {
     const worker = createVidsVideoGenerateHandler({ repositories: f.repositories, scripting: { executeScript: script }, getTab: async (tabId) => tabId === newTabId ? { id: newTabId, url: f.batch.target.canonicalTarget } : undefined, revalidate: async () => undefined });
     const result = await worker.transitionFromPrevious(fiveShotBatchId, shot4.itemId, true, shot5.itemId, false, "inspect_clean");
     expect(result).toMatchObject({ status: "ready", diagnostics: { operationBound: true, attachmentBound: true, targetBound: true, documentBound: true } });
-    expect(script).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: newTabId, documentIds: ["refreshed-doc"] }, args: [expect.objectContaining({ prompt: shot4.rawJsonBody, nextPrompt: shot5.rawJsonBody, nextPromptSha256: shot5.contentHash })] }));
+    expect(script).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: newTabId, documentIds: ["refreshed-doc"] }, args: [expect.objectContaining({ prompt: shot4.rawJsonBody, promptSha256: shot4.contentHash })] }));
     expect(await f.repositories.getVidsVideoQueue(prior.queueId)).toMatchObject({ executionDocumentRebind: rebound, items: expect.arrayContaining([expect.objectContaining({ itemId: shot4.itemId, state: "sent", dispatchReceipt: shot4Receipt })]) });
     for (let index = 0; index < 3; index += 1) expect(await f.repositories.getVidsVideoGenerationOperation(`prior-${f.batch.items[index]!.itemId}`)).toMatchObject({ tabId: oldTabId, documentId: "doc", attemptId: receipts[index]!.receipt.attemptId });
   });
@@ -320,13 +320,15 @@ describe("P10.3 isolated Vids timed queue", () => {
     const { queue: prior, receipts } = await seedPriorBuildPausedFiveShotQueue(f, "absent", undefined, "vids_target_changed_before_composer_transition");
     await f.db.selectedTargets.put(verifiedVidsTarget("rebound-doc", f.batch.target.canonicalTarget, newTabId));
     f.advance(3 * VIDS_VIDEO_DISPATCH_GAP_MS);
-    f.transitionFromPrevious.mockImplementation(async (_batchId, previousItemId, inspectOnly, nextItemId, _checkpointed, phase) => {
-      if (inspectOnly && phase === "inspect_clean" && ((previousItemId === "item-3" && nextItemId === "item-4") || (previousItemId === "item-4" && nextItemId === "item-5"))) return { status: "ready" as const, diagnostics: { stage: "complete", settledEmpty: true } };
+    f.transitionFromPrevious.mockImplementation(async (_batchId, _previousItemId, _inspectOnly, _nextItemId, _checkpointed, phase) => {
+      if (phase === "inspect_clean") return { status: "blocked" as const, reason: "vids_refreshed_composer_not_clean" };
+      if (phase === "inspect" || phase === "remove_reference" || phase === "clear_prompt") return { status: "ready" as const, diagnostics: { stage: "complete", settledPromptEmpty: true } };
       return { status: "blocked" as const, reason: "unexpected_transition_phase" };
     });
     const response = await invokeQueueResume(f, fiveShotBatchId, prior.revision, true);
     expect(response).toMatchObject({ ok: true });
     const shot4Sent = await f.waitForQueue(prior.queueId, (value) => value?.items[3]?.state === "sent");
+    const shot4Receipt = shot4Sent?.items[3]?.dispatchReceipt;
     expect(shot4Sent?.items.map((item) => item.state)).toEqual(["sent", "sent", "sent", "sent", "pending"]);
     expect(shot4Sent?.items.slice(0, 3).map((item) => item.dispatchReceipt)).toEqual(receipts.map((entry) => entry.receipt));
     expect(shot4Sent?.items[3]?.resumeRecoveryEvidence).toMatchObject({ priorReason: "vids_target_changed_before_composer_transition" });
@@ -346,6 +348,8 @@ describe("P10.3 isolated Vids timed queue", () => {
     const shot5Sent = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${prior.queueId}`);
     expect(shot5Sent?.items.map((item) => item.state)).toEqual(["sent", "sent", "sent", "sent", "sent"]);
     expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-4", "item-5"]);
+    expect(shot5Sent?.items.slice(0, 4).map((item) => item.dispatchReceipt)).toEqual([...receipts.map((entry) => entry.receipt), shot4Receipt]);
+    expect(f.transitionFromPrevious.mock.calls.map((call) => call[5]).filter((phase) => phase === "remove_reference" || phase === "clear_prompt")).toEqual(["remove_reference", "clear_prompt", "remove_reference", "clear_prompt"]);
     expect(f.operations.get("item-5")!.dispatchedAt).toBe(dispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS);
   });
 
@@ -378,7 +382,7 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(1, batchId, "item-1", true, "item-2", false, "inspect");
     expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(2, batchId, "item-1", false, "item-2", true, "remove_reference");
     expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(3, batchId, "item-1", false, "item-2", true, "clear_prompt");
-    expect(after?.items[1]?.transitionCheckpoint).toMatchObject({ stage: "prompt_replaced", previousItemId: "item-1", nextItemId: "item-2", documentId: "doc" });
+    expect(after?.items[1]?.transitionCheckpoint).toMatchObject({ stage: "prompt_cleared", previousItemId: "item-1", nextItemId: "item-2", documentId: "doc" });
     expect(after?.state).toBe("all_sent");
   });
 

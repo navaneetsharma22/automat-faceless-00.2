@@ -113,6 +113,7 @@ export function createVidsVideoQueueHandler(input: {
         if (generation.status !== "not_started") throw new Error("vids_generation_attempt_requires_review");
         if (attachment.status !== "not_started") throw new Error("vids_attachment_attempt_requires_review");
         let clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect_clean");
+        const settledEmptyComposer = clean.status === "ready";
         if (clean.status !== "ready" && clean.reason === "vids_refreshed_composer_not_clean") {
           // Populated composers may still be the exact prior pair. Establish fresh
           // ownership on the rebound document before allowing cleanup below.
@@ -129,13 +130,15 @@ export function createVidsVideoQueueHandler(input: {
           const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason } : item);
           const failed = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(failed); return failed;
         }
-        const currentQueue = queue!;
-        const latest = await input.repositories.getVidsVideoQueue(queueId) ?? currentQueue;
-        if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== currentQueue.runId) return latest;
-        const rebound = currentQueue.executionDocumentRebind!;
-        const updated = latest.items.map((item) => item.itemId === next.itemId ? { ...item, cleanComposerRecovery: { tabId: rebound.toTabId ?? prepared.data.target.tabId, documentId: rebound.toDocumentId, canonicalTarget: rebound.canonicalTarget, referenceId: item.referenceId, referenceSha256: item.referenceSha256, promptHash: item.promptHash, verifiedAt: now() }, transitionCheckpoint: undefined } : item);
-        queue = await save(latest, { items: updated });
-        cleanComposerVerified = true;
+        if (settledEmptyComposer) {
+          const currentQueue = queue!;
+          const latest = await input.repositories.getVidsVideoQueue(queueId) ?? currentQueue;
+          if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== currentQueue.runId) return latest;
+          const rebound = currentQueue.executionDocumentRebind!;
+          const updated = latest.items.map((item) => item.itemId === next.itemId ? { ...item, cleanComposerRecovery: { tabId: rebound.toTabId ?? prepared.data.target.tabId, documentId: rebound.toDocumentId, canonicalTarget: rebound.canonicalTarget, referenceId: item.referenceId, referenceSha256: item.referenceSha256, promptHash: item.promptHash, verifiedAt: now() }, transitionCheckpoint: undefined } : item);
+          queue = await save(latest, { items: updated });
+          cleanComposerVerified = true;
+        }
       }
       if (!cleanComposerVerified && next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
         const previous = queue.items[next.order - 1]!;
