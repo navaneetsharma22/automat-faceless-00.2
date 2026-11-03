@@ -123,6 +123,15 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
         </div>
         {queue?.items.map((entry) => <div key={entry.itemId}>
           <p className={styles.queueItem}><strong>Shot {entry.shotId}</strong><span>{queueItemLabel(entry.state)}</span>{entry.reason ? <details><summary>Details</summary><code>{entry.reason}</code></details> : null}</p>
+          {entry.cleanupDiagnostics ? <details className={styles.prompt}><summary>Cleanup readback diagnostics</summary><dl className={styles.diagnostics}>
+            <div><dt>Failing stage</dt><dd>{entry.cleanupDiagnostics.stage}</dd></div>
+            <div><dt>Editor / panel rebound</dt><dd>{entry.cleanupDiagnostics.editorRebound === undefined ? "unknown" : entry.cleanupDiagnostics.editorRebound ? "yes" : "no"} / {entry.cleanupDiagnostics.panelRebound === undefined ? "unknown" : entry.cleanupDiagnostics.panelRebound ? "yes" : "no"}</dd></div>
+            <div><dt>Previews / file inputs</dt><dd>{entry.cleanupDiagnostics.previewCount ?? "unknown"} / {entry.cleanupDiagnostics.fileInputCount ?? "unknown"}</dd></div>
+            <div><dt>Prompt hash</dt><dd>expected <code>{entry.cleanupDiagnostics.expectedPromptSha256 ?? "unknown"}</code>; current <code>{entry.cleanupDiagnostics.currentPromptSha256 ?? "unknown"}</code></dd></div>
+            <div><dt>Prompt length</dt><dd>expected {entry.cleanupDiagnostics.expectedPromptLength ?? "unknown"}; current {entry.cleanupDiagnostics.currentPromptLength ?? "unknown"}</dd></div>
+            <div><dt>Native Clear control</dt><dd>{entry.cleanupDiagnostics.clearAvailable ?? "unknown"}</dd></div>
+            <div><dt>Settled empty</dt><dd>{entry.cleanupDiagnostics.settledEmpty === undefined ? "unknown" : entry.cleanupDiagnostics.settledEmpty ? "yes" : "no"}</dd></div>
+          </dl><p>No raw prompt or media URL is included in cleanup diagnostics.</p></details> : null}
           {queue.state === "paused" && entry.state === "blocked" && ["vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch"].includes(entry.reason ?? "") ? <div className={styles.action}>
             <Button variant="secondary" disabled={queueBusy} loading={inspectingItemId === entry.itemId} loadingLabel="Inspecting read-only" onClick={() => void inspectTransition(entry.itemId)}>Inspect transition (read-only)</Button>
             {transitionInspection?.itemId === entry.itemId ? <details open className={styles.prompt}>

@@ -1,6 +1,6 @@
 import { PreparedVideoBatchRecordSchema, VideoSettingsConfirmationSchema } from "../../shared/schemas";
 import { VidsVideoGenerationOperationSchema } from "../../domain/jobs/vidsVideoGeneration";
-import { VidsVideoQueueRecordSchema, VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS, type VidsVideoQueueRecord } from "../../domain/jobs/vidsVideoQueue";
+import { VidsVideoQueueRecordSchema, VidsVideoTransitionCheckpointSchema, VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS, type VidsVideoQueueRecord } from "../../domain/jobs/vidsVideoQueue";
 import { importPromptBatch } from "../../domain/batches/importBatch";
 import { canonicalizeShotId } from "../../domain/batches/inputPolicy";
 import { sha256Hex } from "../../domain/batches/hashPrompt";
@@ -17,7 +17,7 @@ export function createVidsVideoQueueHandler(input: {
   getAttachment: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string }>;
   generate: (batchId: string, itemId: string, fromQueue: true) => Promise<{ status: string; reason?: string; operation?: unknown }>;
   getGeneration: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string; operation?: unknown }>;
-  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean) => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
+  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean, nextItemId?: string, checkpointedOwnership?: boolean, phase?: "inspect" | "remove_reference" | "clear_prompt" | "verify_empty") => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
   now?: () => number;
   makeRunId?: () => string;
 }) {
@@ -111,26 +111,69 @@ export function createVidsVideoQueueHandler(input: {
           queue = await save(queue, { state: "preparing", items: transitioning, nextActionAt: null });
         }
         const transitionRunId = queue.runId;
-        const inspected = cleanupAlreadyPassed ? { status: "ready" as const } : await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true);
-        let latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
-        if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
-        if (inspected.status !== "ready") {
-          const blockedItems = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason: inspected.reason ?? "vids_composer_transition_failed" } : item);
-          latest = await save(latest, { state: "paused", items: blockedItems, pauseReason: inspected.reason ?? "vids_composer_transition_failed", nextActionAt: null });
-          await schedule(latest); return latest;
+        const isBoundCheckpoint = (candidate: unknown) => {
+          const parsed = VidsVideoTransitionCheckpointSchema.safeParse(candidate);
+          return parsed.success && parsed.data.previousItemId === previous.itemId && parsed.data.previousAttemptId === previous.dispatchReceipt?.attemptId && parsed.data.previousReferenceId === previous.referenceId && parsed.data.previousReferenceSha256 === previous.referenceSha256 && parsed.data.previousPromptHash === previous.promptHash && parsed.data.nextItemId === next.itemId && parsed.data.nextReferenceId === next.referenceId && parsed.data.nextReferenceSha256 === next.referenceSha256 && parsed.data.nextPromptHash === next.promptHash && parsed.data.tabId === prepared.data.target.tabId && parsed.data.canonicalTarget === prepared.data.target.canonicalTarget && parsed.data.documentId === prepared.data.target.documentId;
+        };
+        const itemNow = queue.items.find((item) => item.itemId === next.itemId)!;
+        let checkpoint = itemNow.transitionCheckpoint;
+        if (checkpoint && !isBoundCheckpoint(checkpoint)) {
+          const reason = "vids_cleanup_checkpoint_binding_changed";
+          const items = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason } : item);
+          queue = await save(queue, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(queue); return queue;
         }
-        // Re-read durable queue ownership immediately before invoking the mutation-capable injection.
-        latest = await input.repositories.getVidsVideoQueue(queueId) ?? latest;
-        if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
-        const transitioned = cleanupAlreadyPassed ? { status: "ready" as const } : await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false);
-        if (transitioned.status !== "ready") {
-          latest = await input.repositories.getVidsVideoQueue(queueId) ?? latest;
+        if (!checkpoint && !cleanupAlreadyPassed) {
+          const inspected = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect");
+          let latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+          if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
+          if (inspected.status !== "ready") {
+            const reason = inspected.reason ?? "vids_composer_transition_failed";
+            const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason } : item);
+            latest = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(latest); return latest;
+          }
+          const generation = await input.getGeneration(queue.preparedBatchId, previous.itemId);
+          const operation = VidsVideoGenerationOperationSchema.safeParse(generation.operation);
+          if (!operation.success || !previous.dispatchReceipt || operation.data.attemptId !== previous.dispatchReceipt!.attemptId) return latest;
+          checkpoint = { stage: cleanupAlreadyPassed ? "prompt_cleared" : "ownership_verified", previousItemId: previous.itemId, previousAttemptId: previous.dispatchReceipt!.attemptId, previousReferenceId: previous.referenceId, previousReferenceSha256: previous.referenceSha256, previousPromptHash: previous.promptHash, nextItemId: next.itemId, nextReferenceId: next.referenceId, nextReferenceSha256: next.referenceSha256, nextPromptHash: next.promptHash, tabId: prepared.data.target.tabId, canonicalTarget: prepared.data.target.canonicalTarget, documentId: prepared.data.target.documentId!, verifiedAt: now() };
+          const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint } : item);
+          queue = await save(latest, { state: "preparing", items, nextActionAt: null });
+        }
+        const failCleanup = async (result: { reason?: string; diagnostics?: unknown }) => {
+          const fallbackQueue: VidsVideoQueueRecord = queue!;
+          const latest = await input.repositories.getVidsVideoQueue(queueId) ?? fallbackQueue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
-          const blockedItems = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason: transitioned.reason ?? "vids_composer_transition_failed" } : item);
-          latest = await save(latest, { state: "paused", items: blockedItems, pauseReason: transitioned.reason ?? "vids_composer_transition_failed", nextActionAt: null });
-          await schedule(latest); return latest;
+          const reason = result.reason ?? "vids_composer_transition_failed";
+          const raw = result.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics as Record<string, unknown> : {};
+          const clearAvailable: "unique" | "missing" | "ambiguous" | "not_checked" = raw.clearAvailable === "unique" || raw.clearAvailable === "ambiguous" || raw.clearAvailable === "missing" ? raw.clearAvailable : "not_checked";
+          const bounded = { stage: (raw.stage === "reference_remove" ? "reference_remove" : raw.stage === "settlement" ? "settlement" : raw.stage === "prompt_clear" || raw.stage === "mutation" ? "prompt_clear" : raw.stage === "binding" ? "binding" : "ownership") as "ownership" | "reference_remove" | "prompt_clear" | "settlement" | "complete" | "binding", editorRebound: raw.editorRebound === true, panelRebound: raw.panelRebound === true, previewCount: typeof raw.previewCount === "number" ? Math.min(1000, Math.max(0, Math.trunc(raw.previewCount))) : undefined, fileInputCount: typeof raw.fileInputCount === "number" ? Math.min(1000, Math.max(0, Math.trunc(raw.fileInputCount))) : undefined, expectedPromptSha256: typeof raw.promptExpectedSha256 === "string" && /^[0-9a-f]{64}$/.test(raw.promptExpectedSha256) ? raw.promptExpectedSha256 : undefined, currentPromptSha256: typeof raw.promptActualSha256 === "string" && /^[0-9a-f]{64}$/.test(raw.promptActualSha256) ? raw.promptActualSha256 : undefined, expectedPromptLength: typeof raw.expectedPromptLength === "number" ? Math.min(10_000_000, Math.max(0, Math.trunc(raw.expectedPromptLength))) : undefined, currentPromptLength: typeof raw.actualPromptLength === "number" ? Math.min(10_000_000, Math.max(0, Math.trunc(raw.actualPromptLength))) : undefined, clearAvailable, settledEmpty: raw.settledPromptEmpty === true };
+          const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: bounded } : item);
+          const failed = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(failed); return failed;
+        };
+        // Persist the ownership proof before the first provider mutation.
+        if (checkpoint!.stage === "ownership_verified") {
+          const before = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+          if (before.state === "paused" || before.state === "stopped" || before.runId !== transitionRunId || before.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return before;
+          const removed = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false, next.itemId, true, "remove_reference");
+          if (removed.status !== "ready") return failCleanup(removed);
+          const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+          if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
+          checkpoint = { ...checkpoint!, stage: "image_removed" };
+          queue = await save(latest, { items: latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint } : item) });
         }
-        queue = await input.repositories.getVidsVideoQueue(queueId) ?? latest;
+        if (checkpoint!.stage === "image_removed") {
+          const before = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+          if (before.state === "paused" || before.state === "stopped" || before.runId !== transitionRunId || before.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return before;
+          const cleared = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false, next.itemId, true, "clear_prompt");
+          if (cleared.status !== "ready") return failCleanup(cleared);
+          const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+          if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
+          checkpoint = { ...checkpoint!, stage: "prompt_cleared" };
+          queue = await save(latest, { items: latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint, cleanupDiagnostics: undefined } : item) });
+        } else if (checkpoint!.stage === "prompt_cleared") {
+          const verified = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false, next.itemId, true, "verify_empty");
+          if (verified.status !== "ready") return failCleanup(verified);
+        }
+        queue = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
         if (queue.state === "paused" || queue.state === "stopped") return queue;
       }
       if (next.state === "pending" || next.state === "attaching" || next.state === "transitioning") {
@@ -196,7 +239,7 @@ export function createVidsVideoQueueHandler(input: {
       if (generation.status !== "not_started") return { status: "blocked", reason: "vids_generation_attempt_requires_review" };
       const attachment = await input.getAttachment(preparedBatchId, itemId);
       if (attachment.status !== "not_started") return { status: "blocked", reason: "vids_attachment_attempt_requires_review" };
-      return input.transitionFromPrevious(preparedBatchId, previous.itemId, true);
+      return input.transitionFromPrevious(preparedBatchId, previous.itemId, true, itemId, false, "inspect");
     },
     start: async (preparedBatchId: string) => {
       const id = queueIdFor(preparedBatchId);
@@ -220,9 +263,9 @@ export function createVidsVideoQueueHandler(input: {
     resume: async (preparedBatchId: string, expectedRevision: number) => {
       const queue = await input.repositories.getVidsVideoQueue(queueIdFor(preparedBatchId));
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("vids_video_queue_revision_changed");
-      const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "worker_restart_during_composer_transition", "worker_restart_before_generate"]);
+      const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "worker_restart_during_composer_transition", "worker_restart_before_generate"]);
       if (queue.items.some((item) => item.state === "uncertain" || (item.state === "blocked" && !retryablePreIntentReasons.has(item.reason ?? "")))) throw new Error("vids_video_queue_requires_review");
-      for (const item of queue.items.filter((candidate) => (candidate.state === "blocked" && ["vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "worker_restart_during_composer_transition", "worker_restart_before_generate"].includes(candidate.reason ?? "")) || candidate.reason === "worker_restart_before_generate")) {
+      for (const item of queue.items.filter((candidate) => (candidate.state === "blocked" && ["vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "worker_restart_during_composer_transition", "worker_restart_before_generate"].includes(candidate.reason ?? "")) || candidate.reason === "worker_restart_before_generate")) {
         if ((await input.getGeneration(preparedBatchId, item.itemId)).status !== "not_started") throw new Error("vids_generation_attempt_requires_review");
         const attachment = await input.getAttachment(preparedBatchId, item.itemId);
         if (["action_intent", "uncertain"].includes(attachment.status)) throw new Error("vids_attachment_attempt_requires_review");

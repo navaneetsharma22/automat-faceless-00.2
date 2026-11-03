@@ -76,8 +76,10 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(after?.items.map((item) => item.state)).toEqual(["sent", "sent"]);
     expect(f.generate).toHaveBeenCalledTimes(1);
     expect(f.generate.mock.calls[0]?.[1]).toBe("item-2");
-    expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(1, batchId, "item-1", true);
-    expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(2, batchId, "item-1", false);
+    expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(1, batchId, "item-1", true, "item-2", false, "inspect");
+    expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(2, batchId, "item-1", false, "item-2", true, "remove_reference");
+    expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(3, batchId, "item-1", false, "item-2", true, "clear_prompt");
+    expect(after?.items[1]?.transitionCheckpoint).toMatchObject({ stage: "prompt_cleared", previousItemId: "item-1", nextItemId: "item-2", documentId: "doc" });
     expect(after?.state).toBe("all_sent");
   });
 
@@ -155,10 +157,34 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(paused?.items[0]?.state).toBe("sent");
     expect(paused?.items[1]?.state).toBe("transitioning");
     expect(f.transitionFromPrevious).toHaveBeenCalledTimes(1);
-    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true);
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true, "item-2", false, "inspect");
     expect(f.generate).toHaveBeenCalledTimes(1);
     expect(f.attach).toHaveBeenCalledTimes(1);
     expect(cooldown?.items[0]?.dispatchReceipt).toEqual(paused?.items[0]?.dispatchReceipt);
+  });
+
+  it.each(["pause", "stop"] as const)("persists ownership before removal and does not clear after %s at the removal boundary", async (action) => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    let interrupted = false;
+    f.transitionFromPrevious.mockImplementation(async (_id, _previous, inspectOnly, _nextId, _checkpointed, phase) => {
+      if (inspectOnly) return { status: "ready" as const, diagnostics: { stage: "complete" } };
+      if (phase === "remove_reference" && !interrupted) {
+        interrupted = true;
+        const current = await f.repositories.getVidsVideoQueue(started.queueId);
+        await f.handler[action](batchId, current!.revision);
+      }
+      return { status: "ready" as const };
+    });
+    const boundary = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(boundary?.state).toBe(action === "pause" ? "paused" : "stopped");
+    expect(boundary?.items[0]?.dispatchReceipt).toEqual(sent?.items[0]?.dispatchReceipt);
+    expect(boundary?.items[1]?.transitionCheckpoint).toMatchObject({ stage: "ownership_verified", nextItemId: "item-2", previousAttemptId: sent?.items[0]?.dispatchReceipt?.attemptId });
+    expect(f.transitionFromPrevious.mock.calls.some((call) => call[5] === "clear_prompt")).toBe(false);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    expect(f.attach).toHaveBeenCalledTimes(1);
   });
 
   it("resumes an interrupted pre-Generate composer transition from the same state without replaying Sent", async () => {
@@ -176,9 +202,52 @@ describe("P10.3 isolated Vids timed queue", () => {
     f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
     const resumed = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
     expect(resumed?.items.map((item) => item.state)).toEqual(["sent", "sent"]);
-    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true);
-    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", false);
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true, "item-2", false, "inspect");
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", false, "item-2", true, "remove_reference");
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", false, "item-2", true, "clear_prompt");
     expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+  });
+
+  it("resumes from the durable image-removed checkpoint without reproving removed bytes or replaying Sent", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const previous = sent!.items[0]!, next = sent!.items[1]!;
+    const checkpoint = { stage: "image_removed" as const, previousItemId: previous.itemId, previousAttemptId: previous.dispatchReceipt!.attemptId, previousReferenceId: previous.referenceId, previousReferenceSha256: previous.referenceSha256, previousPromptHash: previous.promptHash, nextItemId: next.itemId, nextReferenceId: next.referenceId, nextReferenceSha256: next.referenceSha256, nextPromptHash: next.promptHash, tabId: f.batch.target.tabId, canonicalTarget: f.batch.target.canonicalTarget, documentId: f.batch.target.documentId!, verifiedAt: f.now() };
+    const pausedRecord = { ...sent!, state: "paused" as const, pauseReason: "vids_previous_prompt_clear_failed", revision: sent!.revision + 1, nextActionAt: null, items: sent!.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason: "vids_previous_prompt_clear_failed", transitionCheckpoint: checkpoint } : item) };
+    await f.repositories.updateVidsVideoQueue({ expectedRevision: sent!.revision, next: pausedRecord });
+    const resumed = await f.handler.resume(batchId, pausedRecord.revision);
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const after = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(after?.items.map((item) => item.state)).toEqual(["sent", "sent"]);
+    expect(after?.items[0]?.dispatchReceipt).toEqual(sent!.items[0]?.dispatchReceipt);
+    expect(f.transitionFromPrevious.mock.calls.some((call) => call[5] === "inspect" || call[5] === "remove_reference")).toBe(false);
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, previous.itemId, false, next.itemId, true, "clear_prompt");
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+    expect(resumed.items[1]?.transitionCheckpoint).toEqual(checkpoint);
+  });
+
+  it.each(["pause", "stop"] as const)("does not advance from image_removed after a %s arrives during prompt clearing", async (action) => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    let interrupted = false;
+    f.transitionFromPrevious.mockImplementation(async (_id, _previous, inspectOnly, _nextId, _checkpointed, phase) => {
+      if (inspectOnly) return { status: "ready" as const };
+      if (phase === "clear_prompt" && !interrupted) {
+        interrupted = true;
+        const current = await f.repositories.getVidsVideoQueue(started.queueId);
+        await f.handler[action](batchId, current!.revision);
+      }
+      return { status: "ready" as const };
+    });
+    const boundary = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(boundary?.state).toBe(action === "pause" ? "paused" : "stopped");
+    expect(boundary?.items[1]?.transitionCheckpoint).toMatchObject({ stage: "image_removed", previousItemId: "item-1", nextItemId: "item-2" });
+    expect(boundary?.items[0]?.dispatchReceipt).toEqual(sent?.items[0]?.dispatchReceipt);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    expect(f.attach).toHaveBeenCalledTimes(1);
   });
 
   it("resumes an attached, pre-intent prompt stage through P10.2 without reupload or replaying Sent", async () => {
@@ -239,7 +308,7 @@ describe("P10.3 isolated Vids timed queue", () => {
     await f.repositories.createVidsVideoQueue(queue);
     const result = await f.handler.inspectTransition(batchId, "item-2");
     expect(result.status).toBe("ready");
-    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true);
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true, "item-2", false, "inspect");
     expect(await f.repositories.getVidsVideoQueue(queue.queueId)).toEqual(queue);
     expect(f.attach).not.toHaveBeenCalled();
     expect(f.generate).not.toHaveBeenCalled();

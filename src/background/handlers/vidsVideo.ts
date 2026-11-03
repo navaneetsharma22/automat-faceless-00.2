@@ -277,12 +277,14 @@ export function createVidsVideoGenerateHandler(deps: {
     return { status: "retry_ready", operation: await deps.repositories.getVidsVideoGenerationOperation(id) ?? next };
   }
 
-  async function transitionFromPrevious(preparedBatchId: string, previousItemId: string, inspectOnly = false): Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }> {
+  async function transitionFromPrevious(preparedBatchId: string, previousItemId: string, inspectOnly = false, nextItemId?: string, checkpointedOwnership = false, phase: "inspect" | "remove_reference" | "clear_prompt" | "verify_empty" = "inspect"): Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }> {
     const parsed = PreparedVideoBatchRecordSchema.safeParse(await deps.repositories.getPreparedVideoBatchById(preparedBatchId));
     if (!parsed.success || parsed.data.destination !== "Vids") return { status: "blocked", reason: "prepared_vids_batch_invalid" };
     const batch = parsed.data;
     const item = batch.items.find((candidate) => candidate.itemId === previousItemId);
     if (!item) return { status: "blocked", reason: "prepared_vids_previous_item_missing" };
+    const nextItem = nextItemId ? batch.items.find((candidate) => candidate.itemId === nextItemId) : undefined;
+    if (nextItemId && !nextItem) return { status: "blocked", reason: "prepared_vids_next_item_missing" };
     const generation = await deps.repositories.getVidsVideoGenerationOperation(await makeId(batch.id, item.itemId));
     const attachmentId = `vids:${await sha256Hex(`${batch.id}\u0000${item.itemId}`)}`;
     const attachment = await deps.repositories.getVidsVideoAttachmentOperation(attachmentId);
@@ -293,12 +295,21 @@ export function createVidsVideoGenerateHandler(deps: {
     const target = await validateTarget(batch);
     if ("reason" in target || target.binding.documentId !== generation.documentId || target.selected.tabId !== generation.tabId || target.selected.canonicalTarget !== generation.canonicalTarget)
       return { status: "blocked", reason: "vids_target_changed_before_composer_transition", diagnostics: { stage: "binding", operationBound, attachmentBound, targetBound: false, documentBound: target.binding?.documentId === generation.documentId, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256 } };
+    let checkpointBound = false;
+    if (checkpointedOwnership && nextItem) {
+      const queue = await deps.repositories.getVidsVideoQueue(`vids-video:${batch.id}`);
+      const current = queue?.items.find((candidate) => candidate.itemId === nextItemId);
+      const cp = current?.transitionCheckpoint;
+      const expectedStage = phase === "clear_prompt" ? "image_removed" : phase === "verify_empty" ? "prompt_cleared" : "ownership_verified";
+      checkpointBound = Boolean(queue && queue.state === "preparing" && current?.state === "transitioning" && cp && cp.previousItemId === item.itemId && cp.previousAttemptId === generation.attemptId && cp.previousReferenceId === item.reference.referenceId && cp.previousReferenceSha256 === item.reference.sha256 && cp.previousPromptHash === item.contentHash && cp.nextItemId === nextItem.itemId && cp.nextReferenceId === nextItem.reference.referenceId && cp.nextReferenceSha256 === nextItem.reference.sha256 && cp.nextPromptHash === nextItem.contentHash && cp.tabId === batch.target.tabId && cp.canonicalTarget === batch.target.canonicalTarget && cp.documentId === batch.target.documentId && cp.stage === expectedStage);
+      if (!checkpointBound) return { status: "blocked", reason: "vids_cleanup_checkpoint_binding_changed", diagnostics: { stage: "binding", operationBound, attachmentBound, targetBound: true, documentBound: true } };
+    }
     let pageResult: Awaited<ReturnType<typeof transitionVidsComposerFromPreviousInPage>> | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let response: Injection | undefined;
       try {
         [response] = await deps.scripting.executeScript({ target: { tabId: generation.tabId, documentIds: [generation.documentId] }, world: "MAIN", func: transitionVidsComposerFromPreviousInPage,
-          args: [{ prompt: item.rawJsonBody, promptSha256: item.contentHash, referenceId: item.reference.referenceId, referenceCandidates: batch.items.map((candidate) => ({ referenceId: candidate.reference.referenceId, sha256: candidate.reference.sha256, mimeType: candidate.reference.mimeType as "image/png" | "image/jpeg", byteSize: candidate.reference.byteSize, width: candidate.reference.width, height: candidate.reference.height })), referenceSha256: item.reference.sha256, referenceMimeType: item.reference.mimeType as "image/png" | "image/jpeg", referenceByteSize: item.reference.byteSize, referenceWidth: item.reference.width, referenceHeight: item.reference.height, timeoutMs: 2500, inspectOnly }] });
+          args: [{ prompt: item.rawJsonBody, promptSha256: item.contentHash, referenceId: item.reference.referenceId, referenceCandidates: batch.items.map((candidate) => ({ referenceId: candidate.reference.referenceId, sha256: candidate.reference.sha256, mimeType: candidate.reference.mimeType as "image/png" | "image/jpeg", byteSize: candidate.reference.byteSize, width: candidate.reference.width, height: candidate.reference.height })), referenceSha256: item.reference.sha256, referenceMimeType: item.reference.mimeType as "image/png" | "image/jpeg", referenceByteSize: item.reference.byteSize, referenceWidth: item.reference.width, referenceHeight: item.reference.height, timeoutMs: 2500, inspectOnly, phase, checkpointedOwnership: checkpointBound }] });
       } catch { return { status: "blocked", reason: "vids_composer_transition_reply_uncertain", diagnostics: { stage: "injection", operationBound, attachmentBound, targetBound: true, documentBound: true, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256 } }; }
       if (response?.documentId !== generation.documentId) return { status: "blocked", reason: "vids_document_changed_during_composer_transition", diagnostics: { stage: "binding", operationBound, attachmentBound, targetBound: true, documentBound: false, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256 } };
       pageResult = response.result as Awaited<ReturnType<typeof transitionVidsComposerFromPreviousInPage>> | undefined;

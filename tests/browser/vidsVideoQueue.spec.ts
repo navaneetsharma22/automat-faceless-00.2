@@ -24,7 +24,7 @@ test("production transition removes only exact previous content, then leaves the
   expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 0 });
 });
 
-test("three-shot production chain verifies the immediately preceding reference at both transitions", async ({ page }) => {
+test("four-shot production chain verifies the immediately preceding reference at every transition", async ({ page }) => {
   const shot1Bytes = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOo1nX+DwAD/QHrf7yFWAAAAABJRU5ErkJggg=="), (value) => value.charCodeAt(0));
   const shot1Prompt = previousPrompt;
   const shot2Prompt = JSON.stringify({ shot_id: "2", prompt_type: "video", scene: "second pair", multiline: ["line one", "line two"] }, null, 2);
@@ -88,7 +88,18 @@ test("three-shot production chain verifies the immediately preceding reference a
   const shot3Hash = await sha256Hex(shot3Prompt);
   expect(await page.evaluate(enterVidsPromptInPage, { prompt: shot3Prompt, expectedSha256: shot3Hash, referenceSha256: await sha256Bytes(shot3Bytes), referenceMimeType: "image/png", referenceByteSize: shot3Bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1000 })).toMatchObject({ ok: true, immediateMatch: true, settledMatch: true, referenceProofSource: "preview_blob_sha256" });
   expect(await page.evaluate(activateVidsGenerateInPage, { prompt: shot3Prompt, promptSha256: shot3Hash, referenceSha256: await sha256Bytes(shot3Bytes), referenceMimeType: "image/png", referenceByteSize: shot3Bytes.length, referenceWidth: 1, referenceHeight: 1 })).toMatchObject({ ok: true, activationCount: 1 });
-  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removes: number; generates: number } }).queueFixture)).toEqual({ removes: 2, generates: 3 });
+  const shot4Prompt = JSON.stringify({ shot_id: "4", prompt_type: "video", scene: "fourth consecutive pair", camera: { movement: "orbit", duration: 7 } }, null, 2);
+  const shot4Bytes = Uint8Array.from(shot3Bytes); shot4Bytes[shot4Bytes.length - 1] ^= 1;
+  const shot3Candidates = [
+    { referenceId: shot3Id, sha256: await sha256Bytes(shot3Bytes), mimeType: "image/png" as const, byteSize: shot3Bytes.length, width: 1, height: 1 },
+    { referenceId: "40000000-0000-4000-8000-000000000004", sha256: await sha256Bytes(shot4Bytes), mimeType: "image/png" as const, byteSize: shot4Bytes.length, width: 1, height: 1 },
+  ];
+  expect(await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: shot3Prompt, promptSha256: shot3Hash, referenceId: shot3Id, referenceCandidates: shot3Candidates, referenceSha256: await sha256Bytes(shot3Bytes), referenceMimeType: "image/png", referenceByteSize: shot3Bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1000 })).toMatchObject({ ok: true, changed: true });
+  expect(await upload(shot4Bytes)).toMatchObject({ ok: true, submitted: true });
+  const shot4Hash = await sha256Hex(shot4Prompt);
+  expect(await page.evaluate(enterVidsPromptInPage, { prompt: shot4Prompt, expectedSha256: shot4Hash, referenceSha256: await sha256Bytes(shot4Bytes), referenceMimeType: "image/png", referenceByteSize: shot4Bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1000 })).toMatchObject({ ok: true, immediateMatch: true, settledMatch: true });
+  expect(await page.evaluate(activateVidsGenerateInPage, { prompt: shot4Prompt, promptSha256: shot4Hash, referenceSha256: await sha256Bytes(shot4Bytes), referenceMimeType: "image/png", referenceByteSize: shot4Bytes.length, referenceWidth: 1, referenceHeight: 1 })).toMatchObject({ ok: true, activationCount: 1 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removes: number; generates: number } }).queueFixture)).toEqual({ removes: 3, generates: 4 });
 });
 
 test("transition rejects different current bytes and reports the uniquely matching prepared reference ID", async ({ page }) => {
@@ -108,7 +119,7 @@ test("interrupted cleanup resumes from the removed-image boundary only for the e
   await page.locator("img[alt='Uploaded image preview']").evaluate((preview) => preview.remove());
   await page.locator("button[aria-label='Remove image']").evaluate((button) => button.remove());
   await page.locator("[role=tabpanel]").evaluate((panel) => panel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file">'));
-  const resumed = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceId: "60000000-0000-4000-8000-000000000006", referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500 });
+  const resumed = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceId: "60000000-0000-4000-8000-000000000006", referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, checkpointedOwnership: true, phase: "clear_prompt" });
   expect(resumed).toMatchObject({ ok: true, changed: true, diagnostics: { cleanupState: "already_empty", referenceResult: "not_checked", promptMatches: true } });
   expect(await page.locator("[role=textbox]").textContent()).toBe("");
   expect(await page.locator("button[aria-label='Add image']").count()).toBe(1);
@@ -117,9 +128,72 @@ test("interrupted cleanup resumes from the removed-image boundary only for the e
   await page.locator("img[alt='Uploaded image preview']").evaluate((preview) => preview.remove());
   await page.locator("button[aria-label='Remove image']").evaluate((button) => button.remove());
   await page.locator("[role=textbox]").evaluate((editor) => { editor.textContent = "unrelated user edit"; });
-  const preserved = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500 });
+  const preserved = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, checkpointedOwnership: true, phase: "clear_prompt" });
   expect(preserved).toMatchObject({ ok: false, reason: "vids_previous_composer_content_conflict", changed: false });
   expect(await page.locator("[role=textbox]").textContent()).toBe("unrelated user edit");
+});
+
+test("cleanup rebinds a replaced Animate panel and editor after image removal", async ({ page }) => {
+  await install(page);
+  await page.evaluate((prompt) => {
+    const sidebar = document.querySelector("[role=complementary]")!;
+    document.addEventListener("click", (event) => {
+      const button = (event.target as Element | null)?.closest("button[aria-label='Remove image']");
+      if (!button) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      const oldPanel = sidebar.querySelector("[role=tabpanel]")!;
+      const replacement = document.createElement("section"); replacement.setAttribute("role", "tabpanel"); replacement.setAttribute("aria-label", "Animate");
+      replacement.innerHTML = `<button aria-label="Add image">Add image</button><input type="file"><div role="textbox" contenteditable="true" aria-label="Add your image, then describe what should happen in your video."></div><button aria-label="Generate">Generate</button>`;
+      replacement.querySelector("[role=textbox]")!.textContent = prompt;
+      oldPanel.replaceWith(replacement);
+      Object.assign(window, { replacedPanel: true });
+    }, true);
+  }, previousPrompt);
+  const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 700 });
+  expect(result).toMatchObject({ ok: true, diagnostics: { editorRebound: true, panelRebound: true, settledPromptEmpty: true } });
+  expect(await page.locator("[role=textbox]").textContent()).toBe("");
+});
+
+test("native Clear fallback waits for delayed settled-empty state and reports bounded diagnostics", async ({ page }) => {
+  await install(page);
+  await page.locator("[role=tabpanel]").evaluate((panel) => {
+    const clear = document.createElement("button"); clear.setAttribute("aria-label", "Clear prompt and image"); clear.textContent = "Clear";
+    clear.addEventListener("click", () => setTimeout(() => { const editor = document.querySelector("[role=textbox]")!; editor.replaceChildren(); }, 175));
+    panel.append(clear);
+  });
+  await page.evaluate(() => { document.execCommand = () => false; });
+  const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 900 });
+  expect(result).toMatchObject({ ok: true, diagnostics: { clearAttempt: "native_clear", settledPromptEmpty: true } });
+  expect(result.diagnostics).toMatchObject({ expectedPromptLength: previousPrompt.length, actualPromptLength: previousPrompt.length, clearAvailable: "unique", fileInputCount: 1, previewCount: 0 });
+});
+
+test("failed prompt clear exposes stage and bounded hashes without prompt or URL content", async ({ page }) => {
+  await install(page);
+  await page.evaluate(() => { document.execCommand = () => false; });
+  const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 300 });
+  expect(result).toMatchObject({ ok: false, reason: "vids_previous_prompt_clear_failed", diagnostics: { stage: "prompt_clear", clearAvailable: "missing", previewCount: 0, fileInputCount: 1 } });
+  expect(result.diagnostics).toMatchObject({ promptExpectedSha256: await sha256Hex(previousPrompt), promptActualSha256: await sha256Hex(previousPrompt), expectedPromptLength: previousPrompt.length, actualPromptLength: previousPrompt.length });
+  expect(JSON.stringify(result)).not.toContain(previousPrompt);
+  expect(JSON.stringify(result)).not.toContain("blob:");
+});
+
+test("cleanup resumes at each persisted mutation boundary and refuses uncheckpointed removed images", async ({ page }) => {
+  await install(page);
+  const promptSha256 = await sha256Hex(previousPrompt), referenceSha256 = await sha256Bytes(bytes);
+  const ownership = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, phase: "inspect", inspectOnly: true });
+  expect(ownership.ok).toBe(true);
+  const beforeRemove = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, phase: "remove_reference" });
+  expect(beforeRemove.ok).toBe(true);
+  const afterRemove = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, phase: "clear_prompt", checkpointedOwnership: true });
+  expect(afterRemove.ok).toBe(true);
+  const afterClearBeforeCheckpoint = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, phase: "verify_empty", checkpointedOwnership: true });
+  expect(afterClearBeforeCheckpoint).toMatchObject({ ok: true, diagnostics: { settledPromptEmpty: true } });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture)).toEqual({ removeClicks: 1, generateClicks: 0, unrelatedClicks: 0 });
+  await install(page);
+  await page.locator("img[alt='Uploaded image preview']").evaluate((preview) => preview.remove());
+  const uncheckpointed = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 300, phase: "clear_prompt" });
+  expect(uncheckpointed).toMatchObject({ ok: false, reason: "vids_cleanup_checkpoint_required" });
+  expect(await page.locator("[role=textbox]").textContent()).toBe(previousPrompt);
 });
 
 test("a distinct second reference and long multiline prompt pass the production preflight and one-shot path", async ({ page }) => {

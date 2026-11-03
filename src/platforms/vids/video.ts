@@ -196,7 +196,7 @@ export async function enterVidsPromptInPage(input: {
 export type VidsGenerateActivationResult = { href: string; ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1; referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256" };
 
 export type VidsComposerTransitionDiagnostics = {
-  stage: "sidebar" | "animate" | "editor" | "prompt" | "reference" | "ownership" | "mutation" | "prompt_clear" | "complete";
+  stage: "sidebar" | "animate" | "editor" | "prompt" | "reference" | "ownership" | "mutation" | "reference_remove" | "prompt_clear" | "settlement" | "complete";
   sidebar: "unique" | "missing" | "ambiguous";
   animateTab: "unique" | "missing" | "ambiguous";
   animatePanel: "unique" | "missing" | "ambiguous";
@@ -216,6 +216,11 @@ export type VidsComposerTransitionDiagnostics = {
   referenceReason?: string;
   cleanupState?: "previous_pair_present" | "reference_removed_prompt_present" | "already_empty";
   editorRebound?: boolean;
+  panelRebound?: boolean;
+  fileInputCount?: number;
+  expectedPromptLength?: number;
+  actualPromptLength?: number;
+  clearAvailable?: "unique" | "missing" | "ambiguous" | "not_checked";
   clearAttempt?: "contenteditable_input" | "native_clear";
   immediatePromptEmpty?: boolean;
   settledPromptEmpty?: boolean;
@@ -242,6 +247,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   referenceId?: string;
   referenceCandidates?: Array<{ referenceId: string; sha256: string; mimeType: "image/png" | "image/jpeg"; byteSize: number; width: number; height: number }>;
   checkpointedOwnership?: boolean;
+  phase?: "inspect" | "remove_reference" | "clear_prompt" | "verify_empty" | "full";
   referenceByteSize: number; referenceWidth: number; referenceHeight: number; timeoutMs: number; inspectOnly?: boolean;
 }): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean; diagnostics: VidsComposerTransitionDiagnostics }> {
   const href = location.href;
@@ -319,7 +325,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     while (Date.now() < deadline) { const context = resolveFreshContext(); if (context && contextIsEmptyAndReady(context)) { diagnostic.editorRebound = true; return true; } await new Promise((resolve) => setTimeout(resolve, 50)); }
     const context = resolveFreshContext(); return Boolean(context && contextIsEmptyAndReady(context));
   };
-  const clearExactPrompt = async () => {
+  const clearExactPrompt = async (): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean; diagnostics: VidsComposerTransitionDiagnostics }> => {
     diagnostic.stage = "prompt_clear";
     let context = resolveFreshContext();
     if (!context) return blocked("prompt_clear", "vids_prompt_editor_rebind_failed");
@@ -327,35 +333,50 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     const actual = serialize(context.editor);
     const actualHash = await digest(new TextEncoder().encode(actual).buffer);
     diagnostic.promptActualSha256 = actualHash;
+    diagnostic.expectedPromptLength = Math.min(input.prompt.length, 10_000_000);
+    diagnostic.actualPromptLength = Math.min(actual.length, 10_000_000);
     diagnostic.promptTextMatches = actual === input.prompt;
     diagnostic.promptHashMatches = actualHash === input.promptSha256;
     diagnostic.promptMatches = diagnostic.promptTextMatches && diagnostic.promptHashMatches;
     const noPreview = [...context.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible).length === 0;
+    diagnostic.previewCount = Math.min(1000, [...context.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible).length);
+    diagnostic.fileInputCount = Math.min(1000, context.panel.querySelectorAll("input[type='file']").length);
+    const initialClearControls = [...context.panel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Clear prompt and image" || element.getAttribute("data-tooltip")?.trim() === "Clear prompt and image");
+    diagnostic.clearAvailable = initialClearControls.length === 1 ? "unique" : initialClearControls.length ? "ambiguous" : "missing";
     if (!diagnostic.promptMatches || !noPreview) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
-    if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, cleanupState: "reference_removed_prompt_present", stage: "complete" } };
+    if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, cleanupState: "reference_removed_prompt_present", stage: "complete" as const } };
     context.editor.focus();
     const range = document.createRange(); range.selectNodeContents(context.editor); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-    let execResult = false;
-    try { execResult = document.execCommand("delete"); } catch { execResult = false; }
+    let execResult: boolean;
+    try { execResult = document.execCommand("delete"); } catch { execResult = false; /* Fall through to the uniquely scoped native Clear control. */ }
     selection?.removeAllRanges();
     if (execResult) context.editor.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "deleteContentBackward" }));
     diagnostic.clearAttempt = "contenteditable_input";
     let deadline = Date.now() + Math.min(input.timeoutMs, 500);
     while (Date.now() < deadline) {
       context = resolveFreshContext();
-      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; } }
+      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty" as const, stage: "complete" as const } }; } }
       else if (context && serialize(context.editor) !== input.prompt) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     context = resolveFreshContext();
     if (!context) return blocked("prompt_clear", "vids_prompt_editor_rebind_failed");
+    diagnostic.editorRebound ||= context.editor !== editor;
+    diagnostic.panelRebound = context.panel !== panel;
     const currentText = serialize(context.editor);
-    if (editorIsEmpty(context.editor) && contextIsEmptyAndReady(context)) { diagnostic.immediatePromptEmpty = true; diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; }
-    if (currentText !== input.prompt || await digest(new TextEncoder().encode(currentText).buffer) !== input.promptSha256) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
-    const clearControls = [...context.panel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Clear prompt and image" || element.getAttribute("data-tooltip")?.trim() === "Clear prompt and image");
-    if (clearControls.length !== 1) return blocked("prompt_clear", "vids_previous_prompt_clear_failed");
+    diagnostic.previewCount = Math.min(1000, [...context.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible).length);
+    diagnostic.fileInputCount = Math.min(1000, context.panel.querySelectorAll("input[type='file']").length);
+    diagnostic.actualPromptLength = Math.min(currentText.length, 10_000_000);
+    const currentHash = await digest(new TextEncoder().encode(currentText).buffer);
+    diagnostic.promptActualSha256 = currentHash;
+    const fallbackClearControls = [...context.panel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Clear prompt and image" || element.getAttribute("data-tooltip")?.trim() === "Clear prompt and image");
+    diagnostic.clearAvailable = fallbackClearControls.length === 1 ? "unique" : fallbackClearControls.length ? "ambiguous" : "missing";
+    if (editorIsEmpty(context.editor) && contextIsEmptyAndReady(context)) { diagnostic.immediatePromptEmpty = true; diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty" as const, stage: "complete" as const } }; }
+    if (currentText !== input.prompt || currentHash !== input.promptSha256) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
+    if (fallbackClearControls.length !== 1) return blocked("prompt_clear", "vids_previous_prompt_clear_failed");
     diagnostic.clearAttempt = "native_clear";
-    clearControls[0]!.click();
+    fallbackClearControls[0]!.click();
+    diagnostic.stage = "settlement";
     deadline = Date.now() + input.timeoutMs;
     while (Date.now() < deadline) {
       context = resolveFreshContext();
@@ -373,6 +394,9 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     diagnostic.actualHeight = previews[0]!.naturalHeight;
   }
   const currentPrompt = serialize(editor);
+  diagnostic.expectedPromptLength = Math.min(input.prompt.length, 10_000_000);
+  diagnostic.actualPromptLength = Math.min(currentPrompt.length, 10_000_000);
+  diagnostic.fileInputCount = Math.min(1000, panel.querySelectorAll("input[type='file']").length);
   diagnostic.stage = "prompt";
   try { diagnostic.promptActualSha256 = await digest(new TextEncoder().encode(currentPrompt).buffer); }
   catch { return blocked("prompt", "vids_previous_prompt_hash_unavailable"); }
@@ -384,26 +408,36 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   // exact prior prompt is cleared. Resume may finish only that owned boundary,
   // or continue from an already-empty composer; conflicting text is untouched.
   if (previews.length === 0) {
+    if (!input.checkpointedOwnership) return blocked("ownership", "vids_cleanup_checkpoint_required");
+    if (input.phase === "remove_reference" && currentPrompt === input.prompt && diagnostic.promptHashMatches)
+      return { href, ok: true, changed: false, diagnostics: { ...diagnostic, cleanupState: "reference_removed_prompt_present", stage: "complete" } };
+    if (input.phase === "remove_reference" && currentPrompt === input.prompt && diagnostic.promptHashMatches)
+      return { href, ok: true, changed: false, diagnostics: { ...diagnostic, cleanupState: "reference_removed_prompt_present", stage: "complete" } };
+    if (input.phase === "verify_empty") {
+      if ((!currentPrompt || currentPrompt === "\n") && await waitForEmptyComposer()) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, settledPromptEmpty: true, cleanupState: "already_empty", stage: "complete" } };
+      return blocked("prompt_clear", "vids_cleanup_completion_changed");
+    }
+    if (input.phase === "clear_prompt" && currentPrompt === input.prompt && diagnostic.promptHashMatches) return clearExactPrompt();
     if (currentPrompt === input.prompt && diagnostic.promptHashMatches) {
       diagnostic.cleanupState = "reference_removed_prompt_present";
       if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
-      diagnostic.stage = "mutation";
-      const range = document.createRange(); range.selectNodeContents(editor); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-      const deleted = document.execCommand("delete"); selection?.removeAllRanges();
-      if (!deleted) return blocked("mutation", "vids_previous_prompt_clear_failed");
-      editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
-      const until = Date.now() + input.timeoutMs;
-      while (Date.now() < until) { if (emptyEditor()) { if (await waitForEmptyComposer()) return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; return blocked("mutation", "vids_empty_composer_controls_not_ready"); } await new Promise((resolve) => setTimeout(resolve, 50)); }
-      return blocked("mutation", "vids_previous_prompt_clear_unconfirmed");
+      if (input.phase === "remove_reference") return { href, ok: true, changed: false, diagnostics: { ...diagnostic, cleanupState: "reference_removed_prompt_present", stage: "complete" } };
+      return clearExactPrompt();
     }
     if (!currentPrompt || currentPrompt === "\n") {
       diagnostic.cleanupState = "already_empty";
+      if (input.phase === "clear_prompt") {
+        if (await waitForEmptyComposer()) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, settledPromptEmpty: true, stage: "complete" } };
+        return blocked("prompt_clear", "vids_empty_composer_controls_not_ready");
+      }
+      if (!input.checkpointedOwnership) return blocked("ownership", "vids_cleanup_checkpoint_required");
       if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
       if (await waitForEmptyComposer()) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
       return blocked("mutation", "vids_empty_composer_controls_not_ready");
     }
     return blocked("prompt", "vids_previous_composer_content_conflict");
   }
+  if (input.phase === "verify_empty") return blocked("prompt_clear", "vids_cleanup_completion_changed");
   diagnostic.cleanupState = "previous_pair_present";
 
   diagnostic.stage = "reference";
@@ -438,21 +472,25 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   if (!diagnostic.promptTextMatches) return blocked("prompt", "vids_previous_composer_content_conflict");
   if (!diagnostic.promptHashMatches) return blocked("prompt", "vids_previous_prompt_hash_mismatch");
   if (diagnostic.referenceResult !== "matched") return blocked("reference", "vids_previous_reference_identity_mismatch");
+  if (input.phase === "clear_prompt") return blocked("ownership", "vids_cleanup_stage_mismatch");
+  if (input.phase === "inspect") return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
   const remove = [...panel.querySelectorAll<HTMLButtonElement>("button[aria-label='Remove image']")].filter(visible);
   if (remove.length !== 1) return blocked("ownership", "reference_remove_control_ambiguous");
   if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
-  diagnostic.stage = "mutation";
+  diagnostic.stage = "reference_remove";
   remove[0]!.click();
   const until = Date.now() + input.timeoutMs;
-  while (Date.now() < until && panel.querySelectorAll("img[alt='Uploaded image preview']").length !== 0) await new Promise((resolve) => setTimeout(resolve, 50));
-  if (panel.querySelectorAll("img[alt='Uploaded image preview']").length !== 0) return blocked("mutation", "vids_previous_reference_removal_unconfirmed");
-  const range = document.createRange(); range.selectNodeContents(editor); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-  if (!document.execCommand("delete")) { selection?.removeAllRanges(); return blocked("mutation", "vids_previous_prompt_clear_failed"); }
-  selection?.removeAllRanges();
-  editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
-  const promptUntil = Date.now() + input.timeoutMs;
-  while (Date.now() < promptUntil) { if (emptyEditor()) { if (await waitForEmptyComposer()) return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; return blocked("mutation", "vids_empty_composer_controls_not_ready"); } await new Promise((resolve) => setTimeout(resolve, 50)); }
-  return blocked("mutation", "vids_previous_prompt_clear_unconfirmed");
+  while (Date.now() < until) {
+    const rebound = resolveFreshContext();
+    if (rebound && [...rebound.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible).length === 0) {
+      diagnostic.editorRebound = rebound.editor !== editor || rebound.panel !== panel;
+      diagnostic.panelRebound = rebound.panel !== panel;
+      if (input.phase === "remove_reference") return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "reference_removed_prompt_present", stage: "complete" } };
+      return clearExactPrompt();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return blocked("mutation", "vids_previous_reference_removal_unconfirmed");
 }
 
 /** Final exact prompt/reference/control check and at most one Generate click. */
