@@ -141,8 +141,16 @@ async function seedPriorBuildPausedFiveShotQueue(f: Awaited<ReturnType<typeof se
 }
 
 describe("P10.3 isolated Vids timed queue", () => {
-  it("starts one five-Shot queue, dispatches each saved pair once, and enforces four 50-second handoffs", async () => {
+  it("starts one five-Shot queue, automatically expands/rechecks each collapsed composer, and enforces four 50-second handoffs", async () => {
     const f = await setup({ shotCount: 5 });
+    let ownershipInspections = 0;
+    f.transitionFromPrevious.mockImplementation(async (_batch, _previous, inspectOnly, _next, _checkpointed, phase) => {
+      if (inspectOnly && phase === "inspect") {
+        ownershipInspections += 1;
+        if (ownershipInspections % 2 === 1) return { status: "blocked" as const, reason: "vids_composer_expanded_revalidate", diagnostics: { stage: "animate", panelStateBeforeExpansion: "collapsed", panelStateAfterExpansion: "settled", freshPreviewDetection: "delayed_then_present", previewCount: 1 } };
+      }
+      return { status: "ready" as const };
+    });
     const started = await f.handler.start(f.batch.id);
     let current = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
     const receipts = [current!.items[0]!.dispatchReceipt!];
@@ -158,6 +166,30 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2", "item-3", "item-4", "item-5"]);
     expect(receipts.slice(1).map((receipt, index) => receipt.storedAt - receipts[index]!.storedAt)).toEqual(Array(4).fill(VIDS_VIDEO_DISPATCH_GAP_MS));
     for (const item of f.batch.items) expect(f.operations.get(item.itemId)).toMatchObject({ promptHash: item.contentHash, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, activationAttempted: true, activationCount: 1 });
+    expect(ownershipInspections).toBe(8);
+    expect(f.transitionFromPrevious.mock.calls.map((call) => call[5]).filter((phase) => phase === "remove_reference" || phase === "clear_prompt")).toHaveLength(8);
+  });
+
+  it("recovers the persisted 3/5 checkpoint blocker at Shot 4 and preserves the first three receipts", async () => {
+    const f = await setup({ shotCount: 5, revalidate: async () => ({ ok: true }) });
+    const { queue: prior, receipts } = await seedPriorBuildPausedFiveShotQueue(f, "absent", undefined, "vids_cleanup_checkpoint_required");
+    await f.db.selectedTargets.put(verifiedVidsTarget("doc"));
+    let expanded = false;
+    f.transitionFromPrevious.mockImplementation(async (_batch, _previous, inspectOnly, _next, _checkpointed, phase) => {
+      if (inspectOnly && phase === "inspect" && !expanded) { expanded = true; return { status: "blocked" as const, reason: "vids_composer_expanded_revalidate", diagnostics: { stage: "animate", panelStateBeforeExpansion: "collapsed", panelStateAfterExpansion: "settled", freshPreviewDetection: "delayed_then_present", previewCount: 1 } }; }
+      if (inspectOnly && phase === "inspect") return { status: "ready" as const, diagnostics: { stage: "complete", previewCount: 1, promptMatches: true, referenceResult: "matched" } };
+      return { status: "ready" as const };
+    });
+    f.advance(3 * VIDS_VIDEO_DISPATCH_GAP_MS);
+    const resumed = await invokeQueueResume(f, fiveShotBatchId, prior.revision);
+    expect(resumed).toMatchObject({ ok: true });
+    const sent = await f.waitForQueue(prior.queueId, (value) => value?.items[3]?.state === "sent");
+    expect(sent?.items.map((item) => item.state)).toEqual(["sent", "sent", "sent", "sent", "pending"]);
+    expect(sent?.items.slice(0, 3).map((item) => item.dispatchReceipt)).toEqual(receipts.map((entry) => entry.receipt));
+    expect(sent?.items[3]?.resumeRecoveryEvidence).toMatchObject({ priorReason: "vids_cleanup_checkpoint_required" });
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-4"]);
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-4"]);
+    expect(f.transitionFromPrevious.mock.calls.map((call) => call[5])).toEqual(["inspect", "inspect", "remove_reference", "clear_prompt"]);
   });
 
   it("recovers the persisted Shot 5 handoff blocker only after verifying Shot 4 and proving Shot 5 was untouched", async () => {

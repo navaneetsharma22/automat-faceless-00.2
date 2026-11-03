@@ -1,7 +1,7 @@
 import { PreparedVideoBatchRecordSchema, VideoSettingsConfirmationSchema } from "../../shared/schemas";
 import { VidsVideoGenerationOperationSchema } from "../../domain/jobs/vidsVideoGeneration";
 import { VidsVideoAttachmentOperationSchema } from "../../domain/jobs/vidsVideoAttachment";
-import { VidsVideoQueueRecordSchema, VidsVideoTransitionCheckpointSchema, VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS, type VidsVideoQueueRecord } from "../../domain/jobs/vidsVideoQueue";
+import { VidsVideoQueueRecordSchema, VidsVideoTransitionCheckpointSchema, VIDS_VIDEO_DISPATCH_GAP_MS, VIDS_VIDEO_READINESS_TIMEOUT_MS, type VidsCleanupDiagnostics, type VidsVideoQueueRecord } from "../../domain/jobs/vidsVideoQueue";
 import { importPromptBatch } from "../../domain/batches/importBatch";
 import { canonicalizeShotId } from "../../domain/batches/inputPolicy";
 import { sha256Hex } from "../../domain/batches/hashPrompt";
@@ -11,6 +11,30 @@ import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import { CONNECTION_CAPABILITY, CONNECTOR_PROTOCOL_VERSION } from "../../platforms/shared/contracts";
 
 export const VIDS_VIDEO_QUEUE_ALARM_PREFIX = "automat-vids-video-queue:";
+
+function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanupDiagnostics["checkpointRead"], checkpointWrite: VidsCleanupDiagnostics["checkpointWrite"]): VidsCleanupDiagnostics {
+  const raw = rawValue && typeof rawValue === "object" ? rawValue as Record<string, unknown> : {};
+  const stage = raw.stage === "reference_remove" ? "reference_remove" : raw.stage === "prompt_clear" || raw.stage === "mutation" ? "prompt_clear" : raw.stage === "settlement" ? "settlement" : raw.stage === "binding" ? "binding" : raw.stage === "complete" ? "complete" : "ownership";
+  const clearAvailable = raw.clearAvailable === "unique" || raw.clearAvailable === "ambiguous" || raw.clearAvailable === "missing" ? raw.clearAvailable : "not_checked";
+  const enumValue = <T extends string>(value: unknown, allowed: readonly T[]) => typeof value === "string" && allowed.includes(value as T) ? value as T : undefined;
+  return {
+    stage,
+    editorRebound: raw.editorRebound === true,
+    panelRebound: raw.panelRebound === true,
+    panelStateBeforeExpansion: enumValue(raw.panelStateBeforeExpansion, ["collapsed", "expanded", "unknown"]),
+    panelStateAfterExpansion: enumValue(raw.panelStateAfterExpansion, ["settled", "missing", "unstable", "not_attempted"]),
+    freshPreviewDetection: enumValue(raw.freshPreviewDetection, ["present", "absent_after_settle", "delayed_then_present", "unknown"]),
+    checkpointRead, checkpointWrite,
+    previewCount: typeof raw.previewCount === "number" ? Math.min(1000, Math.max(0, Math.trunc(raw.previewCount))) : undefined,
+    fileInputCount: typeof raw.fileInputCount === "number" ? Math.min(1000, Math.max(0, Math.trunc(raw.fileInputCount))) : undefined,
+    expectedPromptSha256: typeof raw.promptExpectedSha256 === "string" && /^[0-9a-f]{64}$/.test(raw.promptExpectedSha256) ? raw.promptExpectedSha256 : undefined,
+    currentPromptSha256: typeof raw.promptActualSha256 === "string" && /^[0-9a-f]{64}$/.test(raw.promptActualSha256) ? raw.promptActualSha256 : undefined,
+    expectedPromptLength: typeof raw.expectedPromptLength === "number" ? Math.min(10_000_000, Math.max(0, Math.trunc(raw.expectedPromptLength))) : undefined,
+    currentPromptLength: typeof raw.actualPromptLength === "number" ? Math.min(10_000_000, Math.max(0, Math.trunc(raw.actualPromptLength))) : undefined,
+    clearAvailable,
+    settledEmpty: raw.settledPromptEmpty === true,
+  };
+}
 
 /** Vids-only timed submission. The existing P10.1/P10.2 handlers retain all byte, prompt, intent and one-shot checks. */
 export function createVidsVideoQueueHandler(input: {
@@ -128,7 +152,8 @@ export function createVidsVideoQueueHandler(input: {
         if (clean.status !== "ready") {
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           const reason = clean.reason ?? "vids_refreshed_composer_not_clean";
-          const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason } : item);
+          const diagnostics = boundedCleanupDiagnostics(clean.diagnostics, next.transitionCheckpoint ? "valid" : "absent", "not_attempted");
+          const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: diagnostics } : item);
           const failed = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(failed); return failed;
         }
         if (settledEmptyComposer) {
@@ -158,9 +183,13 @@ export function createVidsVideoQueueHandler(input: {
         };
         const itemNow = queue.items.find((item) => item.itemId === next.itemId)!;
         let checkpoint = itemNow.transitionCheckpoint;
+        let checkpointRead: VidsCleanupDiagnostics["checkpointRead"] = checkpoint ? "valid" : "absent";
+        let checkpointWrite: VidsCleanupDiagnostics["checkpointWrite"] = checkpoint ? "persisted" : "not_attempted";
         if (checkpoint && !isBoundCheckpoint(checkpoint)) {
           const reason = "vids_cleanup_checkpoint_binding_changed";
-          const items = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason } : item);
+          checkpointRead = "stale";
+          const diagnostics = boundedCleanupDiagnostics({ stage: "binding" }, checkpointRead, checkpointWrite);
+          const items = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: diagnostics } : item);
           queue = await save(queue, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(queue); return queue;
         }
         if (!checkpoint && !cleanupAlreadyPassed) {
@@ -179,7 +208,8 @@ export function createVidsVideoQueueHandler(input: {
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
           if (inspected.status !== "ready") {
             const reason = inspected.reason ?? "vids_composer_transition_failed";
-            const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason } : item);
+            const diagnostics = boundedCleanupDiagnostics(inspected.diagnostics, checkpointRead, checkpointWrite);
+            const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: diagnostics } : item);
             latest = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(latest); return latest;
           }
           const generation = await input.getGeneration(queue.preparedBatchId, previous.itemId);
@@ -190,15 +220,14 @@ export function createVidsVideoQueueHandler(input: {
           checkpoint = { stage: cleanupAlreadyPassed || alreadyClean ? "prompt_cleared" : "ownership_verified", previousItemId: previous.itemId, previousAttemptId: previous.dispatchReceipt!.attemptId, previousReferenceId: previous.referenceId, previousReferenceSha256: previous.referenceSha256, previousPromptHash: previous.promptHash, nextItemId: next.itemId, nextReferenceId: next.referenceId, nextReferenceSha256: next.referenceSha256, nextPromptHash: next.promptHash, tabId: executionTabId, canonicalTarget: prepared.data.target.canonicalTarget, documentId: executionDocumentId!, verifiedAt: now() };
           const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint } : item);
           queue = await save(latest, { state: "preparing", items, nextActionAt: null });
+          checkpointWrite = "persisted";
         }
         const failCleanup = async (result: { reason?: string; diagnostics?: unknown }) => {
           const fallbackQueue: VidsVideoQueueRecord = queue!;
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? fallbackQueue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
           const reason = result.reason ?? "vids_composer_transition_failed";
-          const raw = result.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics as Record<string, unknown> : {};
-          const clearAvailable: "unique" | "missing" | "ambiguous" | "not_checked" = raw.clearAvailable === "unique" || raw.clearAvailable === "ambiguous" || raw.clearAvailable === "missing" ? raw.clearAvailable : "not_checked";
-          const bounded = { stage: (raw.stage === "reference_remove" ? "reference_remove" : raw.stage === "settlement" ? "settlement" : raw.stage === "prompt_clear" || raw.stage === "mutation" ? "prompt_clear" : raw.stage === "binding" ? "binding" : "ownership") as "ownership" | "reference_remove" | "prompt_clear" | "settlement" | "complete" | "binding", editorRebound: raw.editorRebound === true, panelRebound: raw.panelRebound === true, previewCount: typeof raw.previewCount === "number" ? Math.min(1000, Math.max(0, Math.trunc(raw.previewCount))) : undefined, fileInputCount: typeof raw.fileInputCount === "number" ? Math.min(1000, Math.max(0, Math.trunc(raw.fileInputCount))) : undefined, expectedPromptSha256: typeof raw.promptExpectedSha256 === "string" && /^[0-9a-f]{64}$/.test(raw.promptExpectedSha256) ? raw.promptExpectedSha256 : undefined, currentPromptSha256: typeof raw.promptActualSha256 === "string" && /^[0-9a-f]{64}$/.test(raw.promptActualSha256) ? raw.promptActualSha256 : undefined, expectedPromptLength: typeof raw.expectedPromptLength === "number" ? Math.min(10_000_000, Math.max(0, Math.trunc(raw.expectedPromptLength))) : undefined, currentPromptLength: typeof raw.actualPromptLength === "number" ? Math.min(10_000_000, Math.max(0, Math.trunc(raw.actualPromptLength))) : undefined, clearAvailable, settledEmpty: raw.settledPromptEmpty === true };
+          const bounded = boundedCleanupDiagnostics(result.diagnostics, checkpointRead, checkpointWrite);
           const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: bounded } : item);
           const failed = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(failed); return failed;
         };
@@ -212,6 +241,7 @@ export function createVidsVideoQueueHandler(input: {
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
           checkpoint = { ...checkpoint!, stage: "image_removed" };
           queue = await save(latest, { items: latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint } : item) });
+          checkpointWrite = "persisted";
         }
         if (checkpoint!.stage === "image_removed") {
           const before = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
@@ -222,6 +252,7 @@ export function createVidsVideoQueueHandler(input: {
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
           checkpoint = { ...checkpoint!, stage: "prompt_cleared" };
           queue = await save(latest, { items: latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint, cleanupDiagnostics: undefined } : item) });
+          checkpointWrite = "persisted";
         } else if (checkpoint!.stage === "prompt_cleared") {
           const verified = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false, next.itemId, true, "verify_empty");
           if (verified.status !== "ready") return failCleanup(verified);

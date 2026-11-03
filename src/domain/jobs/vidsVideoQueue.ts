@@ -30,6 +30,11 @@ export const VidsCleanComposerRecoverySchema = z.object({
 export const VidsCleanupDiagnosticsSchema = z.object({
   stage: z.enum(["ownership", "reference_remove", "prompt_clear", "settlement", "complete", "binding"]),
   editorRebound: z.boolean().optional(), panelRebound: z.boolean().optional(),
+  panelStateBeforeExpansion: z.enum(["collapsed", "expanded", "unknown"]).optional(),
+  panelStateAfterExpansion: z.enum(["settled", "missing", "unstable", "not_attempted"]).optional(),
+  freshPreviewDetection: z.enum(["present", "absent_after_settle", "delayed_then_present", "unknown"]).optional(),
+  checkpointRead: z.enum(["absent", "valid", "stale", "not_checked"]).optional(),
+  checkpointWrite: z.enum(["not_attempted", "persisted", "failed"]).optional(),
   previewCount: z.number().int().min(0).max(1000).optional(), fileInputCount: z.number().int().min(0).max(1000).optional(),
   expectedPromptSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(), currentPromptSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   expectedPromptLength: z.number().int().min(0).max(10_000_000).optional(), currentPromptLength: z.number().int().min(0).max(10_000_000).optional(),

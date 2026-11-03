@@ -131,6 +131,9 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
           {entry.cleanupDiagnostics ? <details className={styles.prompt}><summary>Cleanup readback diagnostics</summary><dl className={styles.diagnostics}>
             <div><dt>Failing stage</dt><dd>{entry.cleanupDiagnostics.stage}</dd></div>
             <div><dt>Editor / panel rebound</dt><dd>{entry.cleanupDiagnostics.editorRebound === undefined ? "unknown" : entry.cleanupDiagnostics.editorRebound ? "yes" : "no"} / {entry.cleanupDiagnostics.panelRebound === undefined ? "unknown" : entry.cleanupDiagnostics.panelRebound ? "yes" : "no"}</dd></div>
+            <div><dt>Animate panel before / after expansion</dt><dd>{entry.cleanupDiagnostics.panelStateBeforeExpansion ?? "unknown"} / {entry.cleanupDiagnostics.panelStateAfterExpansion ?? "unknown"}</dd></div>
+            <div><dt>Fresh preview detection</dt><dd>{entry.cleanupDiagnostics.freshPreviewDetection ?? "unknown"}</dd></div>
+            <div><dt>Cleanup checkpoint read / write</dt><dd>{entry.cleanupDiagnostics.checkpointRead ?? "unknown"} / {entry.cleanupDiagnostics.checkpointWrite ?? "unknown"}</dd></div>
             <div><dt>Previews / file inputs</dt><dd>{entry.cleanupDiagnostics.previewCount ?? "unknown"} / {entry.cleanupDiagnostics.fileInputCount ?? "unknown"}</dd></div>
             <div><dt>Prompt hash</dt><dd>expected <code>{entry.cleanupDiagnostics.expectedPromptSha256 ?? "unknown"}</code>; current <code>{entry.cleanupDiagnostics.currentPromptSha256 ?? "unknown"}</code></dd></div>
             <div><dt>Prompt length</dt><dd>expected {entry.cleanupDiagnostics.expectedPromptLength ?? "unknown"}; current {entry.cleanupDiagnostics.currentPromptLength ?? "unknown"}</dd></div>

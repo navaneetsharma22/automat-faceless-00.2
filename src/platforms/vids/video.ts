@@ -217,6 +217,9 @@ export type VidsComposerTransitionDiagnostics = {
   cleanupState?: "previous_pair_present" | "reference_removed_prompt_present" | "already_empty";
   editorRebound?: boolean;
   panelRebound?: boolean;
+  panelStateBeforeExpansion?: "collapsed" | "expanded" | "unknown";
+  panelStateAfterExpansion?: "settled" | "missing" | "unstable" | "not_attempted";
+  freshPreviewDetection?: "present" | "absent_after_settle" | "delayed_then_present" | "unknown";
   fileInputCount?: number;
   expectedPromptLength?: number;
   actualPromptLength?: number;
@@ -276,19 +279,67 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   diagnostic.animateTab = tabs.length === 1 ? "unique" : tabs.length ? "ambiguous" : "missing";
   diagnostic.animatePanel = panels.length === 1 ? "unique" : panels.length ? "ambiguous" : "missing";
   if (tabs.length !== 1) return blocked("animate", tabs.length ? "animate_tab_ambiguous" : "animate_tab_not_selected");
+  diagnostic.panelStateBeforeExpansion = panels.length === 1 ? "expanded" : panels.length === 0 ? "collapsed" : "unknown";
   if (panels.length !== 1) {
     const expanders = [...sidebar.querySelectorAll<HTMLElement>("button[aria-expanded='false'], [role='button'][aria-expanded='false']")].filter(visible).filter((element) => name(element) === "Expand");
     if (expanders.length === 1) {
       expanders[0]!.click();
-      return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "animate" } };
+      let previousPanel: HTMLElement | undefined;
+      let previousEditor: HTMLElement | undefined;
+      let stableReads = 0;
+      let stableSince = 0;
+      let sawMissingPreview = false;
+      let settledPreviewCount = 0;
+      const deadline = Date.now() + Math.max(500, Math.min(input.timeoutMs, 5_000));
+      while (Date.now() < deadline) {
+        const currentSidebars = [...document.querySelectorAll<HTMLElement>("[role='complementary']")].filter(visible).filter((element) => name(element) === "AI video clip");
+        const currentTabs = currentSidebars.length === 1 ? [...currentSidebars[0]!.querySelectorAll<HTMLElement>("[role='tab'][aria-selected='true']")].filter(visible).filter((element) => name(element) === "Animate") : [];
+        const currentPanels = currentSidebars.length === 1 ? [...currentSidebars[0]!.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter(visible).filter((element) => name(element) === "Animate") : [];
+        const currentEditors = currentPanels.length === 1 ? [...currentPanels[0]!.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible) : [];
+        if (currentSidebars.length === 1 && currentTabs.length === 1 && currentPanels.length === 1 && currentEditors.length === 1) {
+          const currentPanel = currentPanels[0]!;
+          const currentEditor = currentEditors[0]!;
+          const previewsNow = [...currentPanel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
+          const previewReady = previewsNow.length === 1 && previewsNow[0]!.complete && previewsNow[0]!.naturalWidth > 0 && previewsNow[0]!.naturalHeight > 0;
+          const addControls = [...currentPanel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Add image");
+          const files = [...currentPanel.querySelectorAll<HTMLInputElement>("input[type='file']")];
+          const emptyEditor = !currentEditor.textContent || currentEditor.textContent === "\n";
+          const cleanReady = input.phase === "inspect_clean" && !previewsNow.length && emptyEditor && addControls.length === 1 && files.length === 1;
+          if (previewsNow.length === 0) sawMissingPreview = true;
+          settledPreviewCount = previewsNow.length;
+          if (currentPanel === previousPanel && currentEditor === previousEditor) stableReads += 1;
+          else { stableReads = 1; stableSince = Date.now(); }
+          previousPanel = currentPanel;
+          previousEditor = currentEditor;
+          diagnostic.panelRebound = currentPanel !== panels[0];
+          diagnostic.editorRebound = true;
+          if (stableReads >= 3 && (previewReady || (cleanReady && Date.now() - stableSince >= 500))) {
+            diagnostic.panelStateAfterExpansion = "settled";
+            diagnostic.freshPreviewDetection = previewReady ? (sawMissingPreview ? "delayed_then_present" : "present") : "absent_after_settle";
+            return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "animate", previewCount: Math.min(1000, settledPreviewCount) } };
+          }
+        } else {
+          stableReads = 0;
+          diagnostic.panelStateAfterExpansion = "missing";
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (previousPanel && stableReads >= 3) {
+        diagnostic.panelStateAfterExpansion = "settled";
+        diagnostic.freshPreviewDetection = settledPreviewCount === 0 ? "absent_after_settle" : "unknown";
+        return { href, ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { ...diagnostic, stage: "animate", previewCount: Math.min(1000, settledPreviewCount) } };
+      }
+      diagnostic.panelStateAfterExpansion = previousPanel ? "unstable" : "missing";
+      diagnostic.freshPreviewDetection = settledPreviewCount === 0 ? "absent_after_settle" : "unknown";
+      return { href, ok: false, reason: "vids_composer_expansion_settlement_failed", changed: false, diagnostics: { ...diagnostic, stage: "settlement", previewCount: Math.min(1000, settledPreviewCount) } };
     }
   }
   if (tabs.length !== 1 || panels.length !== 1) return blocked("animate", panels.length > 1 ? "animate_panel_ambiguous" : "vids_composer_collapsed_or_changed");
-  const panel = panels[0]!;
+  let panel = panels[0]!;
   const editors = [...panel.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible);
   diagnostic.editor = editors.length === 1 ? "unique" : editors.length ? "ambiguous" : "missing";
   if (editors.length !== 1) return blocked("editor", editors.length ? "prompt_editor_ambiguous" : "prompt_editor_changed");
-  const editor = editors[0]!;
+  let editor = editors[0]!;
   const blocks = new Set(["DIV", "P"]);
   const walk = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? "";
@@ -333,25 +384,40 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     diagnostic.clearAvailable = "not_checked";
     if (!contextIsEmptyAndReady(initial)) return blocked("ownership", "vids_refreshed_composer_not_clean");
     let stableReads = 0;
+    let stableSince = 0;
     let last: NonNullable<ReturnType<typeof resolveFreshContext>> | undefined;
     const deadline = Date.now() + input.timeoutMs;
-    while (Date.now() < deadline && stableReads < 3) {
+    while (Date.now() < deadline && (stableReads < 3 || Date.now() - stableSince < 500)) {
       const current = resolveFreshContext();
       if (current && contextIsEmptyAndReady(current)) {
+        if (stableReads === 0) stableSince = Date.now();
         stableReads += 1;
         diagnostic.editorRebound = diagnostic.editorRebound === true || current.editor !== initial.editor;
         diagnostic.panelRebound = diagnostic.panelRebound === true || current.panel !== initial.panel;
         last = current;
-      } else stableReads = 0;
+      } else { stableReads = 0; stableSince = 0; }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    if (stableReads < 3 || !last) return blocked("settlement", "vids_refreshed_composer_not_clean");
+    if (stableReads < 3 || Date.now() - stableSince < 500 || !last) return blocked("settlement", "vids_refreshed_composer_not_clean");
     return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete", settledPromptEmpty: true, cleanupState: "already_empty" } };
   }
   const waitForEmptyComposer = async () => {
     const deadline = Date.now() + input.timeoutMs;
-    while (Date.now() < deadline) { const context = resolveFreshContext(); if (context && contextIsEmptyAndReady(context)) { diagnostic.editorRebound = true; return true; } await new Promise((resolve) => setTimeout(resolve, 50)); }
-    const context = resolveFreshContext(); return Boolean(context && contextIsEmptyAndReady(context));
+    let stableReads = 0, stableSince = 0;
+    let previousPanel: HTMLElement | undefined, previousEditor: HTMLElement | undefined;
+    while (Date.now() < deadline) {
+      const context = resolveFreshContext();
+      if (context && contextIsEmptyAndReady(context)) {
+        if (context.panel === previousPanel && context.editor === previousEditor) stableReads += 1;
+        else { stableReads = 1; stableSince = Date.now(); }
+        previousPanel = context.panel; previousEditor = context.editor;
+        diagnostic.editorRebound = context.editor !== editor;
+        diagnostic.panelRebound = context.panel !== panel;
+        if (stableReads >= 3 && Date.now() - stableSince >= 500) return true;
+      } else { stableReads = 0; stableSince = 0; previousPanel = undefined; previousEditor = undefined; }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
   };
   const clearExactPrompt = async (): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean; diagnostics: VidsComposerTransitionDiagnostics }> => {
     diagnostic.stage = "prompt_clear";
@@ -415,7 +481,53 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     return blocked("prompt_clear", "vids_previous_prompt_clear_failed");
   };
   const digest = async (bytes: ArrayBuffer) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join("");
-  const previews = [...panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
+  diagnostic.panelStateAfterExpansion = "not_attempted";
+  let previews = [...panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
+  diagnostic.freshPreviewDetection = previews.length ? "present" : "unknown";
+  if ((!previews.length || (previews.length === 1 && (!previews[0]!.complete || previews[0]!.naturalWidth < 1))) && !input.checkpointedOwnership) {
+    let lastPanel: HTMLElement | undefined;
+    let lastEditor: HTMLElement | undefined;
+    let stableReads = 0;
+    let sawMissingPreview = previews.length === 0;
+    let settled = false;
+    const deadline = Date.now() + Math.max(500, Math.min(input.timeoutMs, 5_000));
+    while (Date.now() < deadline) {
+      const current = resolveFreshContext();
+      if (current) {
+        const currentPreviews = [...current.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
+        const sameContext = current.panel === lastPanel && current.editor === lastEditor;
+        if (currentPreviews.length === 0) sawMissingPreview = true;
+        const ready = currentPreviews.length === 1 && currentPreviews[0]!.complete && currentPreviews[0]!.naturalWidth > 0 && currentPreviews[0]!.naturalHeight > 0;
+        stableReads = sameContext && ready ? stableReads + 1 : ready ? 1 : 0;
+        lastPanel = current.panel; lastEditor = current.editor;
+        diagnostic.panelRebound = current.panel !== panel;
+        diagnostic.editorRebound = current.editor !== editor;
+        diagnostic.previewCount = Math.min(1000, currentPreviews.length);
+        if (ready && stableReads >= 3) {
+          panel = current.panel; editor = current.editor; previews = currentPreviews; settled = true;
+          diagnostic.panelStateAfterExpansion = "settled";
+          diagnostic.freshPreviewDetection = sawMissingPreview ? "delayed_then_present" : "present";
+          break;
+        }
+      } else { stableReads = 0; lastPanel = undefined; lastEditor = undefined; }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!settled) {
+      const current = resolveFreshContext();
+      if (current && lastPanel === current.panel && lastEditor === current.editor && stableReads === 0 && !current.panel.querySelector("img[alt='Uploaded image preview']")) {
+        panel = current.panel; editor = current.editor; previews = [];
+        diagnostic.panelRebound = current.panel !== panels[0];
+        diagnostic.editorRebound = true;
+        diagnostic.previewCount = 0;
+        diagnostic.panelStateAfterExpansion = "settled";
+        diagnostic.freshPreviewDetection = "absent_after_settle";
+      } else {
+        diagnostic.panelStateAfterExpansion = current ? "unstable" : "missing";
+        diagnostic.freshPreviewDetection = current ? "unknown" : "unknown";
+        return blocked("settlement", "vids_composer_settlement_failed");
+      }
+    }
+  }
   diagnostic.previewCount = Math.min(previews.length, 1_000);
   if (previews.length === 1) {
     diagnostic.actualWidth = previews[0]!.naturalWidth;
