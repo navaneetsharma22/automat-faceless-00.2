@@ -196,7 +196,7 @@ export async function enterVidsPromptInPage(input: {
 export type VidsGenerateActivationResult = { href: string; ok: boolean; reason?: string; activationAttempted: boolean; activationCount: 0 | 1; referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256" };
 
 export type VidsComposerTransitionDiagnostics = {
-  stage: "sidebar" | "animate" | "editor" | "prompt" | "reference" | "ownership" | "mutation" | "complete";
+  stage: "sidebar" | "animate" | "editor" | "prompt" | "reference" | "ownership" | "mutation" | "prompt_clear" | "complete";
   sidebar: "unique" | "missing" | "ambiguous";
   animateTab: "unique" | "missing" | "ambiguous";
   animatePanel: "unique" | "missing" | "ambiguous";
@@ -209,9 +209,16 @@ export type VidsComposerTransitionDiagnostics = {
   promptHashMatches?: boolean;
   referenceExpectedSha256: string;
   referenceActualSha256?: string;
+  referenceExpectedId: string;
+  referenceActualId?: string;
   referenceProofSource?: "selected_file_sha256" | "preview_blob_sha256";
   referenceResult: "not_checked" | "matched" | "mismatched" | "unavailable";
   referenceReason?: string;
+  cleanupState?: "previous_pair_present" | "reference_removed_prompt_present" | "already_empty";
+  editorRebound?: boolean;
+  clearAttempt?: "contenteditable_input" | "native_clear";
+  immediatePromptEmpty?: boolean;
+  settledPromptEmpty?: boolean;
   expectedMimeType: "image/png" | "image/jpeg";
   actualMimeType?: string;
   expectedByteSize: number;
@@ -232,12 +239,15 @@ export type VidsComposerTransitionDiagnostics = {
  */
 export async function transitionVidsComposerFromPreviousInPage(input: {
   prompt: string; promptSha256: string; referenceSha256: string; referenceMimeType: "image/png" | "image/jpeg";
+  referenceId?: string;
+  referenceCandidates?: Array<{ referenceId: string; sha256: string; mimeType: "image/png" | "image/jpeg"; byteSize: number; width: number; height: number }>;
+  checkpointedOwnership?: boolean;
   referenceByteSize: number; referenceWidth: number; referenceHeight: number; timeoutMs: number; inspectOnly?: boolean;
 }): Promise<{ href: string; ok: boolean; reason?: string; changed: boolean; diagnostics: VidsComposerTransitionDiagnostics }> {
   const href = location.href;
   const diagnostic: VidsComposerTransitionDiagnostics = {
     stage: "sidebar", sidebar: "missing", animateTab: "missing", animatePanel: "missing", editor: "missing", previewCount: 0,
-    promptExpectedSha256: input.promptSha256, referenceExpectedSha256: input.referenceSha256, referenceResult: "not_checked",
+    promptExpectedSha256: input.promptSha256, referenceExpectedSha256: input.referenceSha256, referenceExpectedId: input.referenceId ?? "not_provided", referenceResult: "not_checked",
     expectedMimeType: input.referenceMimeType, expectedByteSize: input.referenceByteSize, expectedWidth: input.referenceWidth, expectedHeight: input.referenceHeight,
     operationBound: false, attachmentBound: false, targetBound: false, documentBound: false,
   };
@@ -287,6 +297,74 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     for (const child of [...root.childNodes]) { const block = child.nodeType === Node.ELEMENT_NODE && blocks.has((child as Element).tagName); if (block && output.length && !output.endsWith("\n")) output += "\n"; output += walk(child); }
     return output;
   };
+  const resolveFreshContext = () => {
+    const currentSidebars = [...document.querySelectorAll<HTMLElement>("[role='complementary']")].filter(visible).filter((element) => name(element) === "AI video clip");
+    if (currentSidebars.length !== 1) return undefined;
+    const currentTabs = [...currentSidebars[0]!.querySelectorAll<HTMLElement>("[role='tab'][aria-selected='true']")].filter(visible).filter((element) => name(element) === "Animate");
+    const currentPanels = [...currentSidebars[0]!.querySelectorAll<HTMLElement>("[role='tabpanel']")].filter(visible).filter((element) => name(element) === "Animate");
+    if (currentTabs.length !== 1 || currentPanels.length !== 1) return undefined;
+    const currentEditors = [...currentPanels[0]!.querySelectorAll<HTMLElement>("div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']")].filter(visible);
+    if (currentEditors.length !== 1) return undefined;
+    return { sidebar: currentSidebars[0]!, panel: currentPanels[0]!, editor: currentEditors[0]! };
+  };
+  const editorIsEmpty = (currentEditor: HTMLElement) => { const text = serialize(currentEditor); return !text || text === "\n"; };
+  const contextIsEmptyAndReady = (context: NonNullable<ReturnType<typeof resolveFreshContext>>) => {
+    const addControls = [...context.panel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Add image");
+    const fileInputs = [...context.panel.querySelectorAll<HTMLInputElement>("input[type='file']")];
+    const currentPreviews = [...context.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
+    return currentPreviews.length === 0 && editorIsEmpty(context.editor) && addControls.length === 1 && fileInputs.length === 1;
+  };
+  const waitForEmptyComposer = async () => {
+    const deadline = Date.now() + input.timeoutMs;
+    while (Date.now() < deadline) { const context = resolveFreshContext(); if (context && contextIsEmptyAndReady(context)) { diagnostic.editorRebound = true; return true; } await new Promise((resolve) => setTimeout(resolve, 50)); }
+    const context = resolveFreshContext(); return Boolean(context && contextIsEmptyAndReady(context));
+  };
+  const clearExactPrompt = async () => {
+    diagnostic.stage = "prompt_clear";
+    let context = resolveFreshContext();
+    if (!context) return blocked("prompt_clear", "vids_prompt_editor_rebind_failed");
+    diagnostic.editorRebound = context.editor !== editor || context.panel !== panel;
+    const actual = serialize(context.editor);
+    const actualHash = await digest(new TextEncoder().encode(actual).buffer);
+    diagnostic.promptActualSha256 = actualHash;
+    diagnostic.promptTextMatches = actual === input.prompt;
+    diagnostic.promptHashMatches = actualHash === input.promptSha256;
+    diagnostic.promptMatches = diagnostic.promptTextMatches && diagnostic.promptHashMatches;
+    const noPreview = [...context.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible).length === 0;
+    if (!diagnostic.promptMatches || !noPreview) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
+    if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, cleanupState: "reference_removed_prompt_present", stage: "complete" } };
+    context.editor.focus();
+    const range = document.createRange(); range.selectNodeContents(context.editor); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+    let execResult = false;
+    try { execResult = document.execCommand("delete"); } catch { execResult = false; }
+    selection?.removeAllRanges();
+    if (execResult) context.editor.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "deleteContentBackward" }));
+    diagnostic.clearAttempt = "contenteditable_input";
+    let deadline = Date.now() + Math.min(input.timeoutMs, 500);
+    while (Date.now() < deadline) {
+      context = resolveFreshContext();
+      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; } }
+      else if (context && serialize(context.editor) !== input.prompt) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    context = resolveFreshContext();
+    if (!context) return blocked("prompt_clear", "vids_prompt_editor_rebind_failed");
+    const currentText = serialize(context.editor);
+    if (editorIsEmpty(context.editor) && contextIsEmptyAndReady(context)) { diagnostic.immediatePromptEmpty = true; diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; }
+    if (currentText !== input.prompt || await digest(new TextEncoder().encode(currentText).buffer) !== input.promptSha256) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
+    const clearControls = [...context.panel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Clear prompt and image" || element.getAttribute("data-tooltip")?.trim() === "Clear prompt and image");
+    if (clearControls.length !== 1) return blocked("prompt_clear", "vids_previous_prompt_clear_failed");
+    diagnostic.clearAttempt = "native_clear";
+    clearControls[0]!.click();
+    deadline = Date.now() + input.timeoutMs;
+    while (Date.now() < deadline) {
+      context = resolveFreshContext();
+      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; diagnostic.editorRebound = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; } }
+      else if (context && serialize(context.editor) !== input.prompt) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return blocked("prompt_clear", "vids_previous_prompt_clear_failed");
+  };
   const digest = async (bytes: ArrayBuffer) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join("");
   const previews = [...panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].filter(visible);
   diagnostic.previewCount = Math.min(previews.length, 1_000);
@@ -301,6 +379,32 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   diagnostic.promptTextMatches = currentPrompt === input.prompt;
   diagnostic.promptHashMatches = diagnostic.promptActualSha256 === input.promptSha256;
   diagnostic.promptMatches = diagnostic.promptTextMatches && diagnostic.promptHashMatches;
+
+  // A worker may restart after the verified Remove-image click but before the
+  // exact prior prompt is cleared. Resume may finish only that owned boundary,
+  // or continue from an already-empty composer; conflicting text is untouched.
+  if (previews.length === 0) {
+    if (currentPrompt === input.prompt && diagnostic.promptHashMatches) {
+      diagnostic.cleanupState = "reference_removed_prompt_present";
+      if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
+      diagnostic.stage = "mutation";
+      const range = document.createRange(); range.selectNodeContents(editor); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+      const deleted = document.execCommand("delete"); selection?.removeAllRanges();
+      if (!deleted) return blocked("mutation", "vids_previous_prompt_clear_failed");
+      editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+      const until = Date.now() + input.timeoutMs;
+      while (Date.now() < until) { if (emptyEditor()) { if (await waitForEmptyComposer()) return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; return blocked("mutation", "vids_empty_composer_controls_not_ready"); } await new Promise((resolve) => setTimeout(resolve, 50)); }
+      return blocked("mutation", "vids_previous_prompt_clear_unconfirmed");
+    }
+    if (!currentPrompt || currentPrompt === "\n") {
+      diagnostic.cleanupState = "already_empty";
+      if (input.inspectOnly) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
+      if (await waitForEmptyComposer()) return { href, ok: true, changed: false, diagnostics: { ...diagnostic, stage: "complete" } };
+      return blocked("mutation", "vids_empty_composer_controls_not_ready");
+    }
+    return blocked("prompt", "vids_previous_composer_content_conflict");
+  }
+  diagnostic.cleanupState = "previous_pair_present";
 
   diagnostic.stage = "reference";
   if (previews.length !== 1 || !previews[0]!.complete || previews[0]!.naturalWidth !== input.referenceWidth || previews[0]!.naturalHeight !== input.referenceHeight) {
@@ -322,6 +426,8 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
       }
       const actual = await digest(bytes!);
       diagnostic.referenceActualSha256 = actual;
+      const matches = (input.referenceCandidates ?? []).filter((candidate) => candidate.sha256 === actual && candidate.mimeType === diagnostic.actualMimeType && candidate.byteSize === diagnostic.actualByteSize && candidate.width === diagnostic.actualWidth && candidate.height === diagnostic.actualHeight);
+      if (matches.length === 1) diagnostic.referenceActualId = matches[0]!.referenceId;
       diagnostic.referenceResult = diagnostic.actualMimeType === input.referenceMimeType && diagnostic.actualByteSize === input.referenceByteSize && actual === input.referenceSha256 ? "matched" : "mismatched";
       if (diagnostic.referenceResult === "mismatched") diagnostic.referenceReason = "reference_identity_or_metadata_mismatch";
     } catch (error) {
@@ -345,7 +451,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
   selection?.removeAllRanges();
   editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
   const promptUntil = Date.now() + input.timeoutMs;
-  while (Date.now() < promptUntil) { const text = serialize(editor); if (!text || text === "\n") return { href, ok: true, changed: true, diagnostics: { ...diagnostic, stage: "complete" } }; await new Promise((resolve) => setTimeout(resolve, 50)); }
+  while (Date.now() < promptUntil) { if (emptyEditor()) { if (await waitForEmptyComposer()) return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; return blocked("mutation", "vids_empty_composer_controls_not_ready"); } await new Promise((resolve) => setTimeout(resolve, 50)); }
   return blocked("mutation", "vids_previous_prompt_clear_unconfirmed");
 }
 

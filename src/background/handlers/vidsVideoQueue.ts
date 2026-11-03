@@ -92,7 +92,7 @@ export function createVidsVideoQueueHandler(input: {
         const blocked = await save(queue, { state: "blocked", pauseReason: "prepared_pair_binding_changed", nextActionAt: null });
         await schedule(blocked); return blocked;
       }
-      const next = queue.items.find((item) => item.state === "pending" || item.state === "checking_generate" || item.state === "attaching" || item.state === "entering_prompt");
+      const next = queue.items.find((item) => item.state === "pending" || item.state === "transitioning" || item.state === "checking_generate" || item.state === "attaching" || item.state === "entering_prompt" || item.state === "sending");
       if (!next) {
         queue = await save(queue, { state: "all_sent", nextActionAt: null, readinessStartedAt: null, readinessDeadlineAt: null, pauseReason: undefined });
         await schedule(queue); return queue;
@@ -102,17 +102,35 @@ export function createVidsVideoQueueHandler(input: {
         queue = await save(queue, { state: "cooldown", cooldownDeadlineAt: queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS, nextActionAt: queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS, readinessDeadlineAt: null, readinessStartedAt: null });
         await schedule(queue); return queue;
       }
-      if (next.order > 0 && queue.items[next.order - 1]?.state === "sent" && next.state === "pending") {
+      if (next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
         const previous = queue.items[next.order - 1]!;
-        const transitioning = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "transitioning" as const } : item);
-        queue = await save(queue, { state: "preparing", items: transitioning, nextActionAt: null });
-        const transitioned = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId);
-        if (transitioned.status !== "ready") {
-          const blockedItems = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason: transitioned.reason ?? "vids_composer_transition_failed" } : item);
-          queue = await save(queue, { state: "paused", items: blockedItems, pauseReason: transitioned.reason ?? "vids_composer_transition_failed", nextActionAt: null });
-          await schedule(queue); return queue;
+        const currentAttachment = next.state === "transitioning" ? await input.getAttachment(queue.preparedBatchId, next.itemId) : undefined;
+        const cleanupAlreadyPassed = next.state === "transitioning" && currentAttachment?.status === "attached";
+        if (next.state === "pending") {
+          const transitioning = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "transitioning" as const } : item);
+          queue = await save(queue, { state: "preparing", items: transitioning, nextActionAt: null });
         }
-        queue = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+        const transitionRunId = queue.runId;
+        const inspected = cleanupAlreadyPassed ? { status: "ready" as const } : await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true);
+        let latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
+        if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
+        if (inspected.status !== "ready") {
+          const blockedItems = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason: inspected.reason ?? "vids_composer_transition_failed" } : item);
+          latest = await save(latest, { state: "paused", items: blockedItems, pauseReason: inspected.reason ?? "vids_composer_transition_failed", nextActionAt: null });
+          await schedule(latest); return latest;
+        }
+        // Re-read durable queue ownership immediately before invoking the mutation-capable injection.
+        latest = await input.repositories.getVidsVideoQueue(queueId) ?? latest;
+        if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
+        const transitioned = cleanupAlreadyPassed ? { status: "ready" as const } : await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false);
+        if (transitioned.status !== "ready") {
+          latest = await input.repositories.getVidsVideoQueue(queueId) ?? latest;
+          if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
+          const blockedItems = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason: transitioned.reason ?? "vids_composer_transition_failed" } : item);
+          latest = await save(latest, { state: "paused", items: blockedItems, pauseReason: transitioned.reason ?? "vids_composer_transition_failed", nextActionAt: null });
+          await schedule(latest); return latest;
+        }
+        queue = await input.repositories.getVidsVideoQueue(queueId) ?? latest;
         if (queue.state === "paused" || queue.state === "stopped") return queue;
       }
       if (next.state === "pending" || next.state === "attaching" || next.state === "transitioning") {
@@ -164,7 +182,8 @@ export function createVidsVideoQueueHandler(input: {
     inspectTransition: async (preparedBatchId: string, itemId: string) => {
       const queue = await input.repositories.getVidsVideoQueue(queueIdFor(preparedBatchId));
       const current = queue?.items.find((item) => item.itemId === itemId);
-      if (!queue || queue.state !== "paused" || queue.pauseReason !== "vids_previous_composer_content_conflict" || !current || current.state !== "blocked" || current.reason !== "vids_previous_composer_content_conflict" || current.order < 1)
+      const inspectableReasons = new Set(["vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch"]);
+      if (!queue || queue.state !== "paused" || !current || current.state !== "blocked" || !inspectableReasons.has(current.reason ?? "") || current.order < 1)
         return { status: "blocked", reason: "vids_transition_inspection_not_applicable" };
       const previous = queue.items[current.order - 1];
       if (!previous || previous.state !== "sent" || !previous.dispatchReceipt || previous.dispatchReceipt.attemptId !== previous.attemptId)
@@ -201,13 +220,14 @@ export function createVidsVideoQueueHandler(input: {
     resume: async (preparedBatchId: string, expectedRevision: number) => {
       const queue = await input.repositories.getVidsVideoQueue(queueIdFor(preparedBatchId));
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("vids_video_queue_revision_changed");
-      const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch"]);
+      const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "worker_restart_during_composer_transition", "worker_restart_before_generate"]);
       if (queue.items.some((item) => item.state === "uncertain" || (item.state === "blocked" && !retryablePreIntentReasons.has(item.reason ?? "")))) throw new Error("vids_video_queue_requires_review");
-      for (const item of queue.items.filter((candidate) => candidate.state === "blocked" && candidate.reason === "vids_previous_composer_content_conflict")) {
+      for (const item of queue.items.filter((candidate) => (candidate.state === "blocked" && ["vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "worker_restart_during_composer_transition", "worker_restart_before_generate"].includes(candidate.reason ?? "")) || candidate.reason === "worker_restart_before_generate")) {
         if ((await input.getGeneration(preparedBatchId, item.itemId)).status !== "not_started") throw new Error("vids_generation_attempt_requires_review");
-        if ((await input.getAttachment(preparedBatchId, item.itemId)).status !== "not_started") throw new Error("vids_attachment_attempt_requires_review");
+        const attachment = await input.getAttachment(preparedBatchId, item.itemId);
+        if (["action_intent", "uncertain"].includes(attachment.status)) throw new Error("vids_attachment_attempt_requires_review");
       }
-      const resumedItems = queue.items.map((item) => item.state === "blocked" && retryablePreIntentReasons.has(item.reason ?? "") ? { ...item, state: "pending" as const, reason: undefined } : item);
+      const resumedItems = queue.items.map((item) => item.state === "blocked" && retryablePreIntentReasons.has(item.reason ?? "") ? { ...item, state: "pending" as const, reason: undefined } : item.reason === "worker_restart_before_generate" ? { ...item, reason: undefined } : item);
       const stillChecking = queue.items.some((item) => item.state === "checking_generate");
       const resumed = await save(queue, { state: stillChecking ? "checking_generate" : queue.lastDispatchAt !== null && now() < queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS ? "cooldown" : "ready", items: resumedItems, nextActionAt: stillChecking ? Math.min(now() + CHROME_MIN_ALARM_DELAY_MS, queue.readinessDeadlineAt ?? now()) : queue.lastDispatchAt !== null ? Math.max(now(), queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS) : now(), pauseReason: undefined, readinessStartedAt: stillChecking ? queue.readinessStartedAt : null, readinessDeadlineAt: stillChecking ? queue.readinessDeadlineAt : null, runId: input.makeRunId?.() ?? crypto.randomUUID() });
       void run(resumed.queueId).catch(() => undefined); return resumed;
@@ -230,10 +250,15 @@ export function createVidsVideoQueueHandler(input: {
               continue;
             }
           }
-          const uncertain = ["uncertain", "dispatch_intent", "blocked"].includes(generation.status);
-          const transitionUncertain = item.state === "transitioning" || item.state === "attaching" || item.state === "entering_prompt";
-          const stoppedItems = queue.items.map((value) => value.itemId === item.itemId ? { ...value, state: uncertain || transitionUncertain ? "uncertain" as const : "pending" as const, ...((uncertain || transitionUncertain) ? { reason: transitionUncertain ? "worker_restart_during_composer_transition" : "worker_restart_generation_uncertain" } : {}) } : value);
-          const recovered = await save(queue, { state: uncertain || transitionUncertain ? "blocked" : "paused", items: stoppedItems, pauseReason: uncertain ? "worker_restart_generation_uncertain" : transitionUncertain ? "worker_restart_during_composer_transition" : "worker_restart_review_required", nextActionAt: null });
+          const generationUncertain = ["uncertain", "dispatch_intent", "blocked"].includes(generation.status);
+          const attachment = await input.getAttachment(queue.preparedBatchId, item.itemId);
+          const attachmentUncertain = ["uncertain", "action_intent"].includes(attachment.status);
+          const safePreGenerate = generation.status === "not_started" && !attachmentUncertain && (item.state === "transitioning" && attachment.status === "not_started" || ["attaching", "entering_prompt", "checking_generate", "sending"].includes(item.state) && attachment.status === "attached");
+          const uncertain = generationUncertain || attachmentUncertain;
+          const uncertainReason = generationUncertain ? "worker_restart_generation_uncertain" : "worker_restart_attachment_uncertain";
+          const recoveryReason = safePreGenerate ? "worker_restart_before_generate" : "worker_restart_review_required";
+          const recoveredItems = queue.items.map((value) => value.itemId === item.itemId ? safePreGenerate ? { ...value, reason: recoveryReason } : { ...value, state: uncertain ? "uncertain" as const : "blocked" as const, reason: uncertain ? uncertainReason : recoveryReason } : value);
+          const recovered = await save(queue, { items: recoveredItems, state: uncertain ? "blocked" : "paused", pauseReason: uncertain ? uncertainReason : recoveryReason, nextActionAt: null });
           await schedule(recovered); continue;
         }
         if (queue.state === "cooldown") await schedule(queue);

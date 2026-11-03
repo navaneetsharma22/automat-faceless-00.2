@@ -58,7 +58,7 @@ async function setup(options: { disabledAttempts?: number; uncertain?: boolean; 
     }
     return queue;
   };
-  return { db, batch, repositories, handler, attach, generate, getGeneration, alarms, transitionFromPrevious, now: () => at, advance: (ms: number) => { at += ms; }, flush, waitForQueue, operations };
+  return { db, batch, repositories, handler, attach, generate, getGeneration, getAttachment, alarms, transitionFromPrevious, now: () => at, advance: (ms: number) => { at += ms; }, flush, waitForQueue, operations };
 }
 
 describe("P10.3 isolated Vids timed queue", () => {
@@ -76,7 +76,8 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(after?.items.map((item) => item.state)).toEqual(["sent", "sent"]);
     expect(f.generate).toHaveBeenCalledTimes(1);
     expect(f.generate.mock.calls[0]?.[1]).toBe("item-2");
-    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1");
+    expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(1, batchId, "item-1", true);
+    expect(f.transitionFromPrevious).toHaveBeenNthCalledWith(2, batchId, "item-1", false);
     expect(after?.state).toBe("all_sent");
   });
 
@@ -137,6 +138,68 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(f.generate).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["pause", "stop"] as const)("rechecks %s after read-only ownership proof and never runs cleanup afterward", async (action) => {
+    const f = await setup();
+    const first = await f.handler.start(batchId);
+    const cooldown = await f.waitForQueue(first.queueId, (value) => value?.state === "cooldown");
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    f.transitionFromPrevious.mockImplementation(async (_id, _previous, inspectOnly) => {
+      if (inspectOnly) {
+        const current = await f.repositories.getVidsVideoQueue(first.queueId);
+        await f.handler[action](batchId, current!.revision);
+      }
+      return { status: "ready" as const };
+    });
+    const paused = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${first.queueId}`);
+    expect(paused?.state).toBe(action === "pause" ? "paused" : "stopped");
+    expect(paused?.items[0]?.state).toBe("sent");
+    expect(paused?.items[1]?.state).toBe("transitioning");
+    expect(f.transitionFromPrevious).toHaveBeenCalledTimes(1);
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(cooldown?.items[0]?.dispatchReceipt).toEqual(paused?.items[0]?.dispatchReceipt);
+  });
+
+  it("resumes an interrupted pre-Generate composer transition from the same state without replaying Sent", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const interrupted = { ...sent!, state: "preparing" as const, revision: sent!.revision + 1, items: sent!.items.map((item) => item.itemId === "item-2" ? { ...item, state: "transitioning" as const } : item) };
+    await f.repositories.updateVidsVideoQueue({ expectedRevision: sent!.revision, next: interrupted });
+    await f.handler.reconcileStartup();
+    const paused = await f.repositories.getVidsVideoQueue(started.queueId);
+    expect(paused).toMatchObject({ state: "paused", pauseReason: "worker_restart_before_generate" });
+    expect(paused?.items[0]).toMatchObject({ state: "sent", dispatchReceipt: sent!.items[0]!.dispatchReceipt });
+    expect(paused?.items[1]).toMatchObject({ state: "transitioning", reason: "worker_restart_before_generate" });
+    await f.handler.resume(batchId, paused!.revision);
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const resumed = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(resumed?.items.map((item) => item.state)).toEqual(["sent", "sent"]);
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", true);
+    expect(f.transitionFromPrevious).toHaveBeenCalledWith(batchId, "item-1", false);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+  });
+
+  it("resumes an attached, pre-intent prompt stage through P10.2 without reupload or replaying Sent", async () => {
+    const f = await setup();
+    f.getAttachment.mockImplementation(async (_id, itemId) => ({ status: itemId === "item-2" ? "attached" : "not_started" }));
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const interrupted = { ...sent!, state: "preparing" as const, revision: sent!.revision + 1, items: sent!.items.map((item) => item.itemId === "item-2" ? { ...item, state: "sending" as const } : item) };
+    await f.repositories.updateVidsVideoQueue({ expectedRevision: sent!.revision, next: interrupted });
+    await f.handler.reconcileStartup();
+    const paused = await f.repositories.getVidsVideoQueue(started.queueId);
+    expect(paused).toMatchObject({ state: "paused", pauseReason: "worker_restart_before_generate" });
+    expect(paused?.items[1]).toMatchObject({ state: "sending", reason: "worker_restart_before_generate" });
+    await f.handler.resume(batchId, paused!.revision);
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const resumed = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(resumed?.items.map((item) => item.state)).toEqual(["sent", "sent"]);
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+  });
+
   it("pauses on an exact prompt preflight failure and does not auto-retry or advance", async () => {
     const f = await setup({ blocked: true });
     const queue = await f.handler.start(batchId);
@@ -172,7 +235,7 @@ describe("P10.3 isolated Vids timed queue", () => {
     const previous = f.batch.items[0]!;
     const operation: VidsVideoGenerationOperation = { id: "previous-sent", preparedBatchId: batchId, workspaceId: "workspace", itemId: previous.itemId, canonicalShotId: previous.canonicalShotId, promptHash: previous.contentHash, referenceId: previous.reference.referenceId, referenceSha256: previous.reference.sha256, preIntentReferenceProofSource: "preview_blob_sha256", activationReferenceProofSource: "preview_blob_sha256", tabId: 9, canonicalTarget: f.batch.target.canonicalTarget, documentId: "doc", attemptId: "66666666-6666-4666-8666-666666666666", status: "dispatched", promptReadback: { serialization: "contenteditable_blocks_v1", expectedSha256: previous.contentHash, actualSha256: previous.contentHash, immediateMatch: true, settledMatch: true, stableReads: 3, verifiedAt: 500 }, activationAttempted: true, activationCount: 1, dispatchedAt: 500, createdAt: 400, updatedAt: 500 };
     f.operations.set(previous.itemId, operation);
-    const queue: VidsVideoQueueRecord = { queueId: `vids-video:${batchId}`, preparedBatchId: batchId, state: "paused", items: f.batch.items.map((item, order) => ({ itemId: item.itemId, order, shotId: item.canonicalShotId, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, promptHash: item.contentHash, state: order === 0 ? "sent" : "blocked", ...(order === 0 ? { attemptId: operation.attemptId, dispatchReceipt: { attemptId: operation.attemptId, storedAt: operation.dispatchedAt! } } : { reason: "vids_previous_composer_content_conflict" }) })), revision: 7, createdAt: 1, updatedAt: 500, lastDispatchAt: 500, cooldownDeadlineAt: 50_500, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: null, pauseReason: "vids_previous_composer_content_conflict", runId: "run" };
+    const queue: VidsVideoQueueRecord = { queueId: `vids-video:${batchId}`, preparedBatchId: batchId, state: "paused", items: f.batch.items.map((item, order) => ({ itemId: item.itemId, order, shotId: item.canonicalShotId, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, promptHash: item.contentHash, state: order === 0 ? "sent" : "blocked", ...(order === 0 ? { attemptId: operation.attemptId, dispatchReceipt: { attemptId: operation.attemptId, storedAt: operation.dispatchedAt! } } : { reason: "vids_previous_reference_identity_mismatch" }) })), revision: 7, createdAt: 1, updatedAt: 500, lastDispatchAt: 500, cooldownDeadlineAt: 50_500, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: null, pauseReason: "vids_previous_reference_identity_mismatch", runId: "run" };
     await f.repositories.createVidsVideoQueue(queue);
     const result = await f.handler.inspectTransition(batchId, "item-2");
     expect(result.status).toBe("ready");

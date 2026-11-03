@@ -23,7 +23,7 @@ type TransitionDiagnostic = {
   stage?: string; operationBound?: boolean; attachmentBound?: boolean; targetBound?: boolean; documentBound?: boolean;
   sidebar?: string; animateTab?: string; animatePanel?: string; editor?: string; previewCount?: number;
   promptExpectedSha256?: string; promptActualSha256?: string; promptMatches?: boolean; promptTextMatches?: boolean; promptHashMatches?: boolean;
-  referenceExpectedSha256?: string; referenceActualSha256?: string; referenceProofSource?: string;
+  referenceExpectedSha256?: string; referenceActualSha256?: string; referenceExpectedId?: string; referenceActualId?: string; referenceProofSource?: string;
   referenceResult?: string; referenceReason?: string; expectedMimeType?: string; actualMimeType?: string;
   expectedByteSize?: number; actualByteSize?: number; expectedWidth?: number; expectedHeight?: number; actualWidth?: number; actualHeight?: number;
 };
@@ -123,7 +123,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
         </div>
         {queue?.items.map((entry) => <div key={entry.itemId}>
           <p className={styles.queueItem}><strong>Shot {entry.shotId}</strong><span>{queueItemLabel(entry.state)}</span>{entry.reason ? <details><summary>Details</summary><code>{entry.reason}</code></details> : null}</p>
-          {queue.state === "paused" && entry.state === "blocked" && entry.reason === "vids_previous_composer_content_conflict" ? <div className={styles.action}>
+          {queue.state === "paused" && entry.state === "blocked" && ["vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch"].includes(entry.reason ?? "") ? <div className={styles.action}>
             <Button variant="secondary" disabled={queueBusy} loading={inspectingItemId === entry.itemId} loadingLabel="Inspecting read-only" onClick={() => void inspectTransition(entry.itemId)}>Inspect transition (read-only)</Button>
             {transitionInspection?.itemId === entry.itemId ? <details open className={styles.prompt}>
               <summary>Bounded transition diagnostics</summary>
@@ -134,6 +134,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
                 <div><dt>Prompt expected / current SHA-256</dt><dd><code>{transitionInspection.result.diagnostics.promptExpectedSha256 ?? "not checked"}</code><br /><code>{transitionInspection.result.diagnostics.promptActualSha256 ?? "not available"}</code></dd></div>
                 <div><dt>Prompt text / hash match</dt><dd>{[transitionInspection.result.diagnostics.promptTextMatches, transitionInspection.result.diagnostics.promptHashMatches].map((value) => value === undefined ? "not checked" : value ? "yes" : "no").join(" / ")}</dd></div>
                 <div><dt>Reference expected / current SHA-256</dt><dd><code>{transitionInspection.result.diagnostics.referenceExpectedSha256 ?? "not checked"}</code><br /><code>{transitionInspection.result.diagnostics.referenceActualSha256 ?? "not available"}</code></dd></div>
+                <div><dt>Reference expected / identified current ID</dt><dd><code>{transitionInspection.result.diagnostics.referenceExpectedId ?? "not checked"}</code><br /><code>{transitionInspection.result.diagnostics.referenceActualId ?? "not uniquely identified from bytes"}</code></dd></div>
                 <div><dt>Reference proof</dt><dd>{transitionInspection.result.diagnostics.referenceResult ?? "not checked"}{transitionInspection.result.diagnostics.referenceProofSource ? ` · ${transitionInspection.result.diagnostics.referenceProofSource}` : ""}{transitionInspection.result.diagnostics.referenceReason ? ` · ${transitionInspection.result.diagnostics.referenceReason}` : ""}</dd></div>
                 <div><dt>Current media metadata</dt><dd>{transitionInspection.result.diagnostics.actualMimeType ?? "unknown"}, {transitionInspection.result.diagnostics.actualByteSize ?? "unknown"} bytes, {transitionInspection.result.diagnostics.actualWidth ?? "?"}×{transitionInspection.result.diagnostics.actualHeight ?? "?"}</dd></div>
                 <div><dt>Scoped DOM</dt><dd>Sidebar {transitionInspection.result.diagnostics.sidebar ?? "not checked"}; Animate {transitionInspection.result.diagnostics.animateTab ?? "not checked"}/{transitionInspection.result.diagnostics.animatePanel ?? "not checked"}; editor {transitionInspection.result.diagnostics.editor ?? "not checked"}; previews {transitionInspection.result.diagnostics.previewCount ?? "not checked"}</dd></div>
