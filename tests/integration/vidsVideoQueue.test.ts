@@ -278,6 +278,120 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
   });
 
+  it("gives visibility_wakeup a fresh 30-second composer window after the alarm wait", async () => {
+    const f = await setup({ shotCount: 2 });
+    const started = await f.handler.start(f.batch.id);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const receipt = sent!.items[0]!.dispatchReceipt;
+    f.transitionFromPrevious.mockImplementation(async (_batch, _previous, _inspectOnly, _next, _checkpointed, _phase, traceContext) => {
+      if (traceContext?.triggerSource === "automatic_alarm") return { status: "blocked" as const, reason: "vids_composer_waiting_for_tab", diagnostics: { stage: "readiness", handoffTrace: { triggerSource: traceContext.triggerSource, composerReadinessWaitMs: 30_000, composerReadinessOutcome: "timeout_hidden", composerEditorReady: false } } };
+      return { status: "ready" as const };
+    });
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const waiting = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(waiting?.state).toBe("waiting_for_tab");
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+
+    // Simulate the browser waiting through the hidden deadline and the late
+    // 2.5-second toggle appearance that previously hit the injection fallback.
+    f.advance(30_000 + 2_510);
+    await f.handler.onTargetVisible(9);
+    const completed = await f.waitForQueue(started.queueId, (value) => value?.state === "all_sent");
+    const wakeCall = f.transitionFromPrevious.mock.calls.find((call) => call[6]?.triggerSource === "visibility_wakeup");
+    expect(wakeCall?.[6]).toMatchObject({ triggerSource: "visibility_wakeup", readinessDeadlineAt: f.now() + 30_000 });
+    expect((wakeCall?.[6]?.readinessDeadlineAt ?? 0) - f.now()).toBe(30_000);
+    expect((wakeCall?.[6]?.readinessDeadlineAt ?? 0) - f.now()).not.toBe(VIDS_VIDEO_READINESS_TIMEOUT_MS);
+    expect(completed?.items[0]?.dispatchReceipt).toEqual(receipt);
+    expect(completed?.items[1]?.state).toBe("sent");
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+  });
+
+  it("persists an explicit review state when an alarm handoff throws and ignores duplicate wakeups", async () => {
+    const f = await setup({ shotCount: 2 });
+    const started = await f.handler.start(f.batch.id);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    expect(sent!.nextActionAt).toBe(firstReceipt!.storedAt + VIDS_VIDEO_DISPATCH_GAP_MS);
+    expect(f.alarms.create).toHaveBeenCalledWith(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`, { when: sent!.nextActionAt });
+    f.transitionFromPrevious.mockRejectedValueOnce(new Error("synthetic page injection failure"));
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+
+    const failed = await f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    expect(failed).toMatchObject({ state: "paused", pauseReason: "vids_queue_worker_run_failed", nextActionAt: null, items: [{ state: "sent", dispatchReceipt: firstReceipt }, { state: "blocked", reason: "vids_queue_worker_run_failed" }] });
+    expect((await f.getGeneration(f.batch.id, "item-2")).status).toBe("not_started");
+    expect((await f.getAttachment(f.batch.id, "item-2")).status).toBe("not_started");
+
+    await Promise.all([
+      f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`),
+      f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`),
+    ]);
+    expect(f.transitionFromPrevious).toHaveBeenCalledTimes(1);
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    expect((await f.repositories.getVidsVideoQueue(started.queueId))?.items[0]?.dispatchReceipt).toEqual(firstReceipt);
+  });
+
+  it("serializes overlapping due alarms so only one run claims and generates Shot 2", async () => {
+    const f = await setup({ shotCount: 2 });
+    const started = await f.handler.start(f.batch.id);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    let releaseInspection!: () => void;
+    const inspectionGate = new Promise<void>((resolve) => { releaseInspection = resolve; });
+    let inspectionEntered!: () => void;
+    const inspectionStarted = new Promise<void>((resolve) => { inspectionEntered = resolve; });
+    f.transitionFromPrevious.mockImplementation(async (_batch, _previous, inspectOnly, _next, _checkpointed, phase) => {
+      if (inspectOnly && phase === "inspect") { inspectionEntered(); await inspectionGate; }
+      return { status: "ready" as const };
+    });
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const firstWake = f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    await inspectionStarted;
+    const duplicateWake = f.handler.onAlarm(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`);
+    releaseInspection();
+    const [firstResult, duplicateResult] = await Promise.all([firstWake, duplicateWake]);
+    expect(firstResult?.items[0]?.dispatchReceipt).toEqual(firstReceipt);
+    expect(duplicateResult?.items[0]?.dispatchReceipt).toEqual(firstReceipt);
+    expect((await f.repositories.getVidsVideoQueue(started.queueId))?.state).toBe("all_sent");
+    expect(f.attach.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+  });
+
+  it("resumes a visible composer-readiness timeout only when Shot 2 has no attachment or generation record", async () => {
+    const f = await setup({ shotCount: 2 });
+    const started = await f.handler.start(f.batch.id);
+    const sent = await f.waitForQueue(started.queueId, (value) => value?.state === "cooldown");
+    const receipt = sent!.items[0]!.dispatchReceipt!;
+    const paused = { ...sent!, state: "paused" as const, revision: sent!.revision + 1, pauseReason: "vids_composer_readiness_timeout", items: sent!.items.map((item) => item.itemId === "item-2" ? { ...item, state: "blocked" as const, reason: "vids_composer_readiness_timeout" } : item) };
+    await f.repositories.updateVidsVideoQueue({ expectedRevision: sent!.revision, next: paused });
+    expect((await f.getGeneration(f.batch.id, "item-2")).status).toBe("not_started");
+    expect((await f.getAttachment(f.batch.id, "item-2")).status).toBe("not_started");
+    const itemKey = `${f.batch.id}\u0000item-2`;
+    expect(await f.db.vidsVideoGenerationOperations.get(`vids-generation:${await sha256Hex(itemKey)}`)).toBeUndefined();
+    expect(await f.db.vidsVideoAttachmentOperations.get(`vids:${await sha256Hex(itemKey)}`)).toBeUndefined();
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    const response = await invokeQueueResume(f, f.batch.id, paused.revision);
+    expect(response).toMatchObject({ ok: true });
+    const completed = await f.waitForQueue(started.queueId, (value) => value?.state === "all_sent");
+    expect(completed?.items[0]).toMatchObject({ state: "sent", dispatchReceipt: receipt });
+    expect(completed?.items[1]).toMatchObject({ state: "sent", resumeRecoveryEvidence: { priorReason: "vids_composer_readiness_timeout" } });
+    expect(f.generate.mock.calls.map((call) => call[1])).toEqual(["item-1", "item-2"]);
+
+    const uncertain = await setup({ shotCount: 2 });
+    const uncertainStarted = await uncertain.handler.start(uncertain.batch.id);
+    const uncertainSent = await uncertain.waitForQueue(uncertainStarted.queueId, (value) => value?.state === "cooldown");
+    const uncertainOp = { ...uncertain.operations.get("item-1")!, id: "uncertain-shot-2", itemId: "item-2", canonicalShotId: "2", promptHash: uncertain.batch.items[1]!.contentHash, referenceId: uncertain.batch.items[1]!.reference.referenceId, referenceSha256: uncertain.batch.items[1]!.reference.sha256, status: "uncertain" as const, activationAttempted: true, activationCount: 1, dispatchedAt: undefined };
+    uncertain.operations.set("item-2", uncertainOp);
+    const uncertainQueue = { ...uncertainSent!, state: "paused" as const, revision: uncertainSent!.revision + 1, pauseReason: "vids_composer_readiness_timeout", items: uncertainSent!.items.map((item) => item.itemId === "item-2" ? { ...item, state: "blocked" as const, reason: "vids_composer_readiness_timeout" } : item) };
+    await uncertain.repositories.updateVidsVideoQueue({ expectedRevision: uncertainSent!.revision, next: uncertainQueue });
+    const rejected = await invokeQueueResume(uncertain, uncertain.batch.id, uncertainQueue.revision);
+    expect(rejected).toMatchObject({ ok: false, error: { code: "vids_generation_attempt_requires_review", stage: "resume_validation" } });
+    expect(uncertain.generate.mock.calls.map((call) => call[1])).toEqual(["item-1"]);
+    expect(uncertainSent?.items[0]?.dispatchReceipt).toBe(uncertainQueue.items[0]?.dispatchReceipt);
+  });
+
   it.each(["pause", "stop"] as const)("honors %s while waiting for the Vids tab without replaying Shot 1", async (action) => {
     const f = await setup({ shotCount: 2 });
     const started = await f.handler.start(f.batch.id);

@@ -19,7 +19,7 @@ function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanu
   const safePanel = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["initialAnimateState"] => value === "collapsed" || value === "expanded" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
   const safeToggleLabel = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleLabelBefore"] => value === "Expand" || value === "Collapse" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
   const safeToggleOutcome = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleOutcome"] => value === "already_expanded" || value === "expanded" || value === "missing" || value === "ambiguous" || value === "disabled" || value === "label_unrecognized" || value === "settlement_failed" ? value : undefined;
-  const safeToggleScope = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleScope"] => value === "panel" || value === "tabpanel_sibling" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
+  const safeToggleScope = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleScope"] => value === "panel" || value === "tabpanel_sibling" || value === "composer_container" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
   const safeReadinessOutcome = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerReadinessOutcome"] => value === "ready" || value === "timeout_hidden" || value === "timeout_visible" ? value : undefined;
   const traceArray = <T extends Record<string, unknown>>(value: unknown, parse: (item: unknown, index: number) => T | undefined): T[] | undefined => Array.isArray(value) ? value.slice(0, 8).flatMap((item, index) => { const parsed = parse(item, index); return parsed ? [parsed] : []; }) : undefined;
   const visibilityChanges = traceArray(rawTrace.visibilityChanges, (item) => {
@@ -35,7 +35,7 @@ function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanu
   const composerToggleObservations = traceArray(rawTrace.composerToggleObservations, (item) => {
     if (!item || typeof item !== "object") return undefined;
     const entry = item as Record<string, unknown>, label = safeToggleLabel(entry.label), scope = safeToggleScope(entry.scope), state = safeState(entry.visibility);
-    return typeof entry.atMs === "number" && Number.isFinite(entry.atMs) && label && scope && state ? { atMs: Math.min(30_000, Math.max(0, Math.trunc(entry.atMs))), label, scope, panelCount: Math.min(10, Math.max(0, Math.trunc(Number(entry.panelCount) || 0))), editorCount: Math.min(10, Math.max(0, Math.trunc(Number(entry.editorCount) || 0))), visibility: state } : undefined;
+    return typeof entry.atMs === "number" && Number.isFinite(entry.atMs) && label && scope && state ? { atMs: Math.min(30_000, Math.max(0, Math.trunc(entry.atMs))), label, scope, candidateCount: Math.min(10, Math.max(0, Math.trunc(Number(entry.candidateCount) || 0))), panelCount: Math.min(10, Math.max(0, Math.trunc(Number(entry.panelCount) || 0))), editorCount: Math.min(10, Math.max(0, Math.trunc(Number(entry.editorCount) || 0))), visibility: state } : undefined;
   });
   const selectedTriggerSource = triggerSource ?? (rawTrace.triggerSource === "automatic_start" || rawTrace.triggerSource === "automatic_alarm" || rawTrace.triggerSource === "manual_resume" || rawTrace.triggerSource === "visibility_wakeup" || rawTrace.triggerSource === "unknown" ? rawTrace.triggerSource : undefined);
   const trace = {
@@ -104,6 +104,52 @@ export function createVidsVideoQueueHandler(input: {
   };
   const schedule = async (queue: VidsVideoQueueRecord) => runtime.schedule(queue.queueId, queue.nextActionAt);
 
+  const settleRunFailure = async (queueId: string, triggerSource: NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["triggerSource"], scheduledAt: number | null, stage: string, startedAt: number) => {
+    let outcome = "queue_unavailable";
+    try {
+      const queue = await input.repositories.getVidsVideoQueue(queueId);
+      if (!queue || ["paused", "stopped", "blocked", "all_sent"].includes(queue.state)) {
+        outcome = queue?.state ?? "queue_unavailable";
+        return queue;
+      }
+      const active = queue.items.find((item) => ["transitioning", "attaching", "entering_prompt", "checking_generate", "sending"].includes(item.state));
+      if (!active) {
+        const paused = await save(queue, { state: "paused", pauseReason: "vids_queue_worker_run_failed", nextActionAt: null });
+        await schedule(paused);
+        outcome = "paused_review";
+        return paused;
+      }
+      const generation = await input.getGeneration(queue.preparedBatchId, active.itemId);
+      const operation = VidsVideoGenerationOperationSchema.safeParse(generation.operation);
+      const prepared = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
+      const preparedItem = prepared.success ? prepared.data.items[active.order] : undefined;
+      const executionTabId = queue.executionDocumentRebind?.toTabId ?? prepared.data?.target.tabId;
+      const executionDocumentId = queue.executionDocumentRebind?.toDocumentId ?? prepared.data?.target.documentId;
+      const exactDispatch = generation.status === "dispatched" && operation.success && prepared.success && preparedItem && operation.data.preparedBatchId === queue.preparedBatchId && operation.data.workspaceId === prepared.data.workspaceId && operation.data.itemId === active.itemId && operation.data.canonicalShotId === active.shotId && operation.data.promptHash === active.promptHash && operation.data.referenceId === active.referenceId && operation.data.referenceSha256 === active.referenceSha256 && operation.data.tabId === executionTabId && operation.data.canonicalTarget === prepared.data.target.canonicalTarget && operation.data.documentId === executionDocumentId && operation.data.activationAttempted === true && operation.data.activationCount === 1 && operation.data.dispatchedAt !== undefined;
+      if (exactDispatch && operation.success) {
+        const storedAt = operation.data.dispatchedAt!;
+        const items = queue.items.map((item) => item.itemId === active.itemId ? { ...item, state: "sent" as const, attemptId: operation.data.attemptId, dispatchReceipt: { attemptId: operation.data.attemptId, storedAt } } : item);
+        const allSent = items.every((item) => item.state === "sent");
+        const recovered = await save(queue, { items, state: allSent ? "all_sent" : "cooldown", lastDispatchAt: storedAt, cooldownDeadlineAt: allSent ? null : storedAt + VIDS_VIDEO_DISPATCH_GAP_MS, readinessStartedAt: null, readinessDeadlineAt: null, nextActionAt: allSent ? null : storedAt + VIDS_VIDEO_DISPATCH_GAP_MS, pauseReason: undefined });
+        await schedule(recovered);
+        outcome = "dispatch_receipt_preserved";
+        return recovered;
+      }
+      const attachment = await input.getAttachment(queue.preparedBatchId, active.itemId);
+      const uncertain = ["uncertain", "dispatch_intent", "dispatched", "already_dispatched"].includes(generation.status) || ["uncertain", "action_intent"].includes(attachment.status);
+      const reason = uncertain ? "vids_queue_worker_outcome_uncertain" : "vids_queue_worker_run_failed";
+      const failed = await save(queue, { state: uncertain ? "blocked" : "paused", items: queue.items.map((item) => item.itemId === active.itemId ? { ...item, state: uncertain ? "uncertain" as const : "blocked" as const, reason } : item), pauseReason: reason, nextActionAt: null });
+      await schedule(failed);
+      outcome = uncertain ? "blocked_uncertain" : "paused_review";
+      return failed;
+    } catch {
+      outcome = "persist_failed";
+      return undefined;
+    } finally {
+      console.warn("[vids-video-queue] run-failure", { trigger: triggerSource ?? "unknown", scheduledAt, stage: /^[a-z_]{1,32}$/.test(stage) ? stage : "unknown", elapsedMs: Math.min(60_000, Math.max(0, now() - startedAt)), persistedOutcome: outcome });
+    }
+  };
+
   async function adoptExisting(batchId: string): Promise<VidsVideoQueueRecord> {
     const batch = PreparedVideoBatchRecordSchema.parse(await input.repositories.getPreparedVideoBatchById(batchId));
     const confirmation = VideoSettingsConfirmationSchema.safeParse(batch.manualSettingsDeclaration);
@@ -139,9 +185,14 @@ export function createVidsVideoQueueHandler(input: {
   }
 
   async function run(queueId: string, triggerSource: NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["triggerSource"] = "unknown"): Promise<VidsVideoQueueRecord | undefined> {
+    const startedAt = now();
+    let stage = "queue_read";
+    let scheduledAt: number | null = null;
     return runtime.serialize(queueId, async () => {
       let queue = await input.repositories.getVidsVideoQueue(queueId);
       if (!queue || ["paused", "stopped", "blocked", "all_sent"].includes(queue.state)) return queue;
+      scheduledAt = queue.nextActionAt;
+      stage = "prepared_validation";
       const prepared = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
       const sourceItems = prepared.success ? importPromptBatch(prepared.data.videoSourceText, "video") : undefined;
       let sourceHashValid = false;
@@ -168,6 +219,7 @@ export function createVidsVideoQueueHandler(input: {
         await schedule(queue); return queue;
       }
       const nowAt = now();
+      stage = "cooldown_check";
       if (queue.lastDispatchAt !== null && nowAt < queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS) {
         queue = await save(queue, { state: "cooldown", cooldownDeadlineAt: queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS, nextActionAt: queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS, readinessDeadlineAt: null, readinessStartedAt: null });
         await schedule(queue); return queue;
@@ -183,6 +235,7 @@ export function createVidsVideoQueueHandler(input: {
         return waiting;
       };
       if (queue.executionDocumentRebind && next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
+        stage = "composer_readiness";
         const previous = queue.items[next.order - 1]!;
         const elapsedSinceReceiptToFirstReadMs = previous.dispatchReceipt ? Math.max(0, now() - previous.dispatchReceipt.storedAt) : 0;
         let priorHandoffTrace: VidsCleanupDiagnostics["handoffTrace"];
@@ -334,6 +387,7 @@ export function createVidsVideoQueueHandler(input: {
         if (queue.state === "paused" || queue.state === "stopped") return queue;
       }
       if (next.state === "pending" || next.state === "attaching" || next.state === "transitioning") {
+        stage = "attachment";
         const items = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "attaching" as const } : item);
         queue = await save(queue, { state: "preparing", items, nextActionAt: null });
         const attachment = await input.attach(queue.preparedBatchId, next.itemId, true);
@@ -358,6 +412,7 @@ export function createVidsVideoQueueHandler(input: {
       }
       queue = await save(queue, { items: queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: "sending" as const } : item) });
       const result = await input.generate(queue.preparedBatchId, next.itemId, true);
+      stage = "generate_result_persist";
       const operation = VidsVideoGenerationOperationSchema.safeParse(result.operation);
       if ((result.status === "dispatched" || result.status === "already_dispatched") && operation.success && operation.data.status === "dispatched" && operation.data.preparedBatchId === queue.preparedBatchId && operation.data.workspaceId === prepared.data.workspaceId && operation.data.itemId === next.itemId && operation.data.canonicalShotId === currentItem.shotId && operation.data.promptHash === currentItem.promptHash && operation.data.referenceId === currentItem.referenceId && operation.data.referenceSha256 === currentItem.referenceSha256 && operation.data.tabId === (queue.executionDocumentRebind?.toTabId ?? prepared.data.target.tabId) && operation.data.canonicalTarget === prepared.data.target.canonicalTarget && operation.data.documentId === (queue.executionDocumentRebind?.toDocumentId ?? prepared.data.target.documentId) && operation.data.activationAttempted === true && operation.data.activationCount === 1 && operation.data.dispatchedAt !== undefined) {
         const storedAt = operation.data.dispatchedAt;
@@ -374,7 +429,7 @@ export function createVidsVideoQueueHandler(input: {
       const failedItems = queue.items.map((item) => item.itemId === next.itemId ? { ...item, state: uncertain ? "uncertain" as const : "blocked" as const, reason: result.reason ?? "vids_generation_blocked", ...(operation.success ? { attemptId: operation.data.attemptId } : {}) } : item);
       queue = await save(queue, { state: uncertain ? "blocked" : "paused", items: failedItems, pauseReason: result.reason ?? "vids_generation_blocked", nextActionAt: null });
       await schedule(queue); return queue;
-    });
+    }).catch(() => settleRunFailure(queueId, triggerSource, scheduledAt, stage, startedAt));
   }
 
   return {
@@ -456,7 +511,7 @@ export function createVidsVideoQueueHandler(input: {
       }
       const rebind = Boolean(binding && (binding.tabId !== priorTabId || binding.documentId !== priorDocumentId));
       if (rebind && !confirmSameAccount) throw new Error("vids_same_account_confirmation_required");
-      const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_cleanup_checkpoint_required", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "vids_target_changed_before_composer_transition", "vids_previous_item_dispatch_binding_unverified", "worker_restart_during_composer_transition", "worker_restart_before_generate"]);
+      const retryablePreIntentReasons = new Set(["generate_readiness_timeout", "vids_composer_readiness_timeout", "vids_composer_collapsed_or_changed", "vids_cleanup_checkpoint_required", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "vids_target_changed_before_composer_transition", "vids_previous_item_dispatch_binding_unverified", "worker_restart_during_composer_transition", "worker_restart_before_generate"]);
       if (queue.items.some((item) => item.state === "uncertain" || (item.state === "blocked" && !retryablePreIntentReasons.has(item.reason ?? "")))) throw new Error("vids_video_queue_requires_review");
       const handoffRecoveryItems = queue.items.filter((candidate) => candidate.state === "blocked" && candidate.reason === "vids_previous_item_dispatch_binding_unverified");
       for (const item of handoffRecoveryItems) {
@@ -473,7 +528,7 @@ export function createVidsVideoQueueHandler(input: {
           !attachment.success || attachment.data.status !== "attached" || attachment.data.preparedBatchId !== preparedBatchId || attachment.data.workspaceId !== prepared.data.workspaceId || attachment.data.itemId !== previous.itemId || attachment.data.shotId !== previousPrepared.canonicalShotId || attachment.data.referenceId !== previousPrepared.reference.referenceId || attachment.data.assignmentVersion !== previousPrepared.reference.assignmentVersion || attachment.data.referenceSha256 !== previousPrepared.reference.sha256 || attachment.data.tabId !== binding.tabId || attachment.data.documentId !== binding.documentId || attachment.data.canonicalTarget !== prepared.data.target.canonicalTarget || attachment.data.tabId !== generation.data.tabId || attachment.data.documentId !== generation.data.documentId || attachment.data.uploadEvidence?.exactBytesSha256 !== previousPrepared.reference.sha256 || attachment.data.uploadEvidence.byteSize !== previousPrepared.reference.byteSize || attachment.data.uploadEvidence.mimeType !== previousPrepared.reference.mimeType || attachment.data.uploadEvidence.previewWidth !== previousPrepared.reference.width || attachment.data.uploadEvidence.previewHeight !== previousPrepared.reference.height)
           throw new Error("vids_previous_item_dispatch_binding_unverified");
       }
-      for (const item of queue.items.filter((candidate) => candidate.state === "blocked" && (candidate.reason === "vids_target_changed_before_composer_transition" || candidate.reason === "vids_previous_item_dispatch_binding_unverified" || ["vids_cleanup_checkpoint_required", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "worker_restart_during_composer_transition", "worker_restart_before_generate"].includes(candidate.reason ?? "")))) {
+      for (const item of queue.items.filter((candidate) => candidate.state === "blocked" && (candidate.reason === "vids_target_changed_before_composer_transition" || candidate.reason === "vids_previous_item_dispatch_binding_unverified" || ["vids_composer_readiness_timeout", "vids_cleanup_checkpoint_required", "vids_previous_composer_content_conflict", "vids_previous_reference_identity_mismatch", "vids_previous_prompt_hash_mismatch", "vids_previous_prompt_clear_failed", "vids_previous_prompt_clear_unconfirmed", "vids_prompt_editor_rebind_failed", "vids_cleanup_completion_changed", "vids_empty_composer_controls_not_ready", "worker_restart_during_composer_transition", "worker_restart_before_generate"].includes(candidate.reason ?? "")))) {
         const generation = await input.getGeneration(preparedBatchId, item.itemId);
         const itemKey = `${preparedBatchId}\u0000${item.itemId}`;
         const generationRecord = await input.repositories.getVidsVideoGenerationOperation(`vids-generation:${await sha256Hex(itemKey)}`);
@@ -482,7 +537,7 @@ export function createVidsVideoQueueHandler(input: {
         const attachmentRecord = await input.repositories.getVidsVideoAttachmentOperation(`vids:${await sha256Hex(itemKey)}`);
         if (attachment.status !== "not_started" || attachmentRecord) throw new Error("vids_attachment_attempt_requires_review");
       }
-      const resumedItems = queue.items.map((item) => item.state === "blocked" && retryablePreIntentReasons.has(item.reason ?? "") ? { ...item, state: "pending" as const, ...(["vids_cleanup_checkpoint_required", "vids_target_changed_before_composer_transition", "vids_previous_item_dispatch_binding_unverified"].includes(item.reason ?? "") ? { resumeRecoveryEvidence: { priorReason: item.reason!, verifiedAt: now() } } : {}), reason: undefined } : item.reason === "worker_restart_before_generate" ? { ...item, reason: undefined } : item);
+      const resumedItems = queue.items.map((item) => item.state === "blocked" && retryablePreIntentReasons.has(item.reason ?? "") ? { ...item, state: "pending" as const, ...(["vids_composer_readiness_timeout", "vids_cleanup_checkpoint_required", "vids_target_changed_before_composer_transition", "vids_previous_item_dispatch_binding_unverified"].includes(item.reason ?? "") ? { resumeRecoveryEvidence: { priorReason: item.reason!, verifiedAt: now() } } : {}), reason: undefined } : item.reason === "worker_restart_before_generate" ? { ...item, reason: undefined } : item);
       const stillChecking = queue.items.some((item) => item.state === "checking_generate");
       const resumed = await save(queue, { ...(rebind ? { executionDocumentRebind: { fromTabId: queue.executionDocumentRebind?.fromTabId ?? prepared.data.target.tabId, toTabId: binding!.tabId, fromDocumentId: queue.executionDocumentRebind?.fromDocumentId ?? prepared.data.target.documentId!, toDocumentId: binding!.documentId, projectId: binding!.projectId, canonicalTarget: binding!.canonicalTarget, verifiedAt: binding!.verifiedAt, sameAccountConfirmedAt: now() } } : {}), state: stillChecking ? "checking_generate" : queue.lastDispatchAt !== null && now() < queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS ? "cooldown" : "ready", items: resumedItems, nextActionAt: stillChecking ? Math.min(now() + CHROME_MIN_ALARM_DELAY_MS, queue.readinessDeadlineAt ?? now()) : queue.lastDispatchAt !== null ? Math.max(now(), queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS) : now(), pauseReason: undefined, readinessStartedAt: stillChecking ? queue.readinessStartedAt : null, readinessDeadlineAt: stillChecking ? queue.readinessDeadlineAt : null, runId: input.makeRunId?.() ?? crypto.randomUUID() });
       void run(resumed.queueId, "manual_resume").catch(() => undefined); return resumed;

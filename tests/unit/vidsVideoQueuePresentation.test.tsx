@@ -96,6 +96,23 @@ describe("P10.3 Vids queue presentation", () => {
     expect(requests).not.toContain("vids.video.attachReference");
   });
 
+  it("marks the queue snapshot as potentially stale when a dashboard refresh fails", async () => {
+    const request = vi.fn(async (type: string) => {
+      if (type === "vids.videoQueue.get") throw new Error("synthetic refresh failure");
+      if (type === "vids.video.getAttachmentStatus") return { status: "not_started" };
+      if (type === "vids.video.getGenerationStatus") return { status: "not_started" };
+      return null;
+    });
+    host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(VidsPreparedBatchReview, { preparedBatch: batch, persistenceClient: { request } as never }));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(host.textContent).toContain("Queue status refresh failed. The displayed snapshot may be out of date.");
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("displayed snapshot may be out of date");
+    expect(request).toHaveBeenCalledWith("vids.videoQueue.get", { preparedBatchId: batch.id });
+  });
+
   it("toasts once on the observed all-sent transition and keeps the summary after dismissal", async () => {
     const items = batch.items.map((item, order) => ({ itemId: item.itemId, order, shotId: item.canonicalShotId, referenceId: item.reference.referenceId, referenceSha256: item.reference.sha256, promptHash: item.contentHash, state: "pending" }));
     let current: Record<string, unknown> = { queueId: `vids-video:${batch.id}`, preparedBatchId: batch.id, state: "ready", items, revision: 1, createdAt: 1, updatedAt: 1, lastDispatchAt: null, cooldownDeadlineAt: null, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: null, runId: "run" };

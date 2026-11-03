@@ -13,7 +13,7 @@ async function install(page: import("@playwright/test").Page, collapsed = false)
   await page.locator("input[type=file]").setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: Buffer.from(bytes) });
   await page.locator("input[type=file]").evaluate((input) => { const file = (input as HTMLInputElement).files![0]!; const panel = input.closest("[role=tabpanel]")!; panel.querySelector("img[alt='Uploaded image preview']")!.setAttribute("src", URL.createObjectURL(file)); input.remove(); panel.querySelector("button[aria-label='Add image']")?.remove(); });
   await page.locator("[role=textbox]").evaluate((node, text) => { node.textContent = text; }, previousPrompt);
-  await page.evaluate(() => { Object.assign(window, { queueFixture: { removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 } }); document.addEventListener("click", (event) => { const button = (event.target as Element | null)?.closest("button"); if (!button) return; const fixture = (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture; if (button.matches("[aria-label='Remove image']")) { fixture.removeClicks += 1; button.remove(); document.querySelector("img[alt='Uploaded image preview']")?.remove(); const panel = document.querySelector("[role=tabpanel]")!; panel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file">'); } else if (button.matches("[aria-label='Generate']")) fixture.generateClicks += 1; else fixture.unrelatedClicks += 1; }); });
+  await page.evaluate(() => { Object.assign(window, { queueFixture: { removeClicks: 0, generateClicks: 0, unrelatedClicks: 0 } }); document.addEventListener("click", (event) => { const button = (event.target as Element | null)?.closest("button"); if (!button) return; const fixture = (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number; unrelatedClicks: number } }).queueFixture; if (button.matches("[aria-label='Remove image']")) { fixture.removeClicks += 1; button.remove(); document.querySelector("img[alt='Uploaded image preview']")?.remove(); const panel = document.querySelector("[role=tabpanel]")!; panel.insertAdjacentHTML("afterbegin", '<button aria-label="Add image">Add image</button><input type="file" accept="image/jpeg,image/png">'); } else if (button.matches("[aria-label='Generate']")) fixture.generateClicks += 1; else fixture.unrelatedClicks += 1; }); });
 }
 
 test("production transition removes only exact previous content, then leaves the composer empty", async ({ page }) => {
@@ -356,7 +356,7 @@ test("automatic inspection waits for a missing sibling toggle, expands once, and
     let state: DocumentVisibilityState = "visible";
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
     setTimeout(() => { state = "hidden"; }, 350);
-    setTimeout(() => { state = "visible"; }, 800);
+    setTimeout(() => { state = "visible"; }, 1_200);
   });
   const promptSha256 = await sha256Hex(previousPrompt), referenceSha256 = await sha256Bytes(bytes);
   const referenceId = "60000000-0000-4000-8000-000000000006";
@@ -366,6 +366,7 @@ test("automatic inspection waits for a missing sibling toggle, expands once, and
     expand.addEventListener("click", () => {
       const win = window as unknown as { collapsibleToggleClicks?: number };
       win.collapsibleToggleClicks = (win.collapsibleToggleClicks ?? 0) + 1;
+      expand.remove();
       setTimeout(() => {
         const currentOld = sidebar.querySelector("[role=tabpanel]")!;
         const panel = document.createElement("section"); panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-label", "Animate");
@@ -377,12 +378,12 @@ test("automatic inspection waits for a missing sibling toggle, expands once, and
           const remove = document.createElement("button"); remove.setAttribute("aria-label", "Remove image"); remove.textContent = "Remove"; remove.addEventListener("click", () => { preview.remove(); remove.remove(); });
           panel.insertBefore(preview, panel.querySelector("[role=textbox]")); panel.insertBefore(remove, panel.querySelector("[role=textbox]"));
         }, 280);
-      }, 70);
+      }, 900);
     });
     setTimeout(() => old.after(expand), 150);
   }, { prompt: previousPrompt, base64Bytes: bytes });
   const traceContext = { triggerSource: "automatic_alarm" as const, elapsedSinceReceiptToFirstReadMs: 50_000 };
-  const expanded = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1800, readinessDeadlineAt: Date.now() + 1800, inspectOnly: true, phase: "inspect", traceContext });
+  const expanded = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 3000, readinessDeadlineAt: Date.now() + 3000, inspectOnly: true, phase: "inspect", traceContext });
   expect(expanded).toMatchObject({ ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { panelStateBeforeExpansion: "unknown", panelStateAfterExpansion: "settled", panelRebound: true, editorRebound: true, freshPreviewDetection: "delayed_then_present", previewCount: 1, handoffTrace: { composerReadinessOutcome: "ready", composerEditorReady: true, composerToggleScope: "panel", triggerSource: "automatic_alarm", elapsedSinceReceiptToFirstReadMs: 50_000, visibilityStart: "visible", expansionAttempted: true, panelReplaced: true, editorReplaced: true, initialAnimateState: "missing", finalAnimateState: "expanded", composerToggleLabelBefore: "missing", composerToggleLabelAfter: "Collapse", composerToggleClickAttempted: true, composerToggleOutcome: "expanded" } } });
   expect(expanded.diagnostics.handoffTrace?.composerToggleObservations).toEqual(expect.arrayContaining([expect.objectContaining({ label: "missing" }), expect.objectContaining({ label: "Expand", scope: "tabpanel_sibling" })]));
   expect(await page.evaluate(() => (window as unknown as { collapsibleToggleClicks?: number }).collapsibleToggleClicks)).toBe(1);
@@ -397,6 +398,72 @@ test("automatic inspection waits for a missing sibling toggle, expands once, and
   expect(await page.locator("img[alt='Uploaded image preview']").count()).toBe(0);
   expect(await page.locator("[role=textbox]").textContent()).toBe("");
   expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 0 });
+});
+
+test("visibility wakeup waits past 2.5 seconds for the toggle in the selected Animate composer container", async ({ page }) => {
+  await install(page);
+  const promptSha256 = await sha256Hex(previousPrompt), referenceSha256 = await sha256Bytes(bytes);
+  const referenceId = "70000000-0000-4000-8000-000000000007";
+  const nextPrompt = JSON.stringify({ shot_id: "2", prompt_type: "video", action: "continue with the second shot" }, null, 2);
+  await page.locator("[role=complementary]").evaluate((sidebar) => {
+    const tab = sidebar.querySelector<HTMLElement>("[role=tab]")!;
+    const panel = sidebar.querySelector<HTMLElement>("[role=tabpanel]")!;
+    const toggle = panel.querySelector(".collapsiblePromptBoxToggleExpansionButton")!;
+    toggle.remove();
+    const container = document.createElement("div"); container.id = "animate-composer-container";
+    const toggleSlot = document.createElement("div"); toggleSlot.id = "animate-toggle-slot";
+    container.append(tab, panel, toggleSlot); sidebar.append(container);
+    setTimeout(() => {
+      const lateToggle = document.createElement("button"); lateToggle.className = "collapsiblePromptBoxToggleExpansionButton";
+      lateToggle.setAttribute("data-idom-class", "collapsiblePromptBoxToggleExpansionButton"); lateToggle.setAttribute("aria-label", "Collapse"); lateToggle.textContent = "Collapse";
+      toggleSlot.append(lateToggle);
+    }, 2_500);
+  });
+  const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, {
+    prompt: previousPrompt, promptSha256, referenceId,
+    referenceCandidates: [{ referenceId, sha256: referenceSha256, mimeType: "image/png", byteSize: bytes.length, width: 1, height: 1 }],
+    referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1,
+    timeoutMs: 30_000, readinessDeadlineAt: Date.now() + 30_000, inspectOnly: false, phase: "full", checkpointedOwnership: true,
+    traceContext: { triggerSource: "visibility_wakeup", elapsedSinceReceiptToFirstReadMs: 82_510 },
+  });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true, changed: true, diagnostics: { stage: "complete", settledPromptEmpty: true, handoffTrace: { triggerSource: "visibility_wakeup", composerReadinessWaitMs: expect.any(Number), composerReadinessOutcome: "ready", composerToggleScope: "composer_container", composerToggleLabelBefore: "missing", composerToggleLabelAfter: "Collapse", composerToggleObservations: expect.arrayContaining([expect.objectContaining({ label: "missing", scope: "missing", candidateCount: 0, panelCount: 1, editorCount: 1 }), expect.objectContaining({ label: "Collapse", scope: "composer_container", candidateCount: 1, panelCount: 1, editorCount: 1 })]) } } });
+  expect(result.diagnostics.handoffTrace!.composerReadinessWaitMs).toBeGreaterThanOrEqual(2_500);
+  expect(result.diagnostics.handoffTrace!.composerReadinessWaitMs).toBeLessThan(4_000);
+  expect(await page.locator("[role=textbox]").evaluate((editor) => editor.textContent)).toBe("");
+  expect(await page.locator("img[alt='Uploaded image preview']").count()).toBe(0);
+
+  const nextReferenceSha256 = await sha256Bytes(bytes);
+  await page.locator("input[type=file]").setInputFiles({ name: "shot-2.png", mimeType: "image/png", buffer: Buffer.from(bytes) });
+  await page.locator("input[type=file]").evaluate((input) => {
+    const file = (input as HTMLInputElement).files![0]!;
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    const panel = input.closest("[role=tabpanel]")!;
+    const preview = document.createElement("img"); preview.alt = "Uploaded image preview"; preview.src = URL.createObjectURL(file);
+    const remove = document.createElement("button"); remove.setAttribute("aria-label", "Remove image"); remove.textContent = "Remove";
+    panel.insertBefore(preview, panel.querySelector("[role=textbox]")); panel.insertBefore(remove, panel.querySelector("[role=textbox]"));
+  });
+  expect(await page.locator("img[alt='Uploaded image preview']").count()).toBe(1);
+  const entered = await page.evaluate(enterVidsPromptInPage, { prompt: nextPrompt, expectedSha256: await sha256Hex(nextPrompt), referenceSha256: nextReferenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 2_500 });
+  expect(entered).toMatchObject({ ok: true, immediateMatch: true, settledMatch: true });
+  const generated = await page.evaluate(activateVidsGenerateInPage, { prompt: nextPrompt, promptSha256: await sha256Hex(nextPrompt), referenceSha256: nextReferenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1 });
+  expect(generated).toMatchObject({ ok: true, activationAttempted: true, activationCount: 1 });
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 1 });
+});
+
+test("full visible composer readiness timeout makes no cleanup or next-shot action", async ({ page }) => {
+  test.setTimeout(40_000);
+  await install(page);
+  await page.locator(".collapsiblePromptBoxToggleExpansionButton").evaluate((toggle) => toggle.remove());
+  const startedAt = Date.now();
+  const result = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256: await sha256Hex(previousPrompt), referenceSha256: await sha256Bytes(bytes), referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 30_000, readinessDeadlineAt: Date.now() + 30_000, inspectOnly: false, phase: "full", checkpointedOwnership: true, traceContext: { triggerSource: "visibility_wakeup", elapsedSinceReceiptToFirstReadMs: 50_014 } });
+  expect(Date.now() - startedAt).toBeGreaterThanOrEqual(29_500);
+  expect(result).toMatchObject({ ok: false, changed: false, reason: "vids_composer_readiness_timeout", diagnostics: { stage: "readiness", handoffTrace: { triggerSource: "visibility_wakeup", composerReadinessWaitMs: expect.any(Number), composerReadinessOutcome: "timeout_visible", composerEditorReady: false, composerToggleScope: "missing", composerToggleLabelAfter: "missing", composerToggleClickAttempted: false, composerToggleObservations: expect.arrayContaining([expect.objectContaining({ label: "missing", candidateCount: 0, panelCount: 1, editorCount: 1, visibility: "visible" })]) } } });
+  expect(result.diagnostics.handoffTrace!.composerReadinessWaitMs).toBeGreaterThanOrEqual(29_500);
+  expect(result.diagnostics.handoffTrace!.composerReadinessWaitMs).toBeLessThanOrEqual(30_000);
+  expect(await page.locator("[role=textbox]").evaluate((editor) => editor.textContent)).toBe(previousPrompt);
+  expect(await page.locator("img[alt='Uploaded image preview']").count()).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 0, generateClicks: 0 });
 });
 
 test("hidden readiness expiry reports Waiting for Vids tab and retries from fresh DOM when visible", async ({ page }) => {

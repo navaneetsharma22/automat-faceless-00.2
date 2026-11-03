@@ -255,8 +255,8 @@ export type VidsComposerTransitionDiagnostics = {
     composerReadinessWaitMs?: number;
     composerReadinessOutcome?: "ready" | "timeout_hidden" | "timeout_visible";
     composerEditorReady?: boolean;
-    composerToggleScope?: "panel" | "tabpanel_sibling" | "missing" | "ambiguous" | "unknown";
-    composerToggleObservations?: Array<{ atMs: number; label: VidsComposerToggleLabel; scope: "panel" | "tabpanel_sibling" | "missing" | "ambiguous" | "unknown"; panelCount: number; editorCount: number; visibility: "visible" | "hidden" | "prerender" | "unloaded" | "unknown" }>;
+    composerToggleScope?: "panel" | "tabpanel_sibling" | "composer_container" | "missing" | "ambiguous" | "unknown";
+    composerToggleObservations?: Array<{ atMs: number; label: VidsComposerToggleLabel; scope: "panel" | "tabpanel_sibling" | "composer_container" | "missing" | "ambiguous" | "unknown"; candidateCount: number; panelCount: number; editorCount: number; visibility: "visible" | "hidden" | "prerender" | "unloaded" | "unknown" }>;
     expansionAttempted?: boolean; panelReplaced?: boolean; editorReplaced?: boolean;
     previewObservations?: Array<{ inspection: number; atMs: number; selectorMatches: number; visibleMatches: number; loadedMatches: number; composerToggleLabel?: VidsComposerToggleLabel }>;
   };
@@ -293,20 +293,39 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     if (labelled) return labelled.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? "").join(" ").trim();
     return element.getAttribute("title")?.trim() ?? "";
   };
-  const toggleForPanel = (panel?: HTMLElement) => {
-    if (!panel) return { label: "missing" as const, scope: "missing" as const, control: undefined as HTMLButtonElement | undefined, disabled: false };
+  const toggleForPanel = (panel?: HTMLElement, selectedTab?: HTMLElement, sidebar?: HTMLElement) => {
+    if (!panel) return { label: "missing" as const, scope: "missing" as const, control: undefined as HTMLButtonElement | undefined, disabled: false, candidateCount: 0 };
     const inPanel = [...panel.querySelectorAll<HTMLButtonElement>("button.collapsiblePromptBoxToggleExpansionButton")].filter(visible);
     const siblings = panel.parentElement ? [...panel.parentElement.children].filter((element): element is HTMLButtonElement => element instanceof HTMLButtonElement && element.matches("button.collapsiblePromptBoxToggleExpansionButton") && visible(element)) : [];
-    const candidates = inPanel.length ? inPanel : siblings;
-    const scope = inPanel.length ? "panel" as const : siblings.length ? "tabpanel_sibling" as const : "missing" as const;
-    if (!candidates.length) return { label: "missing" as const, scope, control: undefined as HTMLButtonElement | undefined, disabled: false };
-    if (candidates.length !== 1) return { label: "ambiguous" as const, scope: "ambiguous" as const, control: undefined as HTMLButtonElement | undefined, disabled: false };
+    // Vids can place its toggle beside a nested composer wrapper rather than
+    // inside the tabpanel or as its direct sibling. Search only the nearest
+    // ancestor shared by the selected Animate tab and active tabpanel. Ignore
+    // candidates belonging to any other tabpanel and fail closed on multiples.
+    let commonContainer: HTMLElement | undefined;
+    if (selectedTab && sidebar?.contains(selectedTab)) {
+      let ancestor: HTMLElement | null = panel;
+      while (ancestor && sidebar.contains(ancestor)) {
+        if (ancestor.contains(selectedTab)) { commonContainer = ancestor; break; }
+        ancestor = ancestor.parentElement;
+      }
+    }
+    const commonCandidates = commonContainer ? [...commonContainer.querySelectorAll<HTMLButtonElement>("button.collapsiblePromptBoxToggleExpansionButton")].filter(visible).filter((candidate) => {
+      const owningPanel = candidate.closest<HTMLElement>("[role='tabpanel']");
+      return owningPanel === null || owningPanel === panel;
+    }) : [];
+    const candidates = commonContainer ? commonCandidates : inPanel.length ? inPanel : siblings;
+    const uniqueScope = candidates.length === 1 ? panel.contains(candidates[0]!) ? "panel" as const : candidates[0]!.parentElement === panel.parentElement ? "tabpanel_sibling" as const : "composer_container" as const : undefined;
+    const scope = candidates.length > 1 ? "ambiguous" as const : uniqueScope ?? "missing" as const;
+    if (!candidates.length) return { label: "missing" as const, scope, control: undefined as HTMLButtonElement | undefined, disabled: false, candidateCount: 0 };
+    if (candidates.length !== 1) return { label: "ambiguous" as const, scope: "ambiguous" as const, control: undefined as HTMLButtonElement | undefined, disabled: false, candidateCount: Math.min(10, candidates.length) };
     const control = candidates[0]!;
     const raw = control.getAttribute("aria-label")?.trim();
     const label: VidsComposerToggleLabel = raw === "Expand" || raw === "Collapse" ? raw as VidsComposerToggleLabel : "unknown";
-    return { label, scope, control, disabled: control.disabled || control.getAttribute("aria-disabled") === "true" };
+    return { label, scope, control, disabled: control.disabled || control.getAttribute("aria-disabled") === "true", candidateCount: 1 };
   };
-  const toggleLabelForPanel = (panel?: HTMLElement): VidsComposerToggleLabel => toggleForPanel(panel).label;
+  let traceTab: HTMLElement | undefined;
+  let traceSidebar: HTMLElement | undefined;
+  const toggleLabelForPanel = (panel?: HTMLElement): VidsComposerToggleLabel => toggleForPanel(panel, traceTab, traceSidebar).label;
   const priorTrace = input.traceContext?.priorTrace;
   const trace: NonNullable<VidsComposerTransitionDiagnostics["handoffTrace"]> = {
     ...(priorTrace ?? {}),
@@ -363,7 +382,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     const editorSelector = "div[role='textbox'][contenteditable='true'][aria-label='Add your image, then describe what should happen in your video.']";
     const editorCandidates = freshPanel ? [...freshPanel.querySelectorAll<HTMLElement>(editorSelector)] : [];
     const freshEditors = editorCandidates.filter(visible);
-    return { sidebarCount: freshSidebars.length, tabCount: freshTabs.length, panelCount: freshPanels.length, editorCount: freshEditors.length, sidebar: freshSidebar, tab: freshTabs.length === 1 ? freshTabs[0] : undefined, panel: freshPanel, editor: freshEditors.length === 1 ? freshEditors[0] : undefined, editorCandidate: editorCandidates.length === 1 ? editorCandidates[0] : undefined, toggle: freshPanel ? toggleForPanel(freshPanel) : undefined };
+    return { sidebarCount: freshSidebars.length, tabCount: freshTabs.length, panelCount: freshPanels.length, editorCount: freshEditors.length, sidebar: freshSidebar, tab: freshTabs.length === 1 ? freshTabs[0] : undefined, panel: freshPanel, editor: freshEditors.length === 1 ? freshEditors[0] : undefined, editorCandidate: editorCandidates.length === 1 ? editorCandidates[0] : undefined, toggle: freshPanel ? toggleForPanel(freshPanel, freshTabs.length === 1 ? freshTabs[0] : undefined, freshSidebar) : undefined };
   };
   const startedAt = performance.now();
   const readinessElapsedBefore = trace.composerReadinessWaitMs ?? 0;
@@ -381,13 +400,15 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     const label = current.toggle?.label ?? (current.panelCount > 1 ? "ambiguous" : "missing");
     const scope = current.toggle?.scope ?? "missing";
     trace.composerToggleObservations ??= [];
-    const observation = { atMs: Math.min(30_000, Math.max(0, Math.trunc(performance.now() - startedAt))), label, scope, panelCount: Math.min(10, current.panelCount), editorCount: Math.min(10, current.editorCount), visibility: visibility() };
+    const observation = { atMs: Math.min(30_000, Math.max(0, Math.trunc(performance.now() - startedAt))), label, scope, candidateCount: Math.min(10, current.toggle?.candidateCount ?? 0), panelCount: Math.min(10, current.panelCount), editorCount: Math.min(10, current.editorCount), visibility: visibility() };
     const last = trace.composerToggleObservations.at(-1);
     if (!last || last.label !== label || last.scope !== scope || last.panelCount !== observation.panelCount || last.editorCount !== observation.editorCount || last.visibility !== observation.visibility || observation.atMs === 0) {
       if (trace.composerToggleObservations.length >= 8) trace.composerToggleObservations.splice(1, 1);
       trace.composerToggleObservations.push(observation);
     }
     tracePanel = current.panel;
+    traceTab = current.tab;
+    traceSidebar = current.sidebar;
     recordPreviews(current.panel);
     if (!current.panel || ![...current.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].some(visible)) observedMissingPreview = true;
     if (current.panel && [...current.panel.querySelectorAll<HTMLImageElement>("img[alt='Uploaded image preview']")].some((preview) => visible(preview) && preview.complete && preview.naturalWidth > 0 && preview.naturalHeight > 0)) observedLoadedPreview = true;
@@ -571,7 +592,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     let deadline = Date.now() + Math.min(input.timeoutMs, 500);
     while (Date.now() < deadline) {
       context = resolveFreshContext();
-      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty" as const, stage: "complete" as const } }; } }
+      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; finishTrace(context.panel, "expanded"); return { href, ok: true, changed: true, diagnostics: { ...diagnostic, handoffTrace: trace, cleanupState: "already_empty" as const, stage: "complete" as const } }; } }
       else if (context && serialize(context.editor) !== input.prompt) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -587,7 +608,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     diagnostic.promptActualSha256 = currentHash;
     const fallbackClearControls = [...context.panel.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible).filter((element) => name(element) === "Clear prompt and image" || element.getAttribute("data-tooltip")?.trim() === "Clear prompt and image");
     diagnostic.clearAvailable = fallbackClearControls.length === 1 ? "unique" : fallbackClearControls.length ? "ambiguous" : "missing";
-    if (editorIsEmpty(context.editor) && contextIsEmptyAndReady(context)) { diagnostic.immediatePromptEmpty = true; diagnostic.settledPromptEmpty = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty" as const, stage: "complete" as const } }; }
+    if (editorIsEmpty(context.editor) && contextIsEmptyAndReady(context)) { diagnostic.immediatePromptEmpty = true; diagnostic.settledPromptEmpty = true; finishTrace(context.panel, "expanded"); return { href, ok: true, changed: true, diagnostics: { ...diagnostic, handoffTrace: trace, cleanupState: "already_empty" as const, stage: "complete" as const } }; }
     if (currentText !== input.prompt || currentHash !== input.promptSha256) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
     if (fallbackClearControls.length !== 1) return blocked("prompt_clear", "vids_previous_prompt_clear_failed");
     diagnostic.clearAttempt = "native_clear";
@@ -596,7 +617,7 @@ export async function transitionVidsComposerFromPreviousInPage(input: {
     deadline = Date.now() + input.timeoutMs;
     while (Date.now() < deadline) {
       context = resolveFreshContext();
-      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; diagnostic.editorRebound = true; return { href, ok: true, changed: true, diagnostics: { ...diagnostic, cleanupState: "already_empty", stage: "complete" } }; } }
+      if (context && editorIsEmpty(context.editor)) { diagnostic.immediatePromptEmpty = true; if (contextIsEmptyAndReady(context)) { diagnostic.settledPromptEmpty = true; diagnostic.editorRebound = true; finishTrace(context.panel, "expanded"); return { href, ok: true, changed: true, diagnostics: { ...diagnostic, handoffTrace: trace, cleanupState: "already_empty", stage: "complete" } }; } }
       else if (context && serialize(context.editor) !== input.prompt) return blocked("prompt_clear", "vids_previous_composer_content_conflict");
       await new Promise((resolve) => setTimeout(resolve, 50));
     }

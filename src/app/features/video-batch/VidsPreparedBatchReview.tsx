@@ -34,6 +34,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
   persistenceClient: ReturnType<typeof createFoundationClient>;
 }) {
   const [queue, setQueue] = useState<VidsQueueSnapshot | null>(null);
+  const [queueReadFailed, setQueueReadFailed] = useState(false);
   const [queueBusy, setQueueBusy] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [queueErrorStage, setQueueErrorStage] = useState<string | null>(null);
@@ -46,7 +47,8 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
   useEffect(() => {
     let cancelled = false;
     const load = () => persistenceClient.request("vids.videoQueue.get", { preparedBatchId: preparedBatch.id })
-      .then((value) => { if (!cancelled) setQueue(value as VidsQueueSnapshot | null); }).catch(() => undefined);
+      .then((value) => { if (!cancelled) { setQueue(value as VidsQueueSnapshot | null); setQueueReadFailed(false); } })
+      .catch(() => { if (!cancelled) setQueueReadFailed(true); });
     void load();
     const poll = window.setInterval(() => void load(), 2500);
     return () => { cancelled = true; window.clearInterval(poll); };
@@ -113,6 +115,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
         <div className={styles.queueHeading}><div><p className={styles.eyebrow}>Timed submission</p><h4>{allSent ? `All ${queue?.items.length ?? 0} image–prompt pairs sent to Google Vids` : `Google Vids queue · ${sentCount} of ${preparedBatch.items.length} prompts sent`}</h4></div><span className={styles.status} data-status={queue?.state ?? "ready"}>{queue ? queueStateLabel(queue.state) : "Ready"}</span></div>
         <div className={styles.progressSummary} role="progressbar" aria-label="Vids prompt dispatch progress" aria-valuemin={0} aria-valuemax={preparedBatch.items.length} aria-valuenow={sentCount} aria-valuetext={`${sentCount} of ${preparedBatch.items.length} prompts sent`}><span style={{ width: `${preparedBatch.items.length ? sentCount / preparedBatch.items.length * 100 : 0}%` }} /></div>
         {!allSent ? <p className={styles.queueItem}>Current/next Shot: <strong>{nextQueueItem ? `Shot ${nextQueueItem.shotId}` : "None"}</strong><span>{nextQueueItem ? queueItemLabel(nextQueueItem.state) : "Waiting to start"}</span>{queue?.nextActionAt ? <span>Next check: {new Date(queue.nextActionAt).toLocaleTimeString()}</span> : null}</p> : null}
+        {queueReadFailed ? <p className={styles.error} role="status">Queue status refresh failed. The displayed snapshot may be out of date.</p> : null}
         {allSent ? <p className={styles.note}>Video completion can be checked in Google Vids.</p> : null}
         {queue && !["waiting_for_tab", "paused", "stopped", "blocked", "all_sent"].includes(queue.state) ? <QueueClock queue={queue} now={clockNow} /> : null}
         {queue?.state === "waiting_for_tab" ? <p className={styles.note} role="status">Waiting for Vids tab. The queue will recheck the selected Animate composer when that tab becomes visible.</p> : null}
@@ -141,7 +144,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
               <div><dt>Animate state / expansion</dt><dd>{entry.cleanupDiagnostics.handoffTrace.initialAnimateState ?? "unknown"} → {entry.cleanupDiagnostics.handoffTrace.finalAnimateState ?? "unknown"}; panel/editor replaced {entry.cleanupDiagnostics.handoffTrace.panelReplaced === undefined ? "unknown" : entry.cleanupDiagnostics.handoffTrace.panelReplaced ? "yes" : "no"}/{entry.cleanupDiagnostics.handoffTrace.editorReplaced === undefined ? "unknown" : entry.cleanupDiagnostics.handoffTrace.editorReplaced ? "yes" : "no"}</dd></div>
               <div><dt>Composer toggle</dt><dd>{entry.cleanupDiagnostics.handoffTrace.composerToggleLabelBefore ?? "unknown"} → {entry.cleanupDiagnostics.handoffTrace.composerToggleLabelAfter ?? "unknown"}; click attempted {entry.cleanupDiagnostics.handoffTrace.composerToggleClickAttempted === undefined ? "unknown" : entry.cleanupDiagnostics.handoffTrace.composerToggleClickAttempted ? "yes" : "no"}; outcome {entry.cleanupDiagnostics.handoffTrace.composerToggleOutcome ?? "unknown"}</dd></div>
               <div><dt>Composer readiness</dt><dd>{entry.cleanupDiagnostics.handoffTrace.composerReadinessOutcome ?? "unknown"}; waited {entry.cleanupDiagnostics.handoffTrace.composerReadinessWaitMs ?? "unknown"} ms; editor settled {entry.cleanupDiagnostics.handoffTrace.composerEditorReady === undefined ? "unknown" : entry.cleanupDiagnostics.handoffTrace.composerEditorReady ? "yes" : "no"}; toggle scope {entry.cleanupDiagnostics.handoffTrace.composerToggleScope ?? "unknown"}</dd></div>
-              <div><dt>Readiness observations</dt><dd>{entry.cleanupDiagnostics.handoffTrace.composerToggleObservations?.length ? entry.cleanupDiagnostics.handoffTrace.composerToggleObservations.map((sample, index) => <span key={`${sample.atMs}-${index}`}>{index ? "; " : ""}+{sample.atMs} ms: {sample.label} ({sample.scope}), panel/editor {sample.panelCount}/{sample.editorCount}, {sample.visibility}</span>) : "none recorded"}</dd></div>
+              <div><dt>Readiness observations</dt><dd>{entry.cleanupDiagnostics.handoffTrace.composerToggleObservations?.length ? entry.cleanupDiagnostics.handoffTrace.composerToggleObservations.map((sample, index) => <span key={`${sample.atMs}-${index}`}>{index ? "; " : ""}+{sample.atMs} ms: {sample.label} ({sample.scope}), candidates {sample.candidateCount}, panel/editor {sample.panelCount}/{sample.editorCount}, {sample.visibility}</span>) : "none recorded"}</dd></div>
               <div><dt>Timestamped preview observations</dt><dd>{entry.cleanupDiagnostics.handoffTrace.previewObservations?.length ? entry.cleanupDiagnostics.handoffTrace.previewObservations.map((sample, index) => <span key={`${sample.inspection}-${sample.atMs}-${index}`}>{index ? "; " : ""}read {sample.inspection + 1} +{sample.atMs}ms: toggle {sample.composerToggleLabel ?? "unknown"}, selector {sample.selectorMatches}, visible {sample.visibleMatches}, loaded {sample.loadedMatches}</span>) : "none recorded"}</dd></div>
             </> : null}
             <div><dt>Previews / file inputs</dt><dd>{entry.cleanupDiagnostics.previewCount ?? "unknown"} / {entry.cleanupDiagnostics.fileInputCount ?? "unknown"}</dd></div>
