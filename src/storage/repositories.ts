@@ -43,6 +43,33 @@ import type {
   VideoDestination,
 } from "../domain/batches/types";
 import { sha256Hex } from "../domain/batches/hashPrompt";
+
+const VIDS_QUEUE_RECORD_FIELDS = new Set(["queueId", "preparedBatchId", "state", "items", "revision", "createdAt", "updatedAt", "lastDispatchAt", "cooldownDeadlineAt", "readinessDeadlineAt", "readinessStartedAt", "nextActionAt", "pauseReason", "runId", "executionDocumentRebind", "lastRunDiagnostic", "lastAlarmScheduleDiagnostic", "lastAutomaticAlarmTrace", "lastDispatchTrigger", "itemId", "order", "shotId", "referenceId", "referenceSha256", "promptHash", "reason", "attemptId", "transitionCheckpoint", "cleanComposerRecovery", "cleanupDiagnostics", "resumeRecoveryEvidence", "dispatchReceipt", "stage", "trigger", "scheduledAt", "alarmScheduledAt", "enteredAt", "claim", "dispatchTrigger", "outcome", "elapsedMs", "requestedDueAt", "recordedAt", "handler", "receivedAt", "queueDeadlineAt", "reconciliation", "reconciliationAt", "reconciliationStep", "reconciliationErrorCode", "reconciliationRecordIndex", "reconciliationRecordDigest", "reconciliationFieldPath", "reconciliationValidationRule", "fromTabId", "toTabId", "fromDocumentId", "toDocumentId", "projectId", "canonicalTarget", "verifiedAt", "sameAccountConfirmedAt", "storedAt"]);
+
+function safeVidsQueueValidationDetail(path: PropertyKey[], issueCode: string, recordIndex: number, recordDigest: string) {
+  const safeParts = path.map((part) => typeof part === "number" ? `[${Math.max(0, Math.min(999, part))}]` : typeof part === "string" && VIDS_QUEUE_RECORD_FIELDS.has(part) ? part : "unknown_field");
+  const fieldPath = safeParts.length ? safeParts.reduce((value, part, index) => `${value}${part.startsWith("[") ? part : index === 0 ? part : `.${part}`}`, "") : "unknown_fields";
+  const leaf = typeof path.at(-1) === "string" ? path.at(-1) as string : "record";
+  const validationRule = issueCode === "unrecognized_keys" ? "strict_record_fields_only"
+    : path[0] === "items" && leaf === "state" ? "queue_item_state_enum"
+    : leaf === "state" ? "queue_state_enum"
+    : leaf === "revision" ? "nonnegative_integer"
+    : leaf === "order" ? "order_matches_array_index"
+    : issueCode === "too_small" ? `${leaf}_minimum`
+    : issueCode === "too_big" ? `${leaf}_maximum`
+    : issueCode === "invalid_type" ? `${leaf}_type`
+    : issueCode === "invalid_value" ? `${leaf}_allowed_values`
+    : issueCode === "custom" ? "record_custom_invariant"
+    : /^[a-z0-9_]{1,32}$/.test(issueCode) ? issueCode : "unknown_validation_rule";
+  return { recordIndex: Math.min(999_999, Math.max(0, recordIndex)), recordDigest, fieldPath: fieldPath.slice(0, 128), validationRule };
+}
+
+export class VidsVideoQueueListValidationError extends Error {
+  constructor(readonly recordIndex: number, readonly recordDigest: string, readonly fieldPath: string, readonly validationRule: string) {
+    super("vids_video_queue_invalid");
+    this.name = "VidsVideoQueueListValidationError";
+  }
+}
 import {
   ReferenceAssignmentRecordSchema,
   ReferenceCaptureOperationRecordSchema,
@@ -3341,7 +3368,14 @@ export class ExtensionRepositories {
 
   async listVidsVideoQueues(): Promise<VidsVideoQueueRecord[]> {
     const queues = await this.tables.vidsVideoQueues.toArray();
-    if (queues.some((queue) => !VidsVideoQueueRecordSchema.safeParse(queue).success)) throw new Error("vids_video_queue_invalid");
+    for (const [recordIndex, queue] of queues.entries()) {
+      const result = VidsVideoQueueRecordSchema.safeParse(queue);
+      if (result.success) continue;
+      const issue = result.error.issues[0];
+      const recordDigest = (await sha256Hex(String((queue as { queueId?: unknown }).queueId ?? "missing_queue_id"))).slice(0, 16);
+      const detail = safeVidsQueueValidationDetail(issue?.path ?? [], issue?.code ?? "unknown_validation_rule", recordIndex, recordDigest);
+      throw new VidsVideoQueueListValidationError(detail.recordIndex, detail.recordDigest, detail.fieldPath, detail.validationRule);
+    }
     return queues;
   }
 

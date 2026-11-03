@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createRetryableVidsReadiness, createVidsAlarmLifecycle, VidsStartupReconciliationError } from "../../src/background/vidsAlarmLifecycle";
+import { createRetryableVidsReadiness, createVidsAlarmLifecycle, createVidsStartupRetryController, VidsStartupReconciliationError, VIDS_STARTUP_RETRY_ALARM_NAME } from "../../src/background/vidsAlarmLifecycle";
 
 describe("production Vids alarm listener boundary", () => {
   it("records a cold-start alarm before waiting for reconciliation, then dispatches", async () => {
@@ -45,6 +45,25 @@ describe("production Vids alarm listener boundary", () => {
     await expect(ready()).resolves.toBeUndefined();
     await expect(ready()).resolves.toBeUndefined();
     expect(calls).toBe(2);
+  });
+
+  it("arms a cold-start retry when queue_list fails before per-queue alarm restoration, then clears it after reconciliation succeeds", async () => {
+    let calls = 0;
+    const ready = createRetryableVidsReadiness(Promise.resolve(), async () => {
+      calls += 1;
+      if (calls === 1) throw new VidsStartupReconciliationError("queue_list", new Error("vids_video_queue_invalid"));
+    });
+    const alarms = { create: vi.fn(async () => undefined), clear: vi.fn(async () => true) };
+    const controller = createVidsStartupRetryController({ alarms, ready, now: () => 300_000, minimumDelayMs: 30_000 });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(ready()).rejects.toMatchObject({ step: "queue_list", errorCode: "vids_video_queue_invalid" });
+    controller.scheduleForFailure(new VidsStartupReconciliationError("queue_list", new Error("vids_video_queue_invalid")));
+    await vi.waitFor(() => expect(alarms.create).toHaveBeenCalledWith(VIDS_STARTUP_RETRY_ALARM_NAME, { when: 330_000 }));
+    expect(controller.handleAlarm(VIDS_STARTUP_RETRY_ALARM_NAME)).toBe(true);
+    await vi.waitFor(() => expect(alarms.clear).toHaveBeenCalledWith(VIDS_STARTUP_RETRY_ALARM_NAME));
+    expect(calls).toBe(2);
+    expect(warning).toHaveBeenCalledWith("[vids_queue_startup_retry]", expect.objectContaining({ step: "queue_list", errorCode: "vids_video_queue_invalid" }));
+    warning.mockRestore();
   });
 
   it("dispatches after Vids reconciliation even when an unrelated queue reconciliation failed", async () => {

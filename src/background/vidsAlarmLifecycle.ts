@@ -2,6 +2,11 @@
 export const VIDS_STARTUP_RECONCILIATION_STEPS = ["startup_readiness", "queue_list", "generation_read", "attachment_read", "queue_persist", "alarm_restore"] as const;
 export type VidsStartupReconciliationStep = typeof VIDS_STARTUP_RECONCILIATION_STEPS[number];
 export type VidsStartupReconciliationFailure = { step: VidsStartupReconciliationStep; errorCode: string; recordIndex?: number; recordDigest?: string; fieldPath?: string; validationRule?: string };
+export const VIDS_STARTUP_RETRY_ALARM_NAME = "automat-vids-video-queue:startup-retry";
+
+export function describeVidsStartupFailure(error: unknown): VidsStartupReconciliationFailure {
+  return error instanceof VidsStartupReconciliationError ? { step: error.step, errorCode: error.errorCode, ...(error.recordIndex !== undefined ? { recordIndex: error.recordIndex } : {}), ...(error.recordDigest ? { recordDigest: error.recordDigest } : {}), ...(error.fieldPath ? { fieldPath: error.fieldPath } : {}), ...(error.validationRule ? { validationRule: error.validationRule } : {}) } : { step: "startup_readiness", errorCode: error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,47}Error$/.test(error.name) ? error.name.toLowerCase() : "unknown_exception" };
+}
 
 export class VidsStartupReconciliationError extends Error {
   readonly step: VidsStartupReconciliationStep;
@@ -18,9 +23,9 @@ export class VidsStartupReconciliationError extends Error {
     this.step = step;
     this.errorCode = code;
     const details = error && typeof error === "object" ? error as Record<string, unknown> : {};
-    if (typeof details.recordIndex === "number" && Number.isInteger(details.recordIndex) && details.recordIndex >= 0 && details.recordIndex < 1000) this.recordIndex = details.recordIndex;
+    if (typeof details.recordIndex === "number" && Number.isInteger(details.recordIndex) && details.recordIndex >= 0 && details.recordIndex < 1_000_000) this.recordIndex = details.recordIndex;
     if (typeof details.recordDigest === "string" && /^[0-9a-f]{16}$/.test(details.recordDigest)) this.recordDigest = details.recordDigest;
-    if (typeof details.fieldPath === "string" && /^[a-z0-9_.\[\]-]{1,128}$/.test(details.fieldPath)) this.fieldPath = details.fieldPath;
+    if (typeof details.fieldPath === "string" && /^[a-z0-9_.\x5b\x5d-]{1,128}$/.test(details.fieldPath)) this.fieldPath = details.fieldPath;
     if (typeof details.validationRule === "string" && /^[a-z0-9_]{1,64}$/.test(details.validationRule)) this.validationRule = details.validationRule;
   }
 }
@@ -37,6 +42,31 @@ export function createRetryableVidsReadiness(targetStartupReady: Promise<unknown
       void nextAttempt.catch(() => { if (attempt === nextAttempt) failed = true; });
     }
     return attempt;
+  };
+}
+
+/** A cold-start reconciliation failure has no delivered queue alarm to rearm. Keep one bounded global retry; it only reconciles and restores per-queue alarms. */
+export function createVidsStartupRetryController(input: {
+  alarms: Pick<typeof chrome.alarms, "create" | "clear">;
+  ready: () => Promise<unknown>;
+  now?: () => number;
+  minimumDelayMs: number;
+}) {
+  const now = input.now ?? Date.now;
+  const retry = (error: unknown) => {
+    const failure = describeVidsStartupFailure(error);
+    console.warn("[vids_queue_startup_retry]", { at: now(), ...failure });
+    void input.alarms.create(VIDS_STARTUP_RETRY_ALARM_NAME, { when: now() + input.minimumDelayMs }).catch(() => {
+      console.warn("[vids_queue_startup_retry_schedule_failed]", { at: now(), errorCode: "alarm_schedule_failed" });
+    });
+  };
+  return {
+    scheduleForFailure: retry,
+    handleAlarm: (name: string) => {
+      if (name !== VIDS_STARTUP_RETRY_ALARM_NAME) return false;
+      void input.ready().then(() => input.alarms.clear(VIDS_STARTUP_RETRY_ALARM_NAME)).catch(retry);
+      return true;
+    },
   };
 }
 
@@ -57,7 +87,7 @@ export function createVidsAlarmLifecycle(input: {
       input.recordReconciliation(alarm.name, "completed", now(), receivedAt);
       void input.dispatch(alarm.name, alarm.scheduledTime).catch(() => undefined);
     }, (error: unknown) => {
-      const failure: VidsStartupReconciliationFailure = error instanceof VidsStartupReconciliationError ? { step: error.step, errorCode: error.errorCode, ...(error.recordIndex !== undefined ? { recordIndex: error.recordIndex } : {}), ...(error.recordDigest ? { recordDigest: error.recordDigest } : {}), ...(error.fieldPath ? { fieldPath: error.fieldPath } : {}), ...(error.validationRule ? { validationRule: error.validationRule } : {}) } : { step: "startup_readiness", errorCode: error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,47}Error$/.test(error.name) ? error.name.toLowerCase() : "unknown_exception" };
+      const failure = describeVidsStartupFailure(error);
       console.warn("[vids_queue_reconciliation_failed]", { at: now(), ...failure });
       input.recordReconciliation(alarm.name, "failed", now(), receivedAt, failure);
     });

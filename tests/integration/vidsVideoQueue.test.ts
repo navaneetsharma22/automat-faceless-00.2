@@ -16,7 +16,7 @@ import { CONNECTION_CAPABILITY, CONNECTOR_PROTOCOL_VERSION } from "../../src/pla
 import type { SelectedTargetRecord } from "../../src/storage/db";
 import { createConnectionLifecycleService } from "../../src/background/connectionLifecycle";
 import { createVidsVideoGenerateHandler } from "../../src/background/handlers/vidsVideo";
-import { createRetryableVidsReadiness, createVidsAlarmLifecycle } from "../../src/background/vidsAlarmLifecycle";
+import { createRetryableVidsReadiness, createVidsAlarmLifecycle, createVidsStartupRetryController, VIDS_STARTUP_RETRY_ALARM_NAME } from "../../src/background/vidsAlarmLifecycle";
 import { providerTabFromUrl } from "../../src/platforms/shared/connection";
 import type { ConnectionPort } from "../../src/platforms/shared/contracts";
 
@@ -393,6 +393,106 @@ describe("P10.3 isolated Vids timed queue", () => {
     expect(completed?.lastAutomaticAlarmTrace).toMatchObject({ reconciliation: "completed", handler: "reached", claim: "claimed", outcome: "sent" });
     expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
     expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+  });
+
+  it("identifies an invalid saved queue during queue_list, fails closed, then dispatches once after the offline fixture is corrected", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`;
+    const invalidOtherQueue = { ...sent!, queueId: "vids-video:prepared:vids:unrelated", preparedBatchId: "prepared:vids:unrelated", state: "legacy_waiting" };
+    await f.db.vidsVideoQueues.add(invalidOtherQueue as unknown as VidsVideoQueueRecord);
+    const invalidDigest = (await sha256Hex(invalidOtherQueue.queueId)).slice(0, 16);
+    const readiness = createRetryableVidsReadiness(Promise.resolve(), () => f.handler.reconcileStartup());
+    const listener = createVidsAlarmLifecycle({
+      prefix: VIDS_VIDEO_QUEUE_ALARM_PREFIX, now: () => f.now(), ready: readiness,
+      recordReceived: f.handler.recordAutomaticAlarmReceived,
+      recordReconciliation: f.handler.recordAutomaticAlarmReconciliation,
+      dispatch: (name, scheduledTime) => f.handler.onAlarm(name, scheduledTime),
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    listener({ name: alarmName, scheduledTime: sent!.nextActionAt! });
+    const failed = await f.waitForQueue(started.queueId, (queue) => queue?.lastAutomaticAlarmTrace?.reconciliation === "failed" && queue.lastAutomaticAlarmTrace.reconciliationFieldPath !== undefined);
+    expect(failed?.lastAutomaticAlarmTrace).toMatchObject({ reconciliationStep: "queue_list", reconciliationErrorCode: "vids_video_queue_invalid", reconciliationRecordIndex: 1, reconciliationRecordDigest: invalidDigest, reconciliationFieldPath: "state", reconciliationValidationRule: "queue_state_enum", handler: "not_reached", claim: "not_reached" });
+    expect(warning).toHaveBeenCalledWith("[vids_queue_reconciliation_failed]", expect.objectContaining({ step: "queue_list", errorCode: "vids_video_queue_invalid", recordIndex: 1, recordDigest: invalidDigest, fieldPath: "state", validationRule: "queue_state_enum" }));
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(invalidOtherQueue.queueId);
+    warning.mockRestore();
+    expect(failed).toMatchObject({ state: "cooldown", items: [{ state: "sent", dispatchReceipt: firstReceipt }, { state: "pending" }] });
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+
+    // Repair only the sanitized in-memory fixture; the live path never rewrites rejected records.
+    await f.db.vidsVideoQueues.put({ ...invalidOtherQueue, state: "paused" } as unknown as VidsVideoQueueRecord);
+    f.advance(30_000);
+    listener({ name: alarmName, scheduledTime: f.now() });
+    const completed = await f.waitForQueue(started.queueId, (queue) => queue?.state === "all_sent");
+    expect(completed?.items[0]?.dispatchReceipt).toEqual(firstReceipt);
+    expect(completed?.lastAutomaticAlarmTrace).toMatchObject({ reconciliation: "completed", handler: "reached", claim: "claimed", outcome: "sent" });
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+  });
+
+  it("serves the persisted sanitized reconciliation failure to the dashboard while timed startup readiness is rejected", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const alarmName = `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`;
+    const receivedAt = f.now();
+    f.handler.recordAutomaticAlarmReceived(alarmName, sent!.nextActionAt!, receivedAt);
+    await f.waitForQueue(started.queueId, (queue) => queue?.lastAutomaticAlarmTrace?.receivedAt === receivedAt);
+    f.handler.recordAutomaticAlarmReconciliation(alarmName, "failed", f.now(), receivedAt, { step: "queue_list", errorCode: "vids_video_queue_invalid", recordIndex: 1, recordDigest: "0123456789abcdef", fieldPath: "state", validationRule: "queue_state_enum" });
+    const queue = await f.waitForQueue(started.queueId, (value) => value?.lastAutomaticAlarmTrace?.reconciliationFieldPath === "state");
+    const rejectedTimedReady = Promise.reject(new Error("Vids startup reconciliation failed"));
+    void rejectedTimedReady.catch(() => undefined);
+    const listener = createConnectionMessageListener("vids-dashboard-diagnostics", {
+      repositories: f.repositories,
+      preferences: new ChromePreferenceRepository({ get: async () => ({}), set: async () => undefined }),
+      ready: Promise.resolve(),
+      timedQueueReady: rejectedTimedReady,
+      vidsVideoQueue: f.handler,
+    });
+    const request = makeRequest("vids.videoQueue.get", { preparedBatchId: f.batch.id }, "get-queue-with-reconcile-error");
+    const response = await new Promise<Record<string, unknown>>((resolve) => listener(JSON.parse(JSON.stringify(request)), { id: "vids-dashboard-diagnostics", url: "chrome-extension://vids-dashboard-diagnostics/index.html" }, (value) => resolve(value as unknown as Record<string, unknown>)));
+    expect(response).toMatchObject({ ok: true, data: { lastAutomaticAlarmTrace: { reconciliation: "failed", reconciliationFieldPath: "state", reconciliationValidationRule: "queue_state_enum" } } });
+    expect((response.data as VidsVideoQueueRecord).lastAutomaticAlarmTrace).toMatchObject({ reconciliationRecordIndex: 1, reconciliationRecordDigest: "0123456789abcdef", reconciliationErrorCode: "vids_video_queue_invalid" });
+    expect(queue?.lastAutomaticAlarmTrace?.reconciliationFieldPath).toBe("state");
+  });
+
+  it("retries cold startup queue_list failure without dispatch, restores the overdue alarm, then sends Shot 2 once", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    const sent = await f.waitForQueue(started.queueId, (queue) => queue?.state === "cooldown");
+    const firstReceipt = sent!.items[0]!.dispatchReceipt;
+    const badOtherRow = { ...sent!, queueId: "vids-video:prepared:vids:cold-reload-other", preparedBatchId: "prepared:vids:cold-reload-other", state: "legacy_waiting" };
+    await f.db.vidsVideoQueues.add(badOtherRow as unknown as VidsVideoQueueRecord);
+    const ready = createRetryableVidsReadiness(Promise.resolve(), () => f.handler.reconcileStartup());
+    const startupRetry = createVidsStartupRetryController({ alarms: f.alarms, ready, now: () => f.now(), minimumDelayMs: 30_000 });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    f.alarms.create.mockClear();
+    f.advance(VIDS_VIDEO_DISPATCH_GAP_MS);
+    let startupFailure: unknown;
+    try { await ready(); } catch (error) { startupFailure = error; }
+    expect(startupFailure).toMatchObject({ step: "queue_list", errorCode: "vids_video_queue_invalid", fieldPath: "state", validationRule: "queue_state_enum" });
+    startupRetry.scheduleForFailure(startupFailure);
+    await vi.waitFor(() => expect(f.alarms.create).toHaveBeenCalledWith(VIDS_STARTUP_RETRY_ALARM_NAME, { when: f.now() + 30_000 }));
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+
+    await f.db.vidsVideoQueues.put({ ...badOtherRow, state: "paused" } as unknown as VidsVideoQueueRecord);
+    expect(startupRetry.handleAlarm(VIDS_STARTUP_RETRY_ALARM_NAME)).toBe(true);
+    await vi.waitFor(() => expect(f.alarms.create).toHaveBeenCalledWith(`${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`, { when: f.now() + 30_000 }));
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(0);
+
+    const listener = createVidsAlarmLifecycle({ prefix: VIDS_VIDEO_QUEUE_ALARM_PREFIX, now: () => f.now(), ready, recordReceived: f.handler.recordAutomaticAlarmReceived, recordReconciliation: f.handler.recordAutomaticAlarmReconciliation, dispatch: (name, scheduledTime) => f.handler.onAlarm(name, scheduledTime) });
+    f.advance(30_000);
+    listener({ name: `${VIDS_VIDEO_QUEUE_ALARM_PREFIX}${started.queueId}`, scheduledTime: f.now() });
+    const completed = await f.waitForQueue(started.queueId, (queue) => queue?.state === "all_sent");
+    expect(completed?.items[0]?.dispatchReceipt).toEqual(firstReceipt);
+    expect(f.attach.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+    expect(f.generate.mock.calls.filter((call) => call[1] === "item-2")).toHaveLength(1);
+    warning.mockRestore();
   });
 
   it("persists an explicit review state when an alarm handoff throws and ignores duplicate wakeups", async () => {

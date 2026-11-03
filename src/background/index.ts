@@ -30,7 +30,7 @@ import {
   ChromePreferenceRepository,
   ExtensionRepositories,
 } from "../storage/repositories";
-import { createTimedImageQueueScheduler } from "./scheduler";
+import { CHROME_MIN_ALARM_DELAY_MS, createTimedImageQueueScheduler } from "./scheduler";
 import {
   createFlowTimedQueueDispatcher,
   ImageQueueInspectionError,
@@ -43,7 +43,7 @@ import { createFlowVideoQueueHandler } from "./handlers/flowVideoQueue";
 import { createVidsVideoAttachmentHandler } from "./handlers/vidsVideoAttachment";
 import { createVidsVideoGenerateHandler } from "./handlers/vidsVideo";
 import { createVidsVideoQueueHandler } from "./handlers/vidsVideoQueue";
-import { createRetryableVidsReadiness, createVidsAlarmLifecycle } from "./vidsAlarmLifecycle";
+import { createRetryableVidsReadiness, createVidsAlarmLifecycle, createVidsStartupRetryController } from "./vidsAlarmLifecycle";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
@@ -309,6 +309,8 @@ const nonVidsQueueReady = targetStartupReady.then(async () => {
 const ensureVidsQueueReady = createRetryableVidsReadiness(targetStartupReady, () => vidsVideoQueue.reconcileStartup());
 const vidsQueueReady = ensureVidsQueueReady();
 const timedQueueReady = Promise.all([nonVidsQueueReady, vidsQueueReady]).then(() => undefined);
+const vidsStartupRetry = createVidsStartupRetryController({ alarms: chrome.alarms, ready: ensureVidsQueueReady, minimumDelayMs: CHROME_MIN_ALARM_DELAY_MS });
+void vidsQueueReady.catch(vidsStartupRetry.scheduleForFailure);
 void workerReady.catch(() => undefined);
 const vidsAlarmListener = createVidsAlarmLifecycle({
   prefix: "automat-vids-video-queue:",
@@ -318,6 +320,7 @@ const vidsAlarmListener = createVidsAlarmLifecycle({
   dispatch: (name, scheduledTime) => vidsVideoQueue.onAlarm(name, scheduledTime),
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (vidsStartupRetry.handleAlarm(alarm.name)) return;
   if (alarm.name.startsWith("automat-vids-video-queue:")) {
     vidsAlarmListener(alarm);
     return;
@@ -328,11 +331,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   ])).catch(() => undefined);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  void timedQueueReady.then(() => vidsVideoQueue.onTargetVisible(tabId)).catch(() => undefined);
+  void ensureVidsQueueReady().then(() => vidsVideoQueue.onTargetVisible(tabId)).catch(() => undefined);
 });
 chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  void timedQueueReady.then(async () => {
+  void ensureVidsQueueReady().then(async () => {
     const tabs = await chrome.tabs.query({ active: true, windowId });
     const tab = tabs[0];
     if (tab?.id !== undefined) await vidsVideoQueue.onTargetVisible(tab.id);
