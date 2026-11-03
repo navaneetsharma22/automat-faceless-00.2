@@ -12,8 +12,36 @@ import { CONNECTION_CAPABILITY, CONNECTOR_PROTOCOL_VERSION } from "../../platfor
 
 export const VIDS_VIDEO_QUEUE_ALARM_PREFIX = "automat-vids-video-queue:";
 
-function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanupDiagnostics["checkpointRead"], checkpointWrite: VidsCleanupDiagnostics["checkpointWrite"]): VidsCleanupDiagnostics {
+function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanupDiagnostics["checkpointRead"], checkpointWrite: VidsCleanupDiagnostics["checkpointWrite"], triggerSource?: NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["triggerSource"], elapsedSinceReceiptToFirstReadMs?: number): VidsCleanupDiagnostics {
   const raw = rawValue && typeof rawValue === "object" ? rawValue as Record<string, unknown> : {};
+  const rawTrace = raw.handoffTrace && typeof raw.handoffTrace === "object" ? raw.handoffTrace as Record<string, unknown> : {};
+  const safeState = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["visibilityStart"] => value === "visible" || value === "hidden" || value === "prerender" || value === "unloaded" || value === "unknown" ? value : undefined;
+  const safePanel = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["initialAnimateState"] => value === "collapsed" || value === "expanded" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
+  const safeToggleLabel = (value: unknown): NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["composerToggleLabelBefore"] => value === "Expand" || value === "Collapse" || value === "missing" || value === "ambiguous" || value === "unknown" ? value : undefined;
+  const traceArray = <T extends Record<string, unknown>>(value: unknown, parse: (item: unknown, index: number) => T | undefined): T[] | undefined => Array.isArray(value) ? value.slice(0, 8).flatMap((item, index) => { const parsed = parse(item, index); return parsed ? [parsed] : []; }) : undefined;
+  const visibilityChanges = traceArray(rawTrace.visibilityChanges, (item) => {
+    if (!item || typeof item !== "object") return undefined;
+    const entry = item as Record<string, unknown>, state = safeState(entry.state);
+    return state && typeof entry.atMs === "number" && Number.isFinite(entry.atMs) ? { inspection: Math.min(20, Math.max(0, Math.trunc(Number(entry.inspection) || 0))), atMs: Math.min(10_000_000, Math.max(0, Math.trunc(entry.atMs))), state } : undefined;
+  });
+  const previewObservations = traceArray(rawTrace.previewObservations, (item) => {
+    if (!item || typeof item !== "object") return undefined;
+    const entry = item as Record<string, unknown>;
+    return typeof entry.atMs === "number" && Number.isFinite(entry.atMs) ? { inspection: Math.min(20, Math.max(0, Math.trunc(Number(entry.inspection) || 0))), atMs: Math.min(10_000_000, Math.max(0, Math.trunc(entry.atMs))), selectorMatches: Math.min(10, Math.max(0, Math.trunc(Number(entry.selectorMatches) || 0))), visibleMatches: Math.min(10, Math.max(0, Math.trunc(Number(entry.visibleMatches) || 0))), loadedMatches: Math.min(10, Math.max(0, Math.trunc(Number(entry.loadedMatches) || 0))), ...(safeToggleLabel(entry.composerToggleLabel) ? { composerToggleLabel: safeToggleLabel(entry.composerToggleLabel) } : {}) } : undefined;
+  });
+  const selectedTriggerSource = triggerSource ?? (rawTrace.triggerSource === "automatic_start" || rawTrace.triggerSource === "automatic_alarm" || rawTrace.triggerSource === "manual_resume" || rawTrace.triggerSource === "unknown" ? rawTrace.triggerSource : undefined);
+  const trace = {
+    ...(selectedTriggerSource ? { triggerSource: selectedTriggerSource } : {}),
+    ...(typeof rawTrace.elapsedSinceReceiptToFirstReadMs === "number" ? { elapsedSinceReceiptToFirstReadMs: Math.min(10_000_000, Math.max(0, Math.trunc(rawTrace.elapsedSinceReceiptToFirstReadMs))) } : elapsedSinceReceiptToFirstReadMs !== undefined ? { elapsedSinceReceiptToFirstReadMs: Math.min(10_000_000, Math.max(0, Math.trunc(elapsedSinceReceiptToFirstReadMs))) } : {}),
+    ...(safeState(rawTrace.visibilityStart) ? { visibilityStart: safeState(rawTrace.visibilityStart) } : {}), ...(safeState(rawTrace.visibilityEnd) ? { visibilityEnd: safeState(rawTrace.visibilityEnd) } : {}),
+    ...(visibilityChanges ? { visibilityChanges } : {}),
+    ...(safePanel(rawTrace.initialAnimateState) ? { initialAnimateState: safePanel(rawTrace.initialAnimateState) } : {}), ...(safePanel(rawTrace.finalAnimateState) ? { finalAnimateState: safePanel(rawTrace.finalAnimateState) } : {}),
+    ...(safeToggleLabel(rawTrace.composerToggleLabelBefore) ? { composerToggleLabelBefore: safeToggleLabel(rawTrace.composerToggleLabelBefore) } : {}), ...(safeToggleLabel(rawTrace.composerToggleLabelAfter) ? { composerToggleLabelAfter: safeToggleLabel(rawTrace.composerToggleLabelAfter) } : {}),
+    ...(typeof rawTrace.composerToggleClickAttempted === "boolean" ? { composerToggleClickAttempted: rawTrace.composerToggleClickAttempted } : {}),
+    ...(rawTrace.composerToggleOutcome === "already_expanded" || rawTrace.composerToggleOutcome === "expanded" || rawTrace.composerToggleOutcome === "missing" || rawTrace.composerToggleOutcome === "ambiguous" || rawTrace.composerToggleOutcome === "disabled" || rawTrace.composerToggleOutcome === "label_unrecognized" || rawTrace.composerToggleOutcome === "settlement_failed" ? { composerToggleOutcome: rawTrace.composerToggleOutcome } : {}),
+    ...(typeof rawTrace.expansionAttempted === "boolean" ? { expansionAttempted: rawTrace.expansionAttempted } : {}), ...(typeof rawTrace.panelReplaced === "boolean" ? { panelReplaced: rawTrace.panelReplaced } : {}), ...(typeof rawTrace.editorReplaced === "boolean" ? { editorReplaced: rawTrace.editorReplaced } : {}),
+    ...(previewObservations ? { previewObservations } : {}),
+  };
   const stage = raw.stage === "reference_remove" ? "reference_remove" : raw.stage === "prompt_clear" || raw.stage === "mutation" ? "prompt_clear" : raw.stage === "settlement" ? "settlement" : raw.stage === "binding" ? "binding" : raw.stage === "complete" ? "complete" : "ownership";
   const clearAvailable = raw.clearAvailable === "unique" || raw.clearAvailable === "ambiguous" || raw.clearAvailable === "missing" ? raw.clearAvailable : "not_checked";
   const enumValue = <T extends string>(value: unknown, allowed: readonly T[]) => typeof value === "string" && allowed.includes(value as T) ? value as T : undefined;
@@ -33,6 +61,7 @@ function boundedCleanupDiagnostics(rawValue: unknown, checkpointRead: VidsCleanu
     currentPromptLength: typeof raw.actualPromptLength === "number" ? Math.min(10_000_000, Math.max(0, Math.trunc(raw.actualPromptLength))) : undefined,
     clearAvailable,
     settledEmpty: raw.settledPromptEmpty === true,
+    handoffTrace: Object.keys(trace).length ? trace : undefined,
   };
 }
 
@@ -44,7 +73,7 @@ export function createVidsVideoQueueHandler(input: {
   getAttachment: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string }>;
   generate: (batchId: string, itemId: string, fromQueue: true) => Promise<{ status: string; reason?: string; operation?: unknown }>;
   getGeneration: (batchId: string, itemId: string) => Promise<{ status: string; reason?: string; operation?: unknown }>;
-  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean, nextItemId?: string, checkpointedOwnership?: boolean, phase?: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty") => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
+  transitionFromPrevious: (batchId: string, previousItemId: string, inspectOnly?: boolean, nextItemId?: string, checkpointedOwnership?: boolean, phase?: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty", traceContext?: { triggerSource: "automatic_start" | "automatic_alarm" | "manual_resume" | "unknown"; elapsedSinceReceiptToFirstReadMs: number; priorTrace?: VidsCleanupDiagnostics["handoffTrace"] }) => Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }>;
   revalidate?: () => Promise<unknown>;
   now?: () => number;
   makeRunId?: () => string;
@@ -96,7 +125,7 @@ export function createVidsVideoQueueHandler(input: {
     return input.repositories.createVidsVideoQueue(queue);
   }
 
-  async function run(queueId: string): Promise<VidsVideoQueueRecord | undefined> {
+  async function run(queueId: string, triggerSource: NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["triggerSource"] = "unknown"): Promise<VidsVideoQueueRecord | undefined> {
     return runtime.serialize(queueId, async () => {
       let queue = await input.repositories.getVidsVideoQueue(queueId);
       if (!queue || ["paused", "stopped", "blocked", "all_sent"].includes(queue.state)) return queue;
@@ -133,16 +162,25 @@ export function createVidsVideoQueueHandler(input: {
       let cleanComposerVerified = false;
       if (queue.executionDocumentRebind && next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
         const previous = queue.items[next.order - 1]!;
+        const elapsedSinceReceiptToFirstReadMs = previous.dispatchReceipt ? Math.max(0, now() - previous.dispatchReceipt.storedAt) : 0;
+        let priorHandoffTrace: VidsCleanupDiagnostics["handoffTrace"];
+        const transition = async (inspectOnly: boolean, checkpointedOwnership: boolean, phase: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty") => {
+          const result = await input.transitionFromPrevious(queue!.preparedBatchId, previous.itemId, inspectOnly, next.itemId, checkpointedOwnership, phase, { triggerSource, elapsedSinceReceiptToFirstReadMs, ...(priorHandoffTrace ? { priorTrace: priorHandoffTrace } : {}) });
+          const raw = result.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics as Record<string, unknown> : undefined;
+          const trace = raw?.handoffTrace;
+          if (trace && typeof trace === "object") priorHandoffTrace = trace as VidsCleanupDiagnostics["handoffTrace"];
+          return result;
+        };
         const generation = await input.getGeneration(queue.preparedBatchId, next.itemId);
         const attachment = await input.getAttachment(queue.preparedBatchId, next.itemId);
         if (generation.status !== "not_started") throw new Error("vids_generation_attempt_requires_review");
         if (attachment.status !== "not_started") throw new Error("vids_attachment_attempt_requires_review");
-        let clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect_clean");
+        let clean = await transition(true, false, "inspect_clean");
         const settledEmptyComposer = clean.status === "ready";
         if (clean.status !== "ready" && clean.reason === "vids_refreshed_composer_not_clean") {
           // Populated composers may still be the exact prior pair. Establish fresh
           // ownership on the rebound document before allowing cleanup below.
-          clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect");
+          clean = await transition(true, false, "inspect");
           if (clean.status === "ready") {
             const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
             const updated = latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: undefined, cleanComposerRecovery: undefined } : item);
@@ -152,7 +190,7 @@ export function createVidsVideoQueueHandler(input: {
         if (clean.status !== "ready") {
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           const reason = clean.reason ?? "vids_refreshed_composer_not_clean";
-          const diagnostics = boundedCleanupDiagnostics(clean.diagnostics, next.transitionCheckpoint ? "valid" : "absent", "not_attempted");
+          const diagnostics = boundedCleanupDiagnostics(clean.diagnostics, next.transitionCheckpoint ? "valid" : "absent", "not_attempted", triggerSource, elapsedSinceReceiptToFirstReadMs);
           const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: diagnostics } : item);
           const failed = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(failed); return failed;
         }
@@ -168,6 +206,14 @@ export function createVidsVideoQueueHandler(input: {
       }
       if (!cleanComposerVerified && next.order > 0 && queue.items[next.order - 1]?.state === "sent" && (next.state === "pending" || next.state === "transitioning")) {
         const previous = queue.items[next.order - 1]!;
+        const elapsedSinceReceiptToFirstReadMs = previous.dispatchReceipt ? Math.max(0, now() - previous.dispatchReceipt.storedAt) : 0;
+        let priorHandoffTrace: VidsCleanupDiagnostics["handoffTrace"];
+        const transition = async (inspectOnly: boolean, checkpointedOwnership: boolean, phase: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty") => {
+          const result = await input.transitionFromPrevious(queue!.preparedBatchId, previous.itemId, inspectOnly, next.itemId, checkpointedOwnership, phase, { triggerSource, elapsedSinceReceiptToFirstReadMs, ...(priorHandoffTrace ? { priorTrace: priorHandoffTrace } : {}) });
+          const raw = result.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics as Record<string, unknown> : undefined;
+          if (raw?.handoffTrace && typeof raw.handoffTrace === "object") priorHandoffTrace = raw.handoffTrace as VidsCleanupDiagnostics["handoffTrace"];
+          return result;
+        };
         const currentAttachment = next.state === "transitioning" ? await input.getAttachment(queue.preparedBatchId, next.itemId) : undefined;
         const cleanupAlreadyPassed = next.state === "transitioning" && currentAttachment?.status === "attached";
         if (next.state === "pending") {
@@ -193,22 +239,22 @@ export function createVidsVideoQueueHandler(input: {
           queue = await save(queue, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(queue); return queue;
         }
         if (!checkpoint && !cleanupAlreadyPassed) {
-          let inspected = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect");
+          let inspected = await transition(true, false, "inspect");
           // Expand is allowed only through the unique scoped control. Its result
           // requests a fresh read; it never authorizes cleanup by itself.
           if (inspected.reason === "vids_composer_expanded_revalidate") {
-            inspected = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect");
+            inspected = await transition(true, false, "inspect");
           }
           let alreadyClean = false;
           if (inspected.reason === "vids_cleanup_checkpoint_required") {
-            const clean = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, true, next.itemId, false, "inspect_clean");
+            const clean = await transition(true, false, "inspect_clean");
             if (clean.status === "ready") { inspected = clean; alreadyClean = true; }
           }
           let latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId || latest.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return latest;
           if (inspected.status !== "ready") {
             const reason = inspected.reason ?? "vids_composer_transition_failed";
-            const diagnostics = boundedCleanupDiagnostics(inspected.diagnostics, checkpointRead, checkpointWrite);
+            const diagnostics = boundedCleanupDiagnostics(inspected.diagnostics, checkpointRead, checkpointWrite, triggerSource, elapsedSinceReceiptToFirstReadMs);
             const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: diagnostics } : item);
             latest = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(latest); return latest;
           }
@@ -227,7 +273,7 @@ export function createVidsVideoQueueHandler(input: {
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? fallbackQueue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
           const reason = result.reason ?? "vids_composer_transition_failed";
-          const bounded = boundedCleanupDiagnostics(result.diagnostics, checkpointRead, checkpointWrite);
+          const bounded = boundedCleanupDiagnostics(result.diagnostics, checkpointRead, checkpointWrite, triggerSource, elapsedSinceReceiptToFirstReadMs);
           const items = latest.items.map((item) => item.itemId === next.itemId ? { ...item, state: "blocked" as const, reason, cleanupDiagnostics: bounded } : item);
           const failed = await save(latest, { state: "paused", items, pauseReason: reason, nextActionAt: null }); await schedule(failed); return failed;
         };
@@ -235,7 +281,7 @@ export function createVidsVideoQueueHandler(input: {
         if (checkpoint!.stage === "ownership_verified") {
           const before = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           if (before.state === "paused" || before.state === "stopped" || before.runId !== transitionRunId || before.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return before;
-          const removed = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false, next.itemId, true, "remove_reference");
+          const removed = await transition(false, true, "remove_reference");
           if (removed.status !== "ready") return failCleanup(removed);
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
@@ -246,7 +292,7 @@ export function createVidsVideoQueueHandler(input: {
         if (checkpoint!.stage === "image_removed") {
           const before = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           if (before.state === "paused" || before.state === "stopped" || before.runId !== transitionRunId || before.items.find((item) => item.itemId === next.itemId)?.state !== "transitioning") return before;
-          const cleared = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false, next.itemId, true, "clear_prompt");
+          const cleared = await transition(false, true, "clear_prompt");
           if (cleared.status !== "ready") return failCleanup(cleared);
           const latest = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
           if (latest.state === "paused" || latest.state === "stopped" || latest.runId !== transitionRunId) return latest;
@@ -254,7 +300,7 @@ export function createVidsVideoQueueHandler(input: {
           queue = await save(latest, { items: latest.items.map((item) => item.itemId === next.itemId ? { ...item, transitionCheckpoint: checkpoint, cleanupDiagnostics: undefined } : item) });
           checkpointWrite = "persisted";
         } else if (checkpoint!.stage === "prompt_cleared") {
-          const verified = await input.transitionFromPrevious(queue.preparedBatchId, previous.itemId, false, next.itemId, true, "verify_empty");
+          const verified = await transition(false, true, "verify_empty");
           if (verified.status !== "ready") return failCleanup(verified);
         }
         queue = await input.repositories.getVidsVideoQueue(queueId) ?? queue;
@@ -329,7 +375,7 @@ export function createVidsVideoQueueHandler(input: {
       const id = queueIdFor(preparedBatchId);
       let queue = await input.repositories.getVidsVideoQueue(id);
       if (!queue) queue = await adoptExisting(preparedBatchId);
-      if (queue.state === "ready" || queue.state === "cooldown" || queue.state === "checking_generate") void run(id).catch(() => undefined);
+      if (queue.state === "ready" || queue.state === "cooldown" || queue.state === "checking_generate") void run(id, "automatic_start").catch(() => undefined);
       return queue;
     },
     pause: async (preparedBatchId: string, expectedRevision: number) => {
@@ -412,9 +458,9 @@ export function createVidsVideoQueueHandler(input: {
       const resumedItems = queue.items.map((item) => item.state === "blocked" && retryablePreIntentReasons.has(item.reason ?? "") ? { ...item, state: "pending" as const, ...(["vids_cleanup_checkpoint_required", "vids_target_changed_before_composer_transition", "vids_previous_item_dispatch_binding_unverified"].includes(item.reason ?? "") ? { resumeRecoveryEvidence: { priorReason: item.reason!, verifiedAt: now() } } : {}), reason: undefined } : item.reason === "worker_restart_before_generate" ? { ...item, reason: undefined } : item);
       const stillChecking = queue.items.some((item) => item.state === "checking_generate");
       const resumed = await save(queue, { ...(rebind ? { executionDocumentRebind: { fromTabId: queue.executionDocumentRebind?.fromTabId ?? prepared.data.target.tabId, toTabId: binding!.tabId, fromDocumentId: queue.executionDocumentRebind?.fromDocumentId ?? prepared.data.target.documentId!, toDocumentId: binding!.documentId, projectId: binding!.projectId, canonicalTarget: binding!.canonicalTarget, verifiedAt: binding!.verifiedAt, sameAccountConfirmedAt: now() } } : {}), state: stillChecking ? "checking_generate" : queue.lastDispatchAt !== null && now() < queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS ? "cooldown" : "ready", items: resumedItems, nextActionAt: stillChecking ? Math.min(now() + CHROME_MIN_ALARM_DELAY_MS, queue.readinessDeadlineAt ?? now()) : queue.lastDispatchAt !== null ? Math.max(now(), queue.lastDispatchAt + VIDS_VIDEO_DISPATCH_GAP_MS) : now(), pauseReason: undefined, readinessStartedAt: stillChecking ? queue.readinessStartedAt : null, readinessDeadlineAt: stillChecking ? queue.readinessDeadlineAt : null, runId: input.makeRunId?.() ?? crypto.randomUUID() });
-      void run(resumed.queueId).catch(() => undefined); return resumed;
+      void run(resumed.queueId, "manual_resume").catch(() => undefined); return resumed;
     },
-    onAlarm: (name: string) => { const id = runtime.queueIdFromAlarm(name); return id ? run(id) : Promise.resolve(undefined); },
+    onAlarm: (name: string) => { const id = runtime.queueIdFromAlarm(name); return id ? run(id, "automatic_alarm") : Promise.resolve(undefined); },
     reconcileStartup: async () => {
       const queues = await input.repositories.listVidsVideoQueues();
       for (const queue of queues) {

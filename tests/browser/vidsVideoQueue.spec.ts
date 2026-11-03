@@ -9,7 +9,7 @@ const previousPrompt = JSON.stringify({ shot_id: "1", prompt_type: "video", line
 
 async function install(page: import("@playwright/test").Page, collapsed = false) {
   await page.goto("http://127.0.0.1:5173/");
-  await page.setContent(`<aside role="complementary" aria-labelledby="ai-name"><span id="ai-name">AI video clip</span><button role="tab" aria-labelledby="animate-name" aria-selected="true"><span id="animate-name">Animate</span></button><section role="tabpanel" aria-label="Animate" style="${collapsed ? "display:none" : ""}"><button aria-label="Add image">Add image</button><input type="file"><img alt="Uploaded image preview" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL4WQAAAABJRU5ErkJggg=="><button aria-label="Remove image">Remove</button><div role="textbox" contenteditable="true" aria-label="Add your image, then describe what should happen in your video."></div><button aria-label="Generate">Generate</button></section></aside>`);
+  await page.setContent(`<aside role="complementary" aria-labelledby="ai-name"><span id="ai-name">AI video clip</span><button role="tab" aria-labelledby="animate-name" aria-selected="true"><span id="animate-name">Animate</span></button><section role="tabpanel" aria-label="Animate" style="${collapsed ? "display:none" : ""}"><button class="collapsiblePromptBoxToggleExpansionButton" data-idom-class="collapsiblePromptBoxToggleExpansionButton" aria-label="Collapse">Collapse</button><button aria-label="Add image">Add image</button><input type="file"><img alt="Uploaded image preview" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL4WQAAAABJRU5ErkJggg=="><button aria-label="Remove image">Remove</button><div role="textbox" contenteditable="true" aria-label="Add your image, then describe what should happen in your video."></div><button aria-label="Generate">Generate</button></section></aside>`);
   await page.locator("input[type=file]").setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: Buffer.from(bytes) });
   await page.locator("input[type=file]").evaluate((input) => { const file = (input as HTMLInputElement).files![0]!; const panel = input.closest("[role=tabpanel]")!; panel.querySelector("img[alt='Uploaded image preview']")!.setAttribute("src", URL.createObjectURL(file)); input.remove(); panel.querySelector("button[aria-label='Add image']")?.remove(); });
   await page.locator("[role=textbox]").evaluate((node, text) => { node.textContent = text; }, previousPrompt);
@@ -266,6 +266,10 @@ test("cleanup resumes at each persisted mutation boundary and refuses uncheckpoi
   await page.locator("img[alt='Uploaded image preview']").evaluate((preview) => preview.remove());
   const uncheckpointed = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 300, phase: "clear_prompt" });
   expect(uncheckpointed).toMatchObject({ ok: false, reason: "vids_cleanup_checkpoint_required" });
+  expect(uncheckpointed.diagnostics.handoffTrace).toMatchObject({ initialAnimateState: "expanded", finalAnimateState: "expanded", expansionAttempted: false });
+  expect(uncheckpointed.diagnostics.handoffTrace?.previewObservations?.[0]).toMatchObject({ atMs: 0, selectorMatches: 0, visibleMatches: 0, loadedMatches: 0 });
+  expect(uncheckpointed.diagnostics.handoffTrace?.previewObservations?.at(-1)).toMatchObject({ selectorMatches: 0, visibleMatches: 0, loadedMatches: 0 });
+  expect(uncheckpointed.diagnostics.handoffTrace?.previewObservations?.at(-1)?.atMs).toBeGreaterThanOrEqual(300);
   expect(await page.locator("[role=textbox]").textContent()).toBe(previousPrompt);
 });
 
@@ -337,6 +341,12 @@ test("read-only worker inspection expands a verified Animate panel and rechecks 
 
 test("automatic inspection waits for preview delivery after Animate expands and the editor rerenders", async ({ page }) => {
   await install(page, true);
+  await page.evaluate(() => {
+    let state: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    setTimeout(() => { state = "hidden"; }, 130);
+    setTimeout(() => { state = "visible"; }, 270);
+  });
   const promptSha256 = await sha256Hex(previousPrompt), referenceSha256 = await sha256Bytes(bytes);
   const referenceId = "60000000-0000-4000-8000-000000000006";
   await page.locator("[role=complementary]").evaluate((sidebar, args) => {
@@ -350,17 +360,25 @@ test("automatic inspection waits for preview delivery after Animate expands and 
         old.replaceWith(panel);
         setTimeout(() => {
           const preview = document.createElement("img"); preview.alt = "Uploaded image preview"; preview.src = URL.createObjectURL(new Blob([args.base64Bytes], { type: "image/png" }));
-          const remove = document.createElement("button"); remove.setAttribute("aria-label", "Remove image"); remove.textContent = "Remove";
+          const remove = document.createElement("button"); remove.setAttribute("aria-label", "Remove image"); remove.textContent = "Remove"; remove.addEventListener("click", () => { preview.remove(); remove.remove(); });
           panel.insertBefore(preview, panel.querySelector("[role=textbox]")); panel.insertBefore(remove, panel.querySelector("[role=textbox]"));
         }, 280);
       }, 70);
     });
     sidebar.append(expand);
   }, { prompt: previousPrompt, base64Bytes: bytes });
-  const expanded = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1200, inspectOnly: true, phase: "inspect" });
-  expect(expanded).toMatchObject({ ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { panelStateBeforeExpansion: "collapsed", panelStateAfterExpansion: "settled", panelRebound: true, editorRebound: true, freshPreviewDetection: "delayed_then_present", previewCount: 1 } });
+  const traceContext = { triggerSource: "automatic_alarm" as const, elapsedSinceReceiptToFirstReadMs: 50_000 };
+  const expanded = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1200, inspectOnly: true, phase: "inspect", traceContext });
+  expect(expanded).toMatchObject({ ok: false, reason: "vids_composer_expanded_revalidate", changed: false, diagnostics: { panelStateBeforeExpansion: "collapsed", panelStateAfterExpansion: "settled", panelRebound: true, editorRebound: true, freshPreviewDetection: "delayed_then_present", previewCount: 1, handoffTrace: { triggerSource: "automatic_alarm", elapsedSinceReceiptToFirstReadMs: 50_000, visibilityStart: "visible", expansionAttempted: true, panelReplaced: true, editorReplaced: true } } });
+  expect(expanded.diagnostics.handoffTrace?.visibilityChanges).toEqual(expect.arrayContaining([expect.objectContaining({ state: "hidden" }), expect.objectContaining({ state: "visible" })]));
+  expect(expanded.diagnostics.handoffTrace?.previewObservations).toEqual(expect.arrayContaining([expect.objectContaining({ selectorMatches: 0, visibleMatches: 0, loadedMatches: 0 }), expect.objectContaining({ selectorMatches: 1, visibleMatches: 1, loadedMatches: 1 })]));
   const referenceCandidates = [{ referenceId, sha256: referenceSha256, mimeType: "image/png" as const, byteSize: bytes.length, width: 1, height: 1 }];
-  const inspected = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceId, referenceCandidates, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, inspectOnly: true, phase: "inspect" });
+  const inspected = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceId, referenceCandidates, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 500, inspectOnly: true, phase: "inspect", traceContext: { ...traceContext, priorTrace: expanded.diagnostics.handoffTrace } });
   expect(inspected).toMatchObject({ ok: true, changed: false, diagnostics: { promptMatches: true, referenceResult: "matched" } });
-  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 0, generateClicks: 0 });
+  expect(inspected.diagnostics.handoffTrace?.previewObservations?.slice(0, expanded.diagnostics.handoffTrace?.previewObservations?.length)).toEqual(expanded.diagnostics.handoffTrace?.previewObservations);
+  const cleaned = await page.evaluate(transitionVidsComposerFromPreviousInPage, { prompt: previousPrompt, promptSha256, referenceId, referenceCandidates, referenceSha256, referenceMimeType: "image/png", referenceByteSize: bytes.length, referenceWidth: 1, referenceHeight: 1, timeoutMs: 1200, checkpointedOwnership: true, phase: "full", traceContext: { ...traceContext, priorTrace: inspected.diagnostics.handoffTrace } });
+  expect(cleaned).toMatchObject({ ok: true, changed: true });
+  expect(await page.locator("img[alt='Uploaded image preview']").count()).toBe(0);
+  expect(await page.locator("[role=textbox]").textContent()).toBe("");
+  expect(await page.evaluate(() => (window as unknown as { queueFixture: { removeClicks: number; generateClicks: number } }).queueFixture)).toMatchObject({ removeClicks: 1, generateClicks: 0 });
 });

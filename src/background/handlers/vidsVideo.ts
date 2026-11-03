@@ -9,6 +9,7 @@ import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
 import { CONNECTOR_PROTOCOL_VERSION } from "../../platforms/shared/contracts";
 import { parseProviderRoute } from "../../platforms/shared/providerRoute";
 import { enterVidsPromptInPage, activateVidsGenerateInPage, transitionVidsComposerFromPreviousInPage } from "../../platforms/vids/video";
+import type { VidsCleanupDiagnostics } from "../../domain/jobs/vidsVideoQueue";
 import type { ExtensionRepositories } from "../../storage/repositories";
 
 type Injection = { documentId?: string; result?: unknown };
@@ -281,7 +282,7 @@ export function createVidsVideoGenerateHandler(deps: {
     return { status: "retry_ready", operation: await deps.repositories.getVidsVideoGenerationOperation(id) ?? next };
   }
 
-  async function transitionFromPrevious(preparedBatchId: string, previousItemId: string, inspectOnly = false, nextItemId?: string, checkpointedOwnership = false, phase: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty" = "inspect"): Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }> {
+  async function transitionFromPrevious(preparedBatchId: string, previousItemId: string, inspectOnly = false, nextItemId?: string, checkpointedOwnership = false, phase: "inspect" | "inspect_clean" | "remove_reference" | "clear_prompt" | "verify_empty" = "inspect", traceContext?: { triggerSource: NonNullable<VidsCleanupDiagnostics["handoffTrace"]>["triggerSource"]; elapsedSinceReceiptToFirstReadMs: number; priorTrace?: VidsCleanupDiagnostics["handoffTrace"] }): Promise<{ status: "ready" | "blocked"; reason?: string; diagnostics?: unknown }> {
     const parsed = PreparedVideoBatchRecordSchema.safeParse(await deps.repositories.getPreparedVideoBatchById(preparedBatchId));
     if (!parsed.success || parsed.data.destination !== "Vids") return { status: "blocked", reason: "prepared_vids_batch_invalid" };
     const batch = parsed.data;
@@ -322,14 +323,18 @@ export function createVidsVideoGenerateHandler(deps: {
     }
     let pageResult: Awaited<ReturnType<typeof transitionVidsComposerFromPreviousInPage>> | undefined;
     let expansionDiagnostics: Awaited<ReturnType<typeof transitionVidsComposerFromPreviousInPage>>["diagnostics"] | undefined;
+    let handoffTrace = traceContext?.priorTrace;
+    const elapsedToFirstRead = handoffTrace?.elapsedSinceReceiptToFirstReadMs ?? (priorQueueItem?.dispatchReceipt ? Math.max(0, now() - priorQueueItem.dispatchReceipt.storedAt) : traceContext?.elapsedSinceReceiptToFirstReadMs ?? 0);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let response: Injection | undefined;
       try {
         [response] = await deps.scripting.executeScript({ target: { tabId: currentTabId, documentIds: [currentDocumentId!] }, world: "MAIN", func: transitionVidsComposerFromPreviousInPage,
-          args: [{ prompt: item.rawJsonBody, promptSha256: item.contentHash, referenceId: item.reference.referenceId, referenceCandidates: batch.items.map((candidate) => ({ referenceId: candidate.reference.referenceId, sha256: candidate.reference.sha256, mimeType: candidate.reference.mimeType as "image/png" | "image/jpeg", byteSize: candidate.reference.byteSize, width: candidate.reference.width, height: candidate.reference.height })), referenceSha256: item.reference.sha256, referenceMimeType: item.reference.mimeType as "image/png" | "image/jpeg", referenceByteSize: item.reference.byteSize, referenceWidth: item.reference.width, referenceHeight: item.reference.height, timeoutMs: 2500, inspectOnly, phase, checkpointedOwnership: checkpointBound }] });
+          args: [{ prompt: item.rawJsonBody, promptSha256: item.contentHash, referenceId: item.reference.referenceId, referenceCandidates: batch.items.map((candidate) => ({ referenceId: candidate.reference.referenceId, sha256: candidate.reference.sha256, mimeType: candidate.reference.mimeType as "image/png" | "image/jpeg", byteSize: candidate.reference.byteSize, width: candidate.reference.width, height: candidate.reference.height })), referenceSha256: item.reference.sha256, referenceMimeType: item.reference.mimeType as "image/png" | "image/jpeg", referenceByteSize: item.reference.byteSize, referenceWidth: item.reference.width, referenceHeight: item.reference.height, timeoutMs: 2500, inspectOnly, phase, checkpointedOwnership: checkpointBound, traceContext: traceContext ? { ...traceContext, elapsedSinceReceiptToFirstReadMs: elapsedToFirstRead, ...(handoffTrace ? { priorTrace: handoffTrace } : {}) } : undefined }] });
       } catch { return { status: "blocked", reason: "vids_composer_transition_reply_uncertain", diagnostics: { stage: "injection", operationBound, attachmentBound, targetBound: true, documentBound: true, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256 } }; }
       if (response?.documentId !== currentDocumentId) return { status: "blocked", reason: "vids_document_changed_during_composer_transition", diagnostics: { stage: "binding", operationBound, attachmentBound, targetBound: true, documentBound: false, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256 } };
       pageResult = response.result as Awaited<ReturnType<typeof transitionVidsComposerFromPreviousInPage>> | undefined;
+      const pageDiagnostics = pageResult?.diagnostics as (Awaited<ReturnType<typeof transitionVidsComposerFromPreviousInPage>>["diagnostics"] & { handoffTrace?: VidsCleanupDiagnostics["handoffTrace"] }) | undefined;
+      if (pageDiagnostics?.handoffTrace) handoffTrace = pageDiagnostics.handoffTrace;
       const route = parseProviderRoute(pageResult?.href ?? "");
       if (!route || route.provider !== "Vids" || route.projectId !== batch.target.projectId || route.canonicalTarget !== batch.target.canonicalTarget) return { status: "blocked", reason: "vids_target_changed_during_composer_transition", diagnostics: { stage: "binding", operationBound, attachmentBound, targetBound: false, documentBound: true, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256 } };
       if (pageResult?.reason !== "vids_composer_expanded_revalidate") break;
@@ -339,7 +344,7 @@ export function createVidsVideoGenerateHandler(deps: {
       if ("reason" in afterExpand || afterExpand.binding.documentId !== currentDocumentId || afterExpand.selected.tabId !== currentTabId || afterExpand.selected.canonicalTarget !== generation.canonicalTarget)
         return { status: "blocked", reason: "vids_target_changed_after_composer_expand", diagnostics: { ...pageResult.diagnostics, operationBound, attachmentBound, targetBound: false, documentBound: afterExpand.binding?.documentId === currentDocumentId } };
     }
-    const diagnostics = pageResult?.diagnostics ? { ...pageResult.diagnostics, ...(expansionDiagnostics ? { panelStateBeforeExpansion: expansionDiagnostics.panelStateBeforeExpansion, panelStateAfterExpansion: expansionDiagnostics.panelStateAfterExpansion, freshPreviewDetection: expansionDiagnostics.freshPreviewDetection, panelRebound: pageResult.diagnostics.panelRebound || expansionDiagnostics.panelRebound, editorRebound: pageResult.diagnostics.editorRebound || expansionDiagnostics.editorRebound } : {}), operationBound, attachmentBound, targetBound: true, documentBound: true } : { stage: "injection", operationBound, attachmentBound, targetBound: true, documentBound: true, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256 };
+    const diagnostics = pageResult?.diagnostics ? { ...pageResult.diagnostics, ...(expansionDiagnostics ? { panelStateBeforeExpansion: expansionDiagnostics.panelStateBeforeExpansion, panelStateAfterExpansion: expansionDiagnostics.panelStateAfterExpansion, freshPreviewDetection: expansionDiagnostics.freshPreviewDetection, panelRebound: pageResult.diagnostics.panelRebound || expansionDiagnostics.panelRebound, editorRebound: pageResult.diagnostics.editorRebound || expansionDiagnostics.editorRebound } : {}), ...(handoffTrace ? { handoffTrace } : {}), operationBound, attachmentBound, targetBound: true, documentBound: true } : { stage: "injection", operationBound, attachmentBound, targetBound: true, documentBound: true, expectedPromptSha256: item.contentHash, expectedReferenceSha256: item.reference.sha256, ...(handoffTrace ? { handoffTrace } : {}) };
     if (!pageResult?.ok) return { status: "blocked", reason: safeReason(pageResult?.reason, "vids_composer_transition_failed"), diagnostics };
     const after = await validateTarget(targetBatch);
     if ("reason" in after || after.binding.documentId !== currentDocumentId || after.selected.tabId !== currentTabId || after.selected.canonicalTarget !== generation.canonicalTarget)

@@ -39,6 +39,21 @@ export const VidsCleanupDiagnosticsSchema = z.object({
   expectedPromptSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(), currentPromptSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   expectedPromptLength: z.number().int().min(0).max(10_000_000).optional(), currentPromptLength: z.number().int().min(0).max(10_000_000).optional(),
   clearAvailable: z.enum(["unique", "missing", "ambiguous", "not_checked"]).optional(), settledEmpty: z.boolean().optional(),
+  handoffTrace: z.object({
+    triggerSource: z.enum(["automatic_start", "automatic_alarm", "manual_resume", "unknown"]).optional(),
+    elapsedSinceReceiptToFirstReadMs: z.number().int().min(0).max(10_000_000).optional(),
+    visibilityStart: z.enum(["visible", "hidden", "prerender", "unloaded", "unknown"]).optional(),
+    visibilityEnd: z.enum(["visible", "hidden", "prerender", "unloaded", "unknown"]).optional(),
+    visibilityChanges: z.array(z.object({ inspection: z.number().int().min(0).max(20), atMs: z.number().int().min(0).max(10_000_000), state: z.enum(["visible", "hidden", "prerender", "unloaded", "unknown"]) }).strict()).max(8).optional(),
+    initialAnimateState: z.enum(["collapsed", "expanded", "missing", "ambiguous", "unknown"]).optional(),
+    finalAnimateState: z.enum(["collapsed", "expanded", "missing", "ambiguous", "unknown"]).optional(),
+    composerToggleLabelBefore: z.enum(["Expand", "Collapse", "missing", "ambiguous", "unknown"]).optional(),
+    composerToggleLabelAfter: z.enum(["Expand", "Collapse", "missing", "ambiguous", "unknown"]).optional(),
+    composerToggleClickAttempted: z.boolean().optional(),
+    composerToggleOutcome: z.enum(["already_expanded", "expanded", "missing", "ambiguous", "disabled", "label_unrecognized", "settlement_failed"]).optional(),
+    expansionAttempted: z.boolean().optional(), panelReplaced: z.boolean().optional(), editorReplaced: z.boolean().optional(),
+    previewObservations: z.array(z.object({ inspection: z.number().int().min(0).max(20), atMs: z.number().int().min(0).max(10_000_000), selectorMatches: z.number().int().min(0).max(10), visibleMatches: z.number().int().min(0).max(10), loadedMatches: z.number().int().min(0).max(10), composerToggleLabel: z.enum(["Expand", "Collapse", "missing", "ambiguous", "unknown"]).optional() }).strict()).max(8).optional(),
+  }).strict().optional(),
 }).strict();
 export type VidsCleanupDiagnostics = z.infer<typeof VidsCleanupDiagnosticsSchema>;
 export const VidsResumeRecoveryEvidenceSchema = z.object({

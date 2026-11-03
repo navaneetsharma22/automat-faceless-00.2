@@ -23,6 +23,21 @@ const batch: PreparedVideoBatchRecord = {
 };
 
 describe("P10.3 Vids queue presentation", () => {
+  it("shows the bounded automatic cleanup handoff trace in blocked-shot Details", async () => {
+    const queue = { queueId: `vids-video:${batch.id}`, preparedBatchId: batch.id, state: "paused", revision: 4, createdAt: 1, updatedAt: 2, lastDispatchAt: 1_000, cooldownDeadlineAt: null, readinessDeadlineAt: null, readinessStartedAt: null, nextActionAt: null, pauseReason: "vids_cleanup_checkpoint_required", runId: "trace-run", items: [
+      { itemId: "item-1", order: 0, shotId: "1", referenceId: batch.items[0]!.reference.referenceId, referenceSha256: batch.items[0]!.reference.sha256, promptHash: batch.items[0]!.contentHash, state: "sent", attemptId: "attempt-1", dispatchReceipt: { attemptId: "attempt-1", storedAt: 1_000 } },
+      { itemId: "item-2", order: 1, shotId: "2", referenceId: batch.items[1]!.reference.referenceId, referenceSha256: batch.items[1]!.reference.sha256, promptHash: batch.items[1]!.contentHash, state: "blocked", reason: "vids_cleanup_checkpoint_required", cleanupDiagnostics: { stage: "ownership", checkpointRead: "absent", checkpointWrite: "not_attempted", expectedPromptLength: 15, currentPromptLength: 15, clearAvailable: "not_checked", settledEmpty: false, handoffTrace: { triggerSource: "automatic_alarm", elapsedSinceReceiptToFirstReadMs: 50_012, visibilityStart: "hidden", visibilityEnd: "visible", visibilityChanges: [{ inspection: 0, atMs: 900, state: "visible" }], initialAnimateState: "collapsed", finalAnimateState: "expanded", expansionAttempted: true, panelReplaced: true, editorReplaced: true, previewObservations: [{ inspection: 0, atMs: 0, selectorMatches: 0, visibleMatches: 0, loadedMatches: 0 }, { inspection: 0, atMs: 1200, selectorMatches: 1, visibleMatches: 1, loadedMatches: 1 }] } } },
+    ] };
+    const client = { request: vi.fn(async (type: string) => type === "vids.videoQueue.get" ? queue : type === "vids.video.getAttachmentStatus" ? { status: "not_started" } : null) };
+    host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+    await act(async () => { root!.render(createElement(VidsPreparedBatchReview, { preparedBatch: batch, persistenceClient: client as never })); await Promise.resolve(); });
+    expect(host.textContent).toContain("Cleanup readback diagnostics");
+    expect(host.textContent).toContain("automatic_alarm / 50012 ms");
+    expect(host.textContent).toContain("hidden → visible");
+    expect(host.textContent).toContain("selector 0, visible 0, loaded 0");
+    expect(host.textContent).toContain("selector 1, visible 1, loaded 1");
+  });
+
   it.each([
     ["ready", "Ready", "Starting queue", false],
     ["cooldown", "Waiting for next shot", "Next prompt in", true],
