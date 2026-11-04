@@ -259,12 +259,13 @@ export function FlowGalleryDiagnostic({
             <div>
               <dt>Flow download events</dt>
               <dd>
-                {report.pageDownloadEventsReceived ?? 0} received across debugger
-                targets; {report.pageDownloadTargetMismatches ?? 0} target
-                mismatches; {report.pageDownloadMainFrameEvents ?? 0} selected
-                tab main-frame events; {report.pageDownloadFrameMismatches ?? 0}
-                selected tab events with a non-main frame
-                ; {report.pageDownloads.length} retained;{" "}
+                {report.pageDownloadEventsReceived ?? 0} received across
+                debugger targets; {report.pageDownloadTargetMismatches ?? 0}{" "}
+                target mismatches; {report.pageDownloadMainFrameEvents ?? 0}{" "}
+                selected tab main-frame events;{" "}
+                {report.pageDownloadFrameMismatches ?? 0}
+                selected tab non-main-frame events;{" "}
+                {report.pageDownloads.length} retained;{" "}
                 {
                   report.pageDownloads.filter(
                     (event) => event.frameMatched && event.afterAction,
@@ -286,6 +287,15 @@ export function FlowGalleryDiagnostic({
                 cap
               </dd>
             </div>
+            {report.lastPageDownloadUrlRejection ? (
+              <div>
+                <dt>Last rejected Flow event URL</dt>
+                <dd>
+                  {report.lastPageDownloadUrlRejection.reason} /{" "}
+                  {report.lastPageDownloadUrlRejection.schemeCategory}
+                </dd>
+              </div>
+            ) : null}
           </dl>
           {report.captureIssue ? (
             <p className={styles.disabledReason}>
@@ -341,12 +351,37 @@ export function FlowGalleryDiagnostic({
               ))}
             </ul>
           ) : null}
+          {report.pageDownloads.length ? (
+            <ul aria-label="Sanitized Flow download events">
+              {report.pageDownloads.map((event) => (
+                <li key={event.eventToken}>
+                  {event.eventToken}: {event.filename}; URL scheme{" "}
+                  {event.urlScheme ?? "unknown"}; selected main frame{" "}
+                  {event.frameMatched ? "yes" : "no"}; after quality click{" "}
+                  {event.afterAction ? "yes" : "no"};{" "}
+                  {event.exactDownloadIds?.length
+                    ? `exact URL equality to Chrome download ID${event.exactDownloadIds.length === 1 ? "" : "s"} ${event.exactDownloadIds.join(", ")}`
+                    : "no exact URL equality to a Chrome download ID"}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {report.downloads.length ? (
             <ul aria-label="Candidate Chrome downloads">
               {report.downloads.map((download) => (
                 <li key={download.downloadId}>
                   ID {download.downloadId}: {download.filename} —{" "}
                   {download.state}
+                  {download.urlScheme
+                    ? `; URL scheme ${download.urlScheme}`
+                    : download.urlRejection
+                      ? `; URL rejected: ${download.urlRejection.reason} / ${download.urlRejection.schemeCategory}`
+                      : ""}
+                  {download.finalUrlScheme
+                    ? `; final URL scheme ${download.finalUrlScheme}`
+                    : download.finalUrlRejection
+                      ? `; final URL rejected: ${download.finalUrlRejection.reason} / ${download.finalUrlRejection.schemeCategory}`
+                      : ""}
                   {download.interruptCode ? ` (${download.interruptCode})` : ""}
                 </li>
               ))}

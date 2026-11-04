@@ -308,3 +308,165 @@ The cap can discard association evidence during collection. An offline worker fi
 - Build: **`automat-faceless-0.1.0-mw1xqgpd`**.
 
 Chrome download ID `2784` remains unassociated on the supplied evidence. Missing event URL/filename metadata, event-before-click ordering, processing after detach, and a matching Media request arriving after the reported omitted requests remain live hypotheses. The offline fixtures demonstrate each relevant source behavior but do not establish which occurred in Flow. No live upscale or download was triggered. P11.2/P11.3 remain out of scope.
+
+## P11.1 Flow download URL rejection and feasibility follow-up - 4 November 2026
+
+### Supplied live evidence and exact rejection path
+
+The user reports build `mw1xqgpd` on Flow tab `1957329822`: the trusted 1080p Upscaled click, card owner, both menu bindings, and one selected-tab main-frame download event were recorded. No page download record was retained; one event was rejected for unusable URL metadata. Chrome download ID `2785` completed, but association remained unverified. The live evidence does not give the rejected URL's category or exact reason, and it does not establish that the URL was a blob URL.
+
+In production, `Page.downloadWillBegin` increments the receipt and frame counters before calling `fingerprintFlowDownloadUrl`. A rejected value increments `pageDownloadMetadataRejected`, stores only `lastPageDownloadUrlRejection`, and creates no `pageDownloads` entry. The association classifier then reports `no_selected_frame_download_event` because there is no retained after-action event from the selected main frame. The live summary confirms this branch shape but cannot identify the specific reason below.
+
+| Bounded reason | Condition | Scheme category |
+| --- | --- | --- |
+| `missing` | URL metadata is not a string | `unknown` |
+| `empty` | URL metadata is empty or whitespace | `unknown` |
+| `malformed` | Non-empty value cannot be parsed as an absolute URL | Inferred only from an allowlisted prefix (`https`, `http`, `blob`); otherwise `other` or `unknown` |
+| `unsupported_scheme` | URL parses, but the scheme is not `https`, `http`, or `blob` | `other` |
+| `policy_rejected` | Parsed allowlisted URL exceeds 8,192 characters or contains user/password credentials | Parsed category: `https`, `http`, or `blob` |
+
+Valid `https`, `http`, and `blob` URLs are accepted. The dashboard, logs, and persisted diagnostic contain no raw URL, query string, signed parameter, or blob token. Per-session fingerprints and exact Chrome download IDs are stored; raw URL strings exist only in bounded worker memory for exact equality comparisons.
+
+### Controlled browser URL comparison
+
+An offline Microsoft Edge extension fixture captured real `Page.downloadWillBegin` and Chrome `downloads.onCreated` values. It compared exact strings in memory and kept only scheme categories and equality booleans in its evidence:
+
+| Fixture | Browser completed | Page event scheme | Chrome `url` / `finalUrl` scheme | Event URL equals `url` | Event URL equals `finalUrl` |
+| --- | --- | --- | --- | --- | --- |
+| Direct HTTPS | Yes | `https` | `https` / `https` | Yes | Yes |
+| Redirected HTTPS | Yes | `https` | `https` / `https` | No | Yes |
+| Page-created blob | Yes | `blob` | `blob` / `blob` | Yes | Yes |
+| Two competing downloads | 2 completed | `https`, `https` | `https` / `https` for each | Yes for both | Yes for both |
+
+The redirected fixture demonstrates that the event URL may equal Chrome's `finalUrl` while differing from its initial `url`; comparing both fields in memory is necessary. The blob case proves that this Edge path exposes the same blob URL in the Page event and Chrome DownloadItem. These fixture results establish URL comparison behavior for these controlled cases, not a Flow clip association.
+
+The competing fixture produced two selected-tab page events and two Chrome download records, each with its own exact URL equality link. A focused classifier regression supplies those two competing events without action-time media identity and confirms `ambiguous / multiple_page_download_events`. Existing strict media identity can resolve a unique chain when present; filename, timing, or completion alone still cannot establish one.
+
+### Archive and separate upscaled file dimensions
+
+`C:\Users\ASUS\Downloads\flow vide D.zip` is present. `ffprobe` reports all five archive videos as H.264, 640x360, approximately 4.032 seconds:
+
+- `Dinosaur_turning_head_5f43c1f9.mp4`
+- `Dinosaur_lowering_head_to_inspect_6f0c5678.mp4`
+- `Animal_breathing_and_blinking_7d96c2b5.mp4`
+- `Tyrannosaurus_breathing_and_shif…_14ae0c64.mp4`
+- `Dinosaur_shifting_weight_a1799825.mp4`
+
+Separate local comparison files probe as H.264 1920x1080 at 5.970 seconds (`animated_4a4a3508_1080p.mp4`) and H.264 1728x960 at 8 seconds (`tnik3odvt5y3sah5byxjpujsem (4)_2x_upscaled.mp4`). Neither is established as a paired output of an archive entry. The browser fixtures establish browser download completion and URL-to-DownloadItem equality; they do not produce valid media for dimension analysis. No Flow clip-to-download association or live file dimension was established in this pass.
+
+### Regression, checks, and remaining live acceptance
+
+- Focused Vitest: **2 files / 14 tests PASS**, including each bounded rejection reason, exact ID URL linkage, two-event ambiguity, and the existing media-chain requirements.
+- Offline Microsoft Edge URL comparison fixture: **1/1 PASS** (direct HTTPS, redirected HTTPS, blob, and competing downloads).
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw2018be`**, four JavaScript bundles.
+
+Chrome download ID `2785` remains unassociated. Its live rejection reason and scheme category remain unknown because that report predates the new bounded fields. Live acceptance still requires a future controlled run to retain a selected-tab main-frame event after the trusted quality click, report only its bounded reason/category when rejected, or establish exact in-memory URL equality to the same Chrome download ID plus the existing action-time media identity and unique-chain conditions. Browser completion, clip association, and file dimensions must continue to be reported as separate evidence. No live Flow upscale or download occurred. P11.2/P11.3 remain out of scope.
+
+## P11.1 blob URL match and Download-row menu diagnosis - 4 November 2026
+
+### Supplied live evidence
+
+The user reports that a selected Flow main-frame blob URL exactly matched completed Chrome download ID `2786`. No trusted quality click was captured, so this is event-to-download URL evidence only; clip-to-download association remains **unverified**. The build ID and whether equality was against `DownloadItem.url` or `DownloadItem.finalUrl` were not supplied.
+
+### Menu-only check availability
+
+The requested live sequence was not run in this session. The connected browser inventory returned no apps or browser tabs. The computer-use workflow's `list_apps()` and `list_windows()` calls failed because its native pipe was unavailable. No Flow page was inspected, no diagnostic was armed, and no More options click or Download hover was performed. The menu-only live check is therefore **NOT_RUN**; no live DOM mismatch is confirmed and no production fix is justified by current evidence.
+
+### Current observer branch and limits
+
+Source review shows the first Download-row gate in the passive document-capture `pointerover` handler. It requires a trusted event while the observer is in `download_row`, filters the composed path to buttons, menu items, or elements with `aria-controls`, checks that the path is inside the unique visible panel bound from More options, and searches the filtered path for normalized accessible text containing `download`. If that row lookup finds nothing, the handler returns silently: it does not emit a `capture_issue` or a failed row record.
+
+After a row is recognized, the observer waits up to two seconds for exactly one `aria-controls` ID and one visible linked submenu. The row may be outside the card owner because it is rendered in the overlay, but the selected card owner must remain connected. Only after the linked submenu resolves does it send `downloadRowRecognized`, `qualityMenuControlResolved`, and option visibility/enabled booleans. The current diagnostic does not retain the live row's tag, role, label category, `aria-expanded`, or submenu visibility details; those need a sanitized read-only DOM observation to distinguish a path/text recognition miss from a submenu-binding miss.
+
+Possible source mismatches to check, not confirmed live causes: the live Download row may lack a recognized interactive role and `aria-controls` at pointerover, its accessible text may not normalize to a label containing `download`, the event path may not fall inside the bound main panel, or the row's control may not resolve to one visible submenu. Do not broaden the observer selector or relax unique binding without live evidence.
+
+### Sanitized menu-only observation for the next available live session
+
+On the intended verified Flow tab, confirm build `automat-faceless-0.1.0-mw2018be`, arm the diagnostic, and paste this read-only snippet in DevTools before opening More options. It prints fixed label/role categories, element tags, `aria-expanded` state, whether `aria-controls` exists, target counts, and whether the linked panel is visible. It never prints raw labels, IDs, URLs, text, or tokens. Then click More options, hover Download, review the one console record, and stop before choosing any quality.
+
+```js
+(() => {
+  const normalize = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const labelKind = (element) => {
+    const value = normalize(`${element.getAttribute("aria-label") ?? ""} ${element.innerText ?? element.textContent ?? ""}`);
+    if (value.includes("moreoptions")) return "more_options";
+    if (value.includes("download")) return "download";
+    if (value.includes("1080pupscaled")) return "quality_option";
+    return value ? "other" : "none";
+  };
+  const roleKind = (element) => {
+    const role = (element.getAttribute("role") ?? "").toLowerCase();
+    return ["button", "menu", "menuitem", "option", "group", "presentation"].includes(role)
+      ? role
+      : role ? "other" : "absent";
+  };
+  const visible = (element) => {
+    if (!element?.isConnected || element.hidden || element.getAttribute("aria-hidden") === "true") return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+  };
+  const controlInfo = (element, path = []) => {
+    const ids = (element.getAttribute("aria-controls") ?? "").trim().split(/\s+/).filter(Boolean);
+    const roots = new Set([document, ...path.map((node) => node.getRootNode()).filter((root) => root instanceof ShadowRoot)]);
+    const targets = [...roots].flatMap((root) =>
+      [...root.querySelectorAll("[id]")].filter((target) => ids.includes(target.id)),
+    );
+    const uniqueTarget = ids.length === 1 && targets.length === 1 ? targets[0] : undefined;
+    return {
+      ariaControlsPresent: ids.length > 0,
+      ariaControlsCount: ids.length,
+      resolvedTargetCount: targets.length,
+      linkedPanelVisible: Boolean(uniqueTarget && visible(uniqueTarget)),
+      linkedPanelTag: uniqueTarget?.localName ?? "none",
+      linkedPanelRole: uniqueTarget ? roleKind(uniqueTarget) : "none",
+    };
+  };
+  let moreTrigger;
+  const onClick = (event) => {
+    if (!event.isTrusted) return;
+    const path = event.composedPath().filter((node) => node instanceof HTMLElement);
+    moreTrigger = path.find((node) => labelKind(node) === "more_options");
+  };
+  const onPointerOver = (event) => {
+    if (!event.isTrusted || !moreTrigger) return;
+    const path = event.composedPath().filter((node) => node instanceof HTMLElement);
+    const row = path.find((node) => labelKind(node) === "download");
+    if (!row) return;
+    document.removeEventListener("click", onClick, true);
+    document.removeEventListener("pointerover", onPointerOver, true);
+    const mainBinding = controlInfo(moreTrigger, [moreTrigger]);
+    const mainTargets = (moreTrigger.getAttribute("aria-controls") ?? "").trim().split(/\s+/).filter(Boolean);
+    const withinMainPanel = path.some((node) => {
+      const roots = new Set([document, node.getRootNode()]);
+      return [...roots].some((root) =>
+        [...root.querySelectorAll("[id]")].some((target) => mainTargets.includes(target.id) && (target === node || target.contains(node))),
+      );
+    });
+    console.info("Flow menu-only observation (sanitized)", JSON.stringify({
+      moreOptions: {
+        tag: moreTrigger.localName,
+        role: roleKind(moreTrigger),
+        labelKind: labelKind(moreTrigger),
+        ariaExpanded: ["true", "false"].includes(moreTrigger.getAttribute("aria-expanded")) ? moreTrigger.getAttribute("aria-expanded") : "other_or_absent",
+        ...mainBinding,
+      },
+      downloadRow: {
+        tag: row.localName,
+        role: roleKind(row),
+        labelKind: labelKind(row),
+        ariaExpanded: ["true", "false"].includes(row.getAttribute("aria-expanded")) ? row.getAttribute("aria-expanded") : "other_or_absent",
+        withinBoundMainPanel: withinMainPanel,
+        ...controlInfo(row, path),
+      },
+      observerPathGate: path.some((node) => node.matches("button,[role='button'],[role='menuitem']") || node.hasAttribute("aria-controls")),
+    }, null, 2));
+  };
+  document.addEventListener("click", onClick, true);
+  document.addEventListener("pointerover", onPointerOver, true);
+  console.info("Read-only probe armed: click More options, hover Download, then stop before quality selection.");
+})();
+```
+
+This pass records no confirmed Download-row mismatch and makes no code change. The supplied blob URL equality for ID `2786` is retained as user-reported event/download evidence only. No trusted quality action or Flow clip association is established. P11.2/P11.3 remain out of scope.

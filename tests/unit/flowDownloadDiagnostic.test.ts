@@ -49,6 +49,8 @@ const base = FlowGalleryDownloadDiagnosticSchema.parse({
       eventToken: "page-download-1",
       filename: "clip-8c53eca2.mp4",
       urlFingerprint: "aaaaaaaaaaaaaaaa",
+      urlScheme: "https",
+      exactDownloadIds: [41],
       frameMatched: true,
       afterAction: true,
       offsetMs: 3_000,
@@ -264,6 +266,18 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     });
   });
 
+  it("requires an in-memory exact URL equality link to the Chrome ID", () => {
+    expect(
+      classifyFlowDownloadAssociation({
+        ...base,
+        pageDownloads: [{ ...base.pageDownloads[0]!, exactDownloadIds: [] }],
+      }),
+    ).toEqual({
+      association: "unverified",
+      associationReason: "no_exact_url_filename_pair",
+    });
+  });
+
   it("keeps missing and wrong-frame page events unassociated", () => {
     expect(
       classifyFlowDownloadAssociation({ ...base, pageDownloads: [] }),
@@ -274,9 +288,7 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     expect(
       classifyFlowDownloadAssociation({
         ...base,
-        pageDownloads: [
-          { ...base.pageDownloads[0]!, frameMatched: false },
-        ],
+        pageDownloads: [{ ...base.pageDownloads[0]!, frameMatched: false }],
       }),
     ).toEqual({
       association: "unverified",
@@ -304,11 +316,45 @@ describe("Flow Gallery download feasibility diagnostic", () => {
   it("reports ambiguous when multiple Chrome IDs share the exact evidence", () => {
     const duplicate = {
       ...base,
+      pageDownloads: [
+        { ...base.pageDownloads[0]!, exactDownloadIds: [41, 42] },
+      ],
       downloads: [...base.downloads, { ...base.downloads[0]!, downloadId: 42 }],
     };
     expect(classifyFlowDownloadAssociation(duplicate)).toEqual({
       association: "ambiguous",
       associationReason: "multiple_exact_download_candidates",
+    });
+  });
+
+  it("keeps two competing selected-frame download events ambiguous", () => {
+    const secondEvent = {
+      ...base.pageDownloads[0]!,
+      eventToken: "page-download-2" as const,
+      filename: "second.mp4",
+      urlFingerprint: "cccccccccccccccc",
+      exactDownloadIds: [42],
+    };
+    const competing = {
+      ...base,
+      mediaRequests: [],
+      pageDownloads: [
+        { ...base.pageDownloads[0]!, exactDownloadIds: [41] },
+        secondEvent,
+      ],
+      downloads: [
+        ...base.downloads,
+        {
+          ...base.downloads[0]!,
+          downloadId: 42,
+          filename: "second.mp4",
+          urlFingerprint: "cccccccccccccccc",
+        },
+      ],
+    };
+    expect(classifyFlowDownloadAssociation(competing)).toEqual({
+      association: "ambiguous",
+      associationReason: "multiple_page_download_events",
     });
   });
 
@@ -347,9 +393,48 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       "https://media.example/8c53eca2/video.mp4?signature=secret-token",
     );
     expect(fingerprints).toMatchObject({
+      accepted: true,
+      schemeCategory: "https",
       urlFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/),
       mediaIdFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/),
     });
     expect(JSON.stringify(fingerprints)).not.toContain("secret-token");
+  });
+
+  it("classifies rejected download URLs without returning their contents", async () => {
+    const cases = [
+      [undefined, { reason: "missing", schemeCategory: "unknown" }],
+      ["  ", { reason: "empty", schemeCategory: "unknown" }],
+      ["https://%", { reason: "malformed", schemeCategory: "https" }],
+      [
+        "ftp://download.example/clip.mp4",
+        { reason: "unsupported_scheme", schemeCategory: "other" },
+      ],
+      [
+        "https://user:secret@download.example/clip.mp4?token=private",
+        { reason: "policy_rejected", schemeCategory: "https" },
+      ],
+    ] as const;
+    for (const [rawUrl, rejection] of cases) {
+      const result = await fingerprintFlowDownloadUrl(base.sessionId, rawUrl);
+      expect(result).toEqual({ accepted: false, rejection });
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(JSON.stringify(result)).not.toContain("private");
+    }
+  });
+
+  it("accepts HTTP and blob URL forms for exact in-memory comparison", async () => {
+    await expect(
+      fingerprintFlowDownloadUrl(
+        base.sessionId,
+        "http://localhost:4173/download.mp4",
+      ),
+    ).resolves.toMatchObject({ accepted: true, schemeCategory: "http" });
+    await expect(
+      fingerprintFlowDownloadUrl(
+        base.sessionId,
+        "blob:https://flow.example/opaque-token",
+      ),
+    ).resolves.toMatchObject({ accepted: true, schemeCategory: "blob" });
   });
 });

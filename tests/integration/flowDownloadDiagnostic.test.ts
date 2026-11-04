@@ -263,7 +263,7 @@ describe("Flow Gallery download diagnostic worker path", () => {
         id: 51,
         filename: "C:\\Downloads\\clip-8c53eca2.mp4",
         state: "in_progress",
-        url: mediaUrl,
+        url: "https://media.example/redirect-start?signature=initial-secret",
         finalUrl: mediaUrl,
       });
     }
@@ -282,11 +282,20 @@ describe("Flow Gallery download diagnostic worker path", () => {
             downloadId: 51,
             filename: "clip-8c53eca2.mp4",
             state: "in_progress",
+            urlScheme: "https",
+            finalUrlScheme: "https",
+          }),
+        ]),
+        pageDownloads: expect.arrayContaining([
+          expect.objectContaining({
+            exactDownloadIds: expect.arrayContaining([51]),
+            urlScheme: "https",
           }),
         ]),
       });
     });
     expect(JSON.stringify(await manager.get())).not.toContain("private-token");
+    expect(JSON.stringify(await manager.get())).not.toContain("media.example");
     expect(JSON.stringify(await manager.get())).not.toContain(
       "unrelated-secret",
     );

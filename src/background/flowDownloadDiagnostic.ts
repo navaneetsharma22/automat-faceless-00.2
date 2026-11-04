@@ -170,6 +170,22 @@ export function createFlowDownloadDiagnosticManager(
   let createdListenerRegistered = false;
   let changedListenerRegistered = false;
   let eventQueue: Promise<void> = Promise.resolve();
+  // Raw URLs are kept only in bounded worker memory for exact equality checks.
+  // Persisted diagnostics contain fingerprints, allowlisted schemes, and IDs only.
+  const transientPageDownloadUrls = new Map<string, string>();
+  const transientChromeDownloadUrls = new Map<
+    number,
+    { url?: string; finalUrl?: string }
+  >();
+  const clearTransientUrlComparisons = () => {
+    transientPageDownloadUrls.clear();
+    transientChromeDownloadUrls.clear();
+  };
+  const exactDownloadIdsForUrl = (rawUrl: string) =>
+    [...transientChromeDownloadUrls.entries()]
+      .filter(([, item]) => item.url === rawUrl || item.finalUrl === rawUrl)
+      .map(([downloadId]) => downloadId)
+      .slice(0, 6);
   const loaded = dependencies.storage
     .get(FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY)
     .then((stored) => {
@@ -223,6 +239,11 @@ export function createFlowDownloadDiagnosticManager(
     if (!isActive(record)) return record;
     const next = await persist({ ...record, status });
     await detach(next);
+    if (
+      status !== "interrupted" ||
+      next.interruptionReason !== "debugger_detached"
+    )
+      clearTransientUrlComparisons();
     return next;
   };
 
@@ -267,6 +288,7 @@ export function createFlowDownloadDiagnosticManager(
     await loaded;
     return enqueue(async () => {
       if (isActive(current)) throw new Error("flow_diagnostic_already_active");
+      clearTransientUrlComparisons();
       const permissions = await dependencies.permissions.contains({
         permissions: ["debugger", "tabs", "scripting", "downloads"],
       });
@@ -337,6 +359,7 @@ export function createFlowDownloadDiagnosticManager(
         });
         return publicSnapshot(current);
       } catch (error) {
+        clearTransientUrlComparisons();
         if (attached) {
           await dependencies.scripting
             .executeScript({
@@ -474,9 +497,11 @@ export function createFlowDownloadDiagnosticManager(
     await loaded;
     await enqueue(async () => {
       const record = current;
-      if (!record || !isActive(record) || now() >= record.expiresAt)
-        return;
-      if (method === "Page.downloadWillBegin" && record.tabId !== source.tabId) {
+      if (!record || !isActive(record) || now() >= record.expiresAt) return;
+      if (
+        method === "Page.downloadWillBegin" &&
+        record.tabId !== source.tabId
+      ) {
         await persist({
           ...record,
           pageDownloadEventsReceived: Math.min(
@@ -502,8 +527,9 @@ export function createFlowDownloadDiagnosticManager(
           record.sessionId,
           request?.url,
         );
-        if (!fingerprints) return;
-        const token = `media-request-${record.mediaRequests.length + 1}` as const;
+        if (!fingerprints.accepted) return;
+        const token =
+          `media-request-${record.mediaRequests.length + 1}` as const;
         const mediaRequest: FlowDownloadMediaRequest = {
           requestToken: token,
           resourceKind: type,
@@ -595,16 +621,18 @@ export function createFlowDownloadDiagnosticManager(
           record.sessionId,
           params.url,
         );
-        if (!fingerprints) {
+        if (!fingerprints.accepted) {
           await persist({
             ...observedRecord,
             pageDownloadMetadataRejected: Math.min(
               100,
               (record.pageDownloadMetadataRejected ?? 0) + 1,
             ),
+            lastPageDownloadUrlRejection: fingerprints.rejection,
           });
           return;
         }
+        const rawPageUrl = params.url as string;
         const filename = sanitizeFlowDownloadFilename(params.suggestedFilename);
         const filenameUnavailable = filename === "unknown-file";
         const filenameMediaId = await fingerprintFlowMediaIdentifier(
@@ -626,6 +654,8 @@ export function createFlowDownloadDiagnosticManager(
           eventToken: `page-download-${record.pageDownloads.length + 1}`,
           filename,
           urlFingerprint: fingerprints.urlFingerprint,
+          urlScheme: fingerprints.schemeCategory,
+          exactDownloadIds: exactDownloadIdsForUrl(rawPageUrl),
           ...((fingerprints.mediaIdFingerprint ?? filenameMediaId)
             ? {
                 mediaIdFingerprint:
@@ -637,6 +667,7 @@ export function createFlowDownloadDiagnosticManager(
             record.actionAt !== undefined && capturedAt >= record.actionAt,
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
+        transientPageDownloadUrls.set(pageEvent.eventToken, rawPageUrl);
         const next = updateAssociation(
           {
             ...pageObservedRecord,
@@ -697,6 +728,35 @@ export function createFlowDownloadDiagnosticManager(
         fingerprintFlowDownloadUrl(record.sessionId, item.url),
         fingerprintFlowDownloadUrl(record.sessionId, item.finalUrl),
       ]);
+      const transientUrls = {
+        ...(url.accepted && typeof item.url === "string"
+          ? { url: item.url }
+          : {}),
+        ...(finalUrl.accepted && typeof item.finalUrl === "string"
+          ? { finalUrl: item.finalUrl }
+          : {}),
+      };
+      transientChromeDownloadUrls.set(item.id, transientUrls);
+      while (transientChromeDownloadUrls.size > 6) {
+        const oldestDownloadId = transientChromeDownloadUrls.keys().next()
+          .value as number | undefined;
+        if (oldestDownloadId === undefined) break;
+        transientChromeDownloadUrls.delete(oldestDownloadId);
+      }
+      const pageDownloads = record.pageDownloads.map((event) => {
+        const pageUrl = transientPageDownloadUrls.get(event.eventToken);
+        if (
+          pageUrl === undefined ||
+          (transientUrls.url !== pageUrl && transientUrls.finalUrl !== pageUrl)
+        )
+          return event;
+        return {
+          ...event,
+          exactDownloadIds: [
+            ...new Set([...(event.exactDownloadIds ?? []), item.id]),
+          ].slice(0, 6),
+        };
+      });
       const mediaIdFingerprint = await fingerprintFlowMediaIdentifier(
         record.sessionId,
         filename,
@@ -706,8 +766,18 @@ export function createFlowDownloadDiagnosticManager(
         filename,
         state: readBrowserState(item.state),
         extension,
-        ...(url ? { urlFingerprint: url.urlFingerprint } : {}),
-        ...(finalUrl ? { finalUrlFingerprint: finalUrl.urlFingerprint } : {}),
+        ...(url.accepted
+          ? {
+              urlFingerprint: url.urlFingerprint,
+              urlScheme: url.schemeCategory,
+            }
+          : { urlRejection: url.rejection }),
+        ...(finalUrl.accepted
+          ? {
+              finalUrlFingerprint: finalUrl.urlFingerprint,
+              finalUrlScheme: finalUrl.schemeCategory,
+            }
+          : { finalUrlRejection: finalUrl.rejection }),
         ...(mediaIdFingerprint ? { mediaIdFingerprint } : {}),
         startedOffsetMs: Math.max(0, now() - record.startedAt),
         ...(item.error
@@ -718,6 +788,7 @@ export function createFlowDownloadDiagnosticManager(
         {
           ...record,
           downloadCreatedEvents: received,
+          pageDownloads,
           downloads: [...record.downloads, candidate],
         },
         now(),

@@ -1,6 +1,27 @@
 import { z } from "zod";
 import { sha256Hex } from "../../domain/batches/hashPrompt";
 
+export const FlowDownloadUrlSchemeCategorySchema = z.enum([
+  "https",
+  "http",
+  "blob",
+  "other",
+  "unknown",
+]);
+export const FlowDownloadUrlRejectionSchema = z
+  .object({
+    reason: z.enum([
+      "missing",
+      "empty",
+      "malformed",
+      "unsupported_scheme",
+      "policy_rejected",
+    ]),
+    schemeCategory: FlowDownloadUrlSchemeCategorySchema,
+  })
+  .strict();
+const FlowSupportedDownloadUrlSchemeSchema = z.enum(["https", "http", "blob"]);
+
 export const FLOW_GALLERY_DIAGNOSTIC_TTL_MS = 20 * 60 * 1000;
 export const FLOW_GALLERY_DIAGNOSTIC_ALARM =
   "automat-flow-gallery-download-diagnostic-expire";
@@ -23,6 +44,10 @@ export const FlowDownloadCandidateSchema = z
       .string()
       .regex(/^[a-f0-9]{16}$/)
       .optional(),
+    urlScheme: FlowSupportedDownloadUrlSchemeSchema.optional(),
+    finalUrlScheme: FlowSupportedDownloadUrlSchemeSchema.optional(),
+    urlRejection: FlowDownloadUrlRejectionSchema.optional(),
+    finalUrlRejection: FlowDownloadUrlRejectionSchema.optional(),
     mediaIdFingerprint: z
       .string()
       .regex(/^[a-f0-9]{16}$/)
@@ -40,6 +65,8 @@ export const FlowDownloadPageEventSchema = z
     eventToken: z.string().regex(/^page-download-[1-4]$/),
     filename: z.string().max(120),
     urlFingerprint: z.string().regex(/^[a-f0-9]{16}$/),
+    urlScheme: FlowSupportedDownloadUrlSchemeSchema.optional(),
+    exactDownloadIds: z.array(z.number().int().nonnegative()).max(6).optional(),
     mediaIdFingerprint: z
       .string()
       .regex(/^[a-f0-9]{16}$/)
@@ -106,14 +133,55 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     mediaRequests: z.array(FlowDownloadMediaRequestSchema).max(16),
     pageDownloads: z.array(FlowDownloadPageEventSchema).max(4),
     downloads: z.array(FlowDownloadCandidateSchema).max(6),
-    pageDownloadEventsReceived: z.number().int().nonnegative().max(100).optional(),
-    pageDownloadTargetMismatches: z.number().int().nonnegative().max(100).optional(),
-    pageDownloadFrameMismatches: z.number().int().nonnegative().max(100).optional(),
-    pageDownloadMainFrameEvents: z.number().int().nonnegative().max(100).optional(),
-    pageDownloadMetadataRejected: z.number().int().nonnegative().max(100).optional(),
-    pageDownloadFilenameUnavailable: z.number().int().nonnegative().max(100).optional(),
-    pageDownloadEventsOmittedAtCap: z.number().int().nonnegative().max(100).optional(),
-    mediaRequestsOmittedAtCap: z.number().int().nonnegative().max(100).optional(),
+    pageDownloadEventsReceived: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    pageDownloadTargetMismatches: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    pageDownloadFrameMismatches: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    pageDownloadMainFrameEvents: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    pageDownloadMetadataRejected: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    pageDownloadFilenameUnavailable: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    pageDownloadEventsOmittedAtCap: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    lastPageDownloadUrlRejection: FlowDownloadUrlRejectionSchema.optional(),
+    mediaRequestsOmittedAtCap: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
     nonVideoDownloadCount: z.number().int().nonnegative().max(100),
     downloadCreatedEvents: z.number().int().nonnegative().max(100).optional(),
     videoCandidatesOmitted: z.number().int().nonnegative().max(100).optional(),
@@ -256,21 +324,74 @@ export function flowDownloadExtension(
 }
 
 /** URL values are hashed in memory with a per-observation scope; raw URLs are never returned. */
+export type FlowDownloadUrlSchemeCategory = z.infer<
+  typeof FlowDownloadUrlSchemeCategorySchema
+>;
+export type FlowDownloadUrlRejection = z.infer<
+  typeof FlowDownloadUrlRejectionSchema
+>;
+export type FlowDownloadUrlFingerprint =
+  | {
+      accepted: true;
+      schemeCategory: "https" | "http" | "blob";
+      urlFingerprint: string;
+      mediaIdFingerprint?: string;
+    }
+  | { accepted: false; rejection: FlowDownloadUrlRejection };
+
+function rawUrlSchemeCategory(rawUrl: string): FlowDownloadUrlSchemeCategory {
+  const match = rawUrl.match(/^\s*([a-z][a-z\d+.-]*):/i);
+  const scheme = match?.[1]?.toLowerCase();
+  return scheme === "https" || scheme === "http" || scheme === "blob"
+    ? scheme
+    : scheme
+      ? "other"
+      : "unknown";
+}
+
 export async function fingerprintFlowDownloadUrl(
   sessionId: string,
   rawUrl: unknown,
-): Promise<
-  { urlFingerprint: string; mediaIdFingerprint?: string } | undefined
-> {
-  if (typeof rawUrl !== "string" || rawUrl.length > 8192) return undefined;
+): Promise<FlowDownloadUrlFingerprint> {
+  if (typeof rawUrl !== "string")
+    return {
+      accepted: false,
+      rejection: { reason: "missing", schemeCategory: "unknown" },
+    };
+  if (rawUrl.trim().length === 0)
+    return {
+      accepted: false,
+      rejection: { reason: "empty", schemeCategory: "unknown" },
+    };
+  const rawScheme = rawUrlSchemeCategory(rawUrl);
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
   } catch {
-    return undefined;
+    return {
+      accepted: false,
+      rejection: { reason: "malformed", schemeCategory: rawScheme },
+    };
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
-    return undefined;
+  const schemeCategory = rawUrlSchemeCategory(rawUrl);
+  if (
+    schemeCategory !== "https" &&
+    schemeCategory !== "http" &&
+    schemeCategory !== "blob"
+  )
+    return {
+      accepted: false,
+      rejection: { reason: "unsupported_scheme", schemeCategory },
+    };
+  if (
+    rawUrl.length > 8192 ||
+    parsed.username.length > 0 ||
+    parsed.password.length > 0
+  )
+    return {
+      accepted: false,
+      rejection: { reason: "policy_rejected", schemeCategory },
+    };
   const urlFingerprint = (await sha256Hex(`${sessionId}\n${rawUrl}`)).slice(
     0,
     16,
@@ -284,6 +405,8 @@ export async function fingerprintFlowDownloadUrl(
     ? (await sha256Hex(`${sessionId}\nmedia\n${pathId}`)).slice(0, 16)
     : undefined;
   return {
+    accepted: true,
+    schemeCategory,
     urlFingerprint,
     ...(mediaIdFingerprint ? { mediaIdFingerprint } : {}),
   };
@@ -331,6 +454,7 @@ export function classifyFlowDownloadAssociation(
     input.downloads
       .filter(
         (download) =>
+          (event.exactDownloadIds ?? []).includes(download.downloadId) &&
           (download.urlFingerprint === event.urlFingerprint ||
             download.finalUrlFingerprint === event.urlFingerprint) &&
           download.filename === event.filename,
