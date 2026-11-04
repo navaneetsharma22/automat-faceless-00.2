@@ -209,5 +209,33 @@ describe("Flow Gallery download diagnostic worker path", () => {
     });
     expect(debuggerDetaches).toHaveLength(1);
     expect(detachDebugger).toHaveBeenCalledTimes(1);
+
+    await manager.arm();
+    for (const listener of debuggerDetaches)
+      listener({ tabId: 7 }, "target_closed");
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        status: "interrupted",
+        interruptionReason: "debugger_detached",
+      });
+    });
+    for (const listener of createdListeners) {
+      listener({
+        id: 53,
+        filename: "C:\\Downloads\\late-candidate.mp4",
+        state: "in_progress",
+        url: "https://media.example/late/candidate.mp4?signature=late-secret",
+      });
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        status: "interrupted",
+        interruptionReason: "debugger_detached",
+        association: "unverified",
+        downloadCreatedEvents: 1,
+        downloads: [expect.objectContaining({ downloadId: 53, filename: "late-candidate.mp4" })],
+      });
+    });
+    expect(JSON.stringify(await manager.get())).not.toContain("late-secret");
   });
 });

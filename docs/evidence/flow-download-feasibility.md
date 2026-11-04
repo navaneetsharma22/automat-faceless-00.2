@@ -6,6 +6,20 @@ This note combines the user-provided Flow observations below with offline implem
 
 The offline package produced by this task is **`automat-faceless-0.1.0-mw0vqugh`**. It has not yet been loaded or confirmed in Chrome.
 
+## P11.1 offline follow-up — 4 November 2026
+
+The user reports that build `automat-faceless-0.1.0-mw0vqugh` was armed for Flow tab `1957329822`, and that Chrome history showed `animate_d35cfe17_1080p.mp4` (5.0 MB) after a newly generated clip. The diagnostic reported `interrupted`, no card owner/menu binding, no native action, and no candidate MP4/WebM. The exact Chrome download ID and the association with the observed action remain unverified. This is user-supplied live evidence; Chrome remained inaccessible during this offline follow-up.
+
+Source review found two confirmed diagnostic gaps. First, the manager has two paths to `interrupted`: a debugger `onDetach` handler that called `finish(..., "interrupted")` without retaining a cause, and status resolution when an exactly associated Chrome download is itself interrupted. The record now carries bounded `debugger_detached` or `matched_download_interrupted` causes. The reported live interruption cannot be attributed to either path from the supplied snapshot alone.
+
+Second, Chrome `downloads.onCreated` candidates were already stored independently from Gallery action verification, but the report did not count received events or video candidates omitted after the six-candidate cap. Those bounded counters are now visible, alongside a bounded last Gallery capture issue. A debugger detach previously ended active capture before a later Chrome download event could be recorded. The interrupted diagnostic now continues collecting Chrome lifecycle evidence through its original expiry while the reason is `debugger_detached`; the record stays interrupted and any late candidate stays unassociated without the strict identity chain. The next run can distinguish a received non-video event, a stored MP4/WebM candidate awaiting association, and capacity omission. A zero event count still cannot distinguish an event that never occurred from one the browser did not deliver to the listener; the new listener registration is a precondition of arming.
+
+The passive page observer listens in capture phase, checks the trusted click's composed path, normalizes `downloadDownload`, and resolves each `aria-controls` value at the relevant menu step. Its menu query is deferred to a microtask after the Download-row click so the dynamically created quality submenu can appear. The browser fixture replaces the main menu with the quality submenu between clicks and removes the quality menu immediately after the trusted quality click is handled. It confirms the click is received and accepted in that structure. It does not establish what the live Flow page emitted during the reported run; capture issue diagnostics now report expected-stage target/control/menu recognition failures when observed.
+
+Final offline checks: focused diagnostic tests **2 files / 9 tests PASS**; typecheck, ESLint, production build/package validation, and `git diff --check` **PASS**. Final build: **`automat-faceless-0.1.0-mw1ix2hs`**, four JavaScript bundles. Live verification remains **NOT_RUN**. P11.2/P11.3 remain out of scope.
+
+For the next live run, load and confirm build `automat-faceless-0.1.0-mw1ix2hs`, arm on the intended Flow tab, and perform one manually authorized Gallery action. The report should show whether the trusted action was captured, the last bounded capture issue if not, the main and quality menu bindings, Chrome created-event count, candidate count/omission count, and any stored candidate basename/state. If debugger detach precedes Chrome's download event, the report should retain the debugger cause and still capture the late Chrome candidate. Keep a candidate unassociated unless the strict selected-frame/action-media/Chrome ID chain is present. Do not repeat the action because the result is unverified.
+
 ## Previously collected Flow evidence
 
 - In Gallery → Videos → a clip's More options → Download, **1080p Upscaled** was visible and enabled for a 720p clip.

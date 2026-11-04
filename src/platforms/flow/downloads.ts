@@ -89,6 +89,13 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     pageDownloads: z.array(FlowDownloadPageEventSchema).max(4),
     downloads: z.array(FlowDownloadCandidateSchema).max(6),
     nonVideoDownloadCount: z.number().int().nonnegative().max(100),
+    downloadCreatedEvents: z.number().int().nonnegative().max(100).optional(),
+    videoCandidatesOmitted: z.number().int().nonnegative().max(100).optional(),
+    interruptionReason: z.enum(["debugger_detached", "matched_download_interrupted"]).optional(),
+    captureIssue: z.object({
+      stage: z.enum(["main_menu", "download_row", "quality_option"]),
+      reason: z.enum(["click_target_not_recognized", "control_missing", "owner_missing", "menu_unresolved", "quality_option_unresolved"]),
+    }).strict().optional(),
     association: z.enum(["matched", "ambiguous", "unverified"]),
     associationReason: z.enum([
       "unique_action_media_and_download_chain",
@@ -155,6 +162,13 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
         qualityOptionEnabled: z.boolean(),
       })
       .strict(),
+    z.object({
+      sessionId: z.string().uuid(),
+      stage: z.literal("capture_issue"),
+      capturedAt: z.number().int().nonnegative(),
+      failedStage: z.enum(["main_menu", "download_row", "quality_option"]),
+      reason: z.enum(["click_target_not_recognized", "control_missing", "owner_missing", "menu_unresolved", "quality_option_unresolved"]),
+    }).strict(),
     z
       .object({
         sessionId: z.string().uuid(),
@@ -327,10 +341,15 @@ export function resolveFlowDownloadDiagnosticStatus(
     else if (matchingDownload?.state === "complete") status = "completed";
     else if (matchingDownload?.state === "interrupted") status = "interrupted";
   }
+  const interruptionReason =
+    status === "interrupted" && matchingDownload?.state === "interrupted"
+      ? "matched_download_interrupted"
+      : record.interruptionReason;
   return FlowGalleryDownloadDiagnosticSchema.parse({
     ...record,
     ...association,
     status,
+    ...(interruptionReason ? { interruptionReason } : {}),
   });
 }
 
@@ -385,20 +404,34 @@ export function installFlowGalleryDownloadObserver(
       ...message,
     }).catch(() => undefined);
   };
+  const issue = (
+    failedStage: "main_menu" | "download_row" | "quality_option",
+    reason: "click_target_not_recognized" | "control_missing" | "owner_missing" | "menu_unresolved" | "quality_option_unresolved",
+  ) => send({ sessionId, stage: "capture_issue", capturedAt: Date.now(), failedStage, reason });
   const onClick = (event: MouseEvent) => {
     if (stopped || stage === "done" || !event.isTrusted) return;
     const path = clickablePath(event);
     const target = path[0];
-    if (!target) return;
+    if (!target) {
+      if (stage !== "main_menu") issue(stage, "click_target_not_recognized");
+      return;
+    }
 
     if (stage === "main_menu") {
       const label = textFor(target);
-      if (!label.includes("moreoptions")) return;
-      if (!target.hasAttribute("aria-controls")) return;
+      if (!label.includes("moreoptions")) {
+        issue("main_menu", "click_target_not_recognized");
+        return;
+      }
+      if (!target.hasAttribute("aria-controls")) {
+        issue("main_menu", "control_missing");
+        return;
+      }
       selectedCard = target.closest<HTMLElement>(
         "article,[role='listitem'],li,[data-testid*='video-card' i],[class*='videoCard' i]",
       ) ?? target.parentElement ?? undefined;
       mainControlId = target.getAttribute("aria-controls")?.trim().split(/\s+/)[0];
+      if (!selectedCard) issue("main_menu", "owner_missing");
       stage = "download_row";
       queueMicrotask(() => {
         const owner = selectedCard;
@@ -419,7 +452,10 @@ export function installFlowGalleryDownloadObserver(
 
     if (stage === "download_row") {
       const row = path.find((entry) => textFor(entry).includes("download"));
-      if (!row) return;
+      if (!row) {
+        issue("download_row", "click_target_not_recognized");
+        return;
+      }
       downloadControlId = row
         .getAttribute("aria-controls")
         ?.trim()
@@ -455,6 +491,8 @@ export function installFlowGalleryDownloadObserver(
           qualityOptionObserved,
           qualityOptionEnabled,
         });
+        if (!menu?.isConnected) issue("download_row", "menu_unresolved");
+        else if (!qualityOptionObserved) issue("download_row", "quality_option_unresolved");
       });
       return;
     }
@@ -463,7 +501,10 @@ export function installFlowGalleryDownloadObserver(
       const qualityOption = path.find((entry) =>
         textFor(entry).includes("1080pupscaled"),
       );
-      if (!qualityOption) return;
+      if (!qualityOption) {
+        issue("quality_option", "click_target_not_recognized");
+        return;
+      }
       stage = "done";
       send({
         sessionId,

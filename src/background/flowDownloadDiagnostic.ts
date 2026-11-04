@@ -281,6 +281,8 @@ export function createFlowDownloadDiagnosticManager(
         pageDownloads: [],
         downloads: [],
         nonVideoDownloadCount: 0,
+        downloadCreatedEvents: 0,
+        videoCandidatesOmitted: 0,
         association: "unverified",
         associationReason: "no_quality_action",
       });
@@ -428,6 +430,11 @@ export function createFlowDownloadDiagnosticManager(
               record.startedAt + event.offsetMs >= message.capturedAt,
           })),
         };
+      } else if (message.stage === "capture_issue") {
+        next = {
+          ...record,
+          captureIssue: { stage: message.failedStage, reason: message.reason },
+        };
       }
       next = updateAssociation(next, now());
       await persist(next);
@@ -527,17 +534,33 @@ export function createFlowDownloadDiagnosticManager(
     await loaded;
     await enqueue(async () => {
       const record = current;
-      if (!record || !isActive(record) || now() >= record.expiresAt) return;
+      const collectingAfterDebuggerDetach =
+        record?.status === "interrupted" &&
+        record.interruptionReason === "debugger_detached";
+      if (
+        !record ||
+        (!isActive(record) && !collectingAfterDebuggerDetach) ||
+        now() >= record.expiresAt
+      ) return;
+      const received = Math.min(100, (record.downloadCreatedEvents ?? 0) + 1);
       const filename = sanitizeFlowDownloadFilename(item.filename);
       const extension = flowDownloadExtension(filename);
       if (extension === "other") {
         await persist({
           ...record,
+          downloadCreatedEvents: received,
           nonVideoDownloadCount: Math.min(100, record.nonVideoDownloadCount + 1),
         });
         return;
       }
-      if (record.downloads.length >= 6) return;
+      if (record.downloads.length >= 6) {
+        await persist({
+          ...record,
+          downloadCreatedEvents: received,
+          videoCandidatesOmitted: Math.min(100, (record.videoCandidatesOmitted ?? 0) + 1),
+        });
+        return;
+      }
       const [url, finalUrl] = await Promise.all([
         fingerprintFlowDownloadUrl(record.sessionId, item.url),
         fingerprintFlowDownloadUrl(record.sessionId, item.finalUrl),
@@ -561,10 +584,14 @@ export function createFlowDownloadDiagnosticManager(
       };
       const next = updateAssociation({
         ...record,
+        downloadCreatedEvents: received,
         downloads: [...record.downloads, candidate],
       }, now());
       await persist(next);
-      if (next.status === "completed" || next.status === "interrupted")
+      if (
+        next.status === "completed" ||
+        (next.status === "interrupted" && !collectingAfterDebuggerDetach)
+      )
         await detach(next);
     });
   }
@@ -578,7 +605,10 @@ export function createFlowDownloadDiagnosticManager(
     await loaded;
     await enqueue(async () => {
       const record = current;
-      if (!record || !isActive(record)) return;
+      const collectingAfterDebuggerDetach =
+        record?.status === "interrupted" &&
+        record.interruptionReason === "debugger_detached";
+      if (!record || (!isActive(record) && !collectingAfterDebuggerDetach)) return;
       const index = record.downloads.findIndex(
         (candidate) => candidate.downloadId === delta.id,
       );
@@ -599,7 +629,10 @@ export function createFlowDownloadDiagnosticManager(
       };
       const next = updateAssociation({ ...record, downloads }, now());
       await persist(next);
-      if (next.status === "completed" || next.status === "interrupted")
+      if (
+        next.status === "completed" ||
+        (next.status === "interrupted" && !collectingAfterDebuggerDetach)
+      )
         await detach(next);
     });
   }
@@ -621,7 +654,7 @@ export function createFlowDownloadDiagnosticManager(
     void enqueue(async () => {
       const record = current;
       if (record && isActive(record) && record.tabId === source.tabId)
-        await finish(record, "interrupted");
+        await finish({ ...record, interruptionReason: "debugger_detached" }, "interrupted");
     }).catch(() => undefined);
   };
   const createdListener = (item: ChromeDownloadItem) => {

@@ -74,8 +74,6 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     const dom = new JSDOM(
       `<article data-video-id="private-clip-id">
         <button aria-label="More options" aria-controls="gallery-menu">⋮</button>
-        <div id="gallery-menu"><div role="menuitem" aria-controls="quality-menu">downloadDownload</div></div>
-        <div id="quality-menu"><button role="menuitem">1080p Upscaled</button></div>
       </article>`,
       { url: "https://flow.google.com/project/test" },
     );
@@ -109,6 +107,7 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       expect(installFlowGalleryDownloadObserver(session)).toMatchObject({
         installed: true,
       });
+      dom.window.document.body.insertAdjacentHTML("beforeend", `<div id="gallery-menu"><div role="menuitem" aria-controls="quality-menu">downloadDownload</div></div>`);
       const click = (selector: string) => {
         const element = dom.window.document.querySelector(selector);
         if (!(element instanceof dom.window.HTMLElement))
@@ -121,8 +120,11 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       click("button[aria-label='More options']");
       await new Promise((resolve) => setTimeout(resolve, 0));
       click("[role='menuitem'][aria-controls='quality-menu']");
+      dom.window.document.querySelector("#gallery-menu")?.remove();
+      dom.window.document.body.insertAdjacentHTML("beforeend", `<div id="quality-menu"><button role="menuitem">1080p Upscaled</button></div>`);
       await new Promise((resolve) => setTimeout(resolve, 0));
       click("#quality-menu button");
+      dom.window.document.querySelector("#quality-menu")?.remove();
 
       expect(sent).toHaveLength(3);
       expect(sent).toEqual(
@@ -207,6 +209,23 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     ).toMatchObject({
       association: "unverified",
       associationReason: "no_action_media_identity_link",
+    });
+  });
+
+  it("retains a Chrome video candidate as unverified before the Gallery action is confirmed", () => {
+    const candidateOnly = {
+      ...base,
+      status: "armed" as const,
+      actionAt: undefined,
+      nativeActionObserved: undefined,
+      requestedQuality: undefined,
+      pageDownloads: [],
+      downloads: [{ ...base.downloads[0]!, downloadId: 52 }],
+    };
+    expect(candidateOnly.downloads).toHaveLength(1);
+    expect(classifyFlowDownloadAssociation(candidateOnly)).toEqual({
+      association: "unverified",
+      associationReason: "no_quality_action",
     });
   });
 

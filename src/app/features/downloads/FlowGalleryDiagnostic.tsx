@@ -173,13 +173,16 @@ export function FlowGalleryDiagnostic({
         <div className={styles.flowDiagnosticReport}>
           <dl>
             <div><dt>State</dt><dd>{report.status.replaceAll("_", " ")}</dd></div>
+            {report.interruptionReason ? <div><dt>Interruption cause</dt><dd>{report.interruptionReason.replaceAll("_", " ")}</dd></div> : null}
             <div><dt>Selected tab</dt><dd>{report.tabId}</dd></div>
             <div><dt>Native menu action</dt><dd>{report.nativeActionObserved ? "trusted 1080p Upscaled click observed" : "not observed"}</dd></div>
             <div><dt>Requested quality</dt><dd>{report.requestedQuality ?? "not observed"}</dd></div>
             <div><dt>Association</dt><dd>{associationLabel(report)}</dd></div>
             <div><dt>Browser completion</dt><dd>{report.matchedDownloadId === undefined ? "not verified" : report.downloads.find((item) => item.downloadId === report.matchedDownloadId)?.state ?? "unknown"}</dd></div>
             <div><dt>Saved-file resolution</dt><dd>not inspected</dd></div>
+            <div><dt>Chrome download events</dt><dd>{report.downloadCreatedEvents ?? 0} received; {report.nonVideoDownloadCount} non-video; {report.videoCandidatesOmitted ?? 0} video candidates omitted at capacity</dd></div>
           </dl>
+          {report.captureIssue ? <p className={styles.disabledReason}>Last Gallery capture issue: {report.captureIssue.stage.replaceAll("_", " ")} / {report.captureIssue.reason.replaceAll("_", " ")}.</p> : null}
           <p className={styles.disabledReason}>
             Card owner observed: {report.selectedCard?.ownerFound ? "yes" : "no"}; stable ID attribute observed: {report.selectedCard?.stableIdAttributeObserved ? "yes" : "no"}. Menu controls resolved: {report.menuBinding?.mainMenuControlResolved ? "main" : "main missing"}; {report.menuBinding?.qualityMenuControlResolved ? "quality submenu" : "quality submenu missing"}. 1080p Upscaled: {report.menuBinding?.qualityOptionObserved ? report.menuBinding.qualityOptionEnabled ? "enabled" : "disabled" : "not observed"}. Non-video downloads ignored: {report.nonVideoDownloadCount}.
           </p>
