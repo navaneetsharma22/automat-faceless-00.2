@@ -106,6 +106,14 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     mediaRequests: z.array(FlowDownloadMediaRequestSchema).max(16),
     pageDownloads: z.array(FlowDownloadPageEventSchema).max(4),
     downloads: z.array(FlowDownloadCandidateSchema).max(6),
+    pageDownloadEventsReceived: z.number().int().nonnegative().max(100).optional(),
+    pageDownloadTargetMismatches: z.number().int().nonnegative().max(100).optional(),
+    pageDownloadFrameMismatches: z.number().int().nonnegative().max(100).optional(),
+    pageDownloadMainFrameEvents: z.number().int().nonnegative().max(100).optional(),
+    pageDownloadMetadataRejected: z.number().int().nonnegative().max(100).optional(),
+    pageDownloadFilenameUnavailable: z.number().int().nonnegative().max(100).optional(),
+    pageDownloadEventsOmittedAtCap: z.number().int().nonnegative().max(100).optional(),
+    mediaRequestsOmittedAtCap: z.number().int().nonnegative().max(100).optional(),
     nonVideoDownloadCount: z.number().int().nonnegative().max(100),
     downloadCreatedEvents: z.number().int().nonnegative().max(100).optional(),
     videoCandidatesOmitted: z.number().int().nonnegative().max(100).optional(),
@@ -603,7 +611,7 @@ export function installFlowGalleryDownloadObserver(sessionId: string): {
       );
       if (!target || bindingPending) return;
       const cardSelector =
-        "article,[role='listitem'],li,[data-testid*='video-card' i],[class*='videoCard' i]";
+        "flow-video-tile,article,[role='listitem'],li,[data-testid*='video-card' i],[class*='videoCard' i]";
       const pathOwner = event
         .composedPath()
         .find(

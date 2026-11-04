@@ -141,7 +141,7 @@ If connected Chrome remains unavailable, open DevTools on the reported Flow tab,
 ```js
 (() => {
   const ownerSelector =
-    "article,[role='listitem'],li,[data-testid*='video-card' i],[class*='videoCard' i]";
+    "flow-video-tile,article,[role='listitem'],li,[data-testid*='video-card' i],[class*='videoCard' i]";
   const normalize = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, "");
   const labelKind = (element) => {
     const value = normalize(`${element.getAttribute("aria-label") ?? ""} ${element.innerText ?? element.textContent ?? ""}`);
@@ -213,3 +213,98 @@ Compare `productionClosestOwnerFound` with `composedPathOwnerCount` and the prin
 - Build: **`automat-faceless-0.1.0-mw1mmq40`**, four JavaScript bundles.
 
 No live menu retest or provider action occurred. The fix is verified for the reproduced composed-tree case; whether it covers tab `1957329822` remains **NOT_VERIFIED** pending the sanitized DevTools output and menu-only retest. Stop after the menu-only retest. P11.2/P11.3 remain out of scope.
+
+## P11.1 verified Flow video tile owner - 4 November 2026
+
+### Supplied live evidence
+
+The user reports build `mw1mmq40` on Flow tab `1957329822`. The trusted click path began at `mat-icon` → More options button; `flow-video-tile` was at composed-path index 8 and the enclosing `flow-grid-tile-container[role=group]` at index 11. `productionClosestOwnerFound` was false and the then-current composed-path owner count was zero. `aria-controls` was absent at capture. Separate live inspection verified that opening More options links the trigger to the main menu and hovering Download links the row to a distinct quality submenu. These are user-supplied live observations; they were not independently reread in Chrome during this offline implementation.
+
+### Cause and correction
+
+Confirmed selector gap: the production owner selector recognized `article`, `[role=listitem]`, `li`, video-card test IDs, and `videoCard` classes, but omitted the live `<flow-video-tile>` host. Therefore neither `closest()` nor the existing composed-path search recognized the actual card. The parent `flow-grid-tile-container[role=group]` is a grid container, not the selected tile owner, and is intentionally not added as an owner selector.
+
+Added `flow-video-tile` as an explicit owner selector. The observer resolves the nearest matching element from the trusted More options event path and keeps the existing composed-tree trigger-containment check. It does not require a mounted `<video>` or a stable tile ID. The existing two-second wait for one unique, available `aria-controls` menu target is unchanged for both the main menu and the quality submenu. Menu evidence remains separate from a trusted quality click and from download association.
+
+The read-only DevTools snippet in the preceding owner diagnosis now includes `flow-video-tile` in its production selector so future comparisons reflect the current build.
+
+### Regression and checks
+
+- Browser regression models the supplied hierarchy with `flow-video-tile` inside `flow-grid-tile-container[role=group]`, nested wrappers and `<mat-icon>`, no `<video>`, and no stable tile ID.
+- The More options click handler assigns its `aria-controls` and inserts the main menu after a delay. Hovering Download separately assigns its own control and adds the quality submenu after a delay.
+- Assertions verify `ownerFound: true`, `stableIdAttributeObserved: false`, and both menu bindings with the quality option visible/enabled. The test stops before a quality click and asserts no `quality_action` or association evidence.
+- Focused Vitest: **2 files / 9 tests PASS**.
+- Synthetic Microsoft Edge browser tests: **4/4 PASS**.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw1n5b95`**, four JavaScript bundles.
+
+### Menu-only retest
+
+1. Load and confirm build `automat-faceless-0.1.0-mw1n5b95`; arm the diagnostic on the intended verified Flow tab.
+2. On the target video tile, click More options once and wait for the card owner and main menu binding to resolve.
+3. Hover Download and wait for the row and quality submenu binding to resolve.
+4. Stop observation before selecting any quality. This confirms menu ownership only; do not continue to an upscale or download in this retest.
+
+No live retest, quality click, upscale, or download was performed in this pass. P11.2/P11.3 remain out of scope.
+
+## P11.1 Flow frame-to-download association diagnosis - 4 November 2026
+
+### Supplied live evidence
+
+The user reports build `mw1mmq40` on Flow tab `1957329822`: card owner and both menu bindings resolved, the trusted 1080p Upscaled click was captured, Chrome download ID `2783` completed as `animated_9d5114d7_1080p.mp4`, and the observer reported `no download event was tied to the selected Flow frame`. This summary does not say whether Chrome delivered `Page.downloadWillBegin`, whether the event source tab/frame matched, or whether usable URL metadata was present. No live Flow tab was inspected in this offline pass.
+
+### Production trace and confirmed behavior
+
+The exact reason is selected in `classifyFlowDownloadAssociation`: after a trusted action and valid card/menu evidence, it filters `pageDownloads` for entries where both `frameMatched` and `afterAction` are true. An empty result emits `no_selected_frame_download_event`. Exact Chrome ID `2783` and its completed MP4 metadata do not change that branch.
+
+The source event is Chrome DevTools Protocol `Page.downloadWillBegin`; its `params.frameId` supplies the frame attribution. At diagnostic arm, production attaches the debugger to the selected tab, sends `Page.enable` and `Network.enable`, then obtains the root frame ID from `Page.getFrameTree.frameTree.frame.id`. The download event is considered main-frame only when its `params.frameId` equals that saved root ID. The manager adds `chrome.debugger.onEvent` listener once during manager construction; each callback enters the serialized diagnostic event queue and is retained only while a diagnostic is active and unexpired. Events on another source tab are rejected before association; events on the selected tab with a non-main `params.frameId` are recorded with `frameMatched: false` and excluded by the classifier.
+
+The offline worker fixture reproduces three states: no Flow download event received (zero event counters), a Page download event from another tab (target mismatch increments), and an event from the selected tab's child frame (frame mismatch increments and the page event remains unassociated). A valid selected-tab main-frame event increments the matching-frame counter; the association still requires the action-time media request identity, exact URL/filename pair, and exact Chrome download ID. New counters are bounded, sanitized counts only. They do not weaken matching and expose no URLs or tokens.
+
+### Request evidence cap
+
+The media request cap is applied during collection, before report rendering, so it can discard association evidence; it is not only a display cap. An offline worker reproduction filled all 16 slots with pre-click Media requests, then showed a later request after the trusted quality click would be omitted and could not participate in the association chain. This is a demonstrated general failure mode; whether those 16 requests preceded the user-reported live click is unknown.
+
+Pre-click requests cannot satisfy the classifier condition `startedAt + request.offsetMs >= actionAt`. On the quality action, production now discards those ineligible pre-click entries and resets the cap-overflow count, leaving the bounded 16 slots for action-time evidence. Requests still arriving after those slots fill are counted as omitted; the evidence stays bounded and the report calls out truncation. No cap change can establish a match by filename, timing, or completed MP4 alone.
+
+### Regression and checks
+
+- Focused Vitest: **2 files / 10 tests PASS**. The unit regression verifies that missing and wrong-frame events both remain unverified. The worker integration regression verifies target/frame counters, pre-click cap saturation and reset, and the exact ID association path.
+- Typecheck: **PASS**.
+- ESLint: **PASS**.
+- Production build/package validation: **PASS**, four JavaScript bundles.
+- `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw1npjxx`**.
+
+### Next controlled diagnostic evidence
+
+On the next authorized controlled run, first confirm the installed build ID and arm only on the intended verified Flow tab. The report should show the Flow download-event received count, target mismatch count, selected-tab main-frame count, selected-tab non-main-frame count, retained request count, and post-click request overflow count. Zero received events indicates no Page download event reached the observer. A target mismatch or non-main-frame count shows a received event rejected at that binding check. A main-frame event with no association points to a later URL/filename or action-media identity condition; inspect only the sanitized fingerprints and counters. Preserve the exact Chrome download ID for comparison. A match requires the main-frame after-action event, action-time request identity, exact URL/filename pair, and exact Chrome download ID chain. Stop at the authorized boundary; do not repeat a quiet quality action.
+
+Chrome download ID `2783` remains unassociated on the evidence supplied for this pass. Whether its event was absent, rejected by target/frame, or arrived without usable metadata remains **unverified**. No live upscale or download was triggered. P11.2/P11.3 remain out of scope.
+
+## P11.1 counted main-frame event and request-cap follow-up - 4 November 2026
+
+### Supplied live evidence
+
+The user reports a trusted 1080p Upscaled click with card owner and both menus resolved, one debugger download event counted for the selected Flow tab's main frame, zero target mismatches, and completed Chrome download ID `2784` for `animated_dfacbd5d_1080p.mp4`. Association still reported no event tied to the selected Flow frame. The report also showed 16 retained action-time requests (all Fetch POST) and four omitted at capacity; the debugger detached, with detach/evidence-processing order unknown. No live Flow tab was inspected during this offline pass.
+
+### Main-frame event trace
+
+The event counter increments in the `Page.downloadWillBegin` branch before URL fingerprinting and before the event is added to `pageDownloads`. A missing or invalid URL makes `fingerprintFlowDownloadUrl` return no fingerprint; the worker keeps the receipt/main-frame counters, increments `pageDownloadMetadataRejected`, stores no page event, and the classifier emits `no_selected_frame_download_event`. A valid URL with no usable suggested filename is retained as `unknown-file` but cannot form the existing exact URL/filename pair with a named Chrome download; the report now counts `pageDownloadFilenameUnavailable` separately. If the event has valid metadata, it is retained, but `afterAction` is derived from the worker receipt time compared with the trusted quality-click timestamp. A main-frame event received before the click is stored with `afterAction: false` and excluded by the classifier. The dashboard now distinguishes counted events, target/frame attribution, retained events, retained action-time main-frame events, metadata rejection, missing filename, and page-event capacity omissions.
+
+Detach calls `finish` with `interruptionReason: debugger_detached` and changes status to interrupted while preserving the record's existing page events, media requests, counters, and downloads. It does not clear evidence. A debugger callback that reaches the event queue only after the record has become interrupted is ignored by the active-record check; in that ordering it cannot increment counters or persist the event. The fixture verifies that a pre-click main-frame event remains stored and remains ineligible after the quality click and detach. The live summary gives no retained-event, metadata, or per-event timing detail, so the specific live cause remains unverified.
+
+### Request-cap reproduction and correction
+
+The cap can discard association evidence during collection. An offline worker fixture sends 16 unrelated action-time Fetch POST requests followed by a valid main-frame Media request whose URL fingerprint matches the page download event and Chrome download. With the prior first-16 policy, the Media request would be dropped and the chain could not match. The worker now preserves the bounded 16-entry list while allowing a new main-frame Media request to replace a retained Fetch/XHR entry when capacity is full. The displaced entry increments the existing bounded omission count. This preference changes retention only: association still requires a trusted quality click, owner/menu evidence, an after-click selected-frame page event, exact page-event URL/filename to the exact Chrome download candidate ID, and a matching action-time media identity. Filename or timing alone never matches.
+
+### Regression and checks
+
+- Focused Vitest: **2 files / 10 tests PASS**. Regressions cover main-frame receipt with missing URL, missing filename metadata, event-before-click eligibility, evidence persistence across detach, and 16 Fetch POSTs followed by an exact matching Media request and Chrome download ID.
+- Typecheck: **PASS**.
+- ESLint: **PASS**.
+- Production build/package validation: **PASS**, four JavaScript bundles.
+- `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw1xqgpd`**.
+
+Chrome download ID `2784` remains unassociated on the supplied evidence. Missing event URL/filename metadata, event-before-click ordering, processing after detach, and a matching Media request arriving after the reported omitted requests remain live hypotheses. The offline fixtures demonstrate each relevant source behavior but do not establish which occurred in Flow. No live upscale or download was triggered. P11.2/P11.3 remain out of scope.

@@ -139,6 +139,27 @@ describe("Flow Gallery download diagnostic worker path", () => {
       qualityOptionObserved: true,
       qualityOptionEnabled: true,
     });
+    now += 1;
+    for (const callback of debuggerEvents) {
+      for (let index = 0; index < 17; index += 1) {
+        callback({ tabId: 7 }, "Network.requestWillBeSent", {
+          type: "Media",
+          frameId: "main-frame-test",
+          request: {
+            url: `https://media.example/pre-action-${index}/noise.mp4`,
+            method: "GET",
+          },
+        });
+      }
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        mediaRequests: expect.arrayContaining([
+          expect.objectContaining({ requestToken: "media-request-16" }),
+        ]),
+        mediaRequestsOmittedAtCap: 1,
+      });
+    });
     now += 200;
     await pageEvent({
       stage: "quality_action",
@@ -146,8 +167,63 @@ describe("Flow Gallery download diagnostic worker path", () => {
       trusted: true,
       requestedQuality: "1080p_upscaled",
     });
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        actionAt: now,
+        mediaRequests: [],
+        mediaRequestsOmittedAtCap: 0,
+      });
+    });
 
     now += 100;
+    for (const callback of debuggerEvents) {
+      for (let index = 0; index < 16; index += 1) {
+        callback({ tabId: 7 }, "Network.requestWillBeSent", {
+          type: "Fetch",
+          frameId: "main-frame-test",
+          request: {
+            url: `https://media.example/action-post-${index}/unrelated`,
+            method: "POST",
+          },
+        });
+      }
+    }
+    await vi.waitFor(async () => {
+      expect((await manager.get()).mediaRequests).toHaveLength(16);
+    });
+    for (const callback of debuggerEvents) {
+      callback({ tabId: 99 }, "Page.downloadWillBegin", {
+        frameId: "other-target-frame",
+        url: mediaUrl,
+        suggestedFilename: "clip-8c53eca2.mp4",
+      });
+      callback({ tabId: 7 }, "Page.downloadWillBegin", {
+        frameId: "child-frame-test",
+        url: mediaUrl,
+        suggestedFilename: "clip-8c53eca2.mp4",
+      });
+      callback({ tabId: 7 }, "Page.downloadWillBegin", {
+        frameId: "main-frame-test",
+        suggestedFilename: "clip-8c53eca2.mp4",
+      });
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        association: "unverified",
+        associationReason: "no_selected_frame_download_event",
+        pageDownloadEventsReceived: 3,
+        pageDownloadTargetMismatches: 1,
+        pageDownloadFrameMismatches: 1,
+        pageDownloadMainFrameEvents: 1,
+        pageDownloadMetadataRejected: 1,
+        pageDownloads: [
+          expect.objectContaining({
+            frameMatched: false,
+            afterAction: true,
+          }),
+        ],
+      });
+    });
     for (const callback of debuggerEvents) {
       callback({ tabId: 7 }, "Network.requestWillBeSent", {
         type: "Media",
@@ -163,7 +239,15 @@ describe("Flow Gallery download diagnostic worker path", () => {
     await vi.waitFor(async () => {
       expect(await manager.get()).toMatchObject({
         association: "unverified",
-        mediaRequests: [{ resourceKind: "Media" }],
+        mediaRequests: expect.arrayContaining([
+          expect.objectContaining({ resourceKind: "Media", method: "GET" }),
+        ]),
+        mediaRequestsOmittedAtCap: 1,
+        pageDownloadEventsReceived: 4,
+        pageDownloadTargetMismatches: 1,
+        pageDownloadFrameMismatches: 1,
+        pageDownloadMainFrameEvents: 2,
+        pageDownloadMetadataRejected: 1,
       });
     });
     now += 100;
@@ -222,12 +306,76 @@ describe("Flow Gallery download diagnostic worker path", () => {
     expect(detachDebugger).toHaveBeenCalledTimes(1);
 
     await manager.arm();
+    await pageEvent({
+      stage: "main_menu",
+      capturedAt: now,
+      ownerFound: true,
+      stableIdAttributeObserved: false,
+      mainMenuControlResolved: true,
+    });
+    await pageEvent({
+      stage: "download_row",
+      capturedAt: now + 10,
+      downloadRowRecognized: true,
+      qualityMenuControlResolved: true,
+      qualityOptionObserved: true,
+      qualityOptionEnabled: true,
+    });
+    for (const callback of debuggerEvents) {
+      callback({ tabId: 7 }, "Page.downloadWillBegin", {
+        frameId: "main-frame-test",
+        url: mediaUrl,
+      });
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        pageDownloadMainFrameEvents: 1,
+        pageDownloadFilenameUnavailable: 1,
+        pageDownloads: [
+          expect.objectContaining({
+            frameMatched: true,
+            afterAction: false,
+            filename: "unknown-file",
+          }),
+        ],
+      });
+    });
+    now += 100;
+    await pageEvent({
+      stage: "quality_action",
+      capturedAt: now,
+      trusted: true,
+      requestedQuality: "1080p_upscaled",
+    });
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        association: "unverified",
+        associationReason: "no_selected_frame_download_event",
+        pageDownloadFilenameUnavailable: 1,
+        pageDownloads: [
+          expect.objectContaining({
+            frameMatched: true,
+            afterAction: false,
+            filename: "unknown-file",
+          }),
+        ],
+      });
+    });
     for (const listener of debuggerDetaches)
       listener({ tabId: 7 }, "target_closed");
     await vi.waitFor(async () => {
       expect(await manager.get()).toMatchObject({
         status: "interrupted",
         interruptionReason: "debugger_detached",
+        pageDownloadMainFrameEvents: 1,
+        pageDownloadFilenameUnavailable: 1,
+        pageDownloads: [
+          expect.objectContaining({
+            frameMatched: true,
+            afterAction: false,
+            filename: "unknown-file",
+          }),
+        ],
       });
     });
     for (const listener of createdListeners) {

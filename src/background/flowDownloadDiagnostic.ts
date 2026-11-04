@@ -438,6 +438,13 @@ export function createFlowDownloadDiagnosticManager(
           actionAt: message.capturedAt,
           nativeActionObserved: message.trusted,
           requestedQuality: message.requestedQuality,
+          mediaRequestsOmittedAtCap: 0,
+          // Pre-action requests cannot satisfy the association rule, so they
+          // must not consume the bounded evidence slots needed after the click.
+          mediaRequests: record.mediaRequests.filter(
+            (request) =>
+              record.startedAt + request.offsetMs >= message.capturedAt,
+          ),
           pageDownloads: record.pageDownloads.map((event) => ({
             ...event,
             afterAction:
@@ -467,16 +474,25 @@ export function createFlowDownloadDiagnosticManager(
     await loaded;
     await enqueue(async () => {
       const record = current;
-      if (
-        !record ||
-        !isActive(record) ||
-        record.tabId !== source.tabId ||
-        now() >= record.expiresAt
-      )
+      if (!record || !isActive(record) || now() >= record.expiresAt)
         return;
+      if (method === "Page.downloadWillBegin" && record.tabId !== source.tabId) {
+        await persist({
+          ...record,
+          pageDownloadEventsReceived: Math.min(
+            100,
+            (record.pageDownloadEventsReceived ?? 0) + 1,
+          ),
+          pageDownloadTargetMismatches: Math.min(
+            100,
+            (record.pageDownloadTargetMismatches ?? 0) + 1,
+          ),
+        });
+        return;
+      }
+      if (record.tabId !== source.tabId) return;
       const capturedAt = now();
       if (method === "Network.requestWillBeSent") {
-        if (record.mediaRequests.length >= 16) return;
         const type = params.type;
         if (type !== "Media" && type !== "Fetch" && type !== "XHR") return;
         if (params.frameId !== record.mainFrameId) return;
@@ -487,8 +503,7 @@ export function createFlowDownloadDiagnosticManager(
           request?.url,
         );
         if (!fingerprints) return;
-        const token =
-          `media-request-${record.mediaRequests.length + 1}` as const;
+        const token = `media-request-${record.mediaRequests.length + 1}` as const;
         const mediaRequest: FlowDownloadMediaRequest = {
           requestToken: token,
           resourceKind: type,
@@ -502,6 +517,42 @@ export function createFlowDownloadDiagnosticManager(
             : {}),
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
+        if (record.mediaRequests.length >= 16) {
+          // Preserve a later Media request over lower-specificity Fetch/XHR
+          // entries. Exact fingerprints and the action-time check still gate
+          // association; this only chooses which bounded evidence survives.
+          const replaceIndex =
+            type === "Media"
+              ? record.mediaRequests.findIndex(
+                  (item) => item.resourceKind !== "Media",
+                )
+              : -1;
+          if (replaceIndex < 0) {
+            await persist({
+              ...record,
+              mediaRequestsOmittedAtCap: Math.min(
+                100,
+                (record.mediaRequestsOmittedAtCap ?? 0) + 1,
+              ),
+            });
+            return;
+          }
+          const replaced = record.mediaRequests[replaceIndex]!;
+          const mediaRequests = [...record.mediaRequests];
+          mediaRequests[replaceIndex] = {
+            ...mediaRequest,
+            requestToken: replaced.requestToken,
+          };
+          await persist({
+            ...record,
+            mediaRequests,
+            mediaRequestsOmittedAtCap: Math.min(
+              100,
+              (record.mediaRequestsOmittedAtCap ?? 0) + 1,
+            ),
+          });
+          return;
+        }
         await persist({
           ...record,
           mediaRequests: [...record.mediaRequests, mediaRequest],
@@ -509,18 +560,68 @@ export function createFlowDownloadDiagnosticManager(
         return;
       }
       if (method === "Page.downloadWillBegin") {
-        if (record.pageDownloads.length >= 4) return;
         const frameId = params.frameId;
+        const received = Math.min(
+          100,
+          (record.pageDownloadEventsReceived ?? 0) + 1,
+        );
+        const frameMismatches = Math.min(
+          100,
+          (record.pageDownloadFrameMismatches ?? 0) +
+            (frameId === record.mainFrameId ? 0 : 1),
+        );
+        const mainFrameEvents = Math.min(
+          100,
+          (record.pageDownloadMainFrameEvents ?? 0) +
+            (frameId === record.mainFrameId ? 1 : 0),
+        );
+        const observedRecord = {
+          ...record,
+          pageDownloadEventsReceived: received,
+          pageDownloadFrameMismatches: frameMismatches,
+          pageDownloadMainFrameEvents: mainFrameEvents,
+        };
+        if (record.pageDownloads.length >= 4) {
+          await persist({
+            ...observedRecord,
+            pageDownloadEventsOmittedAtCap: Math.min(
+              100,
+              (record.pageDownloadEventsOmittedAtCap ?? 0) + 1,
+            ),
+          });
+          return;
+        }
         const fingerprints = await fingerprintFlowDownloadUrl(
           record.sessionId,
           params.url,
         );
-        if (!fingerprints) return;
+        if (!fingerprints) {
+          await persist({
+            ...observedRecord,
+            pageDownloadMetadataRejected: Math.min(
+              100,
+              (record.pageDownloadMetadataRejected ?? 0) + 1,
+            ),
+          });
+          return;
+        }
         const filename = sanitizeFlowDownloadFilename(params.suggestedFilename);
+        const filenameUnavailable = filename === "unknown-file";
         const filenameMediaId = await fingerprintFlowMediaIdentifier(
           record.sessionId,
           filename,
         );
+        const pageObservedRecord = {
+          ...observedRecord,
+          ...(filenameUnavailable
+            ? {
+                pageDownloadFilenameUnavailable: Math.min(
+                  100,
+                  (record.pageDownloadFilenameUnavailable ?? 0) + 1,
+                ),
+              }
+            : {}),
+        };
         const pageEvent: FlowDownloadPageEvent = {
           eventToken: `page-download-${record.pageDownloads.length + 1}`,
           filename,
@@ -538,7 +639,7 @@ export function createFlowDownloadDiagnosticManager(
         };
         const next = updateAssociation(
           {
-            ...record,
+            ...pageObservedRecord,
             pageDownloads: [...record.pageDownloads, pageEvent],
           },
           now(),

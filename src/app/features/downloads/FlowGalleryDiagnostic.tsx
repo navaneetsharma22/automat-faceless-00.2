@@ -256,6 +256,36 @@ export function FlowGalleryDiagnostic({
                 capacity
               </dd>
             </div>
+            <div>
+              <dt>Flow download events</dt>
+              <dd>
+                {report.pageDownloadEventsReceived ?? 0} received across debugger
+                targets; {report.pageDownloadTargetMismatches ?? 0} target
+                mismatches; {report.pageDownloadMainFrameEvents ?? 0} selected
+                tab main-frame events; {report.pageDownloadFrameMismatches ?? 0}
+                selected tab events with a non-main frame
+                ; {report.pageDownloads.length} retained;{" "}
+                {
+                  report.pageDownloads.filter(
+                    (event) => event.frameMatched && event.afterAction,
+                  ).length
+                }{" "}
+                retained after-action main-frame events;{" "}
+                {report.pageDownloadMetadataRejected ?? 0} rejected for unusable
+                URL metadata; {report.pageDownloadFilenameUnavailable ?? 0}
+                without a usable filename;{" "}
+                {report.pageDownloadEventsOmittedAtCap ?? 0} page events omitted
+                at capacity
+              </dd>
+            </div>
+            <div>
+              <dt>Action-time request evidence</dt>
+              <dd>
+                {report.mediaRequests.length} retained;{" "}
+                {report.mediaRequestsOmittedAtCap ?? 0} omitted at the 16-entry
+                cap
+              </dd>
+            </div>
           </dl>
           {report.captureIssue ? (
             <p className={styles.disabledReason}>

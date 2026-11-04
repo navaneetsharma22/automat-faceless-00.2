@@ -264,6 +264,26 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     });
   });
 
+  it("keeps missing and wrong-frame page events unassociated", () => {
+    expect(
+      classifyFlowDownloadAssociation({ ...base, pageDownloads: [] }),
+    ).toEqual({
+      association: "unverified",
+      associationReason: "no_selected_frame_download_event",
+    });
+    expect(
+      classifyFlowDownloadAssociation({
+        ...base,
+        pageDownloads: [
+          { ...base.pageDownloads[0]!, frameMatched: false },
+        ],
+      }),
+    ).toEqual({
+      association: "unverified",
+      associationReason: "no_selected_frame_download_event",
+    });
+  });
+
   it("retains a Chrome video candidate as unverified before the Gallery action is confirmed", () => {
     const candidateOnly = {
       ...base,

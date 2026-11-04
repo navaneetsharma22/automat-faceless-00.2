@@ -290,3 +290,143 @@ test("finds the card owner on the composed path across a shadow boundary", async
     mainMenuControlResolved: true,
   });
 });
+
+test("recognizes the verified Flow video tile and captures both menus before quality selection", async ({
+  page,
+}) => {
+  await page.setContent(`
+    <style>
+      flow-grid-tile-container, flow-video-tile { display: block; }
+      flow-grid-tile-container { padding: 20px; }
+      #download-row, #quality-menu [role="menuitem"] { padding: 10px; }
+    </style>
+    <flow-grid-tile-container role="group">
+      <div><div>
+        <flow-video-tile>
+          <div><div><div><div><div><div>
+            <button aria-label="More options"><mat-icon>more_vert</mat-icon></button>
+          </div></div></div></div></div></div>
+        </flow-video-tile>
+      </div></div>
+    </flow-grid-tile-container>
+  `);
+  await page.evaluate((observerSource) => {
+    const target = window as Window & {
+      chrome?: { runtime?: { sendMessage?: (message: unknown) => void } };
+      diagnosticMessages?: Array<Record<string, unknown>>;
+    };
+    target.diagnosticMessages = [];
+    target.chrome = {
+      runtime: {
+        sendMessage: (message) =>
+          target.diagnosticMessages!.push(message as Record<string, unknown>),
+      },
+    };
+    const trigger = document.querySelector("flow-video-tile button")!;
+    trigger.addEventListener("click", () => {
+      window.setTimeout(() => {
+        trigger.setAttribute("aria-controls", "live-main-menu");
+        const menu = document.createElement("div");
+        menu.id = "live-main-menu";
+        menu.setAttribute("role", "menu");
+        menu.innerHTML = `<div id="download-row" role="menuitem">downloadDownload</div>`;
+        document.body.append(menu);
+        menu.querySelector("#download-row")!.addEventListener(
+          "pointerover",
+          () => {
+            const row = menu.querySelector<HTMLElement>("#download-row")!;
+            window.setTimeout(() => {
+              row.setAttribute("aria-controls", "live-quality-menu");
+              const quality = document.createElement("div");
+              quality.id = "live-quality-menu";
+              quality.setAttribute("role", "menu");
+              quality.innerHTML = `<div role="menuitem" aria-disabled="false">1080p Upscaled</div>`;
+              document.body.append(quality);
+            }, 40);
+          },
+          { once: true },
+        );
+      }, 40);
+    });
+    const install = (0, eval)(`(${observerSource})`) as (
+      sessionId: string,
+    ) => unknown;
+    install("33333333-3333-4333-8333-333333333333");
+  }, installFlowGalleryDownloadObserver.toString());
+
+  expect(await page.locator("video").count()).toBe(0);
+  await page.locator("flow-video-tile").locator("mat-icon").click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as Window & {
+            diagnosticMessages?: Array<Record<string, unknown>>;
+          }
+        ).diagnosticMessages?.some((message) => message.stage === "main_menu"),
+      ),
+    )
+    .toBe(true);
+  const main = await page.evaluate(() =>
+    (
+      window as Window & {
+        diagnosticMessages?: Array<Record<string, unknown>>;
+      }
+    ).diagnosticMessages?.find((message) => message.stage === "main_menu"),
+  );
+  expect(main).toMatchObject({
+    stage: "main_menu",
+    ownerFound: true,
+    stableIdAttributeObserved: false,
+    mainMenuControlResolved: true,
+  });
+
+  await page.locator("#download-row").hover();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as Window & {
+            diagnosticMessages?: Array<Record<string, unknown>>;
+          }
+        ).diagnosticMessages?.some(
+          (message) => message.stage === "download_row",
+        ),
+      ),
+    )
+    .toBe(true);
+  const menuOnlyEvidence = await page.evaluate(() => {
+    const messages =
+      (
+        window as Window & {
+          diagnosticMessages?: Array<Record<string, unknown>>;
+        }
+      ).diagnosticMessages ?? [];
+    return {
+      messages,
+      trustedQualityClickObserved: messages.some(
+        (message) => message.stage === "quality_action",
+      ),
+    };
+  });
+  expect(menuOnlyEvidence.messages).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        stage: "main_menu",
+        ownerFound: true,
+        mainMenuControlResolved: true,
+      }),
+      expect.objectContaining({
+        stage: "download_row",
+        downloadRowRecognized: true,
+        qualityMenuControlResolved: true,
+        qualityOptionObserved: true,
+        qualityOptionEnabled: true,
+      }),
+    ]),
+  );
+  expect(menuOnlyEvidence.trustedQualityClickObserved).toBe(false);
+  expect(
+    menuOnlyEvidence.messages.every((message) => !("association" in message)),
+  ).toBe(true);
+});
