@@ -14,12 +14,24 @@ export const FlowDownloadCandidateSchema = z
     downloadId: z.number().int().nonnegative(),
     filename: z.string().max(120),
     state: z.enum(["in_progress", "complete", "interrupted", "unknown"]),
-    extension: z.enum(["mp4", "webm", "other"]),
-    urlFingerprint: z.string().regex(/^[a-f0-9]{16}$/).optional(),
-    finalUrlFingerprint: z.string().regex(/^[a-f0-9]{16}$/).optional(),
-    mediaIdFingerprint: z.string().regex(/^[a-f0-9]{16}$/).optional(),
+    extension: z.enum(["mp4", "webm", "other", "pending"]),
+    urlFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/)
+      .optional(),
+    finalUrlFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/)
+      .optional(),
+    mediaIdFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/)
+      .optional(),
     startedOffsetMs: z.number().int().nonnegative(),
-    interruptCode: z.string().regex(/^[A-Z0-9_]{1,32}$/).optional(),
+    interruptCode: z
+      .string()
+      .regex(/^[A-Z0-9_]{1,32}$/)
+      .optional(),
   })
   .strict();
 
@@ -28,7 +40,10 @@ export const FlowDownloadPageEventSchema = z
     eventToken: z.string().regex(/^page-download-[1-4]$/),
     filename: z.string().max(120),
     urlFingerprint: z.string().regex(/^[a-f0-9]{16}$/),
-    mediaIdFingerprint: z.string().regex(/^[a-f0-9]{16}$/).optional(),
+    mediaIdFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/)
+      .optional(),
     frameMatched: z.boolean(),
     afterAction: z.boolean(),
     offsetMs: z.number().int().nonnegative(),
@@ -41,7 +56,10 @@ export const FlowDownloadMediaRequestSchema = z
     resourceKind: z.enum(["Media", "Fetch", "XHR"]),
     method: z.enum(["GET", "POST", "OTHER"]),
     urlFingerprint: z.string().regex(/^[a-f0-9]{16}$/),
-    mediaIdFingerprint: z.string().regex(/^[a-f0-9]{16}$/).optional(),
+    mediaIdFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/)
+      .optional(),
     offsetMs: z.number().int().nonnegative(),
   })
   .strict();
@@ -91,11 +109,22 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     nonVideoDownloadCount: z.number().int().nonnegative().max(100),
     downloadCreatedEvents: z.number().int().nonnegative().max(100).optional(),
     videoCandidatesOmitted: z.number().int().nonnegative().max(100).optional(),
-    interruptionReason: z.enum(["debugger_detached", "matched_download_interrupted"]).optional(),
-    captureIssue: z.object({
-      stage: z.enum(["main_menu", "download_row", "quality_option"]),
-      reason: z.enum(["click_target_not_recognized", "control_missing", "owner_missing", "menu_unresolved", "quality_option_unresolved"]),
-    }).strict().optional(),
+    interruptionReason: z
+      .enum(["debugger_detached", "matched_download_interrupted"])
+      .optional(),
+    captureIssue: z
+      .object({
+        stage: z.enum(["main_menu", "download_row", "quality_option"]),
+        reason: z.enum([
+          "click_target_not_recognized",
+          "control_missing",
+          "owner_missing",
+          "menu_unresolved",
+          "quality_option_unresolved",
+        ]),
+      })
+      .strict()
+      .optional(),
     association: z.enum(["matched", "ambiguous", "unverified"]),
     associationReason: z.enum([
       "unique_action_media_and_download_chain",
@@ -113,12 +142,8 @@ export const FlowGalleryDownloadDiagnosticSchema = z
 export type FlowGalleryDownloadDiagnostic = z.infer<
   typeof FlowGalleryDownloadDiagnosticSchema
 >;
-export type FlowDownloadCandidate = z.infer<
-  typeof FlowDownloadCandidateSchema
->;
-export type FlowDownloadPageEvent = z.infer<
-  typeof FlowDownloadPageEventSchema
->;
+export type FlowDownloadCandidate = z.infer<typeof FlowDownloadCandidateSchema>;
+export type FlowDownloadPageEvent = z.infer<typeof FlowDownloadPageEventSchema>;
 export type FlowDownloadMediaRequest = z.infer<
   typeof FlowDownloadMediaRequestSchema
 >;
@@ -162,13 +187,21 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
         qualityOptionEnabled: z.boolean(),
       })
       .strict(),
-    z.object({
-      sessionId: z.string().uuid(),
-      stage: z.literal("capture_issue"),
-      capturedAt: z.number().int().nonnegative(),
-      failedStage: z.enum(["main_menu", "download_row", "quality_option"]),
-      reason: z.enum(["click_target_not_recognized", "control_missing", "owner_missing", "menu_unresolved", "quality_option_unresolved"]),
-    }).strict(),
+    z
+      .object({
+        sessionId: z.string().uuid(),
+        stage: z.literal("capture_issue"),
+        capturedAt: z.number().int().nonnegative(),
+        failedStage: z.enum(["main_menu", "download_row", "quality_option"]),
+        reason: z.enum([
+          "click_target_not_recognized",
+          "control_missing",
+          "owner_missing",
+          "menu_unresolved",
+          "quality_option_unresolved",
+        ]),
+      })
+      .strict(),
     z
       .object({
         sessionId: z.string().uuid(),
@@ -207,7 +240,9 @@ export function sanitizeFlowDownloadFilename(value: unknown): string {
   return safe || "unknown-file";
 }
 
-export function flowDownloadExtension(filename: string): "mp4" | "webm" | "other" {
+export function flowDownloadExtension(
+  filename: string,
+): "mp4" | "webm" | "other" {
   const ext = filename.toLowerCase().split(".").pop();
   return ext === "mp4" || ext === "webm" ? ext : "other";
 }
@@ -216,7 +251,9 @@ export function flowDownloadExtension(filename: string): "mp4" | "webm" | "other
 export async function fingerprintFlowDownloadUrl(
   sessionId: string,
   rawUrl: unknown,
-): Promise<{ urlFingerprint: string; mediaIdFingerprint?: string } | undefined> {
+): Promise<
+  { urlFingerprint: string; mediaIdFingerprint?: string } | undefined
+> {
   if (typeof rawUrl !== "string" || rawUrl.length > 8192) return undefined;
   let parsed: URL;
   try {
@@ -226,7 +263,10 @@ export async function fingerprintFlowDownloadUrl(
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
     return undefined;
-  const urlFingerprint = (await sha256Hex(`${sessionId}\n${rawUrl}`)).slice(0, 16);
+  const urlFingerprint = (await sha256Hex(`${sessionId}\n${rawUrl}`)).slice(
+    0,
+    16,
+  );
   const pathId = parsed.pathname
     .match(
       /(?:^\/|\/)([a-f\d]{8,64}(?:-[a-f\d]{4,8}){1,4}|[a-f\d]{8,64})(?=\/|$)/i,
@@ -235,7 +275,10 @@ export async function fingerprintFlowDownloadUrl(
   const mediaIdFingerprint = pathId
     ? (await sha256Hex(`${sessionId}\nmedia\n${pathId}`)).slice(0, 16)
     : undefined;
-  return { urlFingerprint, ...(mediaIdFingerprint ? { mediaIdFingerprint } : {}) };
+  return {
+    urlFingerprint,
+    ...(mediaIdFingerprint ? { mediaIdFingerprint } : {}),
+  };
 }
 
 export function classifyFlowDownloadAssociation(
@@ -261,7 +304,10 @@ export function classifyFlowDownloadAssociation(
     !input.menuBinding.qualityOptionObserved ||
     !input.menuBinding.qualityOptionEnabled
   ) {
-    return { association: "unverified", associationReason: "no_quality_action" };
+    return {
+      association: "unverified",
+      associationReason: "no_quality_action",
+    };
   }
   const pageEvents = input.pageDownloads.filter(
     (event) => event.frameMatched && event.afterAction,
@@ -330,11 +376,12 @@ export function resolveFlowDownloadDiagnosticStatus(
   now: number,
 ): FlowGalleryDownloadDiagnostic {
   const association = classifyFlowDownloadAssociation(record);
-  const matchingDownload = association.matchedDownloadId === undefined
-    ? undefined
-    : record.downloads.find(
-        (candidate) => candidate.downloadId === association.matchedDownloadId,
-      );
+  const matchingDownload =
+    association.matchedDownloadId === undefined
+      ? undefined
+      : record.downloads.find(
+          (candidate) => candidate.downloadId === association.matchedDownloadId,
+        );
   let status = record.status;
   if (status === "armed" || status === "action_observed") {
     if (now >= record.expiresAt) status = "expired";
@@ -354,9 +401,10 @@ export function resolveFlowDownloadDiagnosticStatus(
 }
 
 /** Passive, one-shot DOM observer. It never prevents, changes, or synthesizes provider input. */
-export function installFlowGalleryDownloadObserver(
-  sessionId: string,
-): { installed: boolean; replaced: boolean } {
+export function installFlowGalleryDownloadObserver(sessionId: string): {
+  installed: boolean;
+  replaced: boolean;
+} {
   const scope = globalThis as typeof globalThis & {
     __AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__?: {
       sessionId: string;
@@ -393,118 +441,214 @@ export function installFlowGalleryDownloadObserver(
   const stableCardIdObserved = (owner: HTMLElement | undefined) =>
     Boolean(
       owner &&
-        (owner.id ||
-          owner.hasAttribute("data-id") ||
-          owner.hasAttribute("data-video-id") ||
-          owner.hasAttribute("data-asset-id")),
+      (owner.id ||
+        owner.hasAttribute("data-id") ||
+        owner.hasAttribute("data-video-id") ||
+        owner.hasAttribute("data-asset-id")),
     );
   const send = (message: FlowGalleryDiagnosticPageMessage) => {
-    void scope.chrome?.runtime?.sendMessage?.({
-      type: "AUTOMAT_FLOW_GALLERY_DOWNLOAD_DIAGNOSTIC_EVENT",
-      ...message,
-    }).catch(() => undefined);
+    void scope.chrome?.runtime
+      ?.sendMessage?.({
+        type: "AUTOMAT_FLOW_GALLERY_DOWNLOAD_DIAGNOSTIC_EVENT",
+        ...message,
+      })
+      .catch(() => undefined);
   };
   const issue = (
     failedStage: "main_menu" | "download_row" | "quality_option",
-    reason: "click_target_not_recognized" | "control_missing" | "owner_missing" | "menu_unresolved" | "quality_option_unresolved",
-  ) => send({ sessionId, stage: "capture_issue", capturedAt: Date.now(), failedStage, reason });
+    reason:
+      | "click_target_not_recognized"
+      | "control_missing"
+      | "owner_missing"
+      | "menu_unresolved"
+      | "quality_option_unresolved",
+  ) =>
+    send({
+      sessionId,
+      stage: "capture_issue",
+      capturedAt: Date.now(),
+      failedStage,
+      reason,
+    });
+  const menuAvailable = (menu: HTMLElement) => {
+    if (!menu.isConnected) return false;
+    let current: HTMLElement | null = menu;
+    while (current) {
+      if (current.hidden || current.getAttribute("aria-hidden") === "true")
+        return false;
+      const style = window.getComputedStyle(current);
+      if (style.display === "none" || style.visibility === "hidden")
+        return false;
+      current = current.parentElement;
+    }
+    return true;
+  };
+  const composedContains = (owner: HTMLElement, target: HTMLElement) => {
+    let current: Node | null = target;
+    while (current) {
+      if (current === owner) return true;
+      current =
+        current.parentNode ??
+        (current instanceof ShadowRoot ? current.host : null);
+    }
+    return false;
+  };
+  const inBoundMenu = (path: HTMLElement[], controlId: string | undefined) => {
+    const matches = controlId
+      ? [...document.querySelectorAll<HTMLElement>("[id]")].filter(
+          (element) => element.id === controlId,
+        )
+      : [];
+    const menu = matches.length === 1 ? matches[0] : null;
+    return Boolean(
+      menu &&
+      menuAvailable(menu) &&
+      path.some((entry) => entry === menu || menu.contains(entry)),
+    );
+  };
+  const waitForUniqueControlledMenu = (
+    trigger: HTMLElement,
+    owner: HTMLElement,
+    onResolved: (controlId: string, menu: HTMLElement) => void,
+    onFailed: (
+      reason: "control_missing" | "menu_unresolved" | "owner_missing",
+    ) => void,
+    requireTriggerInsideOwner = true,
+  ) => {
+    let finished = false;
+    let sawControl = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      observer.disconnect();
+      window.clearTimeout(timeout);
+    };
+    const resolve = () => {
+      if (finished) return;
+      if (
+        !owner.isConnected ||
+        !trigger.isConnected ||
+        (requireTriggerInsideOwner && !composedContains(owner, trigger))
+      ) {
+        finish();
+        onFailed("owner_missing");
+        return;
+      }
+      const ids = (trigger.getAttribute("aria-controls") ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      if (!ids.length) return;
+      sawControl = true;
+      if (ids.length !== 1) {
+        finish();
+        onFailed("menu_unresolved");
+        return;
+      }
+      const matches = [
+        ...document.querySelectorAll<HTMLElement>("[id]"),
+      ].filter((element) => element.id === ids[0]);
+      if (matches.length > 1) {
+        finish();
+        onFailed("menu_unresolved");
+        return;
+      }
+      const menu = matches[0];
+      if (!menu || !menuAvailable(menu)) return;
+      finish();
+      onResolved(ids[0]!, menu);
+    };
+    const observer = new MutationObserver(resolve);
+    const timeout = window.setTimeout(() => {
+      finish();
+      onFailed(sawControl ? "menu_unresolved" : "control_missing");
+    }, 2_000);
+    observer.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: [
+        "aria-controls",
+        "id",
+        "hidden",
+        "aria-hidden",
+        "class",
+        "style",
+      ],
+    });
+    queueMicrotask(resolve);
+  };
+  const qualityEvidence = (menu: HTMLElement) => {
+    const options = [
+      ...menu.querySelectorAll<HTMLElement>(
+        "button,[role='button'],[role='menuitem']",
+      ),
+    ].filter((option) => textFor(option).includes("1080pupscaled"));
+    return {
+      observed: options.length === 1,
+      enabled:
+        options.length === 1 &&
+        !options[0]!.matches(":disabled") &&
+        options[0]!.getAttribute("aria-disabled") !== "true",
+    };
+  };
+  let bindingPending = false;
   const onClick = (event: MouseEvent) => {
     if (stopped || stage === "done" || !event.isTrusted) return;
     const path = clickablePath(event);
-    const target = path[0];
-    if (!target) {
-      if (stage !== "main_menu") issue(stage, "click_target_not_recognized");
-      return;
-    }
-
     if (stage === "main_menu") {
-      const label = textFor(target);
-      if (!label.includes("moreoptions")) {
-        issue("main_menu", "click_target_not_recognized");
-        return;
-      }
-      if (!target.hasAttribute("aria-controls")) {
-        issue("main_menu", "control_missing");
-        return;
-      }
-      selectedCard = target.closest<HTMLElement>(
-        "article,[role='listitem'],li,[data-testid*='video-card' i],[class*='videoCard' i]",
-      ) ?? target.parentElement ?? undefined;
-      mainControlId = target.getAttribute("aria-controls")?.trim().split(/\s+/)[0];
-      if (!selectedCard) issue("main_menu", "owner_missing");
-      stage = "download_row";
-      queueMicrotask(() => {
-        const owner = selectedCard;
-        const mainMenu = mainControlId
-          ? document.getElementById(mainControlId)
-          : null;
-        send({
-          sessionId,
-          stage: "main_menu",
-          capturedAt: Date.now(),
-          ownerFound: Boolean(owner),
-          stableIdAttributeObserved: stableCardIdObserved(owner),
-          mainMenuControlResolved: Boolean(mainMenu?.isConnected),
-        });
-      });
-      return;
-    }
-
-    if (stage === "download_row") {
-      const row = path.find((entry) => textFor(entry).includes("download"));
-      if (!row) {
-        issue("download_row", "click_target_not_recognized");
-        return;
-      }
-      downloadControlId = row
-        .getAttribute("aria-controls")
-        ?.trim()
-        .split(/\s+/)[0];
-      stage = "quality_option";
-      queueMicrotask(() => {
-        const menu = downloadControlId
-          ? document.getElementById(downloadControlId)
-          : null;
-        const qualityOptionObserved = Boolean(
-          menu &&
-            [...menu.querySelectorAll<HTMLElement>(
-              "button,[role='button'],[role='menuitem']",
-            )].some((option) => textFor(option).includes("1080pupscaled")),
+      // Ignore unrelated page clicks. Only a recognized Gallery action is diagnostic evidence.
+      const target = path.find((entry) =>
+        textFor(entry).includes("moreoptions"),
+      );
+      if (!target || bindingPending) return;
+      const cardSelector =
+        "article,[role='listitem'],li,[data-testid*='video-card' i],[class*='videoCard' i]";
+      const pathOwner = event
+        .composedPath()
+        .find(
+          (entry): entry is HTMLElement =>
+            entry instanceof HTMLElement && entry.matches(cardSelector),
         );
-        const qualityOptionEnabled = Boolean(
-          menu &&
-            [...menu.querySelectorAll<HTMLElement>(
-              "button,[role='button'],[role='menuitem']",
-            )].some(
-              (option) =>
-                textFor(option).includes("1080pupscaled") &&
-                !option.matches(":disabled") &&
-                option.getAttribute("aria-disabled") !== "true",
-            ),
-        );
-        send({
-          sessionId,
-          stage: "download_row",
-          capturedAt: Date.now(),
-          downloadRowRecognized: true,
-          qualityMenuControlResolved: Boolean(menu?.isConnected),
-          qualityOptionObserved,
-          qualityOptionEnabled,
-        });
-        if (!menu?.isConnected) issue("download_row", "menu_unresolved");
-        else if (!qualityOptionObserved) issue("download_row", "quality_option_unresolved");
-      });
+      selectedCard =
+        pathOwner ?? target.closest<HTMLElement>(cardSelector) ?? undefined;
+      if (!selectedCard) {
+        issue("main_menu", "owner_missing");
+        return;
+      }
+      bindingPending = true;
+      const owner = selectedCard;
+      waitForUniqueControlledMenu(
+        target,
+        owner,
+        (controlId) => {
+          mainControlId = controlId;
+          stage = "download_row";
+          bindingPending = false;
+          // This is menu-only evidence. It does not mean the quality action occurred.
+          send({
+            sessionId,
+            stage: "main_menu",
+            capturedAt: Date.now(),
+            ownerFound: true,
+            stableIdAttributeObserved: stableCardIdObserved(owner),
+            mainMenuControlResolved: true,
+          });
+        },
+        (reason) => {
+          bindingPending = false;
+          issue("main_menu", reason);
+        },
+      );
       return;
     }
 
     if (stage === "quality_option") {
+      if (!inBoundMenu(path, downloadControlId)) return;
       const qualityOption = path.find((entry) =>
         textFor(entry).includes("1080pupscaled"),
       );
-      if (!qualityOption) {
-        issue("quality_option", "click_target_not_recognized");
-        return;
-      }
+      if (!qualityOption) return;
       stage = "done";
       send({
         sessionId,
@@ -515,18 +659,68 @@ export function installFlowGalleryDownloadObserver(
       });
     }
   };
+  const onPointerOver = (event: PointerEvent) => {
+    if (
+      stopped ||
+      stage !== "download_row" ||
+      bindingPending ||
+      !event.isTrusted
+    )
+      return;
+    const path = clickablePath(event);
+    if (!inBoundMenu(path, mainControlId)) return;
+    const row = path.find((entry) => textFor(entry).includes("download"));
+    if (!row) return;
+    const owner = selectedCard;
+    if (!owner) {
+      issue("download_row", "owner_missing");
+      return;
+    }
+    bindingPending = true;
+    waitForUniqueControlledMenu(
+      row,
+      owner,
+      (controlId, menu) => {
+        downloadControlId = controlId;
+        stage = "quality_option";
+        bindingPending = false;
+        const quality = qualityEvidence(menu);
+        send({
+          sessionId,
+          stage: "download_row",
+          capturedAt: Date.now(),
+          downloadRowRecognized: true,
+          qualityMenuControlResolved: true,
+          qualityOptionObserved: quality.observed,
+          qualityOptionEnabled: quality.enabled,
+        });
+        if (!quality.observed)
+          issue("download_row", "quality_option_unresolved");
+      },
+      (reason) => {
+        bindingPending = false;
+        issue("download_row", reason);
+      },
+      false,
+    );
+  };
   const stop = () => {
     stopped = true;
     document.removeEventListener("click", onClick, true);
+    document.removeEventListener("pointerover", onPointerOver, true);
   };
   document.addEventListener("click", onClick, { capture: true, passive: true });
+  document.addEventListener("pointerover", onPointerOver, {
+    capture: true,
+    passive: true,
+  });
   scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__ = { sessionId, stop };
   return { installed: true, replaced: Boolean(previous) };
 }
 
-export function uninstallFlowGalleryDownloadObserver(
-  sessionId: string,
-): { removed: boolean } {
+export function uninstallFlowGalleryDownloadObserver(sessionId: string): {
+  removed: boolean;
+} {
   const scope = globalThis as typeof globalThis & {
     __AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__?: {
       sessionId: string;

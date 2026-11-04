@@ -39,7 +39,9 @@ export function FlowGalleryDiagnostic({
 }: {
   persistenceClient: Client;
 }) {
-  const [snapshot, setSnapshot] = useState<DiagnosticSnapshot>({ status: "idle" });
+  const [snapshot, setSnapshot] = useState<DiagnosticSnapshot>({
+    status: "idle",
+  });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -52,7 +54,9 @@ export function FlowGalleryDiagnostic({
       setSnapshot(next);
       setError(undefined);
     } catch {
-      setError("Diagnostic status could not be read from the extension worker.");
+      setError(
+        "Diagnostic status could not be read from the extension worker.",
+      );
     }
   }, [persistenceClient]);
 
@@ -68,7 +72,9 @@ export function FlowGalleryDiagnostic({
         if (current) setSnapshot(next);
       } catch {
         if (current)
-          setError("Diagnostic status could not be read from the extension worker.");
+          setError(
+            "Diagnostic status could not be read from the extension worker.",
+          );
       }
     };
     void read();
@@ -88,11 +94,10 @@ export function FlowGalleryDiagnostic({
     setPending(true);
     setError(undefined);
     try {
-      if (
-        typeof chrome === "undefined" ||
-        !chrome.permissions?.request
-      ) {
-        setError("Chrome permission requests are unavailable in this dashboard.");
+      if (typeof chrome === "undefined" || !chrome.permissions?.request) {
+        setError(
+          "Chrome permission requests are unavailable in this dashboard.",
+        );
         return;
       }
       // Invoke the optional permission request directly from the operator's click.
@@ -100,7 +105,9 @@ export function FlowGalleryDiagnostic({
         permissions: ["downloads"],
       });
       if (!granted) {
-        setError("Chrome downloads permission was not granted; no observation was armed.");
+        setError(
+          "Chrome downloads permission was not granted; no observation was armed.",
+        );
         return;
       }
       const next = (await persistenceClient.request(
@@ -136,62 +143,170 @@ export function FlowGalleryDiagnostic({
   const active = isActive(snapshot);
   const report = snapshot.status === "idle" ? undefined : snapshot;
   return (
-    <article className={styles.downloadCard} aria-labelledby="flow-download-diagnostic-title">
-      <span className={styles.fileIcon} aria-hidden="true">F</span>
-      <h3 id="flow-download-diagnostic-title">Flow Gallery upscale diagnostic</h3>
+    <article
+      className={styles.downloadCard}
+      aria-labelledby="flow-download-diagnostic-title"
+    >
+      <span className={styles.fileIcon} aria-hidden="true">
+        F
+      </span>
+      <h3 id="flow-download-diagnostic-title">
+        Flow Gallery upscale diagnostic
+      </h3>
       <p>
         Observe one manually selected 1080p Upscaled action. The extension will
         not click a quality option, start an upscale, or initiate a download.
       </p>
       <p className={styles.disabledReason}>
         Optional Chrome downloads permission exposes local download IDs,
-        basenames, and completion or interruption state. The diagnostic does
-        not call Chrome&apos;s download-start API. Raw URLs and query tokens are
+        basenames, and completion or interruption state. The diagnostic does not
+        call Chrome&apos;s download-start API. Raw URLs and query tokens are
         discarded after in-memory fingerprinting.
       </p>
       <div className={styles.actionRow}>
         {active ? (
-          <Button variant="secondary" disabled={pending} onClick={() => void stop()}>
+          <Button
+            variant="secondary"
+            disabled={pending}
+            onClick={() => void stop()}
+          >
             {pending ? "Stopping…" : "Stop observation"}
           </Button>
         ) : (
-          <Button disabled={pending} loading={pending} onClick={() => void arm()}>
+          <Button
+            disabled={pending}
+            loading={pending}
+            onClick={() => void arm()}
+          >
             Arm one observation
           </Button>
         )}
         <span role="status" aria-live="polite">
-          {pending ? "Working" : snapshot.status === "armed" ? "Armed" : snapshot.status.replaceAll("_", " ")}
+          {pending
+            ? "Working"
+            : snapshot.status === "armed"
+              ? "Armed"
+              : snapshot.status.replaceAll("_", " ")}
         </span>
       </div>
       <p className={styles.disabledReason}>
-        After arming, use the selected Flow tab and manually choose the target
-        Gallery card&apos;s More options → Download → 1080p Upscaled. Observation
-        expires after 20 minutes.
+        For menu-only verification, open one card&apos;s More options menu and
+        hover Download. Confirm the pre-click evidence below, then stop before
+        selecting a quality. A controlled association run may continue with one
+        manually chosen quality. Observation expires after 20 minutes.
       </p>
-      {error ? <p className={styles.fieldError} role="alert">{error}</p> : null}
+      {error ? (
+        <p className={styles.fieldError} role="alert">
+          {error}
+        </p>
+      ) : null}
       {report ? (
         <div className={styles.flowDiagnosticReport}>
           <dl>
-            <div><dt>State</dt><dd>{report.status.replaceAll("_", " ")}</dd></div>
-            {report.interruptionReason ? <div><dt>Interruption cause</dt><dd>{report.interruptionReason.replaceAll("_", " ")}</dd></div> : null}
-            <div><dt>Selected tab</dt><dd>{report.tabId}</dd></div>
-            <div><dt>Native menu action</dt><dd>{report.nativeActionObserved ? "trusted 1080p Upscaled click observed" : "not observed"}</dd></div>
-            <div><dt>Requested quality</dt><dd>{report.requestedQuality ?? "not observed"}</dd></div>
-            <div><dt>Association</dt><dd>{associationLabel(report)}</dd></div>
-            <div><dt>Browser completion</dt><dd>{report.matchedDownloadId === undefined ? "not verified" : report.downloads.find((item) => item.downloadId === report.matchedDownloadId)?.state ?? "unknown"}</dd></div>
-            <div><dt>Saved-file resolution</dt><dd>not inspected</dd></div>
-            <div><dt>Chrome download events</dt><dd>{report.downloadCreatedEvents ?? 0} received; {report.nonVideoDownloadCount} non-video; {report.videoCandidatesOmitted ?? 0} video candidates omitted at capacity</dd></div>
+            <div>
+              <dt>State</dt>
+              <dd>{report.status.replaceAll("_", " ")}</dd>
+            </div>
+            {report.interruptionReason ? (
+              <div>
+                <dt>Interruption cause</dt>
+                <dd>{report.interruptionReason.replaceAll("_", " ")}</dd>
+              </div>
+            ) : null}
+            <div>
+              <dt>Selected tab</dt>
+              <dd>{report.tabId}</dd>
+            </div>
+            <div>
+              <dt>Trusted quality click</dt>
+              <dd>
+                {report.nativeActionObserved
+                  ? "1080p Upscaled click observed"
+                  : "not observed"}
+              </dd>
+            </div>
+            <div>
+              <dt>Requested quality</dt>
+              <dd>{report.requestedQuality ?? "not observed"}</dd>
+            </div>
+            <div>
+              <dt>Association</dt>
+              <dd>{associationLabel(report)}</dd>
+            </div>
+            <div>
+              <dt>Browser completion</dt>
+              <dd>
+                {report.matchedDownloadId === undefined
+                  ? "not verified"
+                  : (report.downloads.find(
+                      (item) => item.downloadId === report.matchedDownloadId,
+                    )?.state ?? "unknown")}
+              </dd>
+            </div>
+            <div>
+              <dt>Saved-file resolution</dt>
+              <dd>not inspected</dd>
+            </div>
+            <div>
+              <dt>Chrome download events</dt>
+              <dd>
+                {report.downloadCreatedEvents ?? 0} received;{" "}
+                {report.nonVideoDownloadCount} non-video;{" "}
+                {report.videoCandidatesOmitted ?? 0} video candidates omitted at
+                capacity
+              </dd>
+            </div>
           </dl>
-          {report.captureIssue ? <p className={styles.disabledReason}>Last Gallery capture issue: {report.captureIssue.stage.replaceAll("_", " ")} / {report.captureIssue.reason.replaceAll("_", " ")}.</p> : null}
-          <p className={styles.disabledReason}>
-            Card owner observed: {report.selectedCard?.ownerFound ? "yes" : "no"}; stable ID attribute observed: {report.selectedCard?.stableIdAttributeObserved ? "yes" : "no"}. Menu controls resolved: {report.menuBinding?.mainMenuControlResolved ? "main" : "main missing"}; {report.menuBinding?.qualityMenuControlResolved ? "quality submenu" : "quality submenu missing"}. 1080p Upscaled: {report.menuBinding?.qualityOptionObserved ? report.menuBinding.qualityOptionEnabled ? "enabled" : "disabled" : "not observed"}. Non-video downloads ignored: {report.nonVideoDownloadCount}.
-          </p>
+          {report.captureIssue ? (
+            <p className={styles.disabledReason}>
+              Last Gallery capture issue:{" "}
+              {report.captureIssue.stage.replaceAll("_", " ")} /{" "}
+              {report.captureIssue.reason.replaceAll("_", " ")}.
+            </p>
+          ) : null}
+          <section aria-label="Pre-click Gallery menu evidence">
+            <strong>Pre-click menu evidence</strong>
+            <p className={styles.disabledReason}>
+              Card owner:{" "}
+              {report.selectedCard?.ownerFound ? "confirmed" : "not confirmed"};
+              stable ID attribute:{" "}
+              {report.selectedCard?.stableIdAttributeObserved
+                ? "observed"
+                : "not observed"}
+              . Main menu binding:{" "}
+              {report.menuBinding?.mainMenuControlResolved
+                ? "resolved"
+                : "not resolved"}
+              . Download row:{" "}
+              {report.menuBinding?.downloadRowRecognized
+                ? "recognized"
+                : "not recognized"}
+              . Quality submenu binding:{" "}
+              {report.menuBinding?.qualityMenuControlResolved
+                ? "resolved"
+                : "not resolved"}
+              . 1080p Upscaled option:{" "}
+              {report.menuBinding?.qualityOptionObserved
+                ? report.menuBinding.qualityOptionEnabled
+                  ? "visible and enabled"
+                  : "visible but disabled"
+                : "not observed"}
+              .
+            </p>
+            <p className={styles.disabledReason}>
+              These menu checks are recorded before a quality click; they do not
+              establish an action or download association.
+            </p>
+          </section>
           {report.mediaRequests.length ? (
             <ul aria-label="Sanitized media requests">
               {report.mediaRequests.map((request) => (
                 <li key={request.requestToken}>
-                  {request.requestToken}: {request.resourceKind}, {request.method}, URL fingerprint {request.urlFingerprint}
-                  {request.mediaIdFingerprint ? `, media ID fingerprint ${request.mediaIdFingerprint}` : ""}
+                  {request.requestToken}: {request.resourceKind},{" "}
+                  {request.method}, URL fingerprint {request.urlFingerprint}
+                  {request.mediaIdFingerprint
+                    ? `, media ID fingerprint ${request.mediaIdFingerprint}`
+                    : ""}
                 </li>
               ))}
             </ul>
@@ -200,18 +315,30 @@ export function FlowGalleryDiagnostic({
             <ul aria-label="Candidate Chrome downloads">
               {report.downloads.map((download) => (
                 <li key={download.downloadId}>
-                  ID {download.downloadId}: {download.filename} — {download.state}
+                  ID {download.downloadId}: {download.filename} —{" "}
+                  {download.state}
                   {download.interruptCode ? ` (${download.interruptCode})` : ""}
                 </li>
               ))}
             </ul>
-          ) : <p className={styles.disabledReason}>No candidate MP4/WebM downloads observed.</p>}
+          ) : (
+            <p className={styles.disabledReason}>
+              No candidate MP4/WebM downloads observed.
+            </p>
+          )}
           <p className={styles.disabledReason}>
-            Completed browser downloads do not verify the saved file&apos;s actual resolution. An unverified or ambiguous association requires a separate evidence review; it does not authorize another upscale.
+            Completed browser downloads do not verify the saved file&apos;s
+            actual resolution. An unverified or ambiguous association requires a
+            separate evidence review; it does not authorize another upscale.
           </p>
         </div>
       ) : null}
-      <Button variant="quiet" size="compact" disabled={pending} onClick={() => void refresh()}>
+      <Button
+        variant="quiet"
+        size="compact"
+        disabled={pending}
+        onClick={() => void refresh()}
+      >
         Refresh diagnostic status
       </Button>
     </article>

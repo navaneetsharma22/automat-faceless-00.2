@@ -80,10 +80,14 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     const scope = globalThis as unknown as Record<string, unknown>;
     const originalDocument = scope.document;
     const originalHTMLElement = scope.HTMLElement;
+    const originalMutationObserver = scope.MutationObserver;
+    const originalWindow = scope.window;
     const originalChrome = scope.chrome;
     const sent: unknown[] = [];
     scope.document = dom.window.document;
     scope.HTMLElement = dom.window.HTMLElement;
+    scope.MutationObserver = dom.window.MutationObserver;
+    scope.window = dom.window;
     scope.chrome = {
       runtime: {
         sendMessage: vi.fn(async (message: unknown) => {
@@ -92,7 +96,10 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       },
     };
     let clickListener: EventListener | undefined;
-    const originalAdd = dom.window.document.addEventListener.bind(dom.window.document);
+    let pointerOverListener: EventListener | undefined;
+    const originalAdd = dom.window.document.addEventListener.bind(
+      dom.window.document,
+    );
     dom.window.document.addEventListener = ((
       type: string,
       listener: EventListenerOrEventListenerObject | null,
@@ -100,6 +107,8 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     ) => {
       if (type === "click" && typeof listener === "function")
         clickListener = listener as EventListener;
+      if (type === "pointerover" && typeof listener === "function")
+        pointerOverListener = listener as EventListener;
       return originalAdd(type, listener, options);
     }) as typeof dom.window.document.addEventListener;
     const session = "33333333-3333-4333-8333-333333333333";
@@ -107,7 +116,10 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       expect(installFlowGalleryDownloadObserver(session)).toMatchObject({
         installed: true,
       });
-      dom.window.document.body.insertAdjacentHTML("beforeend", `<div id="gallery-menu"><div role="menuitem" aria-controls="quality-menu">downloadDownload</div></div>`);
+      dom.window.document.body.insertAdjacentHTML(
+        "beforeend",
+        `<div id="gallery-menu"><div role="menuitem" aria-controls="quality-menu">downloadDownload</div></div>`,
+      );
       const click = (selector: string) => {
         const element = dom.window.document.querySelector(selector);
         if (!(element instanceof dom.window.HTMLElement))
@@ -117,16 +129,47 @@ describe("Flow Gallery download feasibility diagnostic", () => {
           composedPath: () => [element],
         } as unknown as Event);
       };
-      click("button[aria-label='More options']");
+      // A click elsewhere in the page is not a failed attempt at the Gallery action.
+      click("body");
+      const more = dom.window.document.querySelector(
+        "button[aria-label='More options']",
+      )!;
+      const nested = dom.window.document.createElement("span");
+      more.append(nested);
+      clickListener?.({
+        isTrusted: true,
+        composedPath: () => [nested, more, more.closest("article")],
+      } as unknown as Event);
       await new Promise((resolve) => setTimeout(resolve, 0));
-      click("[role='menuitem'][aria-controls='quality-menu']");
-      dom.window.document.querySelector("#gallery-menu")?.remove();
-      dom.window.document.body.insertAdjacentHTML("beforeend", `<div id="quality-menu"><button role="menuitem">1080p Upscaled</button></div>`);
+      const download = dom.window.document.querySelector(
+        "[role='menuitem'][aria-controls='quality-menu']",
+      )!;
+      const downloadIcon = dom.window.document.createElement("span");
+      download.append(downloadIcon);
+      pointerOverListener?.({
+        isTrusted: true,
+        composedPath: () => [downloadIcon, download],
+      } as unknown as Event);
+      dom.window.document.body.insertAdjacentHTML(
+        "beforeend",
+        `<div id="quality-menu"><button role="menuitem">1080p Upscaled</button></div>`,
+      );
       await new Promise((resolve) => setTimeout(resolve, 0));
-      click("#quality-menu button");
+      const quality = dom.window.document.querySelector(
+        "#quality-menu button",
+      )!;
+      const qualityText = dom.window.document.createElement("span");
+      qualityText.textContent = "1080p Upscaled";
+      quality.textContent = "";
+      quality.append(qualityText);
+      clickListener?.({
+        isTrusted: true,
+        composedPath: () => [qualityText, quality],
+      } as unknown as Event);
+      // The submenu also closes in response to the same click, after capture.
       dom.window.document.querySelector("#quality-menu")?.remove();
 
-      expect(sent).toHaveLength(3);
+      expect(sent, JSON.stringify(sent)).toHaveLength(3);
       expect(sent).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -151,6 +194,11 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       );
       expect(JSON.stringify(sent)).not.toContain("private-clip-id");
       expect(JSON.stringify(sent)).not.toContain("gallery-menu");
+      expect(sent).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ stage: "capture_issue" }),
+        ]),
+      );
       expect(uninstallFlowGalleryDownloadObserver(session)).toEqual({
         removed: true,
       });
@@ -160,6 +208,10 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       else scope.document = originalDocument;
       if (originalHTMLElement === undefined) delete scope.HTMLElement;
       else scope.HTMLElement = originalHTMLElement;
+      if (originalMutationObserver === undefined) delete scope.MutationObserver;
+      else scope.MutationObserver = originalMutationObserver;
+      if (originalWindow === undefined) delete scope.window;
+      else scope.window = originalWindow;
       if (originalChrome === undefined) delete scope.chrome;
       else scope.chrome = originalChrome;
     }
@@ -232,10 +284,7 @@ describe("Flow Gallery download feasibility diagnostic", () => {
   it("reports ambiguous when multiple Chrome IDs share the exact evidence", () => {
     const duplicate = {
       ...base,
-      downloads: [
-        ...base.downloads,
-        { ...base.downloads[0]!, downloadId: 42 },
-      ],
+      downloads: [...base.downloads, { ...base.downloads[0]!, downloadId: 42 }],
     };
     expect(classifyFlowDownloadAssociation(duplicate)).toEqual({
       association: "ambiguous",
@@ -258,15 +307,21 @@ describe("Flow Gallery download feasibility diagnostic", () => {
     });
     expect(
       resolveFlowDownloadDiagnosticStatus(
-        { ...base, status: "armed", actionAt: undefined, requestedQuality: undefined },
+        {
+          ...base,
+          status: "armed",
+          actionAt: undefined,
+          requestedQuality: undefined,
+        },
         base.expiresAt,
       ),
     ).toMatchObject({ status: "expired", association: "unverified" });
   });
 
   it("keeps filenames to basenames and never returns URL query tokens", async () => {
-    expect(sanitizeFlowDownloadFilename("C:\\Users\\me\\clip 01.mp4?secret=token"))
-      .toBe("clip 01.mp4");
+    expect(
+      sanitizeFlowDownloadFilename("C:\\Users\\me\\clip 01.mp4?secret=token"),
+    ).toBe("clip 01.mp4");
     const fingerprints = await fingerprintFlowDownloadUrl(
       base.sessionId,
       "https://media.example/8c53eca2/video.mp4?signature=secret-token",

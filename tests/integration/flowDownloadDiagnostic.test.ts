@@ -10,7 +10,8 @@ import { FLOW_GALLERY_DIAGNOSTIC_EVENT } from "../../src/platforms/flow/download
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 
 const sessionId = "33333333-3333-4333-8333-333333333333";
-const mediaUrl = "https://media.example/8c53eca2/clip.mp4?signature=private-token";
+const mediaUrl =
+  "https://media.example/8c53eca2/clip.mp4?signature=private-token";
 
 describe("Flow Gallery download diagnostic worker path", () => {
   it("arms only the verified Flow document and records the native-to-download evidence chain", async () => {
@@ -18,39 +19,44 @@ describe("Flow Gallery download diagnostic worker path", () => {
     const storage = new Map<string, unknown>();
     const debuggerEvents: FlowDownloadDiagnosticDebuggerEventListener[] = [];
     const debuggerDetaches: FlowDownloadDiagnosticDebuggerDetachListener[] = [];
-    const createdListeners: FlowDownloadDiagnosticDownloadCreatedListener[] = [];
-    const changedListeners: FlowDownloadDiagnosticDownloadChangedListener[] = [];
+    const createdListeners: FlowDownloadDiagnosticDownloadCreatedListener[] =
+      [];
+    const changedListeners: FlowDownloadDiagnosticDownloadChangedListener[] =
+      [];
     const detachDebugger = vi.fn(async () => undefined);
-    const executeScript = vi.fn(async (input: { func: (...args: never[]) => unknown }) => {
-      if (input.func.name.includes("installFlowGalleryDownloadObserver"))
-        return [{ documentId: "document-test", result: { installed: true } }];
-      return [{ documentId: "document-test", result: { removed: true } }];
-    });
+    const executeScript = vi.fn(
+      async (input: { func: (...args: never[]) => unknown }) => {
+        if (input.func.name.includes("installFlowGalleryDownloadObserver"))
+          return [{ documentId: "document-test", result: { installed: true } }];
+        return [{ documentId: "document-test", result: { removed: true } }];
+      },
+    );
     const manager = createFlowDownloadDiagnosticManager({
       extensionId: "extension-test",
       repositories: {
-        getSelectedTarget: async () => ({
-          provider: "Flow",
-          tabId: 7,
-          canonicalTarget: "https://flow.google.com/project/project-test",
-          verification: "verified",
-          connectionState: "verified",
-          verificationBinding: {
+        getSelectedTarget: async () =>
+          ({
             provider: "Flow",
             tabId: 7,
             canonicalTarget: "https://flow.google.com/project/project-test",
-            projectId: "project-test",
-            frameId: 0,
-            documentId: "document-test",
-            documentToken: "document-token",
-            extensionBuildId: BUILD_ID,
-            extensionProtocolVersion: PROTOCOL_VERSION,
-            connectorBuildId: BUILD_ID,
-            connectorProtocolVersion: 1,
-            capability: "read-only-connection-v1",
-            verifiedAt: 1,
-          },
-        } as never),
+            verification: "verified",
+            connectionState: "verified",
+            verificationBinding: {
+              provider: "Flow",
+              tabId: 7,
+              canonicalTarget: "https://flow.google.com/project/project-test",
+              projectId: "project-test",
+              frameId: 0,
+              documentId: "document-test",
+              documentToken: "document-token",
+              extensionBuildId: BUILD_ID,
+              extensionProtocolVersion: PROTOCOL_VERSION,
+              connectorBuildId: BUILD_ID,
+              connectorProtocolVersion: 1,
+              capability: "read-only-connection-v1",
+              verifiedAt: 1,
+            },
+          }) as never,
       },
       permissions: { contains: async () => true },
       tabs: {
@@ -89,9 +95,12 @@ describe("Flow Gallery download diagnostic worker path", () => {
         },
       },
       storage: {
-        get: async (key) => ({ ...(storage.has(key) ? { [key]: storage.get(key) } : {}) }),
+        get: async (key) => ({
+          ...(storage.has(key) ? { [key]: storage.get(key) } : {}),
+        }),
         set: async (items) => {
-          for (const [key, value] of Object.entries(items)) storage.set(key, value);
+          for (const [key, value] of Object.entries(items))
+            storage.set(key, value);
         },
         remove: async (key) => void storage.delete(key),
       },
@@ -194,7 +203,9 @@ describe("Flow Gallery download diagnostic worker path", () => {
       });
     });
     expect(JSON.stringify(await manager.get())).not.toContain("private-token");
-    expect(JSON.stringify(await manager.get())).not.toContain("unrelated-secret");
+    expect(JSON.stringify(await manager.get())).not.toContain(
+      "unrelated-secret",
+    );
 
     now += 100;
     for (const listener of changedListeners) {
@@ -233,9 +244,85 @@ describe("Flow Gallery download diagnostic worker path", () => {
         interruptionReason: "debugger_detached",
         association: "unverified",
         downloadCreatedEvents: 1,
-        downloads: [expect.objectContaining({ downloadId: 53, filename: "late-candidate.mp4" })],
+        downloads: [
+          expect.objectContaining({
+            downloadId: 53,
+            filename: "late-candidate.mp4",
+          }),
+        ],
       });
     });
     expect(JSON.stringify(await manager.get())).not.toContain("late-secret");
+
+    await manager.arm();
+    for (const listener of createdListeners) {
+      listener({
+        id: 54,
+        state: "in_progress",
+        url: "https://media.example/pending/clip.mp4?signature=pending-secret",
+      });
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        status: "armed",
+        downloadCreatedEvents: 1,
+        downloads: [
+          expect.objectContaining({
+            downloadId: 54,
+            filename: "unknown-file",
+            extension: "pending",
+          }),
+        ],
+        nonVideoDownloadCount: 0,
+      });
+    });
+    for (const listener of changedListeners)
+      listener({ id: 54, state: { current: "in_progress" } });
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        downloads: [
+          expect.objectContaining({ downloadId: 54, extension: "pending" }),
+        ],
+        nonVideoDownloadCount: 0,
+      });
+    });
+    for (const listener of changedListeners) {
+      listener({
+        id: 54,
+        filename: { current: "C:\\Downloads\\animate_a1d1d9a4_1080p.mp4" },
+      });
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        downloads: [
+          expect.objectContaining({
+            downloadId: 54,
+            filename: "animate_a1d1d9a4_1080p.mp4",
+            extension: "mp4",
+          }),
+        ],
+        nonVideoDownloadCount: 0,
+      });
+    });
+    expect(JSON.stringify(await manager.get())).not.toContain("pending-secret");
+
+    await manager.stop();
+    await manager.arm();
+    for (const listener of createdListeners)
+      listener({ id: 55, state: "in_progress" });
+    await vi.waitFor(async () =>
+      expect((await manager.get()).downloads).toEqual([
+        expect.objectContaining({ downloadId: 55, extension: "pending" }),
+      ]),
+    );
+    for (const listener of changedListeners)
+      listener({ id: 55, filename: { current: "unrelated.pdf" } });
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        downloads: [],
+        nonVideoDownloadCount: 1,
+        downloadCreatedEvents: 1,
+      });
+    });
   });
 });

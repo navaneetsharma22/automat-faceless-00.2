@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        font: 16px sans-serif;
+        padding: 32px;
+      }
+      article {
+        position: relative;
+        width: 360px;
+        height: 180px;
+        padding: 16px;
+        border: 1px solid #555;
+      }
+      #more {
+        display: none;
+      }
+      article:hover #more {
+        display: inline-block;
+      }
+      [role="menu"] {
+        position: absolute;
+        z-index: 2;
+        background: white;
+        border: 1px solid #222;
+        padding: 8px;
+      }
+      #main-menu {
+        left: 120px;
+        top: 48px;
+      }
+      #quality-menu {
+        left: 290px;
+        top: 48px;
+      }
+      [role="menuitem"] {
+        display: block;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <article data-video-id="synthetic-card-1" aria-label="Gallery clip">
+      <div>Gallery video card</div>
+      <button id="more" aria-label="More options">⋮</button>
+    </article>
+    <script>
+      const card = document.querySelector("article");
+      const more = document.querySelector("#more");
+      more.addEventListener("click", () => {
+        more.setAttribute("aria-controls", "main-menu");
+        const menu = document.createElement("div");
+        menu.id = "main-menu";
+        menu.setAttribute("role", "menu");
+        menu.innerHTML =
+          '<div id="download-row" role="menuitem">downloadDownload</div>';
+        document.body.append(menu);
+        document.querySelector("#download-row").addEventListener(
+          "pointerover",
+          () => {
+            const row = document.querySelector("#download-row");
+            row.setAttribute("aria-controls", "quality-menu");
+            const qualityMenu = document.createElement("div");
+            qualityMenu.id = "quality-menu";
+            qualityMenu.setAttribute("role", "menu");
+            qualityMenu.innerHTML =
+              '<button id="quality" role="menuitem">1080p Upscaled</button>';
+            document.body.append(qualityMenu);
+            document
+              .querySelector("#quality")
+              .addEventListener("click", () => qualityMenu.remove());
+          },
+          { once: true },
+        );
+      });
+      window.fixtureCard = card;
+    </script>
+  </body>
+</html>

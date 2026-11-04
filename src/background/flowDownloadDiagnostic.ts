@@ -1,9 +1,6 @@
 import type { ExtensionRepositories } from "../storage/repositories";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
-import {
-  flowTabFromUrl,
-  sameFlowDocument,
-} from "../platforms/flow/connection";
+import { flowTabFromUrl, sameFlowDocument } from "../platforms/flow/connection";
 import {
   FLOW_GALLERY_DIAGNOSTIC_ALARM,
   FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY,
@@ -112,18 +109,25 @@ function isActive(record: FlowGalleryDownloadDiagnostic | undefined) {
 }
 
 function readBrowserState(value: unknown): FlowDownloadCandidate["state"] {
-  return value === "in_progress" || value === "complete" || value === "interrupted"
+  return value === "in_progress" ||
+    value === "complete" ||
+    value === "interrupted"
     ? value
     : "unknown";
 }
 
 function sanitizeInterruptCode(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const safe = value.toUpperCase().replace(/[^A-Z0-9_]/g, "_").slice(0, 32);
+  const safe = value
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, "_")
+    .slice(0, 32);
   return safe || undefined;
 }
 
-function pageMessage(raw: unknown): FlowGalleryDiagnosticPageMessage | undefined {
+function pageMessage(
+  raw: unknown,
+): FlowGalleryDiagnosticPageMessage | undefined {
   if (
     !raw ||
     typeof raw !== "object" ||
@@ -206,7 +210,9 @@ export function createFlowDownloadDiagnosticManager(
 
   const detach = async (record: FlowGalleryDownloadDiagnostic) => {
     await uninstall(record);
-    await dependencies.debugger.detach({ tabId: record.tabId }).catch(() => undefined);
+    await dependencies.debugger
+      .detach({ tabId: record.tabId })
+      .catch(() => undefined);
     await dependencies.alarms.clear(FLOW_GALLERY_DIAGNOSTIC_ALARM);
   };
 
@@ -238,7 +244,11 @@ export function createFlowDownloadDiagnosticManager(
     )
       throw new Error("flow_target_not_currently_verified");
     const tab = await dependencies.tabs.get(selected.tabId);
-    const currentTab = flowTabFromUrl(tab.id ?? selected.tabId, tab.title ?? "", tab.url);
+    const currentTab = flowTabFromUrl(
+      tab.id ?? selected.tabId,
+      tab.title ?? "",
+      tab.url,
+    );
     if (
       !sameFlowDocument(
         {
@@ -318,7 +328,8 @@ export function createFlowDownloadDiagnosticManager(
         });
         if (
           injected[0]?.documentId !== binding.documentId ||
-          !(injected[0]?.result as { installed?: boolean } | undefined)?.installed
+          !(injected[0]?.result as { installed?: boolean } | undefined)
+            ?.installed
         )
           throw new Error("flow_diagnostic_observer_install_failed");
         await dependencies.alarms.create(FLOW_GALLERY_DIAGNOSTIC_ALARM, {
@@ -366,12 +377,15 @@ export function createFlowDownloadDiagnosticManager(
     });
   }
 
-  async function ingestPageEvent(raw: unknown, sender: {
-    id?: string;
-    tab?: { id?: number };
-    frameId?: number;
-    documentId?: string;
-  }) {
+  async function ingestPageEvent(
+    raw: unknown,
+    sender: {
+      id?: string;
+      tab?: { id?: number };
+      frameId?: number;
+      documentId?: string;
+    },
+  ) {
     const message = pageMessage(raw);
     if (!message || sender.id !== dependencies.extensionId) return false;
     await loaded;
@@ -467,14 +481,14 @@ export function createFlowDownloadDiagnosticManager(
         if (type !== "Media" && type !== "Fetch" && type !== "XHR") return;
         if (params.frameId !== record.mainFrameId) return;
         const request = params.request as
-          | { url?: unknown; method?: unknown }
-          | undefined;
+          { url?: unknown; method?: unknown } | undefined;
         const fingerprints = await fingerprintFlowDownloadUrl(
           record.sessionId,
           request?.url,
         );
         if (!fingerprints) return;
-        const token = `media-request-${record.mediaRequests.length + 1}` as const;
+        const token =
+          `media-request-${record.mediaRequests.length + 1}` as const;
         const mediaRequest: FlowDownloadMediaRequest = {
           requestToken: token,
           resourceKind: type,
@@ -488,7 +502,10 @@ export function createFlowDownloadDiagnosticManager(
             : {}),
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
-        await persist({ ...record, mediaRequests: [...record.mediaRequests, mediaRequest] });
+        await persist({
+          ...record,
+          mediaRequests: [...record.mediaRequests, mediaRequest],
+        });
         return;
       }
       if (method === "Page.downloadWillBegin") {
@@ -508,7 +525,7 @@ export function createFlowDownloadDiagnosticManager(
           eventToken: `page-download-${record.pageDownloads.length + 1}`,
           filename,
           urlFingerprint: fingerprints.urlFingerprint,
-          ...(fingerprints.mediaIdFingerprint ?? filenameMediaId
+          ...((fingerprints.mediaIdFingerprint ?? filenameMediaId)
             ? {
                 mediaIdFingerprint:
                   fingerprints.mediaIdFingerprint ?? filenameMediaId,
@@ -519,10 +536,13 @@ export function createFlowDownloadDiagnosticManager(
             record.actionAt !== undefined && capturedAt >= record.actionAt,
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
-        const next = updateAssociation({
-          ...record,
-          pageDownloads: [...record.pageDownloads, pageEvent],
-        }, now());
+        const next = updateAssociation(
+          {
+            ...record,
+            pageDownloads: [...record.pageDownloads, pageEvent],
+          },
+          now(),
+        );
         await persist(next);
         if (next.status === "completed" || next.status === "interrupted")
           await detach(next);
@@ -541,15 +561,23 @@ export function createFlowDownloadDiagnosticManager(
         !record ||
         (!isActive(record) && !collectingAfterDebuggerDetach) ||
         now() >= record.expiresAt
-      ) return;
+      )
+        return;
       const received = Math.min(100, (record.downloadCreatedEvents ?? 0) + 1);
       const filename = sanitizeFlowDownloadFilename(item.filename);
-      const extension = flowDownloadExtension(filename);
+      const filenameAvailable =
+        typeof item.filename === "string" && filename !== "unknown-file";
+      const extension = filenameAvailable
+        ? flowDownloadExtension(filename)
+        : "pending";
       if (extension === "other") {
         await persist({
           ...record,
           downloadCreatedEvents: received,
-          nonVideoDownloadCount: Math.min(100, record.nonVideoDownloadCount + 1),
+          nonVideoDownloadCount: Math.min(
+            100,
+            record.nonVideoDownloadCount + 1,
+          ),
         });
         return;
       }
@@ -557,7 +585,10 @@ export function createFlowDownloadDiagnosticManager(
         await persist({
           ...record,
           downloadCreatedEvents: received,
-          videoCandidatesOmitted: Math.min(100, (record.videoCandidatesOmitted ?? 0) + 1),
+          videoCandidatesOmitted: Math.min(
+            100,
+            (record.videoCandidatesOmitted ?? 0) + 1,
+          ),
         });
         return;
       }
@@ -582,11 +613,14 @@ export function createFlowDownloadDiagnosticManager(
           ? { interruptCode: sanitizeInterruptCode(item.error) }
           : {}),
       };
-      const next = updateAssociation({
-        ...record,
-        downloadCreatedEvents: received,
-        downloads: [...record.downloads, candidate],
-      }, now());
+      const next = updateAssociation(
+        {
+          ...record,
+          downloadCreatedEvents: received,
+          downloads: [...record.downloads, candidate],
+        },
+        now(),
+      );
       await persist(next);
       if (
         next.status === "completed" ||
@@ -608,21 +642,48 @@ export function createFlowDownloadDiagnosticManager(
       const collectingAfterDebuggerDetach =
         record?.status === "interrupted" &&
         record.interruptionReason === "debugger_detached";
-      if (!record || (!isActive(record) && !collectingAfterDebuggerDetach)) return;
+      if (!record || (!isActive(record) && !collectingAfterDebuggerDetach))
+        return;
       const index = record.downloads.findIndex(
         (candidate) => candidate.downloadId === delta.id,
       );
       if (index < 0) return;
       const downloads = [...record.downloads];
       const prior = downloads[index]!;
+      const filename = delta.filename?.current
+        ? sanitizeFlowDownloadFilename(delta.filename.current)
+        : prior.filename;
+      const filenameAvailable =
+        Boolean(delta.filename?.current) && filename !== "unknown-file";
+      const extension =
+        prior.extension === "pending" && filenameAvailable
+          ? flowDownloadExtension(filename)
+          : prior.extension;
+      if (
+        prior.extension === "pending" &&
+        filenameAvailable &&
+        extension === "other"
+      ) {
+        downloads.splice(index, 1);
+        const next = await persist({
+          ...record,
+          downloads,
+          nonVideoDownloadCount: Math.min(
+            100,
+            record.nonVideoDownloadCount + 1,
+          ),
+        });
+        // The now-classified non-video ID is intentionally excluded from candidate association.
+        if (next.status === "completed") await detach(next);
+        return;
+      }
       downloads[index] = {
         ...prior,
+        extension,
         ...(delta.state
           ? { state: readBrowserState(delta.state.current) }
           : {}),
-        ...(delta.filename?.current
-          ? { filename: sanitizeFlowDownloadFilename(delta.filename.current) }
-          : {}),
+        filename,
         ...(delta.error?.current
           ? { interruptCode: sanitizeInterruptCode(delta.error.current) }
           : {}),
@@ -647,14 +708,23 @@ export function createFlowDownloadDiagnosticManager(
     return true;
   }
 
-  const pageListener: FlowDownloadDiagnosticDebuggerEventListener = (source, method, params) => {
+  const pageListener: FlowDownloadDiagnosticDebuggerEventListener = (
+    source,
+    method,
+    params,
+  ) => {
     void onDebuggerEvent(source, method, params).catch(() => undefined);
   };
-  const detachedListener: FlowDownloadDiagnosticDebuggerDetachListener = (source) => {
+  const detachedListener: FlowDownloadDiagnosticDebuggerDetachListener = (
+    source,
+  ) => {
     void enqueue(async () => {
       const record = current;
       if (record && isActive(record) && record.tabId === source.tabId)
-        await finish({ ...record, interruptionReason: "debugger_detached" }, "interrupted");
+        await finish(
+          { ...record, interruptionReason: "debugger_detached" },
+          "interrupted",
+        );
     }).catch(() => undefined);
   };
   const createdListener = (item: ChromeDownloadItem) => {
@@ -666,8 +736,10 @@ export function createFlowDownloadDiagnosticManager(
   dependencies.debugger.onEvent.addListener(pageListener);
   dependencies.debugger.onDetach.addListener(detachedListener);
   const registerDownloadListeners = () => {
-    if (dependencies.downloads.onCreated.available?.() === false ||
-        dependencies.downloads.onChanged.available?.() === false)
+    if (
+      dependencies.downloads.onCreated.available?.() === false ||
+      dependencies.downloads.onChanged.available?.() === false
+    )
       return false;
     try {
       if (!createdListenerRegistered) {
