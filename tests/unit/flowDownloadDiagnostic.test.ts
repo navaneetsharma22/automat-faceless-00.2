@@ -2,6 +2,7 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
 import {
   classifyFlowDownloadAssociation,
+  diagnoseFlowDownloadMediaIdentity,
   fingerprintFlowDownloadUrl,
   FlowGalleryDownloadDiagnosticSchema,
   resolveFlowDownloadDiagnosticStatus,
@@ -171,7 +172,7 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       // The submenu also closes in response to the same click, after capture.
       dom.window.document.querySelector("#quality-menu")?.remove();
 
-      expect(sent, JSON.stringify(sent)).toHaveLength(3);
+      expect(sent, JSON.stringify(sent)).toHaveLength(5);
       expect(sent).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -186,6 +187,12 @@ describe("Flow Gallery download feasibility diagnostic", () => {
             qualityMenuControlResolved: true,
             qualityOptionObserved: true,
             qualityOptionEnabled: true,
+          }),
+          expect.objectContaining({
+            stage: "quality_click_listener",
+          }),
+          expect.objectContaining({
+            stage: "quality_action_accepted_in_page",
           }),
           expect.objectContaining({
             stage: "quality_action",
@@ -258,12 +265,63 @@ describe("Flow Gallery download feasibility diagnostic", () => {
   });
 
   it("does not call a filename or timing-only match a result association", () => {
-    expect(
-      classifyFlowDownloadAssociation({ ...base, mediaRequests: [] }),
-    ).toMatchObject({
+    const noIdentity = { ...base, mediaRequests: [] };
+    expect(classifyFlowDownloadAssociation(noIdentity)).toMatchObject({
       association: "unverified",
       associationReason: "no_action_media_identity_link",
     });
+    expect(diagnoseFlowDownloadMediaIdentity(noIdentity)).toBe(
+      "identity_not_extracted",
+    );
+  });
+
+  it("does not match an unrelated clip's completed download when request identity differs", () => {
+    const mismatch = {
+      ...base,
+      pageDownloads: [
+        {
+          ...base.pageDownloads[0]!,
+          mediaIdFingerprint: "aaaaaaaaaaaaaaaa",
+        },
+      ],
+      downloads: [
+        {
+          ...base.downloads[0]!,
+          state: "complete" as const,
+          mediaIdFingerprint: "aaaaaaaaaaaaaaaa",
+        },
+      ],
+      mediaRequests: [
+        {
+          ...base.mediaRequests[0]!,
+          urlFingerprint: "bbbbbbbbbbbbbbbb",
+          mediaIdFingerprint: "cccccccccccccccc",
+        },
+      ],
+    };
+    expect(classifyFlowDownloadAssociation(mismatch)).toEqual({
+      association: "unverified",
+      associationReason: "no_action_media_identity_link",
+    });
+    expect(diagnoseFlowDownloadMediaIdentity(mismatch)).toBe(
+      "identity_extracted_no_match",
+    );
+  });
+
+  it("reports an identity-bearing request dropped by the bounded request buffer", () => {
+    expect(
+      diagnoseFlowDownloadMediaIdentity({
+        ...base,
+        mediaRequests: [],
+        mediaIdentityRequestsOmittedAtCap: 1,
+      }),
+    ).toBe("identity_request_dropped_at_cap");
+  });
+
+  it("reports a retained request identity that matches the exact event/download pair", () => {
+    expect(diagnoseFlowDownloadMediaIdentity(base)).toBe(
+      "matching_request_retained",
+    );
   });
 
   it("requires an in-memory exact URL equality link to the Chrome ID", () => {

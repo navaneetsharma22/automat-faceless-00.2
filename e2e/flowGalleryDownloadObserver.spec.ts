@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { chromium, expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { installFlowGalleryDownloadObserver } from "../src/platforms/flow/downloads";
@@ -23,7 +23,10 @@ test("binds menus after trigger updates aria-controls and reports before quality
     target.preClickControls = [];
     target.chrome = {
       runtime: {
-        sendMessage: (message) => target.diagnosticMessages!.push(message),
+        sendMessage: (message) => {
+          target.diagnosticMessages!.push(message);
+          return Promise.resolve(undefined);
+        },
       },
     };
     document.addEventListener(
@@ -119,7 +122,25 @@ test("binds menus after trigger updates aria-controls and reports before quality
   });
   expect(preQualityEvidence.qualityAction).toBe(false);
 
-  await page.click("#quality");
+  await page.click("#other-quality-menuitem");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as Window & {
+            diagnosticMessages?: Array<Record<string, unknown>>;
+          }
+        ).diagnosticMessages?.some(
+          (message) =>
+            message.stage === "quality_click_rejected" &&
+            message.reason === "quality_option_not_found",
+        ),
+      ),
+    )
+    .toBe(true);
+  await expect(page.locator("#quality-menu")).toHaveCount(1);
+
+  await page.click("#quality-label");
   await expect(page.locator("#quality-menu")).toHaveCount(0);
   await expect
     .poll(() =>
@@ -134,6 +155,29 @@ test("binds menus after trigger updates aria-controls and reports before quality
       ),
     )
     .toBe(true);
+  const clickStages = await page.evaluate(() =>
+    (
+      window as Window & {
+        diagnosticMessages?: Array<Record<string, unknown>>;
+      }
+    ).diagnosticMessages
+      ?.map((message) => message.stage)
+      .filter((stage) =>
+        [
+          "quality_click_listener",
+          "quality_click_rejected",
+          "quality_action_accepted_in_page",
+          "quality_action",
+        ].includes(String(stage)),
+      ),
+  );
+  expect(clickStages).toEqual([
+    "quality_click_listener",
+    "quality_click_rejected",
+    "quality_click_listener",
+    "quality_action_accepted_in_page",
+    "quality_action",
+  ]);
 });
 
 test("rejects a duplicated aria-controls target instead of guessing a menu", async ({
@@ -318,8 +362,10 @@ test("recognizes the verified Flow video tile and captures both menus before qua
     target.diagnosticMessages = [];
     target.chrome = {
       runtime: {
-        sendMessage: (message) =>
-          target.diagnosticMessages!.push(message as Record<string, unknown>),
+        sendMessage: (message) => {
+          target.diagnosticMessages!.push(message as Record<string, unknown>);
+          return Promise.resolve(undefined);
+        },
       },
     };
     const trigger = document.querySelector("flow-video-tile button")!;
@@ -429,4 +475,197 @@ test("recognizes the verified Flow video tile and captures both menus before qua
   expect(
     menuOnlyEvidence.messages.every((message) => !("association" in message)),
   ).toBe(true);
+});
+
+test("recognizes the live Download button when hover assigns the submenu binding", async () => {
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  try {
+    const page = await browser.newPage();
+  await page.setContent(`
+    <style>
+      flow-grid-tile-container, flow-video-tile { display: block; }
+      [role="menu"] { display: block; padding: 8px; }
+      #download-row, #quality-menu [role="menuitem"] { display: block; padding: 8px; }
+    </style>
+    <flow-grid-tile-container role="group">
+      <flow-video-tile><button id="more" aria-label="More options">More</button></flow-video-tile>
+    </flow-grid-tile-container>
+  `);
+  await page.evaluate((observerSource) => {
+    const target = window as Window & {
+      chrome?: { runtime?: { sendMessage?: (message: unknown) => void } };
+      diagnosticMessages?: Array<Record<string, unknown>>;
+    };
+    target.diagnosticMessages = [];
+    target.chrome = {
+      runtime: {
+        sendMessage: (message) => {
+          target.diagnosticMessages!.push(message as Record<string, unknown>);
+          return Promise.resolve(undefined);
+        },
+      },
+    };
+    const trigger = document.querySelector<HTMLButtonElement>("#more")!;
+    trigger.addEventListener("click", () => {
+      trigger.setAttribute("aria-controls", "live-main-menu");
+      const mainMenu = document.createElement("div");
+      mainMenu.id = "live-main-menu";
+      mainMenu.setAttribute("role", "menu");
+      mainMenu.innerHTML =
+        '<button id="download-row" role="menuitem" aria-haspopup="menu" aria-expanded="false"><mat-icon aria-hidden="true">download</mat-icon><span class="label">Download</span></button>';
+      document.body.append(mainMenu);
+      const row = mainMenu.querySelector<HTMLButtonElement>("#download-row")!;
+      row.addEventListener("pointerover", () => {
+        window.setTimeout(() => {
+          row.setAttribute("aria-expanded", "true");
+          row.setAttribute("aria-controls", "live-quality-menu");
+          const qualityMenu = document.createElement("div");
+          qualityMenu.id = "live-quality-menu";
+          qualityMenu.setAttribute("role", "menu");
+          qualityMenu.innerHTML =
+            '<button id="live-quality-option" role="menuitem" aria-disabled="false"><span id="live-quality-label">1080p Upscaled</span></button><button id="live-other-option" role="menuitem">Settings</button>';
+          document.body.append(qualityMenu);
+          qualityMenu
+            .querySelector("#live-quality-option")
+            ?.addEventListener("click", () => qualityMenu.remove());
+        }, 50);
+      }, { once: true });
+    });
+    const install = (0, eval)(`(${observerSource})`) as (
+      sessionId: string,
+    ) => unknown;
+    install("33333333-3333-4333-8333-333333333333");
+  }, installFlowGalleryDownloadObserver.toString());
+
+  await page.click("#more");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as Window & {
+            diagnosticMessages?: Array<Record<string, unknown>>;
+          }
+        ).diagnosticMessages?.some((message) => message.stage === "main_menu"),
+      ),
+    )
+    .toBe(true);
+  const beforeHover = await page.locator("#download-row").evaluate((row) => ({
+    tag: row.localName,
+    role: row.getAttribute("role"),
+    hasAriaLabel: row.hasAttribute("aria-label"),
+    ariaHaspopup: row.getAttribute("aria-haspopup"),
+    textContent: row.textContent,
+    iconAriaHidden: row.querySelector("mat-icon")?.getAttribute("aria-hidden"),
+    labelText: row.querySelector("span.label")?.textContent,
+    expanded: row.getAttribute("aria-expanded"),
+    controls: row.getAttribute("aria-controls"),
+  }));
+  expect(beforeHover).toEqual({
+    tag: "button",
+    role: "menuitem",
+    hasAriaLabel: false,
+    ariaHaspopup: "menu",
+    textContent: "downloadDownload",
+    iconAriaHidden: "true",
+    labelText: "Download",
+    expanded: "false",
+    controls: null,
+  });
+
+  await page.locator("#download-row").hover();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as Window & {
+            diagnosticMessages?: Array<Record<string, unknown>>;
+          }
+        ).diagnosticMessages?.some(
+          (message) => message.stage === "download_row",
+        ),
+      ),
+    )
+    .toBe(true);
+  await expect(page.locator("#live-quality-menu[role='menu']")).toBeVisible();
+  const evidence = await page.evaluate(() => {
+    const target = window as Window & {
+      diagnosticMessages?: Array<Record<string, unknown>>;
+    };
+    const row = document.querySelector<HTMLButtonElement>("#download-row")!;
+    const linkedMenu = document.querySelector("#live-quality-menu");
+    const messages = target.diagnosticMessages ?? [];
+    return {
+      rowExpanded: row.getAttribute("aria-expanded"),
+      rowControlsTargetCount: document.querySelectorAll(
+        `#${row.getAttribute("aria-controls")}`,
+      ).length,
+      linkedMenuRole: linkedMenu?.getAttribute("role"),
+      linkedMenuVisible: Boolean(
+        linkedMenu && linkedMenu.getBoundingClientRect().height > 0,
+      ),
+      mainMenuEvidence: messages.find(
+        (message) => message.stage === "main_menu",
+      ),
+      downloadRowEvidence: messages.find(
+        (message) => message.stage === "download_row",
+      ),
+      qualityActionObserved: messages.some(
+        (message) => message.stage === "quality_action",
+      ),
+      associationEvidence: messages.some((message) => "association" in message),
+    };
+  });
+  expect(evidence.rowExpanded).toBe("true");
+  expect(evidence.rowControlsTargetCount).toBe(1);
+  expect(evidence.linkedMenuRole).toBe("menu");
+  expect(evidence.linkedMenuVisible).toBe(true);
+  expect(evidence.mainMenuEvidence).toMatchObject({
+    ownerFound: true,
+    mainMenuControlResolved: true,
+  });
+  expect(evidence.downloadRowEvidence).toMatchObject({
+    downloadRowRecognized: true,
+    qualityMenuControlResolved: true,
+    qualityOptionObserved: true,
+    qualityOptionEnabled: true,
+  });
+  expect(evidence.qualityActionObserved).toBe(false);
+  expect(evidence.associationEvidence).toBe(false);
+
+  await page.click("#live-other-option");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as Window & {
+            diagnosticMessages?: Array<Record<string, unknown>>;
+          }
+        ).diagnosticMessages?.some(
+          (message) =>
+            message.stage === "quality_click_rejected" &&
+            message.reason === "quality_option_not_found",
+        ),
+      ),
+    )
+    .toBe(true);
+  await page.click("#live-quality-label");
+  await expect(page.locator("#live-quality-menu")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const messages =
+          (
+            window as Window & {
+              diagnosticMessages?: Array<Record<string, unknown>>;
+            }
+          ).diagnosticMessages ?? [];
+        return messages.some(
+          (message) => message.stage === "quality_action_accepted_in_page",
+        ) && messages.some((message) => message.stage === "quality_action");
+      }),
+    )
+    .toBe(true);
+  } finally {
+    await browser.close();
+  }
 });

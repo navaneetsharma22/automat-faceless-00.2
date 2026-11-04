@@ -66,7 +66,7 @@
             qualityMenu.id = "quality-menu";
             qualityMenu.setAttribute("role", "menu");
             qualityMenu.innerHTML =
-              '<button id="quality" role="menuitem">1080p Upscaled</button>';
+              '<button id="quality" role="menuitem"><span id="quality-label">1080p Upscaled</span></button><button id="other-quality-menuitem" role="menuitem">Settings</button>';
             document.body.append(qualityMenu);
             document
               .querySelector("#quality")

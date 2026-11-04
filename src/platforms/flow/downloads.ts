@@ -110,8 +110,27 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     documentId: z.string().min(1).max(128),
     mainFrameId: z.string().min(1).max(128),
     actionAt: z.number().int().nonnegative().optional(),
+    qualityActionAcceptedAt: z.number().int().nonnegative().optional(),
     nativeActionObserved: z.literal(true).optional(),
     requestedQuality: z.literal("1080p_upscaled").optional(),
+    qualityClickListenerReached: z.boolean().optional(),
+    qualityClickListenerEvents: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    qualityClickRejections: z.number().int().nonnegative().max(100).optional(),
+    lastQualityClickRejection: z
+      .enum([
+        "outside_bound_submenu",
+        "quality_option_not_found",
+        "quality_option_ambiguous",
+        "quality_option_disabled",
+      ])
+      .optional(),
+    qualityActionAcceptedInPage: z.boolean().optional(),
+    qualityActionReceivedByWorker: z.boolean().optional(),
     selectedCard: z
       .object({
         token: z.literal("selected-card-1"),
@@ -177,6 +196,12 @@ export const FlowGalleryDownloadDiagnosticSchema = z
       .optional(),
     lastPageDownloadUrlRejection: FlowDownloadUrlRejectionSchema.optional(),
     mediaRequestsOmittedAtCap: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(100)
+      .optional(),
+    mediaIdentityRequestsOmittedAtCap: z
       .number()
       .int()
       .nonnegative()
@@ -281,6 +306,33 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
     z
       .object({
         sessionId: z.string().uuid(),
+        stage: z.literal("quality_click_listener"),
+        capturedAt: z.number().int().nonnegative(),
+      })
+      .strict(),
+    z
+      .object({
+        sessionId: z.string().uuid(),
+        stage: z.literal("quality_click_rejected"),
+        capturedAt: z.number().int().nonnegative(),
+        reason: z.enum([
+          "outside_bound_submenu",
+          "quality_option_not_found",
+          "quality_option_ambiguous",
+          "quality_option_disabled",
+        ]),
+      })
+      .strict(),
+    z
+      .object({
+        sessionId: z.string().uuid(),
+        stage: z.literal("quality_action_accepted_in_page"),
+        capturedAt: z.number().int().nonnegative(),
+      })
+      .strict(),
+    z
+      .object({
+        sessionId: z.string().uuid(),
         stage: z.literal("quality_action"),
         capturedAt: z.number().int().nonnegative(),
         trusted: z.literal(true),
@@ -299,6 +351,73 @@ export type FlowDownloadAssociation = {
   associationReason: FlowGalleryDownloadDiagnostic["associationReason"];
   matchedDownloadId?: number;
 };
+
+export type FlowDownloadMediaIdentityStatus =
+  | "not_evaluated"
+  | "identity_not_extracted"
+  | "identity_extracted_no_match"
+  | "matching_request_retained"
+  | "identity_request_dropped_at_cap";
+
+export function diagnoseFlowDownloadMediaIdentity(
+  input: Pick<
+    FlowGalleryDownloadDiagnostic,
+    | "startedAt"
+    | "actionAt"
+    | "nativeActionObserved"
+    | "pageDownloads"
+    | "mediaRequests"
+    | "downloads"
+    | "mediaIdentityRequestsOmittedAtCap"
+  >,
+): FlowDownloadMediaIdentityStatus {
+  if (input.actionAt === undefined || input.nativeActionObserved !== true)
+    return "not_evaluated";
+  const pageEvents = input.pageDownloads.filter(
+    (event) => event.frameMatched && event.afterAction,
+  );
+  if (!pageEvents.length) return "not_evaluated";
+  const exactPairs = pageEvents.flatMap((event) =>
+    input.downloads
+      .filter(
+        (download) =>
+          (event.exactDownloadIds ?? []).includes(download.downloadId) &&
+          (download.urlFingerprint === event.urlFingerprint ||
+            download.finalUrlFingerprint === event.urlFingerprint) &&
+          download.filename === event.filename,
+      )
+      .map((download) => ({ event, download })),
+  );
+  if (!exactPairs.length) return "not_evaluated";
+
+  const actionRequests = input.mediaRequests.filter(
+    (request) => input.startedAt + request.offsetMs >= input.actionAt!,
+  );
+  const requestMatchesPair = (
+    request: FlowDownloadMediaRequest,
+    event: FlowDownloadPageEvent,
+    download: FlowDownloadCandidate,
+  ) =>
+    request.urlFingerprint === event.urlFingerprint ||
+    (request.mediaIdFingerprint !== undefined &&
+      (request.mediaIdFingerprint === event.mediaIdFingerprint ||
+        request.mediaIdFingerprint === download.mediaIdFingerprint));
+  if (
+    exactPairs.some(({ event, download }) =>
+      actionRequests.some((request) =>
+        requestMatchesPair(request, event, download),
+      ),
+    )
+  )
+    return "matching_request_retained";
+  if (
+    actionRequests.some((request) => request.mediaIdFingerprint !== undefined)
+  )
+    return "identity_extracted_no_match";
+  if ((input.mediaIdentityRequestsOmittedAtCap ?? 0) > 0)
+    return "identity_request_dropped_at_cap";
+  return "identity_not_extracted";
+}
 
 export function sanitizeFlowDownloadFilename(value: unknown): string {
   if (typeof value !== "string") return "unknown-file";
@@ -776,16 +895,58 @@ export function installFlowGalleryDownloadObserver(sessionId: string): {
     }
 
     if (stage === "quality_option") {
-      if (!inBoundMenu(path, downloadControlId)) return;
-      const qualityOption = path.find((entry) =>
+      send({
+        sessionId,
+        stage: "quality_click_listener",
+        capturedAt: Date.now(),
+      });
+      const reject = (
+        reason:
+          | "outside_bound_submenu"
+          | "quality_option_not_found"
+          | "quality_option_ambiguous"
+          | "quality_option_disabled",
+      ) =>
+        send({
+          sessionId,
+          stage: "quality_click_rejected",
+          capturedAt: Date.now(),
+          reason,
+        });
+      if (!inBoundMenu(path, downloadControlId)) {
+        reject("outside_bound_submenu");
+        return;
+      }
+      const qualityOptions = path.filter((entry) =>
         textFor(entry).includes("1080pupscaled"),
       );
-      if (!qualityOption) return;
+      if (!qualityOptions.length) {
+        reject("quality_option_not_found");
+        return;
+      }
+      if (qualityOptions.length !== 1) {
+        reject("quality_option_ambiguous");
+        return;
+      }
+      const qualityOption = qualityOptions[0]!;
+      if (
+        qualityOption.matches(":disabled") ||
+        qualityOption.getAttribute("aria-disabled") === "true"
+      ) {
+        reject("quality_option_disabled");
+        return;
+      }
       stage = "done";
+      const capturedAt = Date.now();
+      send({
+        sessionId,
+        stage: "quality_action_accepted_in_page",
+        capturedAt,
+      });
       send({
         sessionId,
         stage: "quality_action",
-        capturedAt: Date.now(),
+        capturedAt,
         trusted: true,
         requestedQuality: "1080p_upscaled",
       });

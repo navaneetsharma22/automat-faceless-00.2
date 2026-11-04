@@ -454,6 +454,30 @@ export function createFlowDownloadDiagnosticManager(
             qualityOptionEnabled: message.qualityOptionEnabled,
           },
         };
+      } else if (message.stage === "quality_click_listener") {
+        next = {
+          ...record,
+          qualityClickListenerReached: true,
+          qualityClickListenerEvents: Math.min(
+            100,
+            (record.qualityClickListenerEvents ?? 0) + 1,
+          ),
+        };
+      } else if (message.stage === "quality_click_rejected") {
+        next = {
+          ...record,
+          qualityClickRejections: Math.min(
+            100,
+            (record.qualityClickRejections ?? 0) + 1,
+          ),
+          lastQualityClickRejection: message.reason,
+        };
+      } else if (message.stage === "quality_action_accepted_in_page") {
+        next = {
+          ...record,
+          qualityActionAcceptedInPage: true,
+          qualityActionAcceptedAt: message.capturedAt,
+        };
       } else if (message.stage === "quality_action") {
         next = {
           ...record,
@@ -461,6 +485,7 @@ export function createFlowDownloadDiagnosticManager(
           actionAt: message.capturedAt,
           nativeActionObserved: message.trusted,
           requestedQuality: message.requestedQuality,
+          qualityActionReceivedByWorker: true,
           mediaRequestsOmittedAtCap: 0,
           // Pre-action requests cannot satisfy the association rule, so they
           // must not consume the bounded evidence slots needed after the click.
@@ -544,15 +569,43 @@ export function createFlowDownloadDiagnosticManager(
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
         if (record.mediaRequests.length >= 16) {
-          // Preserve a later Media request over lower-specificity Fetch/XHR
-          // entries. Exact fingerprints and the action-time check still gate
-          // association; this only chooses which bounded evidence survives.
-          const replaceIndex =
-            type === "Media"
+          const actionAt = record.actionAt ?? record.qualityActionAcceptedAt;
+          const matchesActionIdentity = (candidate: FlowDownloadMediaRequest) =>
+            actionAt !== undefined &&
+            record.startedAt + candidate.offsetMs >= actionAt &&
+            record.pageDownloads.some(
+              (event) =>
+                event.frameMatched &&
+                record.startedAt + event.offsetMs >= actionAt &&
+                (candidate.urlFingerprint === event.urlFingerprint ||
+                  (candidate.mediaIdFingerprint !== undefined &&
+                    (candidate.mediaIdFingerprint ===
+                      event.mediaIdFingerprint ||
+                      event.exactDownloadIds?.some((downloadId) => {
+                        const download = record.downloads.find(
+                          (item) => item.downloadId === downloadId,
+                        );
+                        return (
+                          download?.mediaIdFingerprint !== undefined &&
+                          candidate.mediaIdFingerprint ===
+                            download.mediaIdFingerprint
+                        );
+                      })))),
+            );
+          const incomingMatches = matchesActionIdentity(mediaRequest);
+          const replaceIndex = incomingMatches
+            ? record.mediaRequests.findIndex(
+                (item) => !matchesActionIdentity(item),
+              )
+            : fingerprints.mediaIdFingerprint
               ? record.mediaRequests.findIndex(
-                  (item) => item.resourceKind !== "Media",
+                  (item) => item.mediaIdFingerprint === undefined,
                 )
-              : -1;
+              : type === "Media"
+                ? record.mediaRequests.findIndex(
+                    (item) => item.resourceKind !== "Media",
+                  )
+                : -1;
           if (replaceIndex < 0) {
             await persist({
               ...record,
@@ -560,6 +613,14 @@ export function createFlowDownloadDiagnosticManager(
                 100,
                 (record.mediaRequestsOmittedAtCap ?? 0) + 1,
               ),
+              ...(fingerprints.mediaIdFingerprint
+                ? {
+                    mediaIdentityRequestsOmittedAtCap: Math.min(
+                      100,
+                      (record.mediaIdentityRequestsOmittedAtCap ?? 0) + 1,
+                    ),
+                  }
+                : {}),
             });
             return;
           }
@@ -576,6 +637,14 @@ export function createFlowDownloadDiagnosticManager(
               100,
               (record.mediaRequestsOmittedAtCap ?? 0) + 1,
             ),
+            ...(replaced.mediaIdFingerprint
+              ? {
+                  mediaIdentityRequestsOmittedAtCap: Math.min(
+                    100,
+                    (record.mediaIdentityRequestsOmittedAtCap ?? 0) + 1,
+                  ),
+                }
+              : {}),
           });
           return;
         }

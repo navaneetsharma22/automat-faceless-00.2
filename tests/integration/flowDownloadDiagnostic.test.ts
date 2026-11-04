@@ -161,15 +161,49 @@ describe("Flow Gallery download diagnostic worker path", () => {
       });
     });
     now += 200;
+    const qualityClickAt = now;
+    await pageEvent({
+      stage: "quality_click_listener",
+      capturedAt: qualityClickAt,
+    });
+    await pageEvent({
+      stage: "quality_action_accepted_in_page",
+      capturedAt: qualityClickAt,
+    });
+    // The CDP event reaches the worker before the queued quality_action message.
+    now += 10;
+    for (const callback of debuggerEvents) {
+      callback({ tabId: 7 }, "Page.downloadWillBegin", {
+        frameId: "main-frame-test",
+        url: mediaUrl,
+        suggestedFilename: "clip-8c53eca2.mp4",
+      });
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        qualityClickListenerReached: true,
+        qualityActionAcceptedInPage: true,
+        pageDownloads: [
+          expect.objectContaining({ frameMatched: true, afterAction: false }),
+        ],
+      });
+      expect(await manager.get()).not.toHaveProperty(
+        "qualityActionReceivedByWorker",
+      );
+    });
     await pageEvent({
       stage: "quality_action",
-      capturedAt: now,
+      capturedAt: qualityClickAt,
       trusted: true,
       requestedQuality: "1080p_upscaled",
     });
     await vi.waitFor(async () => {
       expect(await manager.get()).toMatchObject({
-        actionAt: now,
+        actionAt: qualityClickAt,
+        qualityActionReceivedByWorker: true,
+        pageDownloads: [
+          expect.objectContaining({ frameMatched: true, afterAction: true }),
+        ],
         mediaRequests: [],
         mediaRequestsOmittedAtCap: 0,
       });
@@ -179,17 +213,60 @@ describe("Flow Gallery download diagnostic worker path", () => {
     for (const callback of debuggerEvents) {
       for (let index = 0; index < 16; index += 1) {
         callback({ tabId: 7 }, "Network.requestWillBeSent", {
-          type: "Fetch",
+          type: "Media",
           frameId: "main-frame-test",
           request: {
-            url: `https://media.example/action-post-${index}/unrelated`,
-            method: "POST",
+            url: `https://media.example/no-identity-${index}/preview.mp4`,
+            method: "GET",
           },
         });
       }
     }
     await vi.waitFor(async () => {
       expect((await manager.get()).mediaRequests).toHaveLength(16);
+    });
+    for (const callback of debuggerEvents) {
+      callback({ tabId: 7 }, "Network.requestWillBeSent", {
+        type: "Fetch",
+        frameId: "main-frame-test",
+        request: {
+          url: "https://media.example/8c53eca2/clip-identity",
+          method: "POST",
+        },
+      });
+    }
+    await vi.waitFor(async () => {
+      const snapshot = await manager.get();
+      expect(snapshot).toMatchObject({
+        mediaRequestsOmittedAtCap: 1,
+        mediaRequests: expect.arrayContaining([
+          expect.objectContaining({
+            resourceKind: "Fetch",
+            method: "POST",
+            mediaIdFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/),
+          }),
+        ]),
+      });
+    });
+    for (const callback of debuggerEvents) {
+      for (let index = 0; index < 16; index += 1) {
+        callback({ tabId: 7 }, "Network.requestWillBeSent", {
+          type: "Fetch",
+          frameId: "main-frame-test",
+          request: {
+            url:
+              "https://media.example/deadbeef0000000" +
+              index.toString(16) +
+              "/noise",
+            method: "POST",
+          },
+        });
+      }
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        mediaIdentityRequestsOmittedAtCap: 1,
+      });
     });
     for (const callback of debuggerEvents) {
       callback({ tabId: 99 }, "Page.downloadWillBegin", {
@@ -210,39 +287,29 @@ describe("Flow Gallery download diagnostic worker path", () => {
     await vi.waitFor(async () => {
       expect(await manager.get()).toMatchObject({
         association: "unverified",
-        associationReason: "no_selected_frame_download_event",
-        pageDownloadEventsReceived: 3,
+        associationReason: "no_exact_url_filename_pair",
+        pageDownloadEventsReceived: 4,
         pageDownloadTargetMismatches: 1,
         pageDownloadFrameMismatches: 1,
-        pageDownloadMainFrameEvents: 1,
+        pageDownloadMainFrameEvents: 2,
         pageDownloadMetadataRejected: 1,
-        pageDownloads: [
+        pageDownloads: expect.arrayContaining([
           expect.objectContaining({
-            frameMatched: false,
+            frameMatched: true,
             afterAction: true,
           }),
-        ],
+          expect.objectContaining({ frameMatched: false, afterAction: true }),
+        ]),
       });
     });
-    for (const callback of debuggerEvents) {
-      callback({ tabId: 7 }, "Network.requestWillBeSent", {
-        type: "Media",
-        frameId: "main-frame-test",
-        request: { url: mediaUrl, method: "GET" },
-      });
-      callback({ tabId: 7 }, "Page.downloadWillBegin", {
-        frameId: "main-frame-test",
-        url: mediaUrl,
-        suggestedFilename: "clip-8c53eca2.mp4",
-      });
-    }
     await vi.waitFor(async () => {
       expect(await manager.get()).toMatchObject({
         association: "unverified",
         mediaRequests: expect.arrayContaining([
-          expect.objectContaining({ resourceKind: "Media", method: "GET" }),
+          expect.objectContaining({ resourceKind: "Fetch", method: "POST" }),
         ]),
-        mediaRequestsOmittedAtCap: 1,
+        mediaRequestsOmittedAtCap: 17,
+        mediaIdentityRequestsOmittedAtCap: 1,
         pageDownloadEventsReceived: 4,
         pageDownloadTargetMismatches: 1,
         pageDownloadFrameMismatches: 1,

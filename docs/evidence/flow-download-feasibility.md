@@ -470,3 +470,118 @@ On the intended verified Flow tab, confirm build `automat-faceless-0.1.0-mw2018b
 ```
 
 This pass records no confirmed Download-row mismatch and makes no code change. The supplied blob URL equality for ID `2786` is retained as user-reported event/download evidence only. No trusted quality action or Flow clip association is established. P11.2/P11.3 remain out of scope.
+
+## P11.1 supplied Download-row markup production-observer fixture - 4 November 2026
+
+### Supplied menu-only DOM evidence
+
+The separate inspection reports a `flow-video-tile` owner and a More options `aria-controls` binding to that card's main `role="menu"` panel. The Download control was a `button[role="menuitem"][aria-haspopup="menu"]` with no `aria-label`; its `textContent` was `downloadDownload`, from an `aria-hidden` `mat-icon` reading `download` and a visible `span.label` reading `Download`. Before hover, `aria-expanded` was false and `aria-controls` absent. After hover, `aria-expanded` became true and `aria-controls` resolved to one `role="menu"` submenu. The 1080p Upscaled option was enabled and was not clicked. This is user-provided DOM evidence; the original live page was not accessible in this session.
+
+### Production-observer reproduction
+
+Added an Edge browser fixture that installs the actual production `installFlowGalleryDownloadObserver` function and reproduces the reported custom-element owner, main-menu binding, exact button role/haspopup/label/text structure, hidden icon, and initially absent submenu control. Hover changes `aria-expanded` and, after a short delay, assigns `aria-controls` and mounts one visible quality menu with an enabled 1080p Upscaled item.
+
+The fixture passes. The observer recognizes the row because its path includes a `button`/`role=menuitem` and `textFor()` sees normalized `downloadDownload`. Its bounded mutation wait sees the delayed submenu binding, resolves exactly one menu panel, and reports `downloadRowRecognized`, `qualityMenuControlResolved`, `qualityOptionObserved`, and `qualityOptionEnabled`. No quality action or association message is emitted. The supplied live markup is already supported by the production observer; no selector or matching-rule change was made.
+
+### Smallest additional menu-only diagnostic
+
+The remaining blind spot is before submenu binding: if a trusted hover is inside the bound main menu but no node in the filtered path passes the Download-row lookup, the observer silently returns. Once a row is recognized, the existing two-second wait already distinguishes `control_missing` (no `aria-controls` appeared) from `menu_unresolved` (control appeared but did not resolve to one visible panel).
+
+If future evidence still shows a missing row, the smallest diagnostic is one bounded pre-binding row-lookup result on the trusted, bound-main-menu hover: `candidate_found` or `no_candidate`. Keep it separate from the later submenu-wait result, and expose no raw text, IDs, URLs, or tokens. Do not change the current matching rules based on the present fixture, which passes.
+
+### Regression and status
+
+- Focused Microsoft Edge production-observer fixture: **1/1 PASS**.
+- Typecheck: **PASS**.
+- ESLint on the modified fixture: **PASS**.
+- Production observer, trusted quality-click logic, download association rules, and package build were unchanged; no new build ID was produced.
+- `git diff --check`: **PASS**.
+
+Chrome download ID `2786` remains unassociated with a Flow clip because no trusted quality click was captured. No quality option was clicked in the fixture or live page. P11.2 remains out of scope.
+
+## P11.1 quality click listener and worker receipt follow-up - 4 November 2026
+
+### Supplied live evidence
+
+The user reports that run `2787` resolved the Flow card, main menu, Download row, and enabled 1080p Upscaled option. The selected main-frame blob URL exactly matched completed Chrome download ID `2787`. No trusted quality click was recorded, so ID `2787` remains complete but **unassociated** with a clip. This is supplied evidence; no live Flow page was accessed in this pass.
+
+### Production quality-click path
+
+The passive observer's document-capture `click` listener first requires a trusted event and the `quality_option` stage. It reduces the composed path to interactive nodes, verifies the path is inside the unique visible submenu bound from the Download row's `aria-controls`, and searches that path for the normalized 1080p Upscaled option. It then requires exactly one candidate and rejects a disabled candidate. Before this change, clicks failing the bound-menu or candidate checks returned silently. A passing click sets the observer to done and sends a page-accepted marker followed by the trusted `quality_action` message.
+
+The worker validates the message schema, extension sender, diagnostic session, selected tab, main frame, document ID, and expiry, then serializes ingestion. The accepted-in-page marker and action receipt are now separate bounded report fields. The click diagnostic records listener events (capped at 100), candidate rejection count (capped at 100) and the last fixed rejection reason: `outside_bound_submenu`, `quality_option_not_found`, `quality_option_ambiguous`, or `quality_option_disabled`. The report shows listener event receipt, last candidate outcome, page acceptance, and worker receipt. It stores no page text, URL, or token.
+
+### Reproduction and ordering
+
+The production observer passes a Microsoft Edge fixture that clicks the nested text label inside the 1080p button and removes the submenu immediately in the button's click handler. The capture listener sees the bound submenu before teardown and emits listener reached, page accepted, and action messages. A click on a different item in the same submenu emits `quality_option_not_found` and does not close the menu or accept an action. The first fixture attempt exposed a mock-only problem: its `sendMessage` stub returned `Array.push()`'s number instead of the Promise returned by Chrome runtime messaging. After correcting the stub to return a resolved Promise, the production observer fixture passes. No corresponding production failure was reproduced.
+
+The worker integration regression delivers a selected-main-frame `Page.downloadWillBegin` event after the page acceptance marker but before the worker receives `quality_action`. The event is initially retained with `afterAction: false`; when the delayed trusted action message arrives with the earlier click timestamp, the worker re-evaluates it to `afterAction: true`. Existing strict matching remains unchanged: the event still needs the trusted action, selected frame, action-time media identity, exact event/download URL and filename relationship, and unique exact Chrome download ID before association can match.
+
+### Checks and remaining evidence
+
+- Focused Vitest: **2 files / 14 tests PASS**.
+- Focused Microsoft Edge production-observer fixture: **1/1 PASS**.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw23suv6`**, four JavaScript bundles.
+
+Chrome ID `2787` remains complete but unassociated because no trusted quality click was captured. Browser completion and blob URL equality are separate from clip association; no saved-file dimensions were inspected. No live quality selection, upscale, or download occurred. P11.2 remains pending; P11.3 is out of scope.
+
+## P11.1 action media-identity diagnosis and request-cap retention - 4 November 2026
+
+### Supplied live evidence
+
+The user reports that build `mw23suv6` recorded the trusted 1080p click in the page and worker. The post-click selected-main-frame blob URL exactly matched completed Chrome download ID `2788`. Association failed with `no media request identity linked the action to the download event`; 16 request entries were retained and 8 omitted. This is user-supplied live evidence. It does not identify the retained or omitted request types or fingerprints, so it cannot show whether the matching request was missing, retained but mismatched, or lost at capacity. ID `2788` remains complete but **unassociated**.
+
+### Exact classifier rule
+
+`no_action_media_identity_link` is returned after a trusted action/menu gate and at least one eligible selected-frame, after-action page event has been found, and after an exact event-to-Chrome candidate pair exists, but no retained action-time media request links to that pair.
+
+The exact event-to-download pair requires the event's `exactDownloadIds` to contain the Chrome ID, the page-event URL fingerprint to equal the Chrome item's URL or final-URL fingerprint, and the sanitized filenames to be identical. Exact URL equality is established in memory and represented by ID/fingerprint evidence; raw URL strings and signed parameters are not persisted.
+
+Then at least one media request must have a capture time at or after the trusted quality click and satisfy one of these identity comparisons: its session-scoped URL fingerprint equals the selected-frame event URL fingerprint, or its media-ID fingerprint equals the event or exact Chrome candidate media-ID fingerprint. The media-ID fingerprint is derived from a hex-shaped path identifier or sanitized filename identifier and hashed with the diagnostic session. Timing only qualifies when the identity also matches. A filename match, completed state, URL-to-Chrome-ID equality, or request count alone cannot establish clip identity.
+
+The card owner gate is recorded as `ownerFound` plus the trusted quality action and resolved menu bindings; the diagnostic does not capture or compare a stable card ID to a network request. Thus the selected clip is inferred through the verified card-bound action and the action-time media request identity chain. That limitation remains explicit; no weaker fallback was added.
+
+### Controlled identity and cap fixtures
+
+The classifier fixtures separate three cases. With no retained media request, the result is `no_action_media_identity_link`. With a retained request whose URL and media-ID fingerprints differ from the event and Chrome candidate, the same rejection is produced despite the exact event-to-download pair. These cases are distinguished by fixture inputs, while the bounded production reason remains the same because neither establishes a media identity link.
+
+The worker cap fixture reproduces 16 unrelated action-time `Media` requests without usable media IDs, followed by a relevant `Fetch` request carrying the media ID that matches the selected-frame event. The previous cap branch could replace `Fetch`/`XHR` only when a new request was `Media`; therefore this relevant request would have been omitted. The request buffer now prioritizes a request that matches an action-time selected-frame event, replacing a retained request that does not match. When the event is not yet available, an identity-bearing request can replace an entry without a media-ID fingerprint. The 16-entry limit remains unchanged; the omission counter still records the displaced or dropped item. Final association still requires the complete strict chain.
+
+The regression reaches a unique match only after the exact page event and Chrome ID pair exist and the retained Fetch request's media-ID fingerprint matches the event/candidate identity. This confirms the cap could cause the observed failure class in a controlled order and that prioritizing identity-linked evidence resolves that fixture. The live run's 8 omitted entries are not individually described, so their relevance remains unconfirmed.
+
+### Checks and remaining evidence
+
+- Focused identity/worker Vitest: **2 files / 15 tests PASS**.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw24ddro`**, four JavaScript bundles.
+
+Chrome ID `2788` remains complete but unassociated; its missing-versus-mismatched-versus-cap-lost media identity evidence cannot be distinguished from the supplied counts alone. No live Flow page was inspected and no upscale or download was triggered. P11.2 remains pending; P11.3 is out of scope.
+
+## P11.1 selected-clip identity availability and bounded diagnosis - 4 November 2026
+
+### Supplied live evidence
+
+The user reports that run `2789` captured the trusted 1080p click in the page and worker, then observed an exact post-click selected-frame blob URL match to completed Chrome download ID `2789`. Association still failed with `no_action_media_identity_link`; the report retained 16 requests and omitted 12, but did not include a build ID or per-request identity evidence. ID `2789` remains complete but **unassociated**.
+
+### Identity available at click time
+
+Source trace shows the observer resolves the trusted More options trigger to its card owner and emits `ownerFound` plus the boolean `stableIdAttributeObserved`. It does not retain the card's `data-video-id`, `data-asset-id`, or `id` value. The page-click message carries the requested quality and timestamp, not an asset or upscale-job identifier. No Flow job-ID extraction or association field appears in the diagnostic path. The controlled DOM observer fixture supplies a synthetic `data-video-id`, confirms only the boolean is reported, and verifies that the raw value is absent from messages.
+
+The worker can derive a session-scoped media-ID fingerprint from a hex-shaped URL path component and from the sanitized page/Chrome filename. It does not independently know that this value is the selected tile's asset ID. That fingerprint bridges the selected action to a request only when the action-time request ID matches the selected-frame page event or exact Chrome candidate. No existing observed asset/job identifier reliably connects the selected card directly to the downloaded blob, so no new identity source or relaxed match was added.
+
+### Bounded identity diagnostics and cap regression
+
+The report now distinguishes `not_evaluated`, `identity_not_extracted`, `identity_extracted_no_match`, `matching_request_retained`, and `identity_request_dropped_at_cap`. It separately counts ID-bearing request entries displaced or dropped at the 16-entry cap, bounded to 100. This counter describes that an identifier-bearing request was omitted; it does not claim the omitted request belonged to the selected clip. The displayed evidence contains only scoped fingerprints and counts, never raw URLs, tokens, or ID strings.
+
+Controlled cases confirm: no retained action-time media ID yields `identity_not_extracted`; a retained request with a different URL/media-ID fingerprint yields `identity_extracted_no_match`; a cap-omitted identity-bearing request with no retained ID yields `identity_request_dropped_at_cap`. A separate case gives an unrelated completed clip an exact page-event/Chrome-ID URL and filename pair but a different action-time request identity; it remains unverified and can never report Matched.
+
+The worker fixture fills all 16 slots with action-time Media requests without media IDs, then sends an identity-bearing Fetch request matching the selected-frame event. The request replaces a nonmatching entry and remains within the 16-entry cap; the strict exact event/Chrome ID pair plus matching request identity can then produce one unique match. Further identity-bearing requests after all slots contain identity fingerprints increment the bounded identity-omission counter. The live `16 retained / 12 omitted` counts do not reveal whether run `2789` had any of these identity patterns.
+
+### Checks and remaining evidence
+
+- Focused identity/worker Vitest: **2 files / 17 tests PASS**.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw24y49t`**, four JavaScript bundles.
+
+Chrome ID `2789` remains complete but unassociated. The supplied evidence does not establish an asset/job identifier bridge or whether a suitable identity was never extracted, mismatched among retained requests, or omitted at capacity. No live Flow page was inspected and no upscale or download was triggered. P11.2 remains pending; P11.3 is out of scope.

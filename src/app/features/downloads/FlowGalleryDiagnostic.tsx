@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import type { FlowGalleryDownloadDiagnostic } from "../../../platforms/flow/downloads";
+import {
+  diagnoseFlowDownloadMediaIdentity,
+  type FlowGalleryDownloadDiagnostic,
+} from "../../../platforms/flow/downloads";
 import type { createFoundationClient } from "../../../shared/messageClient";
 import { Button } from "../../components/Button";
 import styles from "../../Dashboard.module.css";
@@ -31,6 +34,21 @@ function associationLabel(snapshot: FlowGalleryDownloadDiagnostic) {
       return "Matched.";
     case "no_action_media_identity_link":
       return "Unverified: no media request identity linked the action to the download event.";
+  }
+}
+
+function mediaIdentityLabel(snapshot: FlowGalleryDownloadDiagnostic) {
+  switch (diagnoseFlowDownloadMediaIdentity(snapshot)) {
+    case "not_evaluated":
+      return "not evaluated yet";
+    case "identity_not_extracted":
+      return "identity not extracted from retained action-time requests";
+    case "identity_extracted_no_match":
+      return "identity extracted, but it did not match the event/download";
+    case "matching_request_retained":
+      return "matching request identity retained";
+    case "identity_request_dropped_at_cap":
+      return "identity-bearing request omitted at the buffer cap; relevance unknown";
   }
 }
 
@@ -287,6 +305,15 @@ export function FlowGalleryDiagnostic({
                 cap
               </dd>
             </div>
+            <div>
+              <dt>Media identity bridge</dt>
+              <dd>
+                {mediaIdentityLabel(report)};{" "}
+                {report.mediaIdentityRequestsOmittedAtCap ?? "not recorded"}{" "}
+                identity-bearing request(s) omitted at capacity during this
+                session.
+              </dd>
+            </div>
             {report.lastPageDownloadUrlRejection ? (
               <div>
                 <dt>Last rejected Flow event URL</dt>
@@ -336,6 +363,25 @@ export function FlowGalleryDiagnostic({
             <p className={styles.disabledReason}>
               These menu checks are recorded before a quality click; they do not
               establish an action or download association.
+            </p>
+          </section>
+          <section aria-label="Quality click diagnostic">
+            <strong>Quality click diagnostic</strong>
+            <p className={styles.disabledReason}>
+              Click listener:{" "}
+              {report.qualityClickListenerReached
+                ? `reached (${report.qualityClickListenerEvents ?? 0} event${report.qualityClickListenerEvents === 1 ? "" : "s"} received)`
+                : "not reached / no listener event received"}
+              ; candidate:{" "}
+              {report.lastQualityClickRejection
+                ? `rejected (${report.lastQualityClickRejection.replaceAll("_", " ")}; ${report.qualityClickRejections ?? 0} rejection${report.qualityClickRejections === 1 ? "" : "s"})`
+                : report.qualityActionAcceptedInPage
+                  ? "accepted"
+                  : "no rejection recorded"}
+              ; action accepted in page:{" "}
+              {report.qualityActionAcceptedInPage ? "yes" : "no"}; action
+              received by worker:{" "}
+              {report.qualityActionReceivedByWorker ? "yes" : "no"}.
             </p>
           </section>
           {report.mediaRequests.length ? (
