@@ -109,6 +109,50 @@ export const FlowDetailMetadataFieldSchema = z
   })
   .strict();
 
+export const FlowDetailMetadataMimeCategorySchema = z.enum([
+  "json",
+  "text",
+  "binary",
+  "form",
+  "other",
+  "missing",
+]);
+export const FlowDetailMetadataBodyDiagnosticSchema = z
+  .object({
+    stage: z.enum(["request_body", "response_body"]),
+    mimeCategory: FlowDetailMetadataMimeCategorySchema,
+    base64Encoded: z.boolean().optional(),
+    byteLength: z.number().int().nonnegative().max(65_537).optional(),
+    formatCategory: z.enum([
+      "json_object",
+      "json_array",
+      "json_scalar",
+      "json_like_invalid",
+      "prefix_candidate",
+      "non_json",
+      "empty",
+      "base64_encoded",
+      "unsupported_mime",
+      "not_inspected",
+      "too_large",
+      "unavailable",
+      "read_failed",
+      "not_attempted",
+    ]),
+    parseFailureCategory: z.enum([
+      "none",
+      "invalid_json",
+      "prefix_or_framing_candidate",
+      "unsupported_encoding",
+      "unsupported_mime",
+      "too_large",
+      "unavailable",
+      "read_failed",
+      "not_attempted",
+    ]),
+  })
+  .strict();
+
 export const FlowGalleryDownloadDiagnosticSchema = z
   .object({
     version: z.literal(1),
@@ -129,6 +173,39 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     mainFrameId: z.string().min(1).max(128),
     captureMode: z.enum(["gallery", "detail_clip"]).optional(),
     detailMenuBoundAtArm: z.boolean().optional(),
+    detailObserverInstalledAtArm: z.boolean().optional(),
+    detailObserverReplacedAtArm: z.boolean().optional(),
+    detailObserverLifecycleStatus: z
+      .enum(["active", "replaced", "page_hidden", "selection_observed"])
+      .optional(),
+    detailClipTrustedClickEvents: z.number().int().nonnegative().max(100).optional(),
+    detailClipCandidateClickEvents: z.number().int().nonnegative().max(100).optional(),
+    detailClipLastClickObservation: z
+      .object({
+        offsetMs: z.number().int().nonnegative(),
+        routeMatches: z.boolean(),
+        menuBound: z.boolean(),
+        candidateCount: z.number().int().nonnegative().max(8),
+        qualityOptionCount: z.number().int().nonnegative().max(8),
+        candidateInBoundMenu: z.boolean(),
+        candidateEnabled: z.boolean(),
+        decision: z.enum([
+          "accepted",
+          "no_candidate",
+          "not_target_quality",
+          "route_changed",
+          "menu_unresolved",
+          "candidate_not_unique",
+          "candidate_outside_menu",
+          "option_disabled",
+          "route_fingerprint_missing",
+          "selected_asset_changed",
+          "selected_asset_unavailable",
+          "selected_asset_ambiguous",
+        ]),
+      })
+      .strict()
+      .optional(),
     detailClipSelectionStatus: z
       .enum(["not_applicable", "waiting_for_user_selection", "observed", "route_changed"])
       .optional(),
@@ -149,6 +226,10 @@ export const FlowGalleryDownloadDiagnosticSchema = z
       .optional(),
     detailMetadataCaptureEnabled: z.boolean().optional(),
     detailMetadataFields: z.array(FlowDetailMetadataFieldSchema).max(48).optional(),
+    detailMetadataBodyDiagnostics: z
+      .array(FlowDetailMetadataBodyDiagnosticSchema)
+      .max(24)
+      .optional(),
     detailMetadataBodiesOmitted: z.number().int().nonnegative().max(100).optional(),
     detailMetadataEligibleRequestsSeen: z.number().int().nonnegative().max(100).optional(),
     detailMetadataRequestsAdmitted: z.number().int().nonnegative().max(12).optional(),
@@ -183,6 +264,14 @@ export const FlowGalleryDownloadDiagnosticSchema = z
             "not_matched",
           ])
           .optional(),
+      })
+      .strict()
+      .optional(),
+    selectedThumbnailAsset: z
+      .object({
+        captureStatus: z.enum(["captured_for_row", "changed_or_missing"]),
+        selectionStatus: z.enum(["not_checked", "matched", "changed_or_missing"]),
+        fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       })
       .strict()
       .optional(),
@@ -372,6 +461,94 @@ export async function fingerprintFlowAssetPath(
   );
 }
 
+/** Session-scoped fingerprint for the selected detail thumbnail asset UUID. */
+export async function fingerprintFlowSelectedThumbnailAsset(
+  sessionId: string,
+  assetUuid: unknown,
+): Promise<string | undefined> {
+  if (
+    typeof assetUuid !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      assetUuid,
+    )
+  )
+    return undefined;
+  return sha256Hex(
+    `${sessionId}\nflow-selected-thumbnail-asset\n${assetUuid.toLowerCase()}`,
+  );
+}
+
+/** Reads the selected navigation thumbnail against the exact imported detail route. */
+export function inspectSelectedFlowNavigationAssetInPage(
+  expectedProjectId: string,
+  expectedClipId: string,
+): {
+  status:
+    | "captured"
+    | "route_mismatch"
+    | "selection_missing"
+    | "selection_ambiguous"
+    | "image_missing"
+    | "asset_id_ambiguous"
+    | "changed_during_read";
+  assetUuid?: string;
+} {
+  const uuidPattern =
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+  const routeMatches = () => {
+    try {
+      const url = new URL(location.href);
+      const route =
+        url.protocol === "https:" &&
+        url.hostname === "flow.google.com" &&
+        !url.username &&
+        !url.password
+          ? /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/edit\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(
+              url.pathname,
+            )
+          : null;
+      return Boolean(
+        route &&
+          route[1] === expectedProjectId &&
+          route[2]!.toLowerCase() === expectedClipId.toLowerCase(),
+      );
+    } catch {
+      return false;
+    }
+  };
+  const read = () => {
+    if (!routeMatches()) return { status: "route_mismatch" as const };
+    const buttons = document.querySelectorAll<HTMLElement>(
+      "flow-navigation-rail-thumbnail button[aria-current='true']",
+    );
+    if (buttons.length === 0) return { status: "selection_missing" as const };
+    if (buttons.length !== 1)
+      return { status: "selection_ambiguous" as const };
+    const button = buttons[0]!;
+    const images = button.querySelectorAll<HTMLImageElement>("img");
+    if (images.length !== 1) return { status: "image_missing" as const };
+    const image = images[0]!;
+    const imageUrl = image.currentSrc || image.src || image.getAttribute("src") || "";
+    const assetIds = [...new Set(imageUrl.match(uuidPattern) ?? [])].map((id) =>
+      id.toLowerCase(),
+    );
+    if (assetIds.length !== 1)
+      return { status: "asset_id_ambiguous" as const };
+    return { status: "captured" as const, button, image, assetUuid: assetIds[0]! };
+  };
+  const first = read();
+  const second = read();
+  if (first.status !== "captured") return first;
+  if (
+    second.status !== "captured" ||
+    first.button !== second.button ||
+    first.image !== second.image ||
+    first.assetUuid !== second.assetUuid
+  )
+    return { status: "changed_during_read" };
+  return { status: "captured", assetUuid: first.assetUuid };
+}
+
 /** Fingerprints UUID path components on captured Flow media/download URLs. */
 export async function fingerprintFlowAssetUrlPath(
   sessionId: string,
@@ -400,27 +577,188 @@ export async function fingerprintFlowAssetUrlPath(
     : undefined;
 }
 
+export type FlowDetailMetadataMimeCategory = z.infer<
+  typeof FlowDetailMetadataMimeCategorySchema
+>;
+export type FlowDetailMetadataBodyDiagnostic = z.infer<
+  typeof FlowDetailMetadataBodyDiagnosticSchema
+>;
+
+export function classifyFlowDetailMetadataMimeCategory(
+  contentType: unknown,
+): FlowDetailMetadataMimeCategory {
+  if (typeof contentType !== "string" || !contentType.trim()) return "missing";
+  const mediaType = contentType.split(";", 1)[0]!.trim().toLowerCase();
+  if (
+    mediaType === "application/json" ||
+    mediaType === "text/json" ||
+    mediaType.endsWith("+json")
+  )
+    return "json";
+  if (
+    mediaType === "application/x-www-form-urlencoded" ||
+    mediaType === "multipart/form-data"
+  )
+    return "form";
+  if (mediaType.startsWith("text/") || mediaType === "application/graphql")
+    return "text";
+  if (
+    mediaType === "application/octet-stream" ||
+    /^(?:image|audio|video|font)\//.test(mediaType) ||
+    /(?:zip|protobuf|wasm|x-binary)/.test(mediaType)
+  )
+    return "binary";
+  return "other";
+}
+
+function metadataBodyByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else bytes += 3;
+    } else bytes += 3;
+    if (bytes > 65_537) return 65_537;
+  }
+  return bytes;
+}
+
 export type FlowDetailMetadataBodyInspection = {
-  status: "parsed" | "invalid_json" | "unavailable" | "too_large";
+  status:
+    | "parsed"
+    | "invalid_json"
+    | "unavailable"
+    | "too_large"
+    | "unsupported_encoding"
+    | "unsupported_mime";
+  diagnostic: FlowDetailMetadataBodyDiagnostic;
   fields: Array<z.infer<typeof FlowDetailMetadataFieldSchema>>;
 };
 
-/** Parses a bounded JSON body and retains only scoped fingerprints of ID-like scalar fields. */
+/** Inspects bounded JSON-shaped bodies and retains only scoped fingerprints and format categories. */
 export async function inspectFlowDetailMetadataBody(
   sessionId: string,
   requestToken: string,
   role: "request_body" | "response_body",
   rawJson: unknown,
   offsetMs: number,
+  options: {
+    mimeCategory?: FlowDetailMetadataMimeCategory;
+    base64Encoded?: boolean;
+  } = {},
 ): Promise<FlowDetailMetadataBodyInspection> {
-  if (typeof rawJson !== "string") return { status: "unavailable", fields: [] };
-  if (rawJson.length > 64 * 1024) return { status: "too_large", fields: [] };
+  const mimeCategory = options.mimeCategory ?? "missing";
+  const base64Encoded = options.base64Encoded;
+  const base = {
+    stage: role,
+    mimeCategory,
+    ...(base64Encoded === undefined ? {} : { base64Encoded }),
+  } as const;
+  if (mimeCategory !== "json" && mimeCategory !== "missing")
+    return {
+      status: "unsupported_mime",
+      diagnostic: {
+        ...base,
+        ...(typeof rawJson === "string"
+          ? { byteLength: metadataBodyByteLength(rawJson) }
+          : {}),
+        formatCategory: "unsupported_mime",
+        parseFailureCategory: "unsupported_mime",
+      },
+      fields: [],
+    };
+  if (typeof rawJson !== "string")
+    return {
+      status: "unavailable",
+      diagnostic: {
+        ...base,
+        formatCategory: "unavailable",
+        parseFailureCategory: "unavailable",
+      },
+      fields: [],
+    };
+  const byteLength = metadataBodyByteLength(rawJson);
+  const boundedLength = Math.min(byteLength, 65_537);
+  if (base64Encoded === true)
+    return {
+      status: "unsupported_encoding",
+      diagnostic: {
+        ...base,
+        byteLength: boundedLength,
+        formatCategory: "base64_encoded",
+        parseFailureCategory: "unsupported_encoding",
+      },
+      fields: [],
+    };
+  if (byteLength > 64 * 1024)
+    return {
+      status: "too_large",
+      diagnostic: {
+        ...base,
+        byteLength: boundedLength,
+        formatCategory: "too_large",
+        parseFailureCategory: "too_large",
+      },
+      fields: [],
+    };
+  if (!rawJson.trim())
+    return {
+      status: "invalid_json",
+      diagnostic: {
+        ...base,
+        byteLength,
+        formatCategory: "empty",
+        parseFailureCategory: "invalid_json",
+      },
+      fields: [],
+    };
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawJson);
   } catch {
-    return { status: "invalid_json", fields: [] };
+    const trimmed = rawJson.trimStart();
+    const leadingWord = trimmed.match(/^[A-Za-z]+/)?.[0]?.toLowerCase();
+    const startsLikeJson =
+      trimmed.startsWith("{") ||
+      trimmed.startsWith("[") ||
+      trimmed.startsWith('"') ||
+      trimmed.startsWith("-") ||
+      /^\d/.test(trimmed) ||
+      (leadingWord !== undefined &&
+        ["true", "false", "null"].some((literal) =>
+          literal.startsWith(leadingWord),
+        ));
+    const prefixCandidate =
+      !startsLikeJson && /^[\s\S]{1,128}[{[]/.test(rawJson);
+    return {
+      status: "invalid_json",
+      diagnostic: {
+        ...base,
+        byteLength,
+        formatCategory: prefixCandidate
+          ? "prefix_candidate"
+          : startsLikeJson
+            ? "json_like_invalid"
+            : "non_json",
+        parseFailureCategory: prefixCandidate
+          ? "prefix_or_framing_candidate"
+          : "invalid_json",
+      },
+      fields: [],
+    };
   }
+  const shape = Array.isArray(parsed)
+    ? "array"
+    : parsed !== null && typeof parsed === "object"
+      ? "object"
+      : "scalar";
+  const formatCategory = `json_${shape}`;
   const found: Array<z.infer<typeof FlowDetailMetadataFieldSchema>> = [];
   const idKey = /(id|uuid|asset|job|result|clip|media)(?:id)?$/i;
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -465,7 +803,16 @@ export async function inspectFlowDetailMetadataBody(
     }
   };
   await visit(parsed, [], 0);
-  return { status: "parsed", fields: found };
+  return {
+    status: "parsed",
+    diagnostic: {
+      ...base,
+      byteLength,
+      formatCategory: formatCategory as FlowDetailMetadataBodyDiagnostic["formatCategory"],
+      parseFailureCategory: "none",
+    },
+    fields: found,
+  };
 }
 
 /** Backward-compatible helper for focused fingerprint tests. */
@@ -674,10 +1021,64 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
         requestedQuality: z.literal("1080p_upscaled"),
         menuBound: z.literal(true),
         assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+        selectedThumbnailAssetFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict(),
+    z
+      .object({
+        sessionId: z.string().uuid(),
+        stage: z.literal("detail_clip_click_diagnostic"),
+        capturedAt: z.number().int().nonnegative(),
+        routeMatches: z.boolean(),
+        menuBound: z.boolean(),
+        candidateCount: z.number().int().nonnegative().max(8),
+        qualityOptionCount: z.number().int().nonnegative().max(8),
+        candidateInBoundMenu: z.boolean(),
+        candidateEnabled: z.boolean(),
+        decision: z.enum([
+          "accepted",
+          "no_candidate",
+          "not_target_quality",
+          "route_changed",
+          "menu_unresolved",
+          "candidate_not_unique",
+          "candidate_outside_menu",
+          "option_disabled",
+          "route_fingerprint_missing",
+          "selected_asset_changed",
+          "selected_asset_unavailable",
+          "selected_asset_ambiguous",
+        ]),
+      })
+      .strict(),
+    z
+      .object({
+        sessionId: z.string().uuid(),
+        stage: z.literal("detail_clip_observer_lifecycle"),
+        capturedAt: z.number().int().nonnegative(),
+        state: z.enum(["replaced", "page_hidden"]),
       })
       .strict(),
   ],
 );
+
+export const FlowSelectedNavigationAssetPreflightSchema = z
+  .object({
+    status: z.enum([
+      "captured",
+      "route_mismatch",
+      "selection_missing",
+      "selection_ambiguous",
+      "image_missing",
+      "asset_id_ambiguous",
+      "changed_during_read",
+    ]),
+    assetUuid: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+      .optional(),
+  })
+  .strict();
 
 export type FlowGalleryDiagnosticPageMessage = z.infer<
   typeof FlowGalleryDiagnosticPageMessageSchema
@@ -996,6 +1397,8 @@ export function installFlowGalleryDownloadObserver(
   captureMode: "gallery" | "detail_clip" = "gallery",
   expectedClipId?: string,
   expectedAssetPathFingerprint?: string,
+  expectedSelectedAssetUuid?: string,
+  expectedSelectedAssetFingerprint?: string,
 ): {
   installed: boolean;
   replaced: boolean;
@@ -1007,14 +1410,14 @@ export function installFlowGalleryDownloadObserver(
   const scope = globalThis as typeof globalThis & {
     __AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__?: {
       sessionId: string;
-      stop: () => void;
+      stop: (reason?: "replaced" | "uninstalled") => void;
     };
     chrome?: {
       runtime?: { sendMessage?: (message: unknown) => Promise<unknown> };
     };
   };
   const previous = scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__;
-  previous?.stop();
+  previous?.stop("replaced");
   let stage: "main_menu" | "download_row" | "quality_option" | "done" =
     "main_menu";
   let selectedCard: HTMLElement | undefined;
@@ -1022,6 +1425,7 @@ export function installFlowGalleryDownloadObserver(
   let downloadControlId: string | undefined;
   let stopped = false;
   let detailClickHandler: ((event: MouseEvent) => void) | undefined;
+  let detailPageHideHandler: (() => void) | undefined;
 
   const normalized = (value: string) =>
     value.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -1185,6 +1589,7 @@ export function installFlowGalleryDownloadObserver(
       ),
     ].filter((option) => textFor(option).includes("1080pupscaled"));
     return {
+      count: Math.min(8, options.length),
       observed: options.length === 1,
       enabled:
         options.length === 1 &&
@@ -1369,12 +1774,21 @@ export function installFlowGalleryDownloadObserver(
       false,
     );
   };
-  const stop = () => {
+  const stop = (reason?: "replaced" | "uninstalled") => {
     stopped = true;
+    if (captureMode === "detail_clip" && reason === "replaced")
+      send({
+        sessionId,
+        stage: "detail_clip_observer_lifecycle",
+        capturedAt: Date.now(),
+        state: "replaced",
+      });
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("pointerover", onPointerOver, true);
     if (detailClickHandler)
       document.removeEventListener("click", detailClickHandler, true);
+    if (detailPageHideHandler)
+      window.removeEventListener("pagehide", detailPageHideHandler);
   };
 
   if (captureMode === "detail_clip") {
@@ -1437,6 +1851,35 @@ export function installFlowGalleryDownloadObserver(
       const quality = qualityEvidence(menus[0]!);
       return { menu: menus[0]!, quality };
     };
+    const readSelectedAsset = () => {
+      const read = () => {
+        if (!currentRouteMatches()) return { status: "changed" as const };
+        const buttons = document.querySelectorAll<HTMLElement>(
+          "flow-navigation-rail-thumbnail button[aria-current='true']",
+        );
+        if (buttons.length === 0) return { status: "missing" as const };
+        if (buttons.length !== 1) return { status: "ambiguous" as const };
+        const button = buttons[0]!;
+        const images = button.querySelectorAll<HTMLImageElement>("img");
+        if (images.length !== 1) return { status: "ambiguous" as const };
+        const image = images[0]!;
+        const imageUrl = image.currentSrc || image.src || image.getAttribute("src") || "";
+        const ids = [...new Set(imageUrl.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? [])].map((id) => id.toLowerCase());
+        if (ids.length !== 1) return { status: "ambiguous" as const };
+        return { status: "captured" as const, button, image, assetUuid: ids[0]! };
+      };
+      const first = read();
+      const second = read();
+      if (first.status !== "captured") return first;
+      if (
+        second.status !== "captured" ||
+        first.button !== second.button ||
+        first.image !== second.image ||
+        first.assetUuid !== second.assetUuid
+      )
+        return { status: "changed" as const };
+      return first;
+    };
     if (!currentRouteMatches())
       return { installed: false, replaced: Boolean(previous), blocker: "detail_route_mismatch" };
     const preflightMenu = resolveDetailMenu();
@@ -1444,24 +1887,81 @@ export function installFlowGalleryDownloadObserver(
       return { installed: false, replaced: Boolean(previous), blocker: "detail_menu_unbound" };
     if (!preflightMenu.quality.observed || !preflightMenu.quality.enabled)
       return { installed: false, replaced: Boolean(previous), blocker: "quality_option_not_ready" };
+    let detailClickDiagnosticEvents = 0;
     detailClickHandler = (event: MouseEvent) => {
       if (stopped || !event.isTrusted) return;
+      if (detailClickDiagnosticEvents >= 100) return;
+      detailClickDiagnosticEvents += 1;
       const path = clickablePath(event);
-      const menuContext = resolveDetailMenu();
-      if (!menuContext) return;
       const selectedOptions = path.filter((entry) =>
         textFor(entry).includes("1080pupscaled"),
       );
-      if (
-        selectedOptions.length !== 1 ||
-        !menuContext.menu.contains(selectedOptions[0]!) ||
-        selectedOptions[0]!.matches(":disabled") ||
-        selectedOptions[0]!.getAttribute("aria-disabled") === "true"
+      const routeMatches = currentRouteMatches();
+      const menuContext = routeMatches ? resolveDetailMenu() : undefined;
+      const clickInsideMenu = Boolean(
+        menuContext &&
+          path.some(
+            (entry) =>
+              entry === menuContext.menu || menuContext.menu.contains(entry),
+          ),
+      );
+      const candidate = selectedOptions.length === 1 ? selectedOptions[0] : undefined;
+      const candidateInBoundMenu = Boolean(
+        menuContext && candidate && menuContext.menu.contains(candidate),
+      );
+      const candidateEnabled = Boolean(
+        candidate &&
+          !candidate.matches(":disabled") &&
+          candidate.getAttribute("aria-disabled") !== "true",
+      );
+      let decision:
+        | "accepted"
+        | "no_candidate"
+        | "not_target_quality"
+        | "route_changed"
+        | "menu_unresolved"
+        | "candidate_not_unique"
+        | "candidate_outside_menu"
+        | "option_disabled"
+        | "route_fingerprint_missing" = "accepted";
+      if (!clickInsideMenu && !selectedOptions.length) decision = "no_candidate";
+      else if (!selectedOptions.length) decision = "not_target_quality";
+      else if (!routeMatches) decision = "route_changed";
+      else if (!menuContext) decision = "menu_unresolved";
+      else if (selectedOptions.length !== 1) decision = "candidate_not_unique";
+      else if (!candidateInBoundMenu) decision = "candidate_outside_menu";
+      else if (!candidateEnabled || !menuContext.quality.enabled)
+        decision = "option_disabled";
+      else if (
+        !expectedAssetPathFingerprint ||
+        !/^[a-f0-9]{64}$/.test(expectedAssetPathFingerprint)
       )
-        return;
-      const routeFingerprint = expectedAssetPathFingerprint;
-      if (!routeFingerprint || !/^[a-f0-9]{64}$/.test(routeFingerprint)) return;
-      if (!currentRouteMatches()) return;
+        decision = "route_fingerprint_missing";
+      else if (!currentRouteMatches()) decision = "route_changed";
+      else if (!expectedSelectedAssetUuid || !expectedSelectedAssetFingerprint)
+        decision = "selected_asset_unavailable";
+      else {
+        const currentAsset = readSelectedAsset();
+        if (currentAsset.status === "ambiguous")
+          decision = "selected_asset_ambiguous";
+        else if (currentAsset.status !== "captured")
+          decision = "selected_asset_unavailable";
+        else if (currentAsset.assetUuid !== expectedSelectedAssetUuid.toLowerCase())
+          decision = "selected_asset_changed";
+      }
+      send({
+        sessionId,
+        stage: "detail_clip_click_diagnostic",
+        capturedAt: Date.now(),
+        routeMatches,
+        menuBound: Boolean(menuContext),
+        candidateCount: Math.min(8, selectedOptions.length),
+        qualityOptionCount: menuContext?.quality.count ?? 0,
+        candidateInBoundMenu,
+        candidateEnabled,
+        decision,
+      });
+      if (decision !== "accepted") return;
       stopped = true;
       document.removeEventListener("click", detailClickHandler!, true);
       send({
@@ -1471,13 +1971,24 @@ export function installFlowGalleryDownloadObserver(
         trusted: true,
         requestedQuality: "1080p_upscaled",
         menuBound: true,
-        assetPathFingerprint: routeFingerprint,
+        assetPathFingerprint: expectedAssetPathFingerprint!,
+        selectedThumbnailAssetFingerprint: expectedSelectedAssetFingerprint!,
       });
     };
     document.addEventListener("click", detailClickHandler, {
       capture: true,
       passive: true,
     });
+    detailPageHideHandler = () => {
+      send({
+        sessionId,
+        stage: "detail_clip_observer_lifecycle",
+        capturedAt: Date.now(),
+        state: "page_hidden",
+      });
+      stop();
+    };
+    window.addEventListener("pagehide", detailPageHideHandler, { once: true });
     scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__ = { sessionId, stop };
     return {
       installed: true,
@@ -1503,12 +2014,12 @@ export function uninstallFlowGalleryDownloadObserver(sessionId: string): {
   const scope = globalThis as typeof globalThis & {
     __AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__?: {
       sessionId: string;
-      stop: () => void;
+      stop: (reason?: "replaced" | "uninstalled") => void;
     };
   };
   const current = scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__;
   if (current?.sessionId !== sessionId) return { removed: false };
-  current.stop();
+  current.stop("uninstalled");
   delete scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__;
   return { removed: true };
 }
