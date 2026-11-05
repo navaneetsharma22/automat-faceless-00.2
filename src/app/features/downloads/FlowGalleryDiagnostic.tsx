@@ -172,7 +172,7 @@ export function FlowGalleryDiagnostic({
         F
       </span>
       <h3 id="flow-download-diagnostic-title">
-        Flow Gallery upscale diagnostic
+        Flow download diagnostic
       </h3>
       <FlowClipImportProofOfConcept persistenceClient={persistenceClient} />
       <p>
@@ -225,10 +225,9 @@ export function FlowGalleryDiagnostic({
         </label>
       ) : null}
       <p className={styles.disabledReason}>
-        For menu-only verification, open one card&apos;s More options menu and
-        hover Download. Confirm the pre-click evidence below, then stop before
-        selecting a quality. A controlled association run may continue with one
-        manually chosen quality. Observation expires after 20 minutes.
+        {report?.captureMode === "detail_clip"
+          ? "For the single-row detail capture, the observer is armed on the verified clip and its Download media menu. Make one user-initiated 1080p Upscaled selection, then let Chrome finish or stop the observation. The observer expires after 20 minutes."
+          : "For Gallery menu-only verification, open one card's More options menu and hover Download. Confirm the pre-click evidence below, then stop before selecting a quality. Observation expires after 20 minutes."}
       </p>
       {error ? (
         <p className={styles.fieldError} role="alert">
@@ -253,11 +252,21 @@ export function FlowGalleryDiagnostic({
               <dd>{report.tabId}</dd>
             </div>
             <div>
-              <dt>Trusted quality click</dt>
+              <dt>
+                {report.captureMode === "detail_clip"
+                  ? "Detail-menu selection"
+                  : "Trusted quality click"}
+              </dt>
               <dd>
-                {report.nativeActionObserved
-                  ? "1080p Upscaled click observed"
-                  : "not observed"}
+                {report.captureMode === "detail_clip"
+                  ? report.detailClipSelectionStatus === "observed"
+                    ? "User-initiated 1080p Upscaled selection observed inside the bound menu"
+                    : report.detailClipSelectionStatus === "route_changed"
+                      ? "Selection rejected: route changed or no longer matched"
+                      : "Waiting for one user-initiated selection"
+                  : report.nativeActionObserved
+                    ? "1080p Upscaled click observed"
+                    : "not observed"}
               </dd>
             </div>
             <div>
@@ -265,22 +274,44 @@ export function FlowGalleryDiagnostic({
               <dd>{report.requestedQuality ?? "not observed"}</dd>
             </div>
             <div>
-              <dt>Association</dt>
-              <dd>{associationLabel(report)}</dd>
-            </div>
-            <div>
-              <dt>Browser completion</dt>
+              <dt>
+                {report.captureMode === "detail_clip"
+                  ? "Clip association"
+                  : "Association"}
+              </dt>
               <dd>
-                {report.matchedDownloadId === undefined
-                  ? "not verified"
-                  : (report.downloads.find(
-                      (item) => item.downloadId === report.matchedDownloadId,
-                    )?.state ?? "unknown")}
+                {report.captureMode === "detail_clip"
+                  ? "Unverified: a matching route path does not identify the Flow output asset. Existing Gallery-card association rules are unchanged."
+                  : associationLabel(report)}
               </dd>
             </div>
             <div>
-              <dt>Saved-file resolution</dt>
-              <dd>not inspected</dd>
+              <dt>
+                {report.captureMode === "detail_clip"
+                  ? "Download completion"
+                  : "Browser completion"}
+              </dt>
+              <dd>
+                {report.captureMode === "detail_clip"
+                  ? (report.detailDownloadCompletionStatus ?? "not observed").replaceAll("_", " ")
+                  : report.matchedDownloadId === undefined
+                    ? "not verified"
+                    : (report.downloads.find(
+                        (item) => item.downloadId === report.matchedDownloadId,
+                      )?.state ?? "unknown")}
+              </dd>
+            </div>
+            <div>
+              <dt>
+                {report.captureMode === "detail_clip"
+                  ? "File resolution"
+                  : "Saved-file resolution"}
+              </dt>
+              <dd>
+                {report.captureMode === "detail_clip"
+                  ? `${(report.detailFileResolutionStatus ?? "not_checked").replaceAll("_", " ")}; Chrome file existence only, media bytes not decoded`
+                  : "not inspected"}
+              </dd>
             </div>
             <div>
               <dt>Chrome download events</dt>
@@ -360,14 +391,22 @@ export function FlowGalleryDiagnostic({
                     <dd>{armStatus}</dd>
                   </div>
                   <div>
-                    <dt>Clip route when menu opened</dt>
+                    <dt>
+                      {report.captureMode === "detail_clip"
+                        ? "Clip route at selection"
+                        : "Clip route when menu opened"}
+                    </dt>
                     <dd>{menuStatusLabel}</dd>
                   </div>
-                  {report.selectedCard ? (
+                  {report.selectedCard || report.captureMode === "detail_clip" ? (
                     <div>
-                      <dt>Temporary route asset trace</dt>
+                      <dt>
+                        {report.captureMode === "detail_clip"
+                          ? "Clip-to-output path evidence"
+                          : "Temporary route asset trace"}
+                      </dt>
                       <dd>
-                        route -&gt; action request path ID: {identityLink.routeToOutput.replaceAll("_", " ")}; asset ID -&gt; exact page blob/download: {identityLink.outputToBlob.replaceAll("_", " ")}. This checks URL path IDs only; it does not inspect response metadata or blob bytes, and it does not change the clip association result.
+                        route -&gt; action request path ID: {identityLink.routeToOutput.replaceAll("_", " ")}; asset ID -&gt; exact page blob/download: {identityLink.outputToBlob.replaceAll("_", " ")}. Path IDs are evidence only; no Flow job/result metadata or media bytes are inspected and this does not establish clip association.
                       </dd>
                     </div>
                   ) : null}
@@ -391,6 +430,14 @@ export function FlowGalleryDiagnostic({
               {report.captureIssue.reason.replaceAll("_", " ")}.
             </p>
           ) : null}
+          {report.captureMode === "detail_clip" ? (
+            <section aria-label="Verified detail menu evidence">
+              <strong>Verified detail menu at arm</strong>
+              <p className={styles.disabledReason}>
+                Download media binding: {report.detailMenuBoundAtArm ? "resolved" : "not resolved"}; 1080p Upscaled option: {report.menuBinding?.qualityOptionObserved ? report.menuBinding.qualityOptionEnabled ? "visible and enabled" : "visible but disabled" : "not observed"}. The page observer only reports a later trusted selection from this bound menu.
+              </p>
+            </section>
+          ) : (
           <section aria-label="Pre-click Gallery menu evidence">
             <strong>Pre-click menu evidence</strong>
             <p className={styles.disabledReason}>
@@ -425,6 +472,7 @@ export function FlowGalleryDiagnostic({
               establish an action or download association.
             </p>
           </section>
+          )}
           <section aria-label="Quality click diagnostic">
             <strong>Quality click diagnostic</strong>
             <p className={styles.disabledReason}>
@@ -534,51 +582,10 @@ type FlowClipImportRow = {
 };
 
 type FlowClipDownloadProofResult = {
-  status: "blocked" | "menu_recognized";
-  blocker?: string;
-  routeStatus: "matched" | "mismatch" | "not_checked";
-  menuRecognitionStatus?: "recognized" | "not_recognized" | "not_checked";
-  qualityOptionStatus?:
-    | "visible_enabled"
-    | "not_verified"
-    | "not_checked";
-  outputStatus: "unverified";
+  status: "armed" | "action_observed" | "completed" | "interrupted" | "expired" | "stopped";
+  detailClipSelectionStatus?: string;
+  detailMenuBoundAtArm?: boolean;
 };
-
-function flowClipDownloadBlockerLabel(result: FlowClipDownloadProofResult) {
-  switch (result.blocker) {
-    case "clip_not_in_single_row_scope":
-      return "Blocked: this clip is outside the single-row proof scope.";
-    case "imported_row_missing_or_unverified":
-      return "Blocked: the imported row is missing or its exact route is unverified.";
-    case "project_not_currently_verified":
-      return "Blocked: the selected Flow project is not currently verified for this row.";
-    case "detail_route_missing_or_changed":
-      return "Blocked: the selected tab is no longer on this row's exact /edit/ route.";
-    case "page_clip_identity_mismatch":
-      return "Blocked: the verified detail page did not identify this exact clip.";
-    case "detail_download_control_not_found":
-      return "Blocked: the detail page's Download media control was not found.";
-    case "detail_download_control_ambiguous":
-      return "Blocked: more than one Download media control was found.";
-    case "detail_menu_not_open":
-      return "Blocked: the Download media menu is not open.";
-    case "detail_menu_binding_unresolved":
-      return "Blocked: the open menu could not be tied to the Download media control.";
-    case "quality_option_not_found_in_detail_menu":
-      return "Blocked: 1080p Upscaled was not found inside the Download media menu.";
-    case "quality_option_ambiguous_in_detail_menu":
-      return "Blocked: 1080p Upscaled appeared more than once inside that menu.";
-    case "quality_option_disabled_in_detail_menu":
-      return "Blocked: 1080p Upscaled is disabled in the bound menu.";
-    case "detail_menu_inspection_unavailable":
-      return "Blocked: the bound detail menu could not be inspected.";
-    case "output_clip_identity_unverified":
-      return "Blocked: Flow output identity cannot yet be linked to this clip.";
-    default:
-      return "Blocked: the detail menu was not verified.";
-  }
-}
 
 function FlowClipImportProofOfConcept({
   persistenceClient,
@@ -661,28 +668,43 @@ function FlowClipImportProofOfConcept({
     }
   };
 
-  const inspectDownload1080p = async (row: FlowClipImportRow) => {
+  const armDownload1080p = async (row: FlowClipImportRow) => {
     setDownloadProofPending(true);
     setDownloadProofs((previous) => ({ ...previous, [row.id]: undefined }));
     setError(undefined);
     try {
+      if (typeof chrome === "undefined" || !chrome.permissions?.request) {
+        setError("Chrome permission requests are unavailable in this dashboard.");
+        return;
+      }
+      const granted = await chrome.permissions.request({
+        permissions: ["downloads"],
+      });
+      if (!granted) {
+        setError("Chrome downloads permission was not granted; no diagnostic was armed.");
+        return;
+      }
       const result = (await persistenceClient.request(
-        "flow.clipDownloadProof.inspect",
+        "flow.clipDownloadProof.arm",
         { recordId: row.id },
       )) as FlowClipDownloadProofResult;
       setDownloadProofs((previous) => ({ ...previous, [row.id]: result }));
-    } catch {
-      setDownloadProofs((previous) => ({
-        ...previous,
-        [row.id]: {
-          status: "blocked",
-          blocker: "project_not_currently_verified",
-          routeStatus: "not_checked",
-          menuRecognitionStatus: "not_checked",
-          qualityOptionStatus: "not_checked",
-          outputStatus: "unverified",
-        },
-      }));
+    } catch (caught) {
+      const code =
+        caught instanceof Error && "code" in caught
+          ? String((caught as Error & { code?: unknown }).code ?? "")
+          : caught instanceof Error
+            ? caught.message
+            : "";
+      setError(
+        code.includes("flow_detail_download_menu_not_ready")
+          ? "Capture blocked: open the target detail page's Download media menu with 1080p Upscaled visible and enabled, then arm."
+          : code.includes("flow_clip_detail_route_mismatch")
+            ? "Capture blocked: the selected Flow tab is not on the imported target clip's exact detail route."
+            : code.includes("flow_clip_not_in_single_row_scope")
+              ? "Capture blocked: this row is outside the one-clip diagnostic scope."
+              : "The one-shot Flow diagnostic could not arm; no quality selection was made.",
+      );
     } finally {
       setDownloadProofPending(false);
     }
@@ -698,9 +720,8 @@ function FlowClipImportProofOfConcept({
       </p>
       <p className={styles.disabledReason}>
         For the single proof row, open that clip's Download media menu in the
-        verified detail tab, then check whether the 1080p Upscaled item is
-        inside the exact menu controlled by that detail-page button. This check
-        never selects a quality.
+        verified detail tab, then arm a one-shot capture. The capture waits for
+        your trusted 1080p Upscaled selection; it never selects a quality.
       </p>
       <div className={styles.actionRow}>
         <Button disabled={pending} loading={pending} onClick={() => void importCurrent()}>
@@ -741,16 +762,16 @@ function FlowClipImportProofOfConcept({
                     variant="secondary"
                     disabled={downloadProofPending || !row.routeVerified}
                     loading={downloadProofPending}
-                    onClick={() => void inspectDownload1080p(row)}
+                    onClick={() => void armDownload1080p(row)}
                   >
-                    Check 1080p menu
+                    Arm one-shot 1080p capture
                   </Button>
                   {downloadProofs[row.id] ? (
                     <p role="status">
-                      {downloadProofs[row.id]!.status === "menu_recognized"
-                        ? "Recognized: 1080p Upscaled is visible and enabled inside the menu controlled by this detail page's Download media control."
-                        : flowClipDownloadBlockerLabel(downloadProofs[row.id]!)}{" "}
-                      Route: {downloadProofs[row.id]!.routeStatus}; menu: {downloadProofs[row.id]!.menuRecognitionStatus ?? "not checked"}; quality: {downloadProofs[row.id]!.qualityOptionStatus ?? "not checked"}; output-to-clip link: {downloadProofs[row.id]!.outputStatus} (still unverified). No quality selection or download was started.
+                      {downloadProofs[row.id]!.status === "armed"
+                        ? "Armed: make one user-initiated 1080p Upscaled selection in the open, bound Download media menu."
+                        : `Capture state: ${downloadProofs[row.id]!.status.replaceAll("_", " ")}.`}{" "}
+                      No quality selection was made by the extension.
                     </p>
                   ) : null}
                 </div>

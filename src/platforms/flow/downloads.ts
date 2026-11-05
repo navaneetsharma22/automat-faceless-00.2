@@ -112,6 +112,26 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     projectId: z.string().min(1).max(128),
     documentId: z.string().min(1).max(128),
     mainFrameId: z.string().min(1).max(128),
+    captureMode: z.enum(["gallery", "detail_clip"]).optional(),
+    detailMenuBoundAtArm: z.boolean().optional(),
+    detailClipSelectionStatus: z
+      .enum(["not_applicable", "waiting_for_user_selection", "observed", "route_changed"])
+      .optional(),
+    detailDownloadCompletionStatus: z
+      .enum([
+        "not_observed",
+        "awaiting_browser_download",
+        "awaiting_chrome_match",
+        "in_progress",
+        "complete",
+        "interrupted",
+        "ambiguous",
+      ])
+      .optional(),
+    detailTrackedDownloadId: z.number().int().nonnegative().optional(),
+    detailFileResolutionStatus: z
+      .enum(["not_checked", "resolved", "missing", "ambiguous", "unavailable"])
+      .optional(),
     identityCaptureEnabled: z.boolean().optional(),
     assetRoutePreflight: z
       .object({
@@ -352,6 +372,8 @@ export function diagnoseFlowRouteAssetBlobLink(
   record: Pick<
     FlowGalleryDownloadDiagnostic,
     | "identityCaptureEnabled"
+    | "captureMode"
+    | "detailClipSelectionStatus"
     | "assetRoutePreflight"
     | "startedAt"
     | "actionAt"
@@ -377,7 +399,12 @@ export function diagnoseFlowRouteAssetBlobLink(
 } {
   if (!record.identityCaptureEnabled)
     return { routeToOutput: "off", outputToBlob: "off" };
-  const routeFingerprint = record.selectedCard?.assetPathFingerprint;
+  const routeFingerprint =
+    record.captureMode === "detail_clip"
+      ? record.detailClipSelectionStatus === "observed"
+        ? record.assetRoutePreflight?.assetPathFingerprint
+        : undefined
+      : record.selectedCard?.assetPathFingerprint;
   const preflight = record.assetRoutePreflight;
   if (
     !preflight ||
@@ -516,6 +543,17 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
         capturedAt: z.number().int().nonnegative(),
         trusted: z.literal(true),
         requestedQuality: z.literal("1080p_upscaled"),
+      })
+      .strict(),
+    z
+      .object({
+        sessionId: z.string().uuid(),
+        stage: z.literal("detail_clip_selection"),
+        capturedAt: z.number().int().nonnegative(),
+        trusted: z.literal(true),
+        requestedQuality: z.literal("1080p_upscaled"),
+        menuBound: z.literal(true),
+        assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
       })
       .strict(),
   ],
@@ -835,9 +873,15 @@ export function installFlowGalleryDownloadObserver(
   sessionId: string,
   projectId?: string,
   identityCaptureEnabled = false,
+  captureMode: "gallery" | "detail_clip" = "gallery",
+  expectedClipId?: string,
 ): {
   installed: boolean;
   replaced: boolean;
+  menuBound?: boolean;
+  qualityOptionObserved?: boolean;
+  qualityOptionEnabled?: boolean;
+  blocker?: string;
 } {
   const scope = globalThis as typeof globalThis & {
     __AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__?: {
@@ -856,6 +900,7 @@ export function installFlowGalleryDownloadObserver(
   let mainControlId: string | undefined;
   let downloadControlId: string | undefined;
   let stopped = false;
+  let detailClickHandler: ((event: MouseEvent) => void) | undefined;
 
   const normalized = (value: string) =>
     value.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -1207,7 +1252,142 @@ export function installFlowGalleryDownloadObserver(
     stopped = true;
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("pointerover", onPointerOver, true);
+    if (detailClickHandler)
+      document.removeEventListener("click", detailClickHandler, true);
   };
+
+  if (captureMode === "detail_clip") {
+    const expectedId = expectedClipId?.toLowerCase();
+    const currentRouteMatches = () => {
+      if (!projectId || !expectedId) return false;
+      try {
+        const route = new URL(scope.location.href);
+        const routeMatch =
+          route.protocol === "https:" &&
+          route.hostname === "flow.google.com" &&
+          !route.username &&
+          !route.password
+            ? /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/edit\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(
+                route.pathname,
+              )
+            : null;
+        return Boolean(
+          routeMatch &&
+            routeMatch[1] === projectId &&
+            routeMatch[2]!.toLowerCase() === expectedId,
+        );
+      } catch {
+        return false;
+      }
+    };
+    const visible = (element: HTMLElement) => {
+      if (!element.isConnected) return false;
+      let current: HTMLElement | null = element;
+      while (current) {
+        if (current.hidden || current.getAttribute("aria-hidden") === "true")
+          return false;
+        const style = window.getComputedStyle(current);
+        if (style.display === "none" || style.visibility === "hidden")
+          return false;
+        current = current.parentElement;
+      }
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const resolveDetailMenu = () => {
+      if (!currentRouteMatches()) return undefined;
+      const triggers = [
+        ...document.querySelectorAll<HTMLElement>(
+          "button,[role='button'],[role='menuitem']",
+        ),
+      ].filter((entry) => visible(entry) && textFor(entry).includes("downloadmedia"));
+      if (triggers.length !== 1) return undefined;
+      const trigger = triggers[0]!;
+      if (trigger.getAttribute("aria-expanded") === "false") return undefined;
+      const ids = (trigger.getAttribute("aria-controls") ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      if (ids.length !== 1) return undefined;
+      const menus = [...document.querySelectorAll<HTMLElement>("[id]")].filter(
+        (entry) => entry.id === ids[0],
+      );
+      if (menus.length !== 1 || !visible(menus[0]!)) return undefined;
+      const quality = qualityEvidence(menus[0]!);
+      return { menu: menus[0]!, quality };
+    };
+    if (!currentRouteMatches())
+      return { installed: false, replaced: Boolean(previous), blocker: "detail_route_mismatch" };
+    const preflightMenu = resolveDetailMenu();
+    if (!preflightMenu)
+      return { installed: false, replaced: Boolean(previous), blocker: "detail_menu_unbound" };
+    if (!preflightMenu.quality.observed || !preflightMenu.quality.enabled)
+      return { installed: false, replaced: Boolean(previous), blocker: "quality_option_not_ready" };
+    detailClickHandler = async (event: MouseEvent) => {
+      if (stopped || !event.isTrusted) return;
+      const path = clickablePath(event);
+      const menuContext = resolveDetailMenu();
+      if (!menuContext) return;
+      const selectedOptions = path.filter((entry) =>
+        textFor(entry).includes("1080pupscaled"),
+      );
+      if (
+        selectedOptions.length !== 1 ||
+        !menuContext.menu.contains(selectedOptions[0]!) ||
+        selectedOptions[0]!.matches(":disabled") ||
+        selectedOptions[0]!.getAttribute("aria-disabled") === "true"
+      )
+        return;
+      let assetPathFingerprint: string;
+      try {
+        const route = new URL(scope.location.href);
+        const routeMatch = /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/edit\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(
+          route.pathname,
+        );
+        if (
+          !routeMatch ||
+          routeMatch[1] !== projectId ||
+          routeMatch[2]!.toLowerCase() !== expectedId
+        )
+          return;
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(
+            `${sessionId}\nflow-asset-route\n${expectedId}`,
+          ),
+        );
+        assetPathFingerprint = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+      } catch {
+        return;
+      }
+      stopped = true;
+      document.removeEventListener("click", detailClickHandler!, true);
+      send({
+        sessionId,
+        stage: "detail_clip_selection",
+        capturedAt: Date.now(),
+        trusted: true,
+        requestedQuality: "1080p_upscaled",
+        menuBound: true,
+        assetPathFingerprint,
+      });
+    };
+    document.addEventListener("click", detailClickHandler, {
+      capture: true,
+      passive: true,
+    });
+    scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__ = { sessionId, stop };
+    return {
+      installed: true,
+      replaced: Boolean(previous),
+      menuBound: true,
+      qualityOptionObserved: preflightMenu.quality.observed,
+      qualityOptionEnabled: preflightMenu.quality.enabled,
+    };
+  }
+
   document.addEventListener("click", onClick, { capture: true, passive: true });
   document.addEventListener("pointerover", onPointerOver, {
     capture: true,

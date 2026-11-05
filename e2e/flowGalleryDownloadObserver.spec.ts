@@ -669,3 +669,106 @@ test("recognizes the live Download button when hover assigns the submenu binding
     await browser.close();
   }
 });
+
+test("captures only a trusted 1080p click inside the verified detail menu", async ({
+  page,
+}) => {
+  const projectId = "project-detail-test";
+  const clipId = "c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa";
+  const sessionId = "33333333-3333-4333-8333-333333333333";
+  const detailUrl = `https://flow.google.com/project/${projectId}/edit/${clipId}`;
+  const fixture = `
+    <style>
+      button, [role=menu] { display:block; width:180px; height:36px; }
+      [role=menu] { height:120px; }
+    </style>
+    <button id="download-media" aria-controls="detail-quality-menu" aria-expanded="true">Download media</button>
+    <div id="detail-quality-menu" role="menu">
+      <button role="menuitem">720p Original size</button>
+      <button id="target-quality" role="menuitem">1080p Upscaled</button>
+    </div>
+    <button id="outside-quality">1080p Upscaled</button>
+  `;
+  await page.route("https://flow.google.com/**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "text/html", body: fixture });
+  });
+  await page.goto(detailUrl);
+  await page.evaluate(
+    ({ observerSource, sessionId, projectId, clipId }) => {
+      const target = window as Window & {
+        chrome?: { runtime?: { sendMessage?: (message: unknown) => Promise<unknown> } };
+        diagnosticMessages?: Array<Record<string, unknown>>;
+        diagnosticInstallResult?: unknown;
+      };
+      target.diagnosticMessages = [];
+      target.chrome = {
+        runtime: {
+          sendMessage: (message) => {
+            target.diagnosticMessages!.push(message as Record<string, unknown>);
+            return Promise.resolve(undefined);
+          },
+        },
+      };
+      const install = (0, eval)(`(${observerSource})`) as (
+        sessionId: string,
+        projectId: string,
+        identityCaptureEnabled: boolean,
+        captureMode: "gallery" | "detail_clip",
+        expectedClipId: string,
+      ) => unknown;
+      target.diagnosticInstallResult = install(
+        sessionId,
+        projectId,
+        true,
+        "detail_clip",
+        clipId,
+      );
+    },
+    {
+      observerSource: installFlowGalleryDownloadObserver.toString(),
+      sessionId,
+      projectId,
+      clipId,
+    },
+  );
+
+  const installResult = await page.evaluate(() =>
+    (window as Window & { diagnosticInstallResult?: { installed?: boolean; menuBound?: boolean; qualityOptionEnabled?: boolean } }).diagnosticInstallResult,
+  );
+  expect(installResult).toMatchObject({
+    installed: true,
+    menuBound: true,
+    qualityOptionEnabled: true,
+  });
+
+  await page.click("#outside-quality");
+  expect(
+    await page.evaluate(
+      () => (window as Window & { diagnosticMessages?: unknown[] }).diagnosticMessages,
+    ),
+  ).toEqual([]);
+
+  await page.click("#target-quality");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as Window & { diagnosticMessages?: Array<Record<string, unknown>> }).diagnosticMessages,
+      ),
+    )
+    .toEqual([
+      expect.objectContaining({
+        stage: "detail_clip_selection",
+        trusted: true,
+        requestedQuality: "1080p_upscaled",
+        menuBound: true,
+        assetPathFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    ]);
+  const serialized = JSON.stringify(
+    await page.evaluate(
+      () => (window as Window & { diagnosticMessages?: unknown[] }).diagnosticMessages,
+    ),
+  );
+  expect(serialized).not.toContain(clipId);
+  expect(serialized).not.toContain(projectId);
+});

@@ -164,6 +164,7 @@ export type FoundationDependencies = {
     importCurrentClip: () => Promise<unknown>;
     listImportedClips: () => Promise<unknown>;
     inspectClipDownloadProof: (recordId: string) => Promise<unknown>;
+    armClipDownloadProof: (recordId: string) => Promise<unknown>;
     ingestPageEvent: (
       raw: unknown,
       sender: ExtensionMessageSender,
@@ -923,6 +924,37 @@ async function dispatch(
       return await dependencies.flowDownloadDiagnostic.inspectClipDownloadProof(
         request.payload.recordId,
       );
+    case "flow.clipDownloadProof.arm":
+      if (!dependencies.flowDownloadDiagnostic)
+        throw new FoundationOperationError("worker_error", "flow_clip_download_proof_unavailable", "Flow clip download proof is unavailable in this worker.");
+      try {
+        return await dependencies.flowDownloadDiagnostic.armClipDownloadProof(
+          request.payload.recordId,
+        );
+      } catch (error) {
+        const rawCode = error instanceof Error ? error.message : "";
+        const messages: Record<string, string> = {
+          flow_diagnostic_already_active: "A Flow one-shot diagnostic is already active. Stop or complete it before arming another.",
+          flow_target_not_currently_verified: "Capture blocked: the selected Flow project is not currently verified.",
+          flow_target_document_changed: "Capture blocked: the selected Flow tab no longer matches its verified project.",
+          flow_clip_import_row_unverified: "Capture blocked: the imported target row is missing or its route is unverified.",
+          flow_clip_not_in_single_row_scope: "Capture blocked: this clip is outside the single-row diagnostic scope.",
+          flow_clip_project_mismatch: "Capture blocked: the selected Flow project does not match the imported clip row.",
+          flow_clip_detail_route_mismatch: "Open the imported target clip's exact verified /edit/ detail route before arming.",
+          flow_clip_page_identity_mismatch: "Capture blocked: the detail page did not identify the imported target clip.",
+          flow_detail_download_menu_not_ready: "Open the target detail page's bound Download media menu with 1080p Upscaled visible and enabled, then arm again.",
+          flow_diagnostic_permissions_missing: "Capture blocked: the required Flow diagnostic permission is unavailable.",
+          flow_downloads_api_unavailable: "Capture blocked: Chrome download tracking is unavailable.",
+        };
+        const code = Object.hasOwn(messages, rawCode)
+          ? rawCode
+          : "flow_clip_download_proof_arm_failed";
+        throw new FoundationOperationError(
+          "invalid_request",
+          code,
+          messages[code] ?? "The one-shot Flow clip diagnostic could not arm.",
+        );
+      }
   }
 }
 

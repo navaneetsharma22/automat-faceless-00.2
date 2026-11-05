@@ -247,6 +247,7 @@ const flowDownloadDiagnostic = createFlowDownloadDiagnosticManager({
       removeListener: (listener) =>
         chrome.downloads?.onChanged?.removeListener(listener as never),
     },
+    search: (query) => chrome.downloads.search(query),
   },
   storage: {
     get: (key) => chrome.storage.session.get(key),

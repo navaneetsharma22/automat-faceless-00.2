@@ -48,6 +48,7 @@ type ChromeDownloadItem = {
   state?: string;
   url?: string;
   finalUrl?: string;
+  exists?: boolean;
   error?: string;
 };
 
@@ -108,6 +109,7 @@ export type FlowDownloadDiagnosticDependencies = {
   downloads: {
     onCreated: EventPort<FlowDownloadDiagnosticDownloadCreatedListener>;
     onChanged: EventPort<FlowDownloadDiagnosticDownloadChangedListener>;
+    search?(query: { id: number }): Promise<ChromeDownloadItem[]>;
   };
   storage: {
     get(key: string): Promise<Record<string, unknown>>;
@@ -165,7 +167,55 @@ function updateAssociation(
   record: FlowGalleryDownloadDiagnostic,
   at: number,
 ): FlowGalleryDownloadDiagnostic {
-  return resolveFlowDownloadDiagnosticStatus(record, at);
+  const withAssociation = resolveFlowDownloadDiagnosticStatus(record, at);
+  if (withAssociation.captureMode !== "detail_clip") return withAssociation;
+  const pageEvents = withAssociation.pageDownloads.filter(
+    (event) => event.frameMatched && event.afterAction,
+  );
+  const linkedEvents = pageEvents.filter(
+    (event) => (event.exactDownloadIds ?? []).length > 0,
+  );
+  const linkedIds = [
+    ...new Set(linkedEvents.flatMap((event) => event.exactDownloadIds ?? [])),
+  ];
+  let completion: NonNullable<
+    FlowGalleryDownloadDiagnostic["detailDownloadCompletionStatus"]
+  > = "not_observed";
+  let trackedDownloadId: number | undefined;
+  if (withAssociation.detailClipSelectionStatus === "observed") {
+    if (!pageEvents.length) completion = "awaiting_browser_download";
+    else if (!linkedEvents.length) completion = "awaiting_chrome_match";
+    else if (linkedEvents.length !== 1 || linkedIds.length !== 1)
+      completion = "ambiguous";
+    else {
+      trackedDownloadId = linkedIds[0];
+      const item = withAssociation.downloads.find(
+        (download) => download.downloadId === trackedDownloadId,
+      );
+      completion =
+        item?.state === "complete" ||
+        item?.state === "interrupted" ||
+        item?.state === "in_progress"
+          ? item.state
+          : "awaiting_chrome_match";
+    }
+  }
+  let status = withAssociation.status;
+  let interruptionReason = withAssociation.interruptionReason;
+  if (status === "armed" || status === "action_observed") {
+    if (completion === "complete") status = "completed";
+    else if (completion === "interrupted") {
+      status = "interrupted";
+      interruptionReason = "matched_download_interrupted";
+    }
+  }
+  return FlowGalleryDownloadDiagnosticSchema.parse({
+    ...withAssociation,
+    status,
+    detailDownloadCompletionStatus: completion,
+    ...(trackedDownloadId === undefined ? {} : { detailTrackedDownloadId: trackedDownloadId }),
+    ...(interruptionReason ? { interruptionReason } : {}),
+  });
 }
 
 function publicSnapshot(
@@ -204,6 +254,75 @@ export function createFlowDownloadDiagnosticManager(
       .filter(([, item]) => item.url === rawUrl || item.finalUrl === rawUrl)
       .map(([downloadId]) => downloadId)
       .slice(0, 6);
+  const resolveDetailFileLocation = async (
+    record: FlowGalleryDownloadDiagnostic,
+  ) => {
+    if (record.captureMode !== "detail_clip") return record;
+    const eligibleEvents = record.pageDownloads.filter(
+      (event) => event.frameMatched && event.afterAction,
+    );
+    const exactEvents = eligibleEvents.filter(
+      (event) => (event.exactDownloadIds ?? []).length > 0,
+    );
+    const ids = [
+      ...new Set(exactEvents.flatMap((event) => event.exactDownloadIds ?? [])),
+    ];
+    if (exactEvents.length > 1 || ids.length > 1)
+      return {
+        ...record,
+        detailFileResolutionStatus: "ambiguous" as const,
+      };
+    const downloadId = ids[0];
+    if (downloadId === undefined || exactEvents.length !== 1)
+      return record;
+    const candidate = record.downloads.find(
+      (download) => download.downloadId === downloadId,
+    );
+    if (!candidate || candidate.state !== "complete")
+      return {
+        ...record,
+        detailTrackedDownloadId: downloadId,
+        detailFileResolutionStatus: "not_checked" as const,
+      };
+    if (!dependencies.downloads.search)
+      return {
+        ...record,
+        detailTrackedDownloadId: downloadId,
+        detailFileResolutionStatus: "unavailable" as const,
+      };
+    try {
+      const matches = await dependencies.downloads.search({ id: downloadId });
+      if (matches.length !== 1)
+        return {
+          ...record,
+          detailTrackedDownloadId: downloadId,
+          detailFileResolutionStatus: matches.length ? "ambiguous" as const : "unavailable" as const,
+        };
+      const item = matches[0]!;
+      const status: NonNullable<
+        FlowGalleryDownloadDiagnostic["detailFileResolutionStatus"]
+      > =
+        item.state === "complete" &&
+        typeof item.filename === "string" &&
+        item.filename.length > 0 &&
+        item.exists === true
+          ? "resolved"
+          : item.state === "complete" && item.exists === false
+            ? "missing"
+            : "unavailable";
+      return {
+        ...record,
+        detailTrackedDownloadId: downloadId,
+        detailFileResolutionStatus: status,
+      };
+    } catch {
+      return {
+        ...record,
+        detailTrackedDownloadId: downloadId,
+        detailFileResolutionStatus: "unavailable" as const,
+      };
+    }
+  };
   const loaded = dependencies.storage
     .get(FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY)
     .then((stored) => {
@@ -538,7 +657,10 @@ export function createFlowDownloadDiagnosticManager(
     };
   }
 
-  async function arm(identityCaptureEnabled = false) {
+  async function arm(
+    identityCaptureEnabled = false,
+    detailClipRecordId?: string,
+  ) {
     await loaded;
     return enqueue(async () => {
       if (isActive(current)) throw new Error("flow_diagnostic_already_active");
@@ -551,8 +673,57 @@ export function createFlowDownloadDiagnosticManager(
         throw new Error("flow_downloads_api_unavailable");
       const { selected, binding, verifiedTabUrl } =
         await verifySelectedFlowTarget();
+      let detailClipRow:
+        | Awaited<ReturnType<typeof dependencies.repositories.listFlowClipImports>>[number]
+        | undefined;
+      if (detailClipRecordId) {
+        detailClipRow = (await dependencies.repositories.listFlowClipImports()).find(
+          (candidate) => candidate.id === detailClipRecordId,
+        );
+        if (
+          !detailClipRow ||
+          !FlowClipImportRecordSchema.safeParse(detailClipRow).success ||
+          !flowClipImportRouteMatches(detailClipRow)
+        )
+          throw new Error("flow_clip_import_row_unverified");
+        if (!isFlow1080pProofClip(detailClipRow.clipId))
+          throw new Error("flow_clip_not_in_single_row_scope");
+        if (detailClipRow.projectId !== binding.projectId)
+          throw new Error("flow_clip_project_mismatch");
+        const detailRoute = verifiedTabUrl
+          ? flowClipDetailIdentityFromUrl(verifiedTabUrl)
+          : undefined;
+        if (
+          !detailRoute ||
+          detailRoute.projectId !== detailClipRow.projectId ||
+          detailRoute.clipId !== detailClipRow.clipId.toLowerCase()
+        )
+          throw new Error("flow_clip_detail_route_mismatch");
+        const pageIdentityResult = await dependencies.scripting.executeScript({
+          target: {
+            tabId: selected.tabId,
+            documentIds: [binding.documentId],
+          },
+          world: "ISOLATED",
+          func: inspectCurrentFlowClipInPage,
+          args: [],
+        });
+        const pageIdentity = FlowClipPageMetadataSchema.safeParse(
+          pageIdentityResult[0]?.result,
+        );
+        if (
+          pageIdentityResult[0]?.documentId !== binding.documentId ||
+          !pageIdentity.success ||
+          pageIdentity.data.projectId !== detailClipRow.projectId ||
+          pageIdentity.data.clipId.toLowerCase() !==
+            detailClipRow.clipId.toLowerCase()
+        )
+          throw new Error("flow_clip_page_identity_mismatch");
+      }
       const sessionId = createSessionId();
-      const assetPathFingerprint = identityCaptureEnabled
+      const captureMode = detailClipRow ? "detail_clip" : "gallery";
+      const captureIdentityEnabled = identityCaptureEnabled || Boolean(detailClipRow);
+      const assetPathFingerprint = captureIdentityEnabled
         ? await fingerprintFlowAssetPath(
             sessionId,
             verifiedTabUrl,
@@ -571,8 +742,17 @@ export function createFlowDownloadDiagnosticManager(
         projectId: binding.projectId,
         documentId: binding.documentId,
         mainFrameId: "pending",
-        identityCaptureEnabled,
-        ...(identityCaptureEnabled
+        identityCaptureEnabled: captureIdentityEnabled,
+        captureMode,
+        ...(detailClipRow
+          ? {
+              detailMenuBoundAtArm: false,
+              detailClipSelectionStatus: "waiting_for_user_selection",
+              detailDownloadCompletionStatus: "not_observed",
+              detailFileResolutionStatus: "not_checked",
+            }
+          : {}),
+        ...(captureIdentityEnabled
           ? {
               assetRoutePreflight: {
                 matchStatus: assetPathFingerprint
@@ -620,14 +800,49 @@ export function createFlowDownloadDiagnosticManager(
           },
           world: "ISOLATED",
           func: installFlowGalleryDownloadObserver,
-          args: [sessionId, binding.projectId, identityCaptureEnabled],
+          args: [
+            sessionId,
+            binding.projectId,
+            captureIdentityEnabled,
+            captureMode,
+            detailClipRow?.clipId,
+          ],
         });
+        const observerResult = injected[0]?.result as
+          | {
+              installed?: boolean;
+              menuBound?: boolean;
+              qualityOptionObserved?: boolean;
+              qualityOptionEnabled?: boolean;
+              blocker?: string;
+            }
+          | undefined;
         if (
           injected[0]?.documentId !== binding.documentId ||
-          !(injected[0]?.result as { installed?: boolean } | undefined)
-            ?.installed
+          !observerResult?.installed ||
+          (detailClipRow &&
+            (!observerResult.menuBound ||
+              !observerResult.qualityOptionObserved ||
+              !observerResult.qualityOptionEnabled))
         )
-          throw new Error("flow_diagnostic_observer_install_failed");
+          throw new Error(
+            observerResult?.blocker === "detail_route_mismatch"
+              ? "flow_clip_detail_route_mismatch"
+              : "flow_detail_download_menu_not_ready",
+          );
+        if (detailClipRow) {
+          await persist({
+            ...current!,
+            detailMenuBoundAtArm: true,
+            menuBinding: {
+              mainMenuControlResolved: true,
+              downloadRowRecognized: true,
+              qualityMenuControlResolved: true,
+              qualityOptionObserved: true,
+              qualityOptionEnabled: true,
+            },
+          });
+        }
         await dependencies.alarms.create(FLOW_GALLERY_DIAGNOSTIC_ALARM, {
           when: expiresAt,
         });
@@ -655,6 +870,10 @@ export function createFlowDownloadDiagnosticManager(
         throw error;
       }
     });
+  }
+
+  async function armClipDownloadProof(recordId: string) {
+    return arm(true, recordId);
   }
 
   async function stop() {
@@ -770,6 +989,7 @@ export function createFlowDownloadDiagnosticManager(
           qualityActionAcceptedAt: message.capturedAt,
         };
       } else if (message.stage === "quality_action") {
+        if (record.captureMode === "detail_clip") return false;
         next = {
           ...record,
           status: "action_observed",
@@ -790,6 +1010,63 @@ export function createFlowDownloadDiagnosticManager(
               record.startedAt + event.offsetMs >= message.capturedAt,
           })),
         };
+      } else if (message.stage === "detail_clip_selection") {
+        if (
+          record.captureMode !== "detail_clip" ||
+          !message.menuBound ||
+          record.detailMenuBoundAtArm !== true
+        )
+          return false;
+        const expectedFingerprint =
+          record.assetRoutePreflight?.assetPathFingerprint;
+        if (
+          !expectedFingerprint ||
+          message.assetPathFingerprint !== expectedFingerprint
+        ) {
+          next = {
+            ...record,
+            detailClipSelectionStatus: "route_changed",
+            assetRoutePreflight: record.assetRoutePreflight
+              ? {
+                  ...record.assetRoutePreflight,
+                  selectedRouteMatchStatus: "changed_or_missing",
+                }
+              : undefined,
+          };
+        } else {
+          next = {
+            ...record,
+            status: "action_observed",
+            actionAt: message.capturedAt,
+            nativeActionObserved: true,
+            requestedQuality: message.requestedQuality,
+            qualityActionReceivedByWorker: true,
+            detailClipSelectionStatus: "observed",
+            detailDownloadCompletionStatus: "awaiting_browser_download",
+            detailFileResolutionStatus: "not_checked",
+            assetRoutePreflight: {
+              ...record.assetRoutePreflight!,
+              selectedRouteMatchStatus: "matched",
+            },
+            menuBinding: {
+              mainMenuControlResolved: true,
+              downloadRowRecognized: true,
+              qualityMenuControlResolved: true,
+              qualityOptionObserved: true,
+              qualityOptionEnabled: true,
+            },
+            mediaRequestsOmittedAtCap: 0,
+            mediaRequests: record.mediaRequests.filter(
+              (request) =>
+                record.startedAt + request.offsetMs >= message.capturedAt,
+            ),
+            pageDownloads: record.pageDownloads.map((event) => ({
+              ...event,
+              afterAction:
+                record.startedAt + event.offsetMs >= message.capturedAt,
+            })),
+          };
+        }
       } else if (message.stage === "capture_issue") {
         next = {
           ...record,
@@ -1036,13 +1313,11 @@ export function createFlowDownloadDiagnosticManager(
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
         transientPageDownloadUrls.set(pageEvent.eventToken, rawPageUrl);
-        const next = updateAssociation(
-          {
-            ...pageObservedRecord,
-            pageDownloads: [...record.pageDownloads, pageEvent],
-          },
-          now(),
-        );
+        const resolvedPageRecord = await resolveDetailFileLocation({
+          ...pageObservedRecord,
+          pageDownloads: [...record.pageDownloads, pageEvent],
+        });
+        const next = updateAssociation(resolvedPageRecord, now());
         await persist(next);
         if (next.status === "completed" || next.status === "interrupted")
           await detach(next);
@@ -1157,15 +1432,13 @@ export function createFlowDownloadDiagnosticManager(
           ? { interruptCode: sanitizeInterruptCode(item.error) }
           : {}),
       };
-      const next = updateAssociation(
-        {
-          ...record,
-          downloadCreatedEvents: received,
-          pageDownloads,
-          downloads: [...record.downloads, candidate],
-        },
-        now(),
-      );
+      const resolvedDownloadRecord = await resolveDetailFileLocation({
+        ...record,
+        downloadCreatedEvents: received,
+        pageDownloads,
+        downloads: [...record.downloads, candidate],
+      });
+      const next = updateAssociation(resolvedDownloadRecord, now());
       await persist(next);
       if (
         next.status === "completed" ||
@@ -1233,7 +1506,11 @@ export function createFlowDownloadDiagnosticManager(
           ? { interruptCode: sanitizeInterruptCode(delta.error.current) }
           : {}),
       };
-      const next = updateAssociation({ ...record, downloads }, now());
+      const resolvedDownloadRecord =
+        downloads[index]!.state === "complete"
+          ? await resolveDetailFileLocation({ ...record, downloads })
+          : { ...record, downloads };
+      const next = updateAssociation(resolvedDownloadRecord, now());
       await persist(next);
       if (
         next.status === "completed" ||
@@ -1310,6 +1587,7 @@ export function createFlowDownloadDiagnosticManager(
     importCurrentClip,
     listImportedClips,
     inspectClipDownloadProof,
+    armClipDownloadProof,
     ingestPageEvent,
     onAlarm,
     dispose() {

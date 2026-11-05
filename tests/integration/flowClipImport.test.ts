@@ -290,6 +290,10 @@ describe("verified Flow detail clip import", () => {
       outputStatus: "unverified",
     });
     expect(executeScript).not.toHaveBeenCalled();
+    await expect(
+      manager.armClipDownloadProof(other.record.id),
+    ).rejects.toThrow("flow_clip_not_in_single_row_scope");
+    expect(executeScript).not.toHaveBeenCalled();
 
     const target = await manager.inspectClipDownloadProof(first.record.id);
     expect(target).toMatchObject({

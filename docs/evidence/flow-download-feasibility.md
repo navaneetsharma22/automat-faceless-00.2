@@ -765,3 +765,26 @@ The user-supplied screenshot visibly shows `720p Original size` and `1080p Upsca
 - Build: **`automat-faceless-0.1.0-mw2zjzhw`**, four JavaScript bundles.
 
 Manual live check: load `mw2zjzhw`; select/verify the Flow tab for the target imported clip; confirm its exact detail route; open its Download media menu; click **Check 1080p menu** on that row; confirm the result reports the controlled menu and enabled 1080p Upscaled item. Stop before selecting a quality. The other same-title row must not invoke the page inspector or report recognition. No quality selection, upscale, download, or P11.2 work occurred.
+
+## P11.1 one-shot detail-menu selection and download lifecycle capture - 5 November 2026
+
+### Arm and exact selection boundary
+
+The selected target row now arms a one-shot observer only after worker revalidation of the imported project-plus-clip row, current verified Flow tab/document, exact detail route, and page identity. At arm time, the detail page must have one visible Download media control whose unique `aria-controls` target is visible and contains one enabled 1080p Upscaled item. The page observer then waits for a trusted user click on 1080p Upscaled inside that same controlled menu. At click time, it fingerprints the route UUID and the worker requires equality with the arm-time route fingerprint before accepting the selection. The observer is passive: no selection or provider action is synthesized.
+
+The user reports that the prior live menu check passed. The connected browser inventory in this implementation session returned no apps or tabs, so no live selection or download was performed.
+
+### Separate result fields
+
+- **Clip association / path evidence:** a separate route-asset trace compares the arm/selection route fingerprint with UUID path components in action-time request URLs and page download/blob URLs. The capture retains only scoped fingerprints and reports whether a path-ID trace exists. It does not inspect response bodies, identify a Flow upscale job/result asset, or link output bytes to the clip. Therefore clip association remains **Unverified**, even if route-path evidence appears. The existing Gallery-card association rule was not changed and remains unverified in the detail route mode.
+- **Download completion:** after a trusted selection, the diagnostic requires one selected-main-frame Page.downloadWillBegin record and one exact raw-URL equality to a Chrome DownloadItem, compared in bounded memory. It tracks only that exact DownloadItem ID to `in_progress`, `complete`, or `interrupted`. Filename/timing does not supply the association.
+- **File resolution:** for a unique exact download ID after Chrome reports `complete`, the worker calls `chrome.downloads.search({id})` and retains only whether the file exists, is missing, or cannot be resolved. The path is not retained, and the file bytes/codec are not inspected.
+
+### Checks and manual test
+
+- Focused Vitest: **4 files / 29 tests PASS**. Fixtures cover selected-clip route matching, other-row rejection before injection, trusted detail-menu selection, evidence separated from Gallery association, exact page-event/Chrome URL pairing, completion, and file resolution.
+- Synthetic Edge browser observer fixture: **1/1 PASS**. It confirms the exact bound detail menu emits the selection message and the same label outside that menu is ignored; no Flow provider page or download was used.
+- Typecheck, ESLint, production build/build-ID validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw30ocfv`**, four JavaScript bundles.
+
+Manual live test: load build `mw30ocfv`; select/verify the imported target clip's Flow tab and exact detail route; open the Download media menu; arm from that target row; confirm Armed; manually select 1080p Upscaled once; then wait for readback of clip-to-output path evidence, download completion, and file resolution. Stop after readback. If any result is missing or uncertain, leave it unverified and do not repeat the selection. Do not use the other same-title row except to confirm it is blocked. No live selection/upscale/download occurred in this implementation step; P11.2 remains unstarted.
