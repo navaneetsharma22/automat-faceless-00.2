@@ -97,6 +97,7 @@ describe("single-row Flow detail download capture", () => {
               }
             : {
                 installed: true,
+                replaced: false,
                 menuBound: true,
                 qualityOptionObserved: true,
                 qualityOptionEnabled: true,
@@ -162,6 +163,9 @@ describe("single-row Flow detail download capture", () => {
       status: "armed",
       captureMode: "detail_clip",
       detailMenuBoundAtArm: true,
+      detailObserverInstalledAtArm: true,
+      detailObserverReplacedAtArm: false,
+      detailObserverLifecycleStatus: "active",
       detailClipSelectionStatus: "waiting_for_user_selection",
       detailDownloadCompletionStatus: "not_observed",
       detailFileResolutionStatus: "not_checked",
@@ -175,6 +179,34 @@ describe("single-row Flow detail download capture", () => {
       frameId: 0,
       documentId: "document-detail-test",
     };
+    await manager.ingestPageEvent(
+      {
+        type: "AUTOMAT_FLOW_GALLERY_DOWNLOAD_DIAGNOSTIC_EVENT",
+        sessionId,
+        stage: "detail_clip_click_diagnostic",
+        capturedAt: now + 5,
+        routeMatches: true,
+        menuBound: true,
+        candidateCount: 1,
+        qualityOptionCount: 1,
+        candidateInBoundMenu: false,
+        candidateEnabled: true,
+        decision: "candidate_outside_menu",
+      },
+      sender,
+    );
+    expect(await manager.get()).toMatchObject({
+      status: "armed",
+      detailClipTrustedClickEvents: 1,
+      detailClipCandidateClickEvents: 1,
+      detailClipLastClickObservation: {
+        offsetMs: 5,
+        menuBound: true,
+        candidateInBoundMenu: false,
+        decision: "candidate_outside_menu",
+      },
+    });
+    expect(await manager.get()).not.toHaveProperty("qualityActionReceivedByWorker");
     for (const listener of debuggerEvents) {
       listener({ tabId: 7 }, "Network.requestWillBeSent", {
         requestId: "preselection-request",
@@ -200,6 +232,28 @@ describe("single-row Flow detail download capture", () => {
       projectId,
     );
     expect(routeFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    await manager.ingestPageEvent(
+      {
+        type: "AUTOMAT_FLOW_GALLERY_DOWNLOAD_DIAGNOSTIC_EVENT",
+        sessionId,
+        stage: "detail_clip_click_diagnostic",
+        capturedAt: now + 9,
+        routeMatches: true,
+        menuBound: true,
+        candidateCount: 1,
+        qualityOptionCount: 1,
+        candidateInBoundMenu: true,
+        candidateEnabled: true,
+        decision: "accepted",
+      },
+      sender,
+    );
+    expect(await manager.get()).toMatchObject({
+      detailClipTrustedClickEvents: 2,
+      detailClipCandidateClickEvents: 2,
+      detailObserverLifecycleStatus: "selection_observed",
+      detailClipLastClickObservation: { offsetMs: 9, decision: "accepted" },
+    });
     await manager.ingestPageEvent(
       {
         type: "AUTOMAT_FLOW_GALLERY_DOWNLOAD_DIAGNOSTIC_EVENT",
@@ -386,6 +440,35 @@ describe("single-row Flow detail download capture", () => {
       "id",
       "uuid",
     ]);
+    expect(completed.detailMetadataBodyDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "request_body",
+          mimeCategory: "missing",
+          base64Encoded: false,
+          formatCategory: "json_object",
+          parseFailureCategory: "none",
+        }),
+        expect.objectContaining({
+          stage: "response_body",
+          mimeCategory: "text",
+          formatCategory: "unsupported_mime",
+          parseFailureCategory: "unsupported_mime",
+        }),
+        expect.objectContaining({
+          stage: "response_body",
+          mimeCategory: "json",
+          formatCategory: "read_failed",
+          parseFailureCategory: "read_failed",
+        }),
+        expect.objectContaining({
+          stage: "response_body",
+          mimeCategory: "json",
+          formatCategory: "non_json",
+          parseFailureCategory: "invalid_json",
+        }),
+      ]),
+    );
     expect(completed.detailMetadataFields?.find((field) => field.fieldPath === "id" && field.routeEquality)).toMatchObject({
       routeEquality: true,
       blobPathEquality: true,

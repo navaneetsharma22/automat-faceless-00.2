@@ -172,6 +172,14 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     documentId: z.string().min(1).max(128),
     mainFrameId: z.string().min(1).max(128),
     captureMode: z.enum(["gallery", "detail_clip"]).optional(),
+    automaticDownload: z.object({
+      recordId: z.string().min(1).max(300),
+      clipId: z.string().uuid(),
+      selectedAssetFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      dispatchState: z.enum(["preparing", "intent", "sent", "uncertain"]),
+      filenameMediaFingerprint: z.string().regex(/^[a-f0-9]{16}$/).optional(),
+      ignoredPageEvents: z.number().int().nonnegative().max(100).optional(),
+    }).strict().optional(),
     detailMenuBoundAtArm: z.boolean().optional(),
     detailObserverInstalledAtArm: z.boolean().optional(),
     detailObserverReplacedAtArm: z.boolean().optional(),
@@ -199,9 +207,6 @@ export const FlowGalleryDownloadDiagnosticSchema = z
           "candidate_outside_menu",
           "option_disabled",
           "route_fingerprint_missing",
-          "selected_asset_changed",
-          "selected_asset_unavailable",
-          "selected_asset_ambiguous",
         ]),
       })
       .strict()
@@ -264,14 +269,6 @@ export const FlowGalleryDownloadDiagnosticSchema = z
             "not_matched",
           ])
           .optional(),
-      })
-      .strict()
-      .optional(),
-    selectedThumbnailAsset: z
-      .object({
-        captureStatus: z.enum(["captured_for_row", "changed_or_missing"]),
-        selectionStatus: z.enum(["not_checked", "matched", "changed_or_missing"]),
-        fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       })
       .strict()
       .optional(),
@@ -378,7 +375,7 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     downloadCreatedEvents: z.number().int().nonnegative().max(100).optional(),
     videoCandidatesOmitted: z.number().int().nonnegative().max(100).optional(),
     interruptionReason: z
-      .enum(["debugger_detached", "matched_download_interrupted"])
+      .enum(["debugger_detached", "matched_download_interrupted", "dashboard_download_dispatch_uncertain", "dashboard_download_context_changed"])
       .optional(),
     captureIssue: z
       .object({
@@ -459,94 +456,6 @@ export async function fingerprintFlowAssetPath(
   return sha256Hex(
     `${sessionId}\nflow-asset-route\n${match[2]!.toLowerCase()}`,
   );
-}
-
-/** Session-scoped fingerprint for the selected detail thumbnail asset UUID. */
-export async function fingerprintFlowSelectedThumbnailAsset(
-  sessionId: string,
-  assetUuid: unknown,
-): Promise<string | undefined> {
-  if (
-    typeof assetUuid !== "string" ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      assetUuid,
-    )
-  )
-    return undefined;
-  return sha256Hex(
-    `${sessionId}\nflow-selected-thumbnail-asset\n${assetUuid.toLowerCase()}`,
-  );
-}
-
-/** Reads the selected navigation thumbnail against the exact imported detail route. */
-export function inspectSelectedFlowNavigationAssetInPage(
-  expectedProjectId: string,
-  expectedClipId: string,
-): {
-  status:
-    | "captured"
-    | "route_mismatch"
-    | "selection_missing"
-    | "selection_ambiguous"
-    | "image_missing"
-    | "asset_id_ambiguous"
-    | "changed_during_read";
-  assetUuid?: string;
-} {
-  const uuidPattern =
-    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-  const routeMatches = () => {
-    try {
-      const url = new URL(location.href);
-      const route =
-        url.protocol === "https:" &&
-        url.hostname === "flow.google.com" &&
-        !url.username &&
-        !url.password
-          ? /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/edit\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(
-              url.pathname,
-            )
-          : null;
-      return Boolean(
-        route &&
-          route[1] === expectedProjectId &&
-          route[2]!.toLowerCase() === expectedClipId.toLowerCase(),
-      );
-    } catch {
-      return false;
-    }
-  };
-  const read = () => {
-    if (!routeMatches()) return { status: "route_mismatch" as const };
-    const buttons = document.querySelectorAll<HTMLElement>(
-      "flow-navigation-rail-thumbnail button[aria-current='true']",
-    );
-    if (buttons.length === 0) return { status: "selection_missing" as const };
-    if (buttons.length !== 1)
-      return { status: "selection_ambiguous" as const };
-    const button = buttons[0]!;
-    const images = button.querySelectorAll<HTMLImageElement>("img");
-    if (images.length !== 1) return { status: "image_missing" as const };
-    const image = images[0]!;
-    const imageUrl = image.currentSrc || image.src || image.getAttribute("src") || "";
-    const assetIds = [...new Set(imageUrl.match(uuidPattern) ?? [])].map((id) =>
-      id.toLowerCase(),
-    );
-    if (assetIds.length !== 1)
-      return { status: "asset_id_ambiguous" as const };
-    return { status: "captured" as const, button, image, assetUuid: assetIds[0]! };
-  };
-  const first = read();
-  const second = read();
-  if (first.status !== "captured") return first;
-  if (
-    second.status !== "captured" ||
-    first.button !== second.button ||
-    first.image !== second.image ||
-    first.assetUuid !== second.assetUuid
-  )
-    return { status: "changed_during_read" };
-  return { status: "captured", assetUuid: first.assetUuid };
 }
 
 /** Fingerprints UUID path components on captured Flow media/download URLs. */
@@ -1021,7 +930,6 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
         requestedQuality: z.literal("1080p_upscaled"),
         menuBound: z.literal(true),
         assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-        selectedThumbnailAssetFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
       })
       .strict(),
     z
@@ -1045,9 +953,6 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
           "candidate_outside_menu",
           "option_disabled",
           "route_fingerprint_missing",
-          "selected_asset_changed",
-          "selected_asset_unavailable",
-          "selected_asset_ambiguous",
         ]),
       })
       .strict(),
@@ -1061,24 +966,6 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
       .strict(),
   ],
 );
-
-export const FlowSelectedNavigationAssetPreflightSchema = z
-  .object({
-    status: z.enum([
-      "captured",
-      "route_mismatch",
-      "selection_missing",
-      "selection_ambiguous",
-      "image_missing",
-      "asset_id_ambiguous",
-      "changed_during_read",
-    ]),
-    assetUuid: z
-      .string()
-      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
-      .optional(),
-  })
-  .strict();
 
 export type FlowGalleryDiagnosticPageMessage = z.infer<
   typeof FlowGalleryDiagnosticPageMessageSchema
@@ -1397,8 +1284,6 @@ export function installFlowGalleryDownloadObserver(
   captureMode: "gallery" | "detail_clip" = "gallery",
   expectedClipId?: string,
   expectedAssetPathFingerprint?: string,
-  expectedSelectedAssetUuid?: string,
-  expectedSelectedAssetFingerprint?: string,
 ): {
   installed: boolean;
   replaced: boolean;
@@ -1851,35 +1736,6 @@ export function installFlowGalleryDownloadObserver(
       const quality = qualityEvidence(menus[0]!);
       return { menu: menus[0]!, quality };
     };
-    const readSelectedAsset = () => {
-      const read = () => {
-        if (!currentRouteMatches()) return { status: "changed" as const };
-        const buttons = document.querySelectorAll<HTMLElement>(
-          "flow-navigation-rail-thumbnail button[aria-current='true']",
-        );
-        if (buttons.length === 0) return { status: "missing" as const };
-        if (buttons.length !== 1) return { status: "ambiguous" as const };
-        const button = buttons[0]!;
-        const images = button.querySelectorAll<HTMLImageElement>("img");
-        if (images.length !== 1) return { status: "ambiguous" as const };
-        const image = images[0]!;
-        const imageUrl = image.currentSrc || image.src || image.getAttribute("src") || "";
-        const ids = [...new Set(imageUrl.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? [])].map((id) => id.toLowerCase());
-        if (ids.length !== 1) return { status: "ambiguous" as const };
-        return { status: "captured" as const, button, image, assetUuid: ids[0]! };
-      };
-      const first = read();
-      const second = read();
-      if (first.status !== "captured") return first;
-      if (
-        second.status !== "captured" ||
-        first.button !== second.button ||
-        first.image !== second.image ||
-        first.assetUuid !== second.assetUuid
-      )
-        return { status: "changed" as const };
-      return first;
-    };
     if (!currentRouteMatches())
       return { installed: false, replaced: Boolean(previous), blocker: "detail_route_mismatch" };
     const preflightMenu = resolveDetailMenu();
@@ -1938,17 +1794,6 @@ export function installFlowGalleryDownloadObserver(
       )
         decision = "route_fingerprint_missing";
       else if (!currentRouteMatches()) decision = "route_changed";
-      else if (!expectedSelectedAssetUuid || !expectedSelectedAssetFingerprint)
-        decision = "selected_asset_unavailable";
-      else {
-        const currentAsset = readSelectedAsset();
-        if (currentAsset.status === "ambiguous")
-          decision = "selected_asset_ambiguous";
-        else if (currentAsset.status !== "captured")
-          decision = "selected_asset_unavailable";
-        else if (currentAsset.assetUuid !== expectedSelectedAssetUuid.toLowerCase())
-          decision = "selected_asset_changed";
-      }
       send({
         sessionId,
         stage: "detail_clip_click_diagnostic",
@@ -1972,7 +1817,6 @@ export function installFlowGalleryDownloadObserver(
         requestedQuality: "1080p_upscaled",
         menuBound: true,
         assetPathFingerprint: expectedAssetPathFingerprint!,
-        selectedThumbnailAssetFingerprint: expectedSelectedAssetFingerprint!,
       });
     };
     document.addEventListener("click", detailClickHandler, {

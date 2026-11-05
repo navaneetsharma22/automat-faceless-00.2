@@ -14,12 +14,14 @@ import {
   inspectCurrentFlowClipInPage,
 } from "../platforms/flow/clipImport";
 import { inspectFlowClipDownloadMenuInPage } from "../platforms/flow/clipDownloadProof";
+import { FlowClipAssetIdentitySchema, FlowClipDownloadPointSchema, prepareFlowClipDownloadInPage } from "../platforms/flow/clipDownload";
 import {
   FLOW_GALLERY_DIAGNOSTIC_ALARM,
   FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY,
   FLOW_GALLERY_DIAGNOSTIC_TTL_MS,
   FlowGalleryDiagnosticPageMessageSchema,
   FlowGalleryDownloadDiagnosticSchema,
+  classifyFlowDetailMetadataMimeCategory,
   fingerprintFlowAssetPath,
   fingerprintFlowDownloadUrl,
   fingerprintFlowAssetUrlPath,
@@ -35,6 +37,8 @@ import {
   type FlowDownloadPageEvent,
   type FlowGalleryDownloadDiagnostic,
   type FlowGalleryDiagnosticPageMessage,
+  type FlowDetailMetadataBodyDiagnostic,
+  type FlowDetailMetadataMimeCategory,
 } from "../platforms/flow/downloads";
 
 type EventPort<T extends (...args: never[]) => void> = {
@@ -239,6 +243,7 @@ export function createFlowDownloadDiagnosticManager(
   let createdListenerRegistered = false;
   let changedListenerRegistered = false;
   let metadataRequestCount = 0;
+  let automaticDownloadStarting = false;
   let eventQueue: Promise<void> = Promise.resolve();
   // Raw URLs are kept only in bounded worker memory for exact equality checks.
   // Persisted diagnostics contain fingerprints, allowlisted schemes, and IDs only.
@@ -254,7 +259,7 @@ export function createFlowDownloadDiagnosticManager(
       frameId: string;
       offsetMs: number;
       responseReceived: boolean;
-      responseJson: boolean;
+      responseMimeCategory: FlowDetailMetadataMimeCategory;
     }
   >();
   const clearTransientUrlComparisons = () => {
@@ -409,10 +414,36 @@ export function createFlowDownloadDiagnosticManager(
       | "detailMetadataBodiesOmitted"
     >,
     amount = 1,
-  ) => ({
+  ): FlowGalleryDownloadDiagnostic => ({
     ...record,
     [key]: Math.min(100, ((record[key] as number | undefined) ?? 0) + amount),
   });
+
+  const appendMetadataBodyDiagnostic = (
+    record: FlowGalleryDownloadDiagnostic,
+    diagnostic: FlowDetailMetadataBodyDiagnostic,
+  ): FlowGalleryDownloadDiagnostic => ({
+    ...record,
+    detailMetadataBodyDiagnostics: [
+      ...(record.detailMetadataBodyDiagnostics ?? []),
+      diagnostic,
+    ].slice(0, 24),
+  });
+
+  const appendPendingMetadataDiagnostics = (
+    record: FlowGalleryDownloadDiagnostic,
+  ): FlowGalleryDownloadDiagnostic => {
+    let next = record;
+    for (const context of metadataRequests.values()) {
+      next = appendMetadataBodyDiagnostic(next, {
+        stage: "response_body",
+        mimeCategory: context.responseMimeCategory,
+        formatCategory: "unavailable",
+        parseFailureCategory: "unavailable",
+      });
+    }
+    return next;
+  };
 
   const inspectMetadataBody = async (
     record: FlowGalleryDownloadDiagnostic,
@@ -420,6 +451,10 @@ export function createFlowDownloadDiagnosticManager(
     role: "request_body" | "response_body",
     body: unknown,
     offsetMs: number,
+    options: {
+      mimeCategory?: FlowDetailMetadataMimeCategory;
+      base64Encoded?: boolean;
+    } = {},
   ) => {
     const inspection = await inspectFlowDetailMetadataBody(
       record.sessionId,
@@ -427,8 +462,9 @@ export function createFlowDownloadDiagnosticManager(
       role,
       body,
       offsetMs,
+      options,
     );
-    let next = record;
+    let next = appendMetadataBodyDiagnostic(record, inspection.diagnostic);
     if (inspection.status === "parsed") {
       next = incrementMetadataCounter(next, "detailMetadataJsonParseSucceeded");
       if (!inspection.fields.length)
@@ -440,6 +476,12 @@ export function createFlowDownloadDiagnosticManager(
       next = incrementMetadataCounter(next, "detailMetadataJsonParseFailed");
     } else if (inspection.status === "too_large") {
       next = incrementMetadataCounter(next, "detailMetadataBodiesFiltered");
+      next = incrementMetadataCounter(next, "detailMetadataBodiesOmitted");
+    } else if (
+      inspection.status === "unsupported_encoding" ||
+      inspection.status === "unsupported_mime"
+    ) {
+      next = incrementMetadataCounter(next, "detailMetadataBodiesUnsupported");
       next = incrementMetadataCounter(next, "detailMetadataBodiesOmitted");
     } else {
       next = incrementMetadataCounter(next, "detailMetadataBodiesUnavailable");
@@ -493,6 +535,7 @@ export function createFlowDownloadDiagnosticManager(
     let finalRecord = record;
     if (metadataRequests.size > 0) {
       const pending = metadataRequests.size;
+      finalRecord = appendPendingMetadataDiagnostics(finalRecord);
       metadataRequests.clear();
       finalRecord = incrementMetadataCounter(
         finalRecord,
@@ -791,6 +834,7 @@ export function createFlowDownloadDiagnosticManager(
   async function arm(
     identityCaptureEnabled = false,
     detailClipRecordId?: string,
+    automaticAssetId?: string,
   ) {
     await loaded;
     return enqueue(async () => {
@@ -823,7 +867,7 @@ export function createFlowDownloadDiagnosticManager(
           !flowClipImportRouteMatches(detailClipRow)
         )
           throw new Error("flow_clip_import_row_unverified");
-        if (!isFlow1080pProofClip(detailClipRow.clipId))
+        if (!automaticAssetId && !isFlow1080pProofClip(detailClipRow.clipId))
           throw new Error("flow_clip_not_in_single_row_scope");
         if (detailClipRow.projectId !== binding.projectId)
           throw new Error("flow_clip_project_mismatch");
@@ -881,10 +925,24 @@ export function createFlowDownloadDiagnosticManager(
         mainFrameId: "pending",
         identityCaptureEnabled: captureIdentityEnabled,
         captureMode,
+        ...(automaticAssetId && detailClipRow ? {
+          automaticDownload: {
+            recordId: detailClipRow.id,
+            clipId: detailClipRow.clipId,
+            selectedAssetFingerprint: await fingerprintFlowAssetPath(
+              sessionId,
+              `https://flow.google.com/project/${binding.projectId}/edit/${automaticAssetId}`,
+              binding.projectId,
+            ),
+            filenameMediaFingerprint: await fingerprintFlowMediaIdentifier(sessionId, automaticAssetId.split("-")[0]),
+            dispatchState: "preparing",
+          },
+        } : {}),
         ...(detailClipRow
           ? {
-              detailMetadataCaptureEnabled: true,
+              detailMetadataCaptureEnabled: !automaticAssetId,
               detailMetadataFields: [],
+              detailMetadataBodyDiagnostics: [],
               detailMetadataBodiesOmitted: 0,
               detailMetadataEligibleRequestsSeen: 0,
               detailMetadataRequestsAdmitted: 0,
@@ -958,8 +1016,8 @@ export function createFlowDownloadDiagnosticManager(
             documentIds: [binding.documentId],
           },
           world: "ISOLATED",
-          func: installFlowGalleryDownloadObserver,
-          args: [
+          func: automaticAssetId ? prepareFlowClipDownloadInPage : installFlowGalleryDownloadObserver,
+          args: automaticAssetId ? [binding.projectId, detailClipRow!.clipId, automaticAssetId, false] : [
             sessionId,
             binding.projectId,
             captureIdentityEnabled,
@@ -968,9 +1026,15 @@ export function createFlowDownloadDiagnosticManager(
             assetPathFingerprint,
           ],
         });
-        const observerResult = injected[0]?.result as
+        const automaticPoint = automaticAssetId
+          ? FlowClipDownloadPointSchema.safeParse(injected[0]?.result)
+          : undefined;
+        const observerResult = automaticPoint?.success
+          ? { installed: true, replaced: false, menuBound: true, qualityOptionObserved: true, qualityOptionEnabled: true }
+          : injected[0]?.result as
           | {
               installed?: boolean;
+              replaced?: boolean;
               menuBound?: boolean;
               qualityOptionObserved?: boolean;
               qualityOptionEnabled?: boolean;
@@ -994,6 +1058,9 @@ export function createFlowDownloadDiagnosticManager(
           await persist({
             ...current!,
             detailMenuBoundAtArm: true,
+            detailObserverInstalledAtArm: !automaticAssetId,
+            detailObserverReplacedAtArm: observerResult.replaced === true,
+            detailObserverLifecycleStatus: "active",
             menuBinding: {
               mainMenuControlResolved: true,
               downloadRowRecognized: true,
@@ -1034,6 +1101,161 @@ export function createFlowDownloadDiagnosticManager(
 
   async function armClipDownloadProof(recordId: string) {
     return arm(true, recordId);
+  }
+
+  /** One dashboard click sends one native quality selection. Unknown delivery is never replayed. */
+  async function startClipDownload(recordId: string, allowNewAttempt = false) {
+    if (automaticDownloadStarting)
+      throw new Error("flow_download_already_starting");
+    automaticDownloadStarting = true;
+    let armedSessionId: string | undefined;
+    let inputAttempted = false;
+    try {
+      await loaded;
+      if (isActive(current)) throw new Error("flow_diagnostic_already_active");
+      if (
+        current?.automaticDownload &&
+        current.automaticDownload.dispatchState !== "preparing" &&
+        current.status !== "completed" &&
+        !allowNewAttempt
+      )
+        throw new Error("flow_download_previous_outcome_needs_review");
+      const rows = await listImportedClips();
+      const row = rows.find((item) => item.id === recordId);
+      if (!row?.routeVerified) throw new Error("flow_clip_import_row_unverified");
+      const { selected, binding, verifiedTabUrl } =
+        await verifySelectedFlowTarget();
+      const route = verifiedTabUrl
+        ? flowClipDetailIdentityFromUrl(verifiedTabUrl)
+        : undefined;
+      if (
+        route?.projectId !== row.projectId ||
+        route.clipId !== row.clipId.toLowerCase()
+      )
+        throw new Error("flow_clip_detail_route_mismatch");
+      if (
+        !(await dependencies.permissions.contains({
+          permissions: ["downloads", "scripting", "tabs", "debugger"],
+        }))
+      )
+        throw new Error("flow_diagnostic_permissions_missing");
+      const prepared = await dependencies.scripting.executeScript({
+        target: { tabId: selected.tabId, documentIds: [binding.documentId] },
+        world: "ISOLATED",
+        func: prepareFlowClipDownloadInPage,
+        args: [row.projectId, row.clipId, undefined, true],
+      });
+      const point = FlowClipDownloadPointSchema.safeParse(prepared[0]?.result);
+      if (prepared[0]?.documentId !== binding.documentId || !point.success)
+        throw new Error("flow_clip_download_preflight_failed");
+      const armed = await arm(true, recordId, point.data.assetId);
+      if (armed.status === "idle")
+        throw new Error("flow_clip_download_arm_failed");
+      armedSessionId = armed.sessionId;
+      return await enqueue(async () => {
+        if (
+          !current ||
+          current.sessionId !== armedSessionId ||
+          !isActive(current)
+        )
+          throw new Error("flow_clip_download_arm_failed");
+        // Store intent before sending any input. Restart/retry must review this receipt.
+        await persist({
+          ...current,
+          automaticDownload: {
+            ...current.automaticDownload!,
+            dispatchState: "intent",
+          },
+        });
+        const checked = await dependencies.scripting.executeScript({
+          target: { tabId: selected.tabId, documentIds: [binding.documentId] },
+          world: "ISOLATED",
+          func: prepareFlowClipDownloadInPage,
+          args: [row.projectId, row.clipId, point.data.assetId, false],
+        });
+        const finalPoint = FlowClipDownloadPointSchema.safeParse(
+          checked[0]?.result,
+        );
+        if (checked[0]?.documentId !== binding.documentId || !finalPoint.success)
+          throw new Error("flow_clip_selected_asset_changed");
+        const actionAt = now();
+        await persist({
+          ...current!,
+          actionAt,
+          requestedQuality: "1080p_upscaled",
+        });
+        const { x, y } = finalPoint.data;
+        inputAttempted = true;
+        await dependencies.debugger.sendCommand(
+          { tabId: selected.tabId },
+          "Input.dispatchMouseEvent",
+          {
+            type: "mousePressed",
+            button: "left",
+            buttons: 1,
+            clickCount: 1,
+            x,
+            y,
+          },
+        );
+        await dependencies.debugger.sendCommand(
+          { tabId: selected.tabId },
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseReleased",
+            button: "left",
+            buttons: 0,
+            clickCount: 1,
+            x,
+            y,
+          },
+        );
+        const next = updateAssociation(
+          {
+            ...current!,
+            status: "action_observed",
+            automaticDownload: {
+              ...current!.automaticDownload!,
+              dispatchState: "sent",
+            },
+            nativeActionObserved: true,
+            detailClipSelectionStatus: "observed",
+            detailDownloadCompletionStatus: "awaiting_browser_download",
+            assetRoutePreflight: {
+              ...current!.assetRoutePreflight!,
+              selectedRouteMatchStatus: "matched",
+            },
+          },
+          now(),
+        );
+        await persist(next);
+        return publicSnapshot(next);
+      });
+    } catch (error) {
+      if (armedSessionId)
+        await enqueue(async () => {
+          if (!current || current.sessionId !== armedSessionId) return;
+          const failed = {
+            ...current,
+            automaticDownload: {
+              ...current.automaticDownload!,
+              dispatchState: inputAttempted
+                ? ("uncertain" as const)
+                : ("preparing" as const),
+            },
+            ...(inputAttempted
+              ? {
+                  interruptionReason:
+                    "dashboard_download_dispatch_uncertain" as const,
+                }
+              : {}),
+          };
+          await finish(failed, inputAttempted ? "interrupted" : "stopped");
+        });
+      throw error;
+    } finally {
+      automaticDownloadStarting = false;
+    }
   }
 
   async function stop() {
@@ -1197,6 +1419,7 @@ export function createFlowDownloadDiagnosticManager(
           next = {
             ...record,
             status: "action_observed",
+            detailObserverLifecycleStatus: "selection_observed",
             actionAt: message.capturedAt,
             nativeActionObserved: true,
             requestedQuality: message.requestedQuality,
@@ -1227,6 +1450,42 @@ export function createFlowDownloadDiagnosticManager(
             })),
           };
         }
+      } else if (message.stage === "detail_clip_click_diagnostic") {
+        if (record.captureMode !== "detail_clip") return false;
+        next = {
+          ...record,
+          ...(message.decision === "accepted"
+            ? { detailObserverLifecycleStatus: "selection_observed" as const }
+            : {}),
+          detailClipTrustedClickEvents: Math.min(
+            100,
+            (record.detailClipTrustedClickEvents ?? 0) + 1,
+          ),
+          ...(message.candidateCount > 0
+            ? {
+                detailClipCandidateClickEvents: Math.min(
+                  100,
+                  (record.detailClipCandidateClickEvents ?? 0) + 1,
+                ),
+              }
+            : {}),
+          detailClipLastClickObservation: {
+            offsetMs: Math.max(0, message.capturedAt - record.startedAt),
+            routeMatches: message.routeMatches,
+            menuBound: message.menuBound,
+            candidateCount: message.candidateCount,
+            qualityOptionCount: message.qualityOptionCount,
+            candidateInBoundMenu: message.candidateInBoundMenu,
+            candidateEnabled: message.candidateEnabled,
+            decision: message.decision,
+          },
+        };
+      } else if (message.stage === "detail_clip_observer_lifecycle") {
+        if (record.captureMode !== "detail_clip") return false;
+        next = {
+          ...record,
+          detailObserverLifecycleStatus: message.state,
+        };
       } else if (message.stage === "capture_issue") {
         next = {
           ...record,
@@ -1248,6 +1507,8 @@ export function createFlowDownloadDiagnosticManager(
     params: Record<string, unknown>,
   ) {
     if (source.tabId === undefined) return;
+    const capturedAt = now();
+    const actionAtReceipt = current?.actionAt;
     await loaded;
     await enqueue(async () => {
       let record = current;
@@ -1284,7 +1545,6 @@ export function createFlowDownloadDiagnosticManager(
         return;
       }
       if (record.tabId !== source.tabId) return;
-      const capturedAt = now();
       if (method === "Network.requestWillBeSent") {
         const type = params.type;
         if (type !== "Media" && type !== "Fetch" && type !== "XHR") return;
@@ -1296,6 +1556,7 @@ export function createFlowDownloadDiagnosticManager(
             method?: unknown;
             postData?: unknown;
             hasPostData?: unknown;
+            headers?: unknown;
           } | undefined;
         const metadataEligible =
           (type === "Fetch" || type === "XHR") &&
@@ -1316,7 +1577,7 @@ export function createFlowDownloadDiagnosticManager(
             frameId: record.mainFrameId,
             offsetMs: Math.max(0, capturedAt - record.startedAt),
             responseReceived: false,
-            responseJson: false,
+            responseMimeCategory: "missing",
           });
           record = incrementMetadataCounter(
             record,
@@ -1328,6 +1589,15 @@ export function createFlowDownloadDiagnosticManager(
             request?.hasPostData === true ||
             request?.method === "POST";
           if (requestBodyExpected) {
+            const headers = request?.headers;
+            const requestContentType =
+              headers && typeof headers === "object"
+                ? Object.entries(headers as Record<string, unknown>).find(
+                    ([name]) => name.toLowerCase() === "content-type",
+                  )?.[1]
+                : undefined;
+            const requestMimeCategory =
+              classifyFlowDetailMetadataMimeCategory(requestContentType);
             let postData =
               typeof request?.postData === "string"
                 ? request.postData
@@ -1367,6 +1637,7 @@ export function createFlowDownloadDiagnosticManager(
                 "request_body",
                 postData,
                 Math.max(0, capturedAt - record.startedAt),
+                { mimeCategory: requestMimeCategory, base64Encoded: false },
               );
             } else if (requestBodyExpected) {
               if (!requestBodyReadFailed)
@@ -1378,6 +1649,17 @@ export function createFlowDownloadDiagnosticManager(
                 record,
                 "detailMetadataBodiesOmitted",
               );
+              record = appendMetadataBodyDiagnostic(record, {
+                stage: "request_body",
+                mimeCategory: requestMimeCategory,
+                base64Encoded: false,
+                formatCategory: requestBodyReadFailed
+                  ? "read_failed"
+                  : "unavailable",
+                parseFailureCategory: requestBodyReadFailed
+                  ? "read_failed"
+                  : "unavailable",
+              });
             }
           }
           await persist(record);
@@ -1503,12 +1785,21 @@ export function createFlowDownloadDiagnosticManager(
       if (method === "Network.responseReceived") {
         const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
         const context = requestId ? metadataRequests.get(requestId) : undefined;
-        const response = params.response as { mimeType?: unknown } | undefined;
+        const response = params.response as
+          | { mimeType?: unknown; headers?: unknown }
+          | undefined;
         if (context) {
           context.responseReceived = true;
-          context.responseJson =
-            typeof response?.mimeType === "string" &&
-            /(?:json|graphql)/i.test(response.mimeType);
+          const headers = response?.headers;
+          const headerContentType =
+            headers && typeof headers === "object"
+              ? Object.entries(headers as Record<string, unknown>).find(
+                  ([name]) => name.toLowerCase() === "content-type",
+                )?.[1]
+              : undefined;
+          context.responseMimeCategory = classifyFlowDetailMetadataMimeCategory(
+            response?.mimeType ?? headerContentType,
+          );
         }
         return;
       }
@@ -1526,16 +1817,34 @@ export function createFlowDownloadDiagnosticManager(
             responseRecord,
             "detailMetadataBodiesOmitted",
           );
+          responseRecord = appendMetadataBodyDiagnostic(responseRecord, {
+            stage: "response_body",
+            mimeCategory: "missing",
+            formatCategory: "unavailable",
+            parseFailureCategory: "unavailable",
+          });
           metadataRequests.delete(requestId!);
           responseRecord = await persist(responseRecord);
           await detachCompletedWhenDrained(responseRecord);
           return;
         }
-        if (!context.responseJson) {
-          responseRecord = incrementMetadataCounter(
-            responseRecord,
-            "detailMetadataBodiesUnsupported",
+        if (
+          context.responseMimeCategory !== "json" &&
+          context.responseMimeCategory !== "missing"
+        ) {
+          const inspection = await inspectFlowDetailMetadataBody(
+            record.sessionId,
+            context.token,
+            "response_body",
+            undefined,
+            Math.max(0, capturedAt - record.startedAt),
+            { mimeCategory: context.responseMimeCategory },
           );
+          responseRecord = appendMetadataBodyDiagnostic(
+            responseRecord,
+            inspection.diagnostic,
+          );
+          responseRecord = incrementMetadataCounter(responseRecord, "detailMetadataBodiesUnsupported");
           responseRecord = incrementMetadataCounter(
             responseRecord,
             "detailMetadataBodiesOmitted",
@@ -1554,6 +1863,12 @@ export function createFlowDownloadDiagnosticManager(
             responseRecord,
             "detailMetadataBodiesOmitted",
           );
+          responseRecord = appendMetadataBodyDiagnostic(responseRecord, {
+            stage: "response_body",
+            mimeCategory: context.responseMimeCategory,
+            formatCategory: "not_inspected",
+            parseFailureCategory: "not_attempted",
+          });
           metadataRequests.delete(requestId!);
           responseRecord = await persist(responseRecord);
           await detachCompletedWhenDrained(responseRecord);
@@ -1579,6 +1894,12 @@ export function createFlowDownloadDiagnosticManager(
             responseRecord,
             "detailMetadataBodiesOmitted",
           );
+          responseRecord = appendMetadataBodyDiagnostic(responseRecord, {
+            stage: "response_body",
+            mimeCategory: context.responseMimeCategory,
+            formatCategory: "read_failed",
+            parseFailureCategory: "read_failed",
+          });
           metadataRequests.delete(requestId!);
           responseRecord = await persist(responseRecord);
           await detachCompletedWhenDrained(responseRecord);
@@ -1586,13 +1907,13 @@ export function createFlowDownloadDiagnosticManager(
         }
         const body = bodyResult as { body?: unknown; base64Encoded?: unknown } | undefined;
         if (typeof body?.body !== "string") {
-          responseRecord = incrementMetadataCounter(
+          responseRecord = await inspectMetadataBody(
             responseRecord,
-            "detailMetadataBodiesUnavailable",
-          );
-          responseRecord = incrementMetadataCounter(
-            responseRecord,
-            "detailMetadataBodiesOmitted",
+            context.token,
+            "response_body",
+            undefined,
+            Math.max(0, capturedAt - responseRecord.startedAt),
+            { mimeCategory: context.responseMimeCategory },
           );
           metadataRequests.delete(requestId!);
           responseRecord = await persist(responseRecord);
@@ -1603,40 +1924,18 @@ export function createFlowDownloadDiagnosticManager(
           responseRecord,
           "detailMetadataResponseBodiesRead",
         );
-        if (body.base64Encoded === true) {
-          responseRecord = incrementMetadataCounter(
-            responseRecord,
-            "detailMetadataBodiesUnsupported",
-          );
-          responseRecord = incrementMetadataCounter(
-            responseRecord,
-            "detailMetadataBodiesOmitted",
-          );
-          metadataRequests.delete(requestId!);
-          responseRecord = await persist(responseRecord);
-          await detachCompletedWhenDrained(responseRecord);
-          return;
-        }
-        if (body.body.length > 64 * 1024) {
-          responseRecord = incrementMetadataCounter(
-            responseRecord,
-            "detailMetadataBodiesFiltered",
-          );
-          responseRecord = incrementMetadataCounter(
-            responseRecord,
-            "detailMetadataBodiesOmitted",
-          );
-          metadataRequests.delete(requestId!);
-          responseRecord = await persist(responseRecord);
-          await detachCompletedWhenDrained(responseRecord);
-          return;
-        }
         responseRecord = await inspectMetadataBody(
           responseRecord,
           context.token,
           "response_body",
           body.body,
           Math.max(0, capturedAt - responseRecord.startedAt),
+          {
+            mimeCategory: context.responseMimeCategory,
+            ...(typeof body.base64Encoded === "boolean"
+              ? { base64Encoded: body.base64Encoded }
+              : {}),
+          },
         );
         metadataRequests.delete(requestId!);
         responseRecord = await persist(responseRecord);
@@ -1645,7 +1944,8 @@ export function createFlowDownloadDiagnosticManager(
       }
       if (method === "Network.loadingFailed") {
         const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
-        if (!requestId || !metadataRequests.has(requestId)) return;
+        const context = requestId ? metadataRequests.get(requestId) : undefined;
+        if (!requestId || !context) return;
         metadataRequests.delete(requestId);
         let failedRecord = incrementMetadataCounter(
           record,
@@ -1655,6 +1955,12 @@ export function createFlowDownloadDiagnosticManager(
           failedRecord,
           "detailMetadataBodiesOmitted",
         );
+        failedRecord = appendMetadataBodyDiagnostic(failedRecord, {
+          stage: "response_body",
+          mimeCategory: context.responseMimeCategory,
+          formatCategory: "read_failed",
+          parseFailureCategory: "read_failed",
+        });
         failedRecord = await persist(failedRecord);
         await detachCompletedWhenDrained(failedRecord);
         return;
@@ -1716,6 +2022,37 @@ export function createFlowDownloadDiagnosticManager(
           record.sessionId,
           filename,
         );
+        if (record.automaticDownload) {
+          // The filename check only filters candidates. It never verifies output provenance.
+          if (frameId !== record.mainFrameId || actionAtReceipt === undefined ||
+              filenameMediaId !== record.automaticDownload.filenameMediaFingerprint) {
+            await persist({ ...observedRecord, automaticDownload: {
+              ...record.automaticDownload,
+              ignoredPageEvents: Math.min(100, (record.automaticDownload.ignoredPageEvents ?? 0) + 1),
+            } });
+            return;
+          }
+          const tab = await dependencies.tabs.get(record.tabId);
+          const route = tab.url ? flowClipDetailIdentityFromUrl(tab.url) : undefined;
+          const identityResult = await dependencies.scripting.executeScript({
+            target: { tabId: record.tabId, documentIds: [record.documentId] },
+            world: "ISOLATED", func: prepareFlowClipDownloadInPage,
+            args: [record.projectId, record.automaticDownload.clipId, undefined, false, true],
+          }).catch(() => []);
+          const identity = FlowClipAssetIdentitySchema.safeParse(identityResult[0]?.result);
+          const assetFingerprint = identity.success ? await fingerprintFlowAssetPath(
+            record.sessionId,
+            `https://flow.google.com/project/${record.projectId}/edit/${identity.data.assetId}`,
+            record.projectId,
+          ) : undefined;
+          if (route?.projectId !== record.projectId || route.clipId !== record.automaticDownload.clipId ||
+              identityResult[0]?.documentId !== record.documentId ||
+              assetFingerprint !== record.automaticDownload.selectedAssetFingerprint) {
+            await finish({ ...observedRecord, interruptionReason: "dashboard_download_context_changed" }, "interrupted");
+            return;
+          }
+        }
+
         const pageObservedRecord = {
           ...observedRecord,
           ...(filenameUnavailable
@@ -1742,7 +2079,8 @@ export function createFlowDownloadDiagnosticManager(
             : {}),
           frameMatched: frameId === record.mainFrameId,
           afterAction:
-            record.actionAt !== undefined && capturedAt >= record.actionAt,
+            record.actionAt !== undefined && capturedAt >= record.actionAt &&
+            (!record.automaticDownload || actionAtReceipt !== undefined),
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
         transientPageDownloadUrls.set(pageEvent.eventToken, rawPageUrl);
@@ -1963,9 +2301,10 @@ export function createFlowDownloadDiagnosticManager(
         now() >= current.expiresAt
       ) {
         const pending = metadataRequests.size;
+        let expiredRecord = appendPendingMetadataDiagnostics(current);
         metadataRequests.clear();
-        let expiredRecord = incrementMetadataCounter(
-          current,
+        expiredRecord = incrementMetadataCounter(
+          expiredRecord,
           "detailMetadataBodiesUnavailable",
           pending,
         );
@@ -2003,9 +2342,10 @@ export function createFlowDownloadDiagnosticManager(
         metadataRequests.size > 0
       ) {
         const pending = metadataRequests.size;
+        let failedRecord = appendPendingMetadataDiagnostics(record);
         metadataRequests.clear();
-        let failedRecord = incrementMetadataCounter(
-          record,
+        failedRecord = incrementMetadataCounter(
+          failedRecord,
           "detailMetadataBodiesUnavailable",
           pending,
         );
@@ -2064,6 +2404,7 @@ export function createFlowDownloadDiagnosticManager(
     listImportedClips,
     inspectClipDownloadProof,
     armClipDownloadProof,
+    startClipDownload,
     ingestPageEvent,
     onAlarm,
     dispose() {

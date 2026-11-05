@@ -208,6 +208,7 @@ export type RequestPayloads = {
   "flow.clipImport.list": Record<string, never>;
   "flow.clipDownloadProof.inspect": { recordId: string };
   "flow.clipDownloadProof.arm": { recordId: string };
+  "flow.clipDownload.start": { recordId: string; allowNewAttempt?: boolean };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -296,6 +297,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.clipImport.list": 5_000,
   "flow.clipDownloadProof.inspect": 15_000,
   "flow.clipDownloadProof.arm": 30_000,
+  "flow.clipDownload.start": 30_000,
 };
 
 export function makeRequest<T extends RequestTypes>(

@@ -174,10 +174,11 @@ export function FlowGalleryDiagnostic({
       <h3 id="flow-download-diagnostic-title">
         Flow download diagnostic
       </h3>
-      <FlowClipImportProofOfConcept persistenceClient={persistenceClient} report={report} />
+      <FlowClipDownloads persistenceClient={persistenceClient} report={report} />
       <p>
-        Observe one manually selected 1080p Upscaled action. The extension will
-        not click a quality option, start an upscale, or initiate a download.
+        {report?.automaticDownload
+          ? "This report tracks the 1080p download requested from Flow Downloads."
+          : "Observe one manually selected 1080p Upscaled action using the passive diagnostic."}
       </p>
       <p className={styles.disabledReason}>
         Optional Chrome downloads permission exposes local download IDs,
@@ -260,7 +261,9 @@ export function FlowGalleryDiagnostic({
               <dd>
                 {report.captureMode === "detail_clip"
                   ? report.detailClipSelectionStatus === "observed"
-                    ? "User-initiated 1080p Upscaled selection observed inside the bound menu"
+                    ? report.automaticDownload
+                      ? "Dashboard 1080p selection sent through the verified native menu"
+                      : "User-initiated 1080p Upscaled selection observed inside the bound menu"
                     : report.detailClipSelectionStatus === "route_changed"
                       ? "Selection rejected: route changed or no longer matched"
                       : "Waiting for one user-initiated selection"
@@ -412,6 +415,7 @@ export function FlowGalleryDiagnostic({
                   ) : null}
                   {report.captureMode === "detail_clip" && report.detailMetadataCaptureEnabled ? (() => {
                     const fields = report.detailMetadataFields ?? [];
+                    const bodyDiagnostics = report.detailMetadataBodyDiagnostics ?? [];
                     const routeMatches = fields.filter((field) => field.routeEquality).length;
                     const requestResponseMatches = fields.filter((field) => field.requestResponseEquality).length / 2;
                     const blobMatches = fields.filter((field) => field.blobPathEquality).length;
@@ -419,7 +423,7 @@ export function FlowGalleryDiagnostic({
                       <div>
                         <dt>Request/response metadata trace</dt>
                         <dd>
-                          Eligible Fetch/XHR requests since arm: {report.detailMetadataEligibleRequestsSeen ?? 0}; admitted: {report.detailMetadataRequestsAdmitted ?? 0}; omitted at request cap: {report.detailMetadataRequestsOmittedAtCap ?? 0}. Request bodies available/read: {report.detailMetadataRequestBodiesAvailable ?? 0}/{report.detailMetadataRequestBodiesRead ?? 0}; response bodies attempted/read: {report.detailMetadataResponseBodiesAttempted ?? 0}/{report.detailMetadataResponseBodiesRead ?? 0}. JSON parses succeeded/failed: {report.detailMetadataJsonParseSucceeded ?? 0}/{report.detailMetadataJsonParseFailed ?? 0}; parsed bodies with zero accepted identity fields: {report.detailMetadataParsedBodiesWithoutIdentityFields ?? 0}. Bodies unavailable/failed/unsupported/filtered: {report.detailMetadataBodiesUnavailable ?? 0}/{report.detailMetadataBodiesFailed ?? 0}/{report.detailMetadataBodiesUnsupported ?? 0}/{report.detailMetadataBodiesFiltered ?? 0}; pending requests: {report.detailMetadataPendingRequests ?? 0}. Accepted fields: {fields.length}; route UUID equalities: {routeMatches}; same-request cross-role equalities: {requestResponseMatches}; blob-path UUID equalities: {blobMatches}. Field paths/roles and equality flags only: {fields.length ? fields.map((field) => field.requestToken + " " + field.role + "." + field.fieldPath + " [route=" + field.routeEquality + ", request-response=" + field.requestResponseEquality + ", blob-path=" + field.blobPathEquality + "]").join("; ") : "none observed"}. These equality observations do not prove an output-to-blob relationship; an opaque blob URL needs separate direct provenance.
+                          Eligible Fetch/XHR requests since arm: {report.detailMetadataEligibleRequestsSeen ?? 0}; admitted: {report.detailMetadataRequestsAdmitted ?? 0}; omitted at request cap: {report.detailMetadataRequestsOmittedAtCap ?? 0}. Request bodies available/read: {report.detailMetadataRequestBodiesAvailable ?? 0}/{report.detailMetadataRequestBodiesRead ?? 0}; response bodies attempted/read: {report.detailMetadataResponseBodiesAttempted ?? 0}/{report.detailMetadataResponseBodiesRead ?? 0}. JSON parses succeeded/failed: {report.detailMetadataJsonParseSucceeded ?? 0}/{report.detailMetadataJsonParseFailed ?? 0}; parsed bodies with zero accepted identity fields: {report.detailMetadataParsedBodiesWithoutIdentityFields ?? 0}. Bodies unavailable/failed/unsupported/filtered: {report.detailMetadataBodiesUnavailable ?? 0}/{report.detailMetadataBodiesFailed ?? 0}/{report.detailMetadataBodiesUnsupported ?? 0}/{report.detailMetadataBodiesFiltered ?? 0}; pending requests: {report.detailMetadataPendingRequests ?? 0}. Accepted fields: {fields.length}; route UUID equalities: {routeMatches}; same-request cross-role equalities: {requestResponseMatches}; blob-path UUID equalities: {blobMatches}. Body formats: {bodyDiagnostics.length ? bodyDiagnostics.map((item) => item.stage + " / " + item.mimeCategory + " / base64=" + (item.base64Encoded === undefined ? "unknown" : item.base64Encoded) + " / bytes=" + (item.byteLength ?? "unknown") + " / " + item.formatCategory + " / parse=" + item.parseFailureCategory).join("; ") : "none observed"}. Field paths/roles and equality flags only: {fields.length ? fields.map((field) => field.requestToken + " " + field.role + "." + field.fieldPath + " [route=" + field.routeEquality + ", request-response=" + field.requestResponseEquality + ", blob-path=" + field.blobPathEquality + "]").join("; ") : "none observed"}. These equality observations do not prove an output-to-blob relationship; an opaque blob URL needs separate direct provenance.
                         </dd>
                       </div>
                     );
@@ -487,25 +491,42 @@ export function FlowGalleryDiagnostic({
             </p>
           </section>
           )}
-          <section aria-label="Quality click diagnostic">
-            <strong>Quality click diagnostic</strong>
-            <p className={styles.disabledReason}>
-              Click listener:{" "}
-              {report.qualityClickListenerReached
-                ? `reached (${report.qualityClickListenerEvents ?? 0} event${report.qualityClickListenerEvents === 1 ? "" : "s"} received)`
-                : "not reached / no listener event received"}
-              ; candidate:{" "}
-              {report.lastQualityClickRejection
-                ? `rejected (${report.lastQualityClickRejection.replaceAll("_", " ")}; ${report.qualityClickRejections ?? 0} rejection${report.qualityClickRejections === 1 ? "" : "s"})`
-                : report.qualityActionAcceptedInPage
-                  ? "accepted"
-                  : "no rejection recorded"}
-              ; action accepted in page:{" "}
-              {report.qualityActionAcceptedInPage ? "yes" : "no"}; action
-              received by worker:{" "}
-              {report.qualityActionReceivedByWorker ? "yes" : "no"}.
-            </p>
-          </section>
+          {report.automaticDownload ? (
+            <section aria-label="Dashboard download dispatch">
+              <strong>Dashboard download dispatch</strong>
+              <p className={styles.disabledReason}>
+                Native menu input {report.automaticDownload.dispatchState}. Selected asset fingerprint captured.
+                {report.automaticDownload.ignoredPageEvents ? ` ${report.automaticDownload.ignoredPageEvents} unrelated or unverified page download events ignored.` : ""}
+              </p>
+            </section>
+          ) : report.captureMode === "detail_clip" ? (
+            <section aria-label="Detail selection listener diagnostic">
+              <strong>Detail selection listener diagnostic</strong>
+              <p className={styles.disabledReason}>
+                Observer installed at arm: {report.detailObserverInstalledAtArm ? "yes" : "not confirmed"}; prior observer replaced at arm: {report.detailObserverReplacedAtArm === undefined ? "unknown" : report.detailObserverReplacedAtArm ? "yes" : "no"}; lifecycle: {report.detailObserverLifecycleStatus ?? "unknown"}. Trusted click events reaching the detail listener: {report.detailClipTrustedClickEvents ?? 0}; 1080p Upscaled candidate clicks: {report.detailClipCandidateClickEvents ?? 0}. {report.detailClipLastClickObservation ? `Last listener event +${report.detailClipLastClickObservation.offsetMs}ms: ${report.detailClipLastClickObservation.decision.replaceAll("_", " ")}; route ${report.detailClipLastClickObservation.routeMatches ? "matched" : "mismatched"}; current menu ${report.detailClipLastClickObservation.menuBound ? "resolved" : "unresolved"}; current menu quality options ${report.detailClipLastClickObservation.qualityOptionCount}; candidate count ${report.detailClipLastClickObservation.candidateCount}; candidate inside current bound menu ${report.detailClipLastClickObservation.candidateInBoundMenu ? "yes" : "no"}; enabled ${report.detailClipLastClickObservation.candidateEnabled ? "yes" : "no"}.` : "No trusted click event reached the detail listener."} Page selection accepted by worker: {report.qualityActionReceivedByWorker ? "yes" : "no"}.
+              </p>
+            </section>
+          ) : (
+            <section aria-label="Quality click diagnostic">
+              <strong>Quality click diagnostic</strong>
+              <p className={styles.disabledReason}>
+                Click listener:{" "}
+                {report.qualityClickListenerReached
+                  ? `reached (${report.qualityClickListenerEvents ?? 0} event${report.qualityClickListenerEvents === 1 ? "" : "s"} received)`
+                  : "not reached / no listener event received"}
+                ; candidate:{" "}
+                {report.lastQualityClickRejection
+                  ? `rejected (${report.lastQualityClickRejection.replaceAll("_", " ")}; ${report.qualityClickRejections ?? 0} rejection${report.qualityClickRejections === 1 ? "" : "s"})`
+                  : report.qualityActionAcceptedInPage
+                    ? "accepted"
+                    : "no rejection recorded"}
+                ; action accepted in page:{" "}
+                {report.qualityActionAcceptedInPage ? "yes" : "no"}; action
+                received by worker:{" "}
+                {report.qualityActionReceivedByWorker ? "yes" : "no"}.
+              </p>
+            </section>
+          )}
           {report.mediaRequests.length ? (
             <ul aria-label="Sanitized media requests">
               {report.mediaRequests.map((request) => (
@@ -601,18 +622,24 @@ type FlowClipDownloadProofResult = {
   detailMenuBoundAtArm?: boolean;
 };
 
-function FlowClipImportProofOfConcept({
+export function FlowClipDownloads({
   persistenceClient,
   report,
+  downloadMode = false,
 }: {
   persistenceClient: Client;
   report?: FlowGalleryDownloadDiagnostic;
+  downloadMode?: boolean;
 }) {
   const [rows, setRows] = useState<FlowClipImportRow[]>([]);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
   const [downloadProofPending, setDownloadProofPending] = useState(false);
+  const [lastStartedDownload, setLastStartedDownload] = useState<FlowGalleryDownloadDiagnostic>();
+  const downloadReport = report && (!lastStartedDownload || report.startedAt >= lastStartedDownload.startedAt)
+    ? report : lastStartedDownload;
+  const downloadActive = downloadReport?.status === "armed" || downloadReport?.status === "action_observed";
   const [downloadProofs, setDownloadProofs] = useState<
     Record<string, FlowClipDownloadProofResult | undefined>
   >({});
@@ -684,6 +711,37 @@ function FlowClipImportProofOfConcept({
     }
   };
 
+  const download1080p = async (row: FlowClipImportRow) => {
+    setDownloadProofPending(true);
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      const granted = await chrome.permissions.request({
+        permissions: ["downloads"],
+      });
+      if (!granted) {
+        setError("Allow Chrome downloads access to track this file.");
+        return;
+      }
+      const previous = downloadReport?.automaticDownload;
+      const result = (await persistenceClient.request("flow.clipDownload.start", {
+        recordId: row.id,
+        allowNewAttempt: Boolean(
+          previous?.recordId === row.id && previous.dispatchState !== "preparing",
+        ),
+      })) as FlowGalleryDownloadDiagnostic;
+      setLastStartedDownload(result);
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Download could not be started. Review Flow and Chrome downloads before another attempt.",
+      );
+    } finally {
+      setDownloadProofPending(false);
+    }
+  };
+
   const armDownload1080p = async (row: FlowClipImportRow) => {
     setDownloadProofPending(true);
     setDownloadProofs((previous) => ({ ...previous, [row.id]: undefined }));
@@ -727,17 +785,19 @@ function FlowClipImportProofOfConcept({
   };
 
   return (
-    <section aria-labelledby="flow-clip-import-title">
-      <h4 id="flow-clip-import-title">Flow video clip import · proof of concept</h4>
+    <section aria-labelledby={downloadMode ? "flow-clip-downloads-title" : "flow-clip-import-title"}>
+      <h4 id={downloadMode ? "flow-clip-downloads-title" : "flow-clip-import-title"}>
+        {downloadMode ? "Flow Downloads" : "Flow video clip import · proof of concept"}
+      </h4>
       <p className={styles.disabledReason}>
-        On a verified Flow /edit/ detail view, import its route identity, title,
-        and thumbnail metadata already present in the page. The full video is
-        never fetched. Same-title clips remain separate by project and clip ID.
+        {downloadMode
+          ? "Import the clip currently open in the verified Flow tab. Clips with identical titles keep separate project and clip identities."
+          : "On a verified Flow /edit/ detail view, import its route identity, title, and thumbnail metadata already present in the page. Import reads page metadata. Same-title clips remain separate by project and clip ID."}
       </p>
       <p className={styles.disabledReason}>
-        For the single proof row, open that clip's Download media menu in the
-        verified detail tab, then arm a one-shot capture. The capture waits for
-        your trusted 1080p Upscaled selection; it never selects a quality.
+        {downloadMode
+          ? "Open the intended clip in the connected Flow tab, then click Download 1080p on its row. Flow prepares the upscale when needed and saves through Chrome's download settings. Keep that clip open until the download finishes."
+          : "For the single proof row, open that clip's Download media menu in the verified detail tab, then arm a one-shot capture. The capture waits for your trusted 1080p Upscaled selection; it never selects a quality."}
       </p>
       <div className={styles.actionRow}>
         <Button disabled={pending} loading={pending} onClick={() => void importCurrent()}>
@@ -772,7 +832,34 @@ function FlowClipImportProofOfConcept({
                   Open this Flow clip
                 </a>
               </div>
-              {isFlow1080pProofClip(row.clipId) ? (
+              {downloadMode ? (
+                <div>
+                  <Button disabled={pending || downloadProofPending || downloadActive || !row.routeVerified}
+                    loading={downloadProofPending}
+                    onClick={() => void download1080p(row)}>
+                    {downloadReport?.automaticDownload?.recordId === row.id &&
+                      downloadReport.automaticDownload.dispatchState !== "preparing" && !downloadActive
+                      ? "Download again" : "Download 1080p"}
+                  </Button>
+                  {downloadReport?.automaticDownload?.recordId === row.id ? (
+                    <div role="status" aria-live="polite">
+                      <p>{downloadReport.status === "completed" || downloadReport.detailDownloadCompletionStatus === "complete"
+                        ? `Chrome download complete · ID ${downloadReport.detailTrackedDownloadId ?? "unavailable"}.`
+                        : downloadReport.automaticDownload.dispatchState === "uncertain" ||
+                            (downloadReport.automaticDownload.dispatchState === "sent" && ["stopped", "expired", "interrupted"].includes(downloadReport.status))
+                          ? "The prior selection may still complete. Review Flow and Chrome downloads before using Download again."
+                          : downloadReport.status === "action_observed"
+                            ? "1080p selection sent. Waiting for Flow preparation and Chrome download."
+                            : `Download monitoring ${downloadReport.status.replaceAll("_", " ")}.`}</p>
+                      <p className={styles.disabledReason}>
+                        Selected clip asset captured. Clip-to-output association remains unverified. Saved-file resolution requires media inspection.
+                      </p>
+                      {downloadReport.downloads.filter(item => item.downloadId === downloadReport.detailTrackedDownloadId)
+                        .map(item => <p key={item.downloadId}>{item.filename} · {item.state.replaceAll("_", " ")}</p>)}
+                    </div>
+                  ) : null}
+                </div>
+              ) : isFlow1080pProofClip(row.clipId) ? (
                 <div>
                   <Button
                     variant="secondary"
@@ -782,7 +869,7 @@ function FlowClipImportProofOfConcept({
                   >
                     Arm one-shot 1080p capture
                   </Button>
-                  {downloadProofs[row.id] ? (
+                  {downloadProofs[row.id] && !report?.automaticDownload ? (
                     <p role="status">
                       {report?.captureMode === "detail_clip" && report.status === "completed"
                         ? "Capture completed; see download, metadata, and file-exists evidence above."

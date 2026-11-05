@@ -815,6 +815,67 @@ The diagnostic now labels the prior file check **Chrome file-exists check** and 
 
 Remaining live check: in a future explicitly authorized one-shot run on the same target clip, load `mw35ibrf`, arm from the exact imported row with the bound detail menu open, and make one user-initiated 1080p Upscaled selection. Read the sanitized field roles/paths and equality flags to see whether the source clip ID appears in metadata, whether a request/response relation identifies a job and output asset, and whether that output fingerprint equals a blob-path ID or has another direct provenance link to the selected-frame blob. Stop after readback; if any edge is absent or ambiguous, retain **clip-to-output mapping unverified** and do not repeat the selection. The already supplied completed run remains complete for Chrome download ID `2792`; this follow-up is needed only to establish the missing clip-to-output mapping. P11.2 remains unstarted.
 
+## P11.1 detail observer lifecycle and run 2795 review - 5 November 2026
+
+### Supplied run and body sample availability
+
+The user reports that Chrome download `2795` completed and its blob URL exactly matched the selected-main-frame page event, while the detail observer remained Armed and the worker received no quality action. The run also reports three JSON-category responses classified as `prefix_candidate` and failing parsing, with form request bodies marked unsupported. These are supplied run results. No raw or in-memory body sample from 2795 is available in the workspace or current session, and the extension does not persist body text. `prefix_candidate` is only a bounded heuristic label; it does not establish a Flow prefix or framing format. No decoder or field interpretation was added.
+
+### Confirmed observer behavior and diagnostic gap
+
+At arm, the worker injects the production observer into the bound document and accepts the arm only when installation succeeds and the current detail menu plus enabled option are found. The successful `Armed` status therefore confirms arm-time installation/preflight. It does not prove the listener was still present at the later click.
+
+The detail path uses its own document capture listener. It re-queries the current route, `Download media` trigger, `aria-controls`, menu visibility, and option on each trusted click; it does not hold the original menu or option element. A valid replacement/reopening should continue to work if that live binding is still valid. Before this change, failed click checks silently returned. The detail path did not emit `quality_click_listener` or Gallery rejection events, although the UI displayed that Gallery-only diagnostic for detail captures. Thus run 2795's displayed “not reached” state could not establish whether the detail listener ran.
+
+The new detail diagnostics retain the arm install/replaced result, observer lifecycle changes (`replaced` or page hidden), and a bounded count plus the last scoped click observation. A candidate/menu click records only route-match, current-menu binding, bounded option/candidate counts, candidate membership/enabled state, and a fixed decision. It retains no clicked text, URLs, IDs, or body data. A worker-received `detail_clip_selection` remains separately visible as the accepted action.
+
+### Production observer fixture and parse status
+
+A focused production-function fixture waits after install, replaces and reopens the controlled menu, invokes the stale detached option path and verifies rejection, then invokes the current option and verifies acceptance. It also replaces the observer and verifies the prior observer reports the lifecycle change. This confirms the observer logic handles a valid replacement/reopening in the fixture; it does not prove the live Flow menu emitted the same structure in run 2795.
+
+The supplied `prefix_candidate` results do not provide body bytes or excerpts. The current classification means a JSON opener was detected shortly after leading content, while the whole string did not parse as JSON. It cannot distinguish a real protocol prefix from other leading text, malformed content, or framing. Form bodies are deliberately unsupported; they are not decoded or interpreted. No Flow format is claimed. Whether any of the captured requests were media-delivery requests or unrelated same-frame page traffic also remains unknown from the sanitized run summary.
+
+Run 2795's exact blob-to-page-event-to-Chrome-download evidence remains separate. It does not establish a trusted quality action, clip-to-output association, or output-to-blob provenance. Keep clip-to-output **Unverified** and Vids Downloads unchanged.
+
+### Validation and remaining check
+
+- Focused Vitest: **2 files / 26 tests PASS**. Worker integration verifies install receipt and that a rejected detail click diagnostic is retained without marking an action received. Unit fixture exercises the production observer after delay, during a stale option click after menu replacement, and after reopening with the current option.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Production Playwright fixture: **NOT_RUN**; the configured Chromium headless executable is absent. No browser was installed.
+- Build: **`automat-faceless-0.1.0-mw3867q8`**, four JavaScript bundles.
+- Live selection, upscale, and download: **NOT_RUN**.
+
+Next precise check: on one future explicitly authorized run, load `mw3867q8` on the same bound project/clip and arm while the detail menu is open. After a delay and any menu replacement/reopening, inspect the arm install/replaced receipt and lifecycle. If a 1080p candidate click is made, read its detail-specific listener decision and whether the selection reached the worker. Read the three response format diagnostics and form-body rejection categories without storing body content. Stop after readback; do not repeat if any stage is missing or ambiguous. No action from run 2795 can be reconstructed retroactively.
+
+## P11.1 body parse and format diagnosis for run 2794 - 5 November 2026
+
+### Supplied counts and source interpretation
+
+The supplied run 2794 counts are: 5 eligible/admitted requests, 0 cap omissions, 3 request bodies read, 3 response bodies read, 0 successful and 6 failed JSON parses, 0 pending requests, and 0 accepted identity fields. Exact selected blob URL to Chrome download ID `2794` equality succeeded. These are user-supplied observations; no live inspection occurred in this task.
+
+No raw body or captured sample for run 2794 is available in the workspace or current in-memory evidence. The extension intentionally persists no body text or scalar values. The evidence contains only summary counts, so prefix/envelope/framing/non-JSON causes cannot be distinguished retrospectively.
+
+From source and those counts, the six failed parses correspond to six calls to `JSON.parse` on the three request and three response body strings. This is an implementation-based inference: request bodies were parsed without checking Content-Type; responses were parsed only after a coarse MIME check for `json` or `graphql`. An oversized body would have been filtered before parsing, and a response with `base64Encoded: true` would have been counted unsupported and skipped, so neither path explains one of the six parse failures. Given the supplied totals, the three response bodies were not flagged `base64Encoded: true`, and each string was within the old 64 KiB JavaScript-string-length limit. The response flag being absent would have been treated like `false` by that implementation. The failure category and actual structure remain unknown.
+
+The old response path did not decode base64; it conservatively rejected it before JSON parsing. That avoided parsing a base64 representation as JSON, but persisted neither the flag nor a format reason. The request path ignored Content-Type, while the response path used a broad `json|graphql` MIME regex and retained no MIME category. Eligibility only required same-main-frame Fetch/XHR since arm; it did not establish that the requests served media delivery. The five eligible requests could include ordinary page traffic. The run's counts and zero fields cannot distinguish those cases.
+
+### Bounded format diagnostics added
+
+Each inspected body now retains only its stage (`request_body` or `response_body`), an allowlisted MIME category, the known `base64Encoded` flag, bounded UTF-8 byte length, generic format category, and fixed parse-failure category. No MIME string, body excerpt, scalar value, request ID/token, or raw URL is stored. Up to 24 body diagnostics are retained, corresponding to 12 admitted requests with at most request and response bodies. The byte count saturates at 65,537 to signal that the 64 KiB inspection cap was exceeded.
+
+Declared JSON and missing-MIME bodies are parsed as JSON; explicit non-JSON MIME categories are marked unsupported without attempting JSON parsing. Parsed structures are labeled only as JSON object, array, or scalar. Failed parses may be labeled as a generic prefix/framing candidate when a JSON opener appears shortly after leading content; this is a heuristic category, not a confirmed Flow format. `base64Encoded: true` remains unsupported and is reported as such. No decoder was added because no real captured sample demonstrated a format to decode. Synthetic fixtures verify categories and rejection only; they do not establish Flow's live format.
+
+Clip-to-output mapping and output-to-blob provenance remain unverified. Run 2794's exact blob-to-Chrome-download equality does not supply either missing link. No Flow field names or ID relationships were inferred, and Vids Downloads were not changed.
+
+### Validation and remaining live check
+
+- Focused Vitest: **2 files / 25 tests PASS** (`npx vitest run --configLoader native --pool=threads --maxWorkers=1 tests/unit/flowDownloadDiagnostic.test.ts tests/integration/flowClipDownloadProof.test.ts`). Fixtures cover allowlisted MIME categories, JSON and prefix-candidate format labels, UTF-8 byte length, and base64/non-JSON rejection without decoding or retaining raw body content.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw37drkd`**, four JavaScript bundles.
+- Live body inspection/provider action: **NOT_RUN**. No sample exists for run 2794.
+
+Smallest remaining live check: with build `mw37drkd`, run one explicitly authorized capture on the exact project/clip, arm before the manual quality selection, and read back only the format diagnostics and counters after response completion. That run must produce real body categories before any decoder is considered. Request relevance remains unknown unless the live capture supplies direct evidence tying a request to the selected output; do not infer it from Fetch/XHR type or timing. Do not repeat the selection if the format is still unsupported or ambiguous.
+
 ## P11.1 metadata zero-count interpretation and response-drain follow-up - 5 November 2026
 
 ### Supplied run 2793 and what its zero means
@@ -847,3 +908,10 @@ UUID equality between an arbitrary JSON field and the UUID-looking part of an op
 Exact remaining live check: load build `automat-faceless-0.1.0-mw36pcjn`, arm the opt-in observer on project `000936e1-dc7a-4421-988b-d4c66a804aed`, clip `c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa`, with its bound detail menu open before the user makes one 1080p Upscaled selection. After Chrome completion, read the bounded counters and sanitized request/response field roles. Check whether observed fields directly connect the clip to a job/result and whether that output has direct provenance to the selected-frame blob. Stop after readback; do not repeat if either edge remains missing or ambiguous. The supplied run 2793 cannot be retroactively explained by the new counters.
 
 No further live action is part of this change. On a future explicitly authorized one-shot capture, inspect the new stage counters first. A zero field count is meaningful as “parsed bodies had no accepted fields” only when parsed-body and zero-field counts support that interpretation; otherwise use the separate unavailable/failed/unsupported/filtered counts. Any equality with an opaque blob UUID remains insufficient to claim output-to-blob provenance. Keep Vids Downloads separate; P11.2 remains unstarted.
+
+
+## P11.2 dashboard single-clip implementation — 5 November 2026
+
+Build `automat-faceless-0.1.0-mw39351k` adds a functional Download 1080p action for imported Flow detail clips, using the directly observed active navigation-thumbnail asset identity. The worker validates the exact row/project/route/document, resolves and opens the bound native menu, stores dispatch intent and sends one quality click. It tracks one exact selected-frame page event to Chrome download ID and distinguishes browser completion from output association and file dimensions. Flow Downloads and Vids Downloads now have separate tabs.
+
+Ten focused test files / 95 tests, typecheck, ESLint and production/package validation passed. Live acceptance for this new build remains NOT_RUN. The implementation uses native Flow filenames and Chrome folder settings. Current-attempt tracking is implemented; batch downloading, per-row history, custom folder selection and output-to-blob provenance remain pending. The source archive omitted the root status/instructions and build configurations; build configurations were restored from the prior supplied P10.3 snapshot. See [single-clip implementation and operator steps](flow-single-clip-download.md).

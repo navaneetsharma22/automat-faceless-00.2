@@ -165,6 +165,7 @@ export type FoundationDependencies = {
     listImportedClips: () => Promise<unknown>;
     inspectClipDownloadProof: (recordId: string) => Promise<unknown>;
     armClipDownloadProof: (recordId: string) => Promise<unknown>;
+    startClipDownload?: (recordId: string, allowNewAttempt?: boolean) => Promise<unknown>;
     ingestPageEvent: (
       raw: unknown,
       sender: ExtensionMessageSender,
@@ -918,6 +919,26 @@ async function dispatch(
       if (!dependencies.flowDownloadDiagnostic)
         throw new FoundationOperationError("worker_error", "flow_clip_import_unavailable", "Flow clip import is unavailable in this worker.");
       return await dependencies.flowDownloadDiagnostic.listImportedClips();
+    case "flow.clipDownload.start": {
+      if (!dependencies.flowDownloadDiagnostic?.startClipDownload)
+        throw new FoundationOperationError("worker_error", "flow_download_unavailable", "Flow download is unavailable in this build.");
+      try {
+        return await dependencies.flowDownloadDiagnostic.startClipDownload(request.payload.recordId, request.payload.allowNewAttempt);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        const messages: Record<string, string> = {
+          flow_clip_detail_route_mismatch: "Open this row's exact Flow clip, verify its project connection, then click Download 1080p.",
+          flow_clip_import_row_unverified: "Reimport this clip from its verified Flow detail page.",
+          flow_clip_download_preflight_failed: "The selected clip asset or enabled 1080p menu could not be verified. Open the exact clip and try the preflight again.",
+          flow_clip_selected_asset_changed: "The clip, selected asset or menu changed during preparation. Review Flow before starting another attempt.",
+          flow_diagnostic_already_active: "A Flow observation or download is already active. Review it or stop observation before starting another clip.",
+          flow_download_already_starting: "A Flow download is already being prepared.",
+          flow_download_previous_outcome_needs_review: "The previous attempt may have started a download. Review Chrome downloads before explicitly starting another attempt.",
+          flow_diagnostic_permissions_missing: "Grant downloads permission and reconnect the intended Flow project.",
+        };
+        throw new FoundationOperationError("worker_error", code in messages ? code : "flow_download_dispatch_uncertain", messages[code] ?? "Download delivery is uncertain. Check Flow and Chrome downloads before starting another attempt.");
+      }
+    }
     case "flow.clipDownloadProof.inspect":
       if (!dependencies.flowDownloadDiagnostic)
         throw new FoundationOperationError("worker_error", "flow_clip_download_proof_unavailable", "Flow clip download proof is unavailable in this worker.");

@@ -26,6 +26,7 @@ import { PreparedBatchReview } from "./features/video-batch/PreparedBatchReview"
 import { ImportPreviewSession } from "./features/shared/importPreviewSession";
 import { ReferenceSelection } from "./features/references/ReferenceSelection";
 import { FlowGalleryDiagnostic } from "./features/downloads/FlowGalleryDiagnostic";
+import { ProviderDownloads } from "./features/downloads/Downloads";
 import type { PromptBatchSnapshot } from "../storage/repositories";
 import type {
   PreparedVideoBatchRecord,
@@ -287,7 +288,7 @@ function Dashboard() {
               onNavigateToReferences={() => setWorkspace("References")}
             />
           </div>
-          {workspace === "Downloads" ? <DownloadsView /> : null}
+          {workspace === "Downloads" ? <DownloadsView persistenceClient={batchClient} /> : null}
           <details className={styles.advanced}>
             <summary>
               Advanced details <span>Technical preview information</span>
@@ -943,13 +944,16 @@ export function VideosView({
   );
 }
 
-export function DownloadsView() {
+export function DownloadsView({ persistenceClient }: {
+  persistenceClient?: Parameters<typeof ProviderDownloads>[0]["client"];
+} = {}) {
   return (
     <section
       className={`${styles.panel} ${styles.downloadsPanel}`}
       aria-labelledby="downloads-title"
     >
       <PanelHeader kicker="DELIVERY" title="Downloads" id="downloads-title" />
+      {persistenceClient ? <ProviderDownloads client={persistenceClient} /> : <>
       <article className={`${styles.downloadCard} ${styles.downloadEmpty}`}>
         <span className={styles.fileIcon} aria-hidden="true">
           —
@@ -966,6 +970,7 @@ export function DownloadsView() {
           present.
         </p>
       </div>
+      </>}
     </section>
   );
 }

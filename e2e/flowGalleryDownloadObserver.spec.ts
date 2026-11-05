@@ -735,10 +735,11 @@ test("captures only a trusted 1080p click inside the verified detail menu", asyn
   );
 
   const installResult = await page.evaluate(() =>
-    (window as Window & { diagnosticInstallResult?: { installed?: boolean; menuBound?: boolean; qualityOptionEnabled?: boolean } }).diagnosticInstallResult,
+    (window as Window & { diagnosticInstallResult?: { installed?: boolean; replaced?: boolean; menuBound?: boolean; qualityOptionEnabled?: boolean } }).diagnosticInstallResult,
   );
   expect(installResult).toMatchObject({
     installed: true,
+    replaced: false,
     menuBound: true,
     qualityOptionEnabled: true,
   });
@@ -748,7 +749,29 @@ test("captures only a trusted 1080p click inside the verified detail menu", asyn
     await page.evaluate(
       () => (window as Window & { diagnosticMessages?: unknown[] }).diagnosticMessages,
     ),
-  ).toEqual([]);
+  ).toEqual([
+    expect.objectContaining({
+      stage: "detail_clip_click_diagnostic",
+      routeMatches: true,
+      menuBound: true,
+      candidateInBoundMenu: false,
+      decision: "candidate_outside_menu",
+    }),
+  ]);
+
+  await page.waitForTimeout(100);
+  await page.evaluate(() => {
+    const trigger = document.querySelector<HTMLElement>("#download-media")!;
+    const previousMenu = document.querySelector<HTMLElement>(
+      "#detail-quality-menu",
+    )!;
+    trigger.setAttribute("aria-expanded", "false");
+    const replacementMenu = previousMenu.cloneNode(false) as HTMLElement;
+    replacementMenu.innerHTML = `<button id="target-quality" role="menuitem">1080p Upscaled</button>`;
+    previousMenu.replaceWith(replacementMenu);
+    trigger.setAttribute("aria-expanded", "true");
+  });
+  await page.waitForTimeout(50);
 
   await page.click("#target-quality");
   await expect
@@ -758,6 +781,19 @@ test("captures only a trusted 1080p click inside the verified detail menu", asyn
       ),
     )
     .toEqual([
+      expect.objectContaining({
+        stage: "detail_clip_click_diagnostic",
+        decision: "candidate_outside_menu",
+      }),
+      expect.objectContaining({
+        stage: "detail_clip_click_diagnostic",
+        routeMatches: true,
+        menuBound: true,
+        qualityOptionCount: 1,
+        candidateInBoundMenu: true,
+        candidateEnabled: true,
+        decision: "accepted",
+      }),
       expect.objectContaining({
         stage: "detail_clip_selection",
         trusted: true,

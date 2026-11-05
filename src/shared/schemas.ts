@@ -1083,6 +1083,10 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ recordId: z.string().min(1).max(256) }).strict(),
   }),
   requestBase.extend({
+    type: z.literal("flow.clipDownload.start"),
+    payload: z.object({ recordId: z.string().min(1).max(256), allowNewAttempt: z.boolean().optional() }).strict(),
+  }),
+  requestBase.extend({
     type: z.literal("flow.clipDownloadProof.arm"),
     payload: z.object({ recordId: z.string().min(1).max(256) }).strict(),
   }),

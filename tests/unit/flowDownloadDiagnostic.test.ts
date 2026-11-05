@@ -8,6 +8,7 @@ import {
   fingerprintFlowAssetPath,
   fingerprintFlowAssetUrlPath,
   fingerprintFlowDetailMetadataFields,
+  classifyFlowDetailMetadataMimeCategory,
   inspectFlowDetailMetadataBody,
   FlowGalleryDownloadDiagnosticSchema,
   resolveFlowDownloadDiagnosticStatus,
@@ -228,6 +229,185 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       else scope.window = originalWindow;
       if (originalChrome === undefined) delete scope.chrome;
       else scope.chrome = originalChrome;
+    }
+  });
+
+  it("keeps the production detail listener through delay, menu replacement, and reopening", async () => {
+    const projectId = "project-detail-test";
+    const clipId = "11111111-2222-4333-8444-555555555555";
+    const sessionId = "33333333-3333-4333-8333-333333333333";
+    const dom = new JSDOM(
+      `<button id="download-media" aria-controls="detail-quality-menu" aria-expanded="true">Download media</button>
+       <div id="detail-quality-menu" role="menu">
+         <button role="menuitem">1080p Upscaled</button>
+       </div>`,
+      {
+        url: `https://flow.google.com/project/${projectId}/edit/${clipId}`,
+      },
+    );
+    const scope = globalThis as unknown as Record<string, unknown>;
+    const originalDocument = scope.document;
+    const originalHTMLElement = scope.HTMLElement;
+    const originalMutationObserver = scope.MutationObserver;
+    const originalWindow = scope.window;
+    const originalChrome = scope.chrome;
+    const originalLocation = Object.getOwnPropertyDescriptor(scope, "location");
+    const originalObserver = scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__;
+    const originalAdd = dom.window.document.addEventListener.bind(
+      dom.window.document,
+    );
+    const originalRect = dom.window.HTMLElement.prototype.getBoundingClientRect;
+    const sent: Array<Record<string, unknown>> = [];
+    let detailClickListener: EventListener | undefined;
+    dom.window.HTMLElement.prototype.getBoundingClientRect = () =>
+      ({ width: 1, height: 1, top: 0, left: 0, right: 1, bottom: 1 } as DOMRect);
+    dom.window.document.addEventListener = ((
+      type: string,
+      listener: EventListenerOrEventListenerObject | null,
+      options?: boolean | AddEventListenerOptions,
+    ) => {
+      if (
+        type === "click" &&
+        typeof listener === "function" &&
+        typeof options === "object" &&
+        options.capture
+      )
+        detailClickListener = listener as EventListener;
+      return originalAdd(type, listener, options);
+    }) as typeof dom.window.document.addEventListener;
+    scope.document = dom.window.document;
+    scope.HTMLElement = dom.window.HTMLElement;
+    scope.MutationObserver = dom.window.MutationObserver;
+    scope.window = dom.window;
+    Object.defineProperty(scope, "location", {
+      configurable: true,
+      value: dom.window.location,
+    });
+    scope.chrome = {
+      runtime: {
+        sendMessage: vi.fn(async (message: unknown) => {
+          sent.push(message as Record<string, unknown>);
+        }),
+      },
+    };
+    try {
+      expect(
+        installFlowGalleryDownloadObserver(
+          sessionId,
+          projectId,
+          false,
+          "detail_clip",
+          clipId,
+          "a".repeat(64),
+        ),
+      ).toMatchObject({
+        installed: true,
+        replaced: false,
+        menuBound: true,
+        qualityOptionEnabled: true,
+      });
+      expect(
+        installFlowGalleryDownloadObserver(
+          sessionId,
+          projectId,
+          false,
+          "detail_clip",
+          clipId,
+          "a".repeat(64),
+        ),
+      ).toMatchObject({
+        installed: true,
+        replaced: true,
+        menuBound: true,
+      });
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          stage: "detail_clip_observer_lifecycle",
+          state: "replaced",
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      const oldOption = dom.window.document.querySelector<HTMLElement>(
+        "#detail-quality-menu button",
+      )!;
+      const trigger = dom.window.document.querySelector<HTMLElement>(
+        "#download-media",
+      )!;
+      const oldMenu = dom.window.document.querySelector<HTMLElement>(
+        "#detail-quality-menu",
+      )!;
+      trigger.setAttribute("aria-expanded", "false");
+      oldMenu.remove();
+      const replacement = dom.window.document.createElement("div");
+      replacement.id = "detail-quality-menu";
+      replacement.setAttribute("role", "menu");
+      replacement.innerHTML = `<button role="menuitem">1080p Upscaled</button>`;
+      dom.window.document.body.append(replacement);
+      trigger.setAttribute("aria-expanded", "true");
+
+      const click = (option: HTMLElement) =>
+        detailClickListener?.({
+          isTrusted: true,
+          composedPath: () => [option],
+        } as unknown as Event);
+      const unrelated = dom.window.document.createElement("button");
+      dom.window.document.body.append(unrelated);
+      click(unrelated);
+      expect(sent.at(-1)).toMatchObject({
+        stage: "detail_clip_click_diagnostic",
+        decision: "no_candidate",
+        candidateCount: 0,
+      });
+      click(oldOption);
+      expect(sent.at(-1)).toMatchObject({
+        stage: "detail_clip_click_diagnostic",
+        menuBound: true,
+        candidateInBoundMenu: false,
+        decision: "candidate_outside_menu",
+      });
+
+      const replacementOption = replacement.querySelector<HTMLElement>(
+        "button",
+      )!;
+      click(replacementOption);
+      expect(sent.slice(-2)).toEqual([
+        expect.objectContaining({
+          stage: "detail_clip_click_diagnostic",
+          routeMatches: true,
+          menuBound: true,
+          qualityOptionCount: 1,
+          candidateInBoundMenu: true,
+          candidateEnabled: true,
+          decision: "accepted",
+        }),
+        expect.objectContaining({
+          stage: "detail_clip_selection",
+          trusted: true,
+          menuBound: true,
+        }),
+      ]);
+    } finally {
+      uninstallFlowGalleryDownloadObserver(sessionId);
+      dom.window.close();
+      if (originalDocument === undefined) delete scope.document;
+      else scope.document = originalDocument;
+      if (originalHTMLElement === undefined) delete scope.HTMLElement;
+      else scope.HTMLElement = originalHTMLElement;
+      if (originalMutationObserver === undefined) delete scope.MutationObserver;
+      else scope.MutationObserver = originalMutationObserver;
+      if (originalWindow === undefined) delete scope.window;
+      else scope.window = originalWindow;
+      if (originalChrome === undefined) delete scope.chrome;
+      else scope.chrome = originalChrome;
+      if (originalLocation)
+        Object.defineProperty(scope, "location", originalLocation);
+      else delete scope.location;
+      if (originalObserver === undefined)
+        delete scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__;
+      else
+        scope.__AUTOMAT_FLOW_GALLERY_DOWNLOAD_OBSERVER_V1__ = originalObserver;
+      dom.window.HTMLElement.prototype.getBoundingClientRect = originalRect;
     }
   });
 
@@ -575,18 +755,96 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       );
     await expect(inspect('{"state":"ready"}')).resolves.toMatchObject({
       status: "parsed",
+      diagnostic: {
+        stage: "response_body",
+        mimeCategory: "missing",
+        formatCategory: "json_object",
+        parseFailureCategory: "none",
+      },
       fields: [],
     });
     await expect(inspect("not-json")).resolves.toMatchObject({
       status: "invalid_json",
+      diagnostic: {
+        formatCategory: "non_json",
+        parseFailureCategory: "invalid_json",
+      },
+      fields: [],
+    });
+    await expect(inspect("prefix({\"state\":\"ready\"})")).resolves.toMatchObject({
+      status: "invalid_json",
+      diagnostic: {
+        formatCategory: "prefix_candidate",
+        parseFailureCategory: "prefix_or_framing_candidate",
+      },
       fields: [],
     });
     await expect(inspect(undefined)).resolves.toMatchObject({
       status: "unavailable",
+      diagnostic: {
+        formatCategory: "unavailable",
+        parseFailureCategory: "unavailable",
+      },
       fields: [],
     });
     await expect(inspect("x".repeat(64 * 1024 + 1))).resolves.toMatchObject({
       status: "too_large",
+      diagnostic: {
+        formatCategory: "too_large",
+        parseFailureCategory: "too_large",
+      },
+      fields: [],
+    });
+  });
+
+  it("records allowlisted MIME and base64 diagnostics without decoding unsupported bytes", async () => {
+    expect(classifyFlowDetailMetadataMimeCategory("application/json; charset=utf-8")).toBe("json");
+    expect(classifyFlowDetailMetadataMimeCategory("application/graphql-response+json")).toBe("json");
+    expect(classifyFlowDetailMetadataMimeCategory("text/plain")).toBe("text");
+    expect(classifyFlowDetailMetadataMimeCategory("application/octet-stream")).toBe("binary");
+    expect(classifyFlowDetailMetadataMimeCategory(undefined)).toBe("missing");
+
+    const encoded = "eyJpZCI6MX0=";
+    await expect(
+      inspectFlowDetailMetadataBody(
+        base.sessionId,
+        "metadata-request-1",
+        "response_body",
+        encoded,
+        0,
+        { mimeCategory: "json", base64Encoded: true },
+      ),
+    ).resolves.toMatchObject({
+      status: "unsupported_encoding",
+      diagnostic: {
+        stage: "response_body",
+        mimeCategory: "json",
+        base64Encoded: true,
+        byteLength: new TextEncoder().encode(encoded).length,
+        formatCategory: "base64_encoded",
+        parseFailureCategory: "unsupported_encoding",
+      },
+      fields: [],
+    });
+
+    await expect(
+      inspectFlowDetailMetadataBody(
+        base.sessionId,
+        "metadata-request-1",
+        "request_body",
+        '{"state":"ready"}',
+        0,
+        { mimeCategory: "text", base64Encoded: false },
+      ),
+    ).resolves.toMatchObject({
+      status: "unsupported_mime",
+      diagnostic: {
+        stage: "request_body",
+        mimeCategory: "text",
+        base64Encoded: false,
+        formatCategory: "unsupported_mime",
+        parseFailureCategory: "unsupported_mime",
+      },
       fields: [],
     });
   });
