@@ -405,6 +405,369 @@
 .downloadsPanel {
   gap: var(--space-5);
 }
+.providerWorkspace {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-6);
+}
+.providerChoiceGroup {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.providerChoiceGroup legend {
+  margin-block-end: var(--space-1);
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  font-weight: 700;
+}
+.providerChoices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.providerChoice {
+  display: grid;
+  min-width: 0;
+  min-height: 7rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: linear-gradient(145deg, var(--color-surface), var(--color-surface-raised));
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  transition: border-color var(--duration-hover) var(--ease-standard), background-color var(--duration-hover) var(--ease-standard), box-shadow var(--duration-hover) var(--ease-standard);
+}
+.providerChoice:hover {
+  border-color: var(--color-border-strong);
+}
+.providerChoice:has(input:focus-visible) {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+  box-shadow: var(--shadow-focus);
+}
+.providerChoice[data-selected="true"] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 7%, var(--color-surface));
+  box-shadow: var(--shadow-card-selected);
+}
+.providerChoice input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0.25rem 0 0;
+  accent-color: var(--color-accent);
+}
+.providerChoiceCopy,
+.providerChoiceEyebrow,
+.providerChoiceTitle,
+.providerChoiceDescription {
+  display: block;
+}
+.providerChoiceEyebrow {
+  margin-block-end: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.providerChoiceTitle {
+  margin-block-end: var(--space-2);
+  color: var(--color-text);
+  font-size: clamp(1.125rem, 1.6vw, 1.4rem);
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: var(--line-height-tight);
+}
+.providerChoiceDescription {
+  max-width: 46ch;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+.providerChoiceMark {
+  align-self: start;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.providerChoice[data-selected="true"] .providerChoiceMark {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+.providerPanel {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-5);
+}
+.providerPanelHeading {
+  display: grid;
+  gap: var(--space-2);
+}
+.providerPanelHeading h2 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: clamp(1.55rem, 2.3vw, 2rem);
+  letter-spacing: -0.04em;
+  line-height: var(--line-height-tight);
+}
+.providerSectionHeading h2 {
+  font-size: clamp(1.55rem, 2.3vw, 2rem);
+  letter-spacing: -0.04em;
+}
+.providerPanelHeading > p:last-child,
+.providerPanelDescription {
+  max-width: 58ch;
+  margin: 0;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-relaxed);
+}
+.providerUnavailable {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+.providerUnavailable h3,
+.providerUnavailable p {
+  margin: 0;
+}
+.providerUnavailable h3 {
+  margin-block-end: var(--space-1);
+  font-size: var(--font-size-lg);
+}
+.providerUnavailable p {
+  color: var(--color-text-muted);
+}
+.panelSectionTitle {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  letter-spacing: -0.02em;
+}
+.clipManager {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-4);
+}
+.clipToolbar {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-block-end: var(--space-3);
+  border-block-end: 1px solid var(--color-border);
+}
+.clipListHeading {
+  margin: 0;
+  color: var(--color-text);
+  font-size: clamp(1.55rem, 2.3vw, 2rem);
+  letter-spacing: -0.04em;
+  line-height: var(--line-height-tight);
+}
+.clipToolbarTitle {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+}
+.clipCount,
+.clipWorkflow,
+.clipMessage {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+.clipWorkflow {
+  max-width: 75ch;
+}
+.clipToolbarActions,
+.clipActions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.clipList {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.clipCard {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 6.25rem minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: linear-gradient(145deg, var(--color-surface), var(--color-surface-raised));
+}
+.clipPlaceholder {
+  display: grid;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card-compact);
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface-raised));
+  color: var(--color-text-muted);
+}
+.clipPlaceholder svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  fill: currentColor;
+}
+.clipCardBody {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: var(--space-3);
+}
+.clipCardTitleRow {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.clipTitle {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-lg);
+  letter-spacing: -0.02em;
+  line-height: var(--line-height-tight);
+}
+.clipShortId,
+.clipRouteStatus {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+.clipStatus {
+  flex: 0 0 auto;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: var(--line-height-tight);
+}
+.clipStatus[data-state="working"] {
+  border-color: color-mix(in srgb, var(--color-info) 45%, var(--color-border));
+  background: var(--color-info-surface);
+  color: var(--color-info);
+}
+.clipStatus[data-state="complete"] {
+  border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border));
+  background: var(--color-success-surface);
+  color: var(--color-success);
+}
+.clipStatus[data-state="warning"] {
+  border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+}
+.clipStatus[data-state="error"] {
+  border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+  background: var(--color-error-surface);
+  color: var(--color-error);
+}
+.secondaryAction {
+  display: inline-flex;
+  min-height: var(--control-height);
+  align-items: center;
+  justify-content: center;
+  padding: var(--control-padding-block) var(--control-padding-inline);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+  text-decoration: none;
+}
+.secondaryAction:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.clipAttemptStatus {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-inline-start: 3px solid var(--color-border-strong);
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  background: var(--color-surface-raised);
+}
+.clipAttemptStatus p {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.45fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+.clipAttemptStatus strong {
+  color: var(--color-text);
+}
+.clipAttemptStatus span {
+  color: var(--color-text-muted);
+}
+.clipDetails {
+  border-block-start: 1px solid var(--color-border);
+  padding-block-start: var(--space-2);
+}
+.clipDetails summary {
+  width: fit-content;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+.clipDetails dl {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+.clipDetails dl div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.4fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+}
+.clipDetails dt {
+  font-weight: 700;
+}
+.clipDetails dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+.clipDetails code {
+  overflow-wrap: anywhere;
+}
 .downloadCard {
   display: grid;
   min-width: 0;
@@ -798,6 +1161,45 @@
   }
   .advanced summary {
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 680px) {
+  .providerChoices {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .providerChoice {
+    min-height: 0;
+    padding: var(--space-3) var(--space-4);
+  }
+  .clipToolbar {
+    align-items: flex-start;
+  }
+  .clipToolbarActions {
+    width: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .clipCard {
+    grid-template-columns: 4.25rem minmax(0, 1fr);
+    gap: var(--space-3);
+    padding: var(--space-3);
+  }
+  .clipPlaceholder {
+    aspect-ratio: 16 / 9;
+  }
+  .clipCardTitleRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .clipAttemptStatus p,
+  .clipDetails dl div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .clipActions > * {
+    flex: 1 1 auto;
   }
 }
 

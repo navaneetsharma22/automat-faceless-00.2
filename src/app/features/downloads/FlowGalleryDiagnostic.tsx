@@ -622,6 +622,75 @@ type FlowClipDownloadProofResult = {
   detailMenuBoundAtArm?: boolean;
 };
 
+function displayClipTitle(row: FlowClipImportRow) {
+  const title = row.title.trim();
+  if (!title || /^Google Flow\s*[-–—]\s*AI Creative Studio/i.test(title))
+    return `Video · ${row.clipId.slice(0, 8)}`;
+  return title;
+}
+
+function hasGenericFlowTitle(row: FlowClipImportRow) {
+  return !row.title.trim() || /^Google Flow\s*[-–—]\s*AI Creative Studio/i.test(row.title.trim());
+}
+
+function attemptStatus(
+  report: FlowGalleryDownloadDiagnostic | undefined,
+  rowId: string,
+) {
+  const attempt = report?.automaticDownload;
+  if (!report || attempt?.recordId !== rowId)
+    return { label: "Not started", state: "neutral" };
+  if (report.status === "completed" || report.detailDownloadCompletionStatus === "complete")
+    return { label: "Chrome download complete", state: "complete" };
+  if (report.detailDownloadCompletionStatus === "interrupted")
+    return { label: "Chrome download interrupted", state: "error" };
+  if (attempt.dispatchState === "uncertain")
+    return { label: "Uncertain · review before retrying", state: "warning" };
+  if (attempt.dispatchState === "preparing" && report.status === "stopped")
+    return { label: "Preparation failed before quality input", state: "error" };
+  if (report.status === "interrupted")
+    return { label: "Monitoring interrupted · review Flow and Chrome", state: "warning" };
+  if (report.status === "expired" || report.status === "stopped")
+    return { label: "Monitoring stopped · download may continue", state: "warning" };
+  if (report.detailDownloadCompletionStatus === "in_progress")
+    return { label: "Chrome download in progress", state: "working" };
+  if (attempt.dispatchState === "intent")
+    return { label: "Download preparation in progress", state: "working" };
+  if (attempt.dispatchState === "sent")
+    return { label: "1080p selection sent · waiting for Chrome", state: "working" };
+  return { label: "Preparing download", state: "working" };
+}
+
+function chromeCompletionLabel(report: FlowGalleryDownloadDiagnostic) {
+  const download = report.downloads.find(
+    (item) => item.downloadId === report.detailTrackedDownloadId,
+  );
+  if (download)
+    return `${download.state.replaceAll("_", " ")} · ID ${download.downloadId}`;
+  const status = report.detailDownloadCompletionStatus ?? "not_observed";
+  const labels: Record<string, string> = {
+    not_observed: "Not observed",
+    awaiting_browser_download: "Waiting for Flow download event",
+    awaiting_chrome_match: "Waiting for a matching Chrome download",
+    in_progress: "In progress",
+    complete: "Complete",
+    interrupted: "Interrupted",
+    ambiguous: "Ambiguous",
+  };
+  return labels[status] ?? "Unknown";
+}
+
+function fileExistsLabel(status: string | undefined) {
+  const labels: Record<string, string> = {
+    not_checked: "Not checked",
+    resolved: "File exists (Chrome metadata; media not decoded)",
+    missing: "File missing",
+    ambiguous: "Ambiguous",
+    unavailable: "Unavailable",
+  };
+  return labels[status ?? "not_checked"] ?? "Not checked";
+}
+
 export function FlowClipDownloads({
   persistenceClient,
   report,
@@ -632,9 +701,12 @@ export function FlowClipDownloads({
   downloadMode?: boolean;
 }) {
   const [rows, setRows] = useState<FlowClipImportRow[]>([]);
+  const [rowsLoaded, setRowsLoaded] = useState(false);
+  const [rowsLoading, setRowsLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
+  const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
   const [downloadProofPending, setDownloadProofPending] = useState(false);
   const [lastStartedDownload, setLastStartedDownload] = useState<FlowGalleryDownloadDiagnostic>();
   const downloadReport = report && (!lastStartedDownload || report.startedAt >= lastStartedDownload.startedAt)
@@ -645,15 +717,19 @@ export function FlowClipDownloads({
   >({});
 
   const refresh = useCallback(async () => {
+    setRowsLoading(true);
     try {
       const result = (await persistenceClient.request(
         "flow.clipImport.list",
         {},
       )) as FlowClipImportRow[];
       setRows(result);
+      setRowsLoaded(true);
       setError(undefined);
     } catch {
       setError("Imported Flow clips could not be read from local storage.");
+    } finally {
+      setRowsLoading(false);
     }
   }, [persistenceClient]);
 
@@ -714,13 +790,17 @@ export function FlowClipDownloads({
   const download1080p = async (row: FlowClipImportRow) => {
     setDownloadProofPending(true);
     setError(undefined);
+    setDownloadErrors((previous) => ({ ...previous, [row.id]: "" }));
     setMessage(undefined);
     try {
       const granted = await chrome.permissions.request({
         permissions: ["downloads"],
       });
       if (!granted) {
-        setError("Allow Chrome downloads access to track this file.");
+        setDownloadErrors((previous) => ({
+          ...previous,
+          [row.id]: "Allow Chrome downloads access to track this file.",
+        }));
         return;
       }
       const previous = downloadReport?.automaticDownload;
@@ -732,11 +812,13 @@ export function FlowClipDownloads({
       })) as FlowGalleryDownloadDiagnostic;
       setLastStartedDownload(result);
     } catch (caught) {
-      setError(
+      setDownloadErrors((previous) => ({
+        ...previous,
+        [row.id]:
         caught instanceof Error
           ? caught.message
           : "Download could not be started. Review Flow and Chrome downloads before another attempt.",
-      );
+      }));
     } finally {
       setDownloadProofPending(false);
     }
@@ -785,111 +867,189 @@ export function FlowClipDownloads({
   };
 
   return (
-    <section aria-labelledby={downloadMode ? "flow-clip-downloads-title" : "flow-clip-import-title"}>
-      <h4 id={downloadMode ? "flow-clip-downloads-title" : "flow-clip-import-title"}>
-        {downloadMode ? "Flow Downloads" : "Flow video clip import · proof of concept"}
-      </h4>
-      <p className={styles.disabledReason}>
-        {downloadMode
-          ? "Import the clip currently open in the verified Flow tab. Clips with identical titles keep separate project and clip identities."
-          : "On a verified Flow /edit/ detail view, import its route identity, title, and thumbnail metadata already present in the page. Import reads page metadata. Same-title clips remain separate by project and clip ID."}
-      </p>
-      <p className={styles.disabledReason}>
-        {downloadMode
-          ? "Open the intended clip in the connected Flow tab, then click Download 1080p on its row. Flow prepares the upscale when needed and saves through Chrome's download settings. Keep that clip open until the download finishes."
-          : "For the single proof row, open that clip's Download media menu in the verified detail tab, then arm a one-shot capture. The capture waits for your trusted 1080p Upscaled selection; it never selects a quality."}
-      </p>
-      <div className={styles.actionRow}>
-        <Button disabled={pending} loading={pending} onClick={() => void importCurrent()}>
-          Import current detail clip
-        </Button>
-        <Button variant="secondary" disabled={pending} onClick={() => void refresh()}>
-          Refresh imported clips
-        </Button>
-      </div>
-      {message ? <p role="status">{message}</p> : null}
-      {error ? (
-        <p className={styles.fieldError} role="alert">
-          {error}
-        </p>
-      ) : null}
+    <section className={styles.clipManager} aria-label="Imported Flow clips">
+      {downloadMode ? (
+        <>
+          <div className={styles.clipToolbar}>
+            <div className={styles.clipToolbarTitle}>
+              <h2 id="flow-downloads-heading" className={styles.clipListHeading}>
+                Flow Downloads
+              </h2>
+              <span className={styles.clipCount}>
+                {rowsLoaded
+                  ? `${rows.length} imported ${rows.length === 1 ? "clip" : "clips"}`
+                  : "Imported clip count unavailable"}
+              </span>
+            </div>
+            <div className={styles.clipToolbarActions}>
+              <Button
+                disabled={pending}
+                loading={pending}
+                aria-describedby="flow-clip-workflow"
+                onClick={() => void importCurrent()}
+              >
+                Import open clip
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={pending}
+                aria-describedby="flow-clip-workflow"
+                onClick={() => void refresh()}
+              >
+                Refresh list
+              </Button>
+            </div>
+          </div>
+          <p id="flow-clip-workflow" className={styles.clipWorkflow}>
+            Import the clip open in the verified Flow tab, then open it or request its 1080p download. Status reflects only the current attempt; previous downloads are not tracked here.
+          </p>
+        </>
+      ) : (
+        <>
+          <h4 id="flow-clip-import-title">Flow video clip import · proof of concept</h4>
+          <p className={styles.disabledReason}>
+            On a verified Flow /edit/ detail view, import its route identity, title, and thumbnail metadata already present in the page. Same-title clips remain separate by project and clip ID.
+          </p>
+          <p className={styles.disabledReason}>
+            Open the clip's Download media menu in the verified detail tab, then arm a one-shot capture. The capture waits for your trusted 1080p Upscaled selection; it never selects a quality.
+          </p>
+          <div className={styles.clipToolbarActions}>
+            <Button disabled={pending} loading={pending} onClick={() => void importCurrent()}>
+              Import open clip
+            </Button>
+            <Button variant="secondary" disabled={pending} onClick={() => void refresh()}>
+              Refresh list
+            </Button>
+          </div>
+        </>
+      )}
+      {message ? <p className={styles.clipMessage} role="status">{message}</p> : null}
+      {error ? <p className={styles.fieldError} role="alert">{error}</p> : null}
       {rows.length ? (
-        <ul aria-label="Imported Flow clips">
-          {rows.map((row) => (
-            <li key={row.id}>
-              <strong>{row.title || "Untitled Flow clip"}</strong>
-              <div>
-                Flow project <code>{row.projectId}</code> · clip <code>{row.clipId}</code>
-              </div>
-              <div>
-                Thumbnail metadata: {row.thumbnail.available
-                  ? `${row.thumbnail.width ?? "?"} × ${row.thumbnail.height ?? "?"}${row.thumbnail.fingerprint ? " · fingerprint recorded" : " · fingerprint unavailable"}`
-                  : "not available"}
-              </div>
-              <div>
-                {row.routeVerified ? "Exact detail route verified" : "Unverified route"} ·{" "}
-                <a href={row.detailUrl} target="_blank" rel="noreferrer">
-                  Open this Flow clip
-                </a>
-              </div>
-              {downloadMode ? (
-                <div>
-                  <Button disabled={pending || downloadProofPending || downloadActive || !row.routeVerified}
-                    loading={downloadProofPending}
-                    onClick={() => void download1080p(row)}>
-                    {downloadReport?.automaticDownload?.recordId === row.id &&
-                      downloadReport.automaticDownload.dispatchState !== "preparing" && !downloadActive
-                      ? "Download again" : "Download 1080p"}
-                  </Button>
-                  {downloadReport?.automaticDownload?.recordId === row.id ? (
-                    <div role="status" aria-live="polite">
-                      <p>{downloadReport.status === "completed" || downloadReport.detailDownloadCompletionStatus === "complete"
-                        ? `Chrome download complete · ID ${downloadReport.detailTrackedDownloadId ?? "unavailable"}.`
-                        : downloadReport.automaticDownload.dispatchState === "uncertain" ||
-                            (downloadReport.automaticDownload.dispatchState === "sent" && ["stopped", "expired", "interrupted"].includes(downloadReport.status))
-                          ? "The prior selection may still complete. Review Flow and Chrome downloads before using Download again."
-                          : downloadReport.status === "action_observed"
-                            ? "1080p selection sent. Waiting for Flow preparation and Chrome download."
-                            : `Download monitoring ${downloadReport.status.replaceAll("_", " ")}.`}</p>
-                      <p className={styles.disabledReason}>
-                        Selected clip asset captured. Clip-to-output association remains unverified. Saved-file resolution requires media inspection.
-                      </p>
-                      {downloadReport.downloads.filter(item => item.downloadId === downloadReport.detailTrackedDownloadId)
-                        .map(item => <p key={item.downloadId}>{item.filename} · {item.state.replaceAll("_", " ")}</p>)}
+        <ul className={styles.clipList} aria-label="Imported Flow clips">
+          {rows.map((row) => {
+            const currentReport = downloadReport?.automaticDownload?.recordId === row.id
+              ? downloadReport
+              : undefined;
+            const status = downloadMode
+              ? attemptStatus(currentReport, row.id)
+              : { label: row.routeVerified ? "Route verified" : "Route not verified", state: row.routeVerified ? "complete" : "warning" };
+            const allowDownloadAgain = Boolean(
+              currentReport?.automaticDownload &&
+              currentReport.automaticDownload.dispatchState !== "preparing" &&
+              !downloadActive,
+            );
+            return (
+              <li className={styles.clipCard} key={row.id}>
+                <div className={styles.clipPlaceholder} aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M8 5.8c0-.78.85-1.26 1.52-.86l9.2 5.49a1 1 0 0 1 0 1.72l-9.2 5.49A1 1 0 0 1 8 16.78V5.8Z" />
+                  </svg>
+                </div>
+                <div className={styles.clipCardBody}>
+                  <div className={styles.clipCardTitleRow}>
+                    <div>
+                      <h4 className={styles.clipTitle}>{displayClipTitle(row)}</h4>
+                      {!hasGenericFlowTitle(row) ? (
+                        <p className={styles.clipShortId}>Clip · {row.clipId.slice(0, 8)}</p>
+                      ) : null}
                     </div>
-                  ) : null}
+                    <span
+                      className={styles.clipStatus}
+                      data-state={status.state}
+                      aria-label={`Current attempt: ${status.label}`}
+                    >
+                      {status.label}
+                    </span>
+                  </div>
+                  {downloadMode ? (
+                    <>
+                      <div className={styles.clipActions}>
+                        <a className={styles.secondaryAction} href={row.detailUrl} target="_blank" rel="noreferrer">
+                          Open in Flow
+                        </a>
+                        <Button
+                          disabled={pending || downloadProofPending || downloadActive || !row.routeVerified}
+                          loading={downloadProofPending}
+                          onClick={() => void download1080p(row)}
+                        >
+                          {allowDownloadAgain ? "Download again" : "Download 1080p"}
+                        </Button>
+                      </div>
+                      {downloadErrors[row.id] ? (
+                        <p className={styles.fieldError} role="alert">{downloadErrors[row.id]}</p>
+                      ) : null}
+                      {currentReport ? (
+                        <div className={styles.clipAttemptStatus} role="status" aria-live="polite">
+                          <p><strong>Chrome download</strong><span>{chromeCompletionLabel(currentReport)}</span></p>
+                          <p><strong>Clip association</strong><span>Unverified</span></p>
+                          <p><strong>Chrome file-exists check</strong><span>{fileExistsLabel(currentReport.detailFileResolutionStatus)}</span></p>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      <p className={styles.clipRouteStatus}>
+                        {row.routeVerified ? "Exact detail route verified" : "Route not verified"}
+                      </p>
+                      {isFlow1080pProofClip(row.clipId) ? (
+                        <div className={styles.clipActions}>
+                          <Button
+                            variant="secondary"
+                            disabled={downloadProofPending || !row.routeVerified}
+                            loading={downloadProofPending}
+                            onClick={() => void armDownload1080p(row)}
+                          >
+                            Arm one-shot 1080p capture
+                          </Button>
+                          {downloadProofs[row.id] ? (
+                            <p className={styles.clipCount} role="status">
+                              {downloadProofs[row.id]!.status === "armed"
+                                ? "Capture armed; make one user-initiated 1080p Upscaled selection."
+                                : "Capture is no longer armed; review the diagnostic above."}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                  <details className={styles.clipDetails}>
+                    <summary>Details</summary>
+                    <dl>
+                      <div><dt>Project UUID</dt><dd><code>{row.projectId}</code></dd></div>
+                      <div><dt>Clip UUID</dt><dd><code>{row.clipId}</code></dd></div>
+                      <div><dt>Imported route</dt><dd>{row.routeVerified ? "Verified for this imported row" : "Not verified"}</dd></div>
+                      <div><dt>Thumbnail metadata</dt><dd>{row.thumbnail.available
+                        ? `${row.thumbnail.width ?? "Unknown"} × ${row.thumbnail.height ?? "Unknown"}; ${row.thumbnail.fingerprint ? `fingerprint ${row.thumbnail.fingerprint}` : "no fingerprint"}`
+                        : "Not available"}</dd></div>
+                      {currentReport?.automaticDownload ? (
+                        <>
+                          <div><dt>Attempt stage</dt><dd>{currentReport.automaticDownload.failureStage ?? currentReport.automaticDownload.dispatchState}</dd></div>
+                          <div><dt>Native input attempted</dt><dd>{currentReport.automaticDownload.inputAttempted === undefined ? "Not recorded" : currentReport.automaticDownload.inputAttempted ? "Yes" : "No"}</dd></div>
+                          <div><dt>Selected asset fingerprint</dt><dd><code>{currentReport.automaticDownload.selectedAssetFingerprint}</code></dd></div>
+                          {currentReport.automaticDownload.failureCode ? <div><dt>Failure code</dt><dd>{currentReport.automaticDownload.failureCode}</dd></div> : null}
+                        </>
+                      ) : null}
+                    </dl>
+                    {currentReport ? (
+                      <p className={styles.clipCount}>
+                        Chrome's file-exists metadata does not decode the media. The selected thumbnail asset does not establish clip-to-output or output-to-blob provenance.
+                      </p>
+                    ) : null}
+                  </details>
                 </div>
-              ) : isFlow1080pProofClip(row.clipId) ? (
-                <div>
-                  <Button
-                    variant="secondary"
-                    disabled={downloadProofPending || !row.routeVerified}
-                    loading={downloadProofPending}
-                    onClick={() => void armDownload1080p(row)}
-                  >
-                    Arm one-shot 1080p capture
-                  </Button>
-                  {downloadProofs[row.id] && !report?.automaticDownload ? (
-                    <p role="status">
-                      {report?.captureMode === "detail_clip" && report.status === "completed"
-                        ? "Capture completed; see download, metadata, and file-exists evidence above."
-                        : report?.captureMode === "detail_clip" && report.detailClipSelectionStatus === "observed"
-                          ? "Quality selection observed; capture is monitoring the resulting download."
-                          : downloadProofs[row.id]!.status === "armed"
-                            ? report?.captureMode === "detail_clip" && report.status === "armed"
-                              ? "Capture is armed; make one user-initiated 1080p Upscaled selection in the bound Download media menu."
-                              : "Capture was armed; current outcome appears in the diagnostic above."
-                            : "The one-shot capture is no longer armed; see the current diagnostic status above."}{" "}
-                      The extension did not select a quality.
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       ) : (
-        <p className={styles.disabledReason}>No Flow clips imported yet.</p>
+        <p className={styles.disabledReason}>
+          {rowsLoaded
+            ? "No Flow clips imported yet."
+            : rowsLoading
+              ? "Imported Flow clips are loading."
+              : "Imported Flow clips could not be loaded."}
+        </p>
       )}
     </section>
   );

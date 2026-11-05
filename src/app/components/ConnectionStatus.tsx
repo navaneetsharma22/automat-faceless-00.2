@@ -3,7 +3,7 @@ import {
   connectionStatusFromLifecycleState,
   connectionWorkerFailureDetail,
 } from "../connectionAttempt";
-import { ConnectionError } from "./ConnectionError";
+import { ConnectionError, connectionErrorParts } from "./ConnectionError";
 import { Button } from "./Button";
 import { Field } from "./Field";
 import controlStyles from "./controls.module.css";
@@ -990,6 +990,9 @@ export function ConnectionStatus() {
         const options = tabs.filter((tab) => tab.provider === provider);
         const state = states[provider];
         const selectedId = selected[provider];
+        const diagnosticCode = state.detail
+          ? connectionErrorParts(state.detail).code
+          : undefined;
         return (
           <div className={styles.providerConnection} key={provider}>
             <div className={styles.providerConnectionTitle}>
@@ -1115,6 +1118,12 @@ export function ConnectionStatus() {
                     <dt>Image action</dt>
                     <dd>Guarded GenerateOnce is in Legacy tools.</dd>
                   </div>
+                  {diagnosticCode ? (
+                    <div>
+                      <dt>Diagnostic code</dt>
+                      <dd><code>{diagnosticCode}</code></dd>
+                    </div>
+                  ) : null}
                 </dl>
               </div>
             </details>

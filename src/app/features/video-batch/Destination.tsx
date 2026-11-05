@@ -85,11 +85,12 @@ export function Destination({
   return (
     <div className={styles.destinationSection}>
       <fieldset className={styles.destinationGroup} disabled={disabled}>
-        <legend>Video destination</legend>
+        <legend>Choose a video provider</legend>
         <div className={styles.destinationOptions}>
           {(["Flow", "Vids"] as const).map((item) => (
             <label
               className={`${styles.destinationOption} ${destination === item ? styles.destinationSelected : ""} motion-card`}
+              data-selected={destination === item}
               key={item}
             >
               <input
@@ -104,9 +105,16 @@ export function Destination({
                 }}
               />
               <span>
-                <strong>{item}</strong>
-                <small>See Connections for current project status.</small>
+                <strong>{item} Videos</strong>
+                <small>
+                  {item === "Flow"
+                    ? "Prepare a video batch for the verified Flow project."
+                    : "Prepare a Vids batch; add scenes to its timeline manually."}
+                </small>
               </span>
+              {destination === item ? (
+                <span className={styles.destinationSelectedLabel}>Selected</span>
+              ) : null}
             </label>
           ))}
         </div>

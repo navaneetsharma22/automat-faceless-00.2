@@ -869,13 +869,20 @@ export function VideosView({
     <div className={styles.workspaceGrid}>
       <section
         className={`${styles.panel} ${styles.editorPanel}`}
-        aria-labelledby="video-input-title"
+        aria-labelledby="video-provider-title"
       >
         <PanelHeader
-          kicker="VIDEO IMPORT"
-          title="Video prompt import"
-          id="video-input-title"
+          kicker="VIDEO WORKSPACE"
+          title={`${destination} Videos`}
+          id="video-provider-title"
+          prominent
+          description={
+            destination === "Flow"
+              ? "Prepare video prompts for your verified Flow project."
+              : "Prepare a Vids batch; scene insertion remains manual in Vids."
+          }
         />
+        <h3 className={styles.panelSectionTitle}>Video prompt import</h3>
         <VideoImportPanel
           session={session}
           workspaceId="default"
@@ -950,15 +957,14 @@ export function DownloadsView({ persistenceClient }: {
   return (
     <section
       className={`${styles.panel} ${styles.downloadsPanel}`}
-      aria-labelledby="downloads-title"
+      aria-label="Downloads workspace"
     >
-      <PanelHeader kicker="DELIVERY" title="Downloads" id="downloads-title" />
       {persistenceClient ? <ProviderDownloads client={persistenceClient} /> : <>
       <article className={`${styles.downloadCard} ${styles.downloadEmpty}`}>
         <span className={styles.fileIcon} aria-hidden="true">
           —
         </span>
-        <h3>No eligible downloads</h3>
+        <h2>No eligible downloads</h2>
         <p>Generated results and a download workflow are not available yet.</p>
       </article>
       <div className={`${styles.actionRow} ${styles.downloadActionRow}`}>
@@ -978,16 +984,21 @@ function PanelHeader({
   kicker,
   title,
   id,
+  description,
+  prominent = false,
 }: {
   kicker: string;
   title: string;
   id: string;
+  description?: string;
+  prominent?: boolean;
 }) {
   return (
-    <div className={styles.panelHeading}>
+    <div className={`${styles.panelHeading} ${prominent ? styles.providerSectionHeading : ""}`}>
       <div>
         <p className={styles.kicker}>{kicker}</p>
         <h2 id={id}>{title}</h2>
+        {description ? <p className={styles.providerPanelDescription}>{description}</p> : null}
       </div>
     </div>
   );

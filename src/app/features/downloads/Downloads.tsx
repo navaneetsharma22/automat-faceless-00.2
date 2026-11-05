@@ -40,31 +40,52 @@ export function ProviderDownloads({ client }: { client: Client }) {
   const active =
     report?.status === "armed" || report?.status === "action_observed";
   return (
-    <>
-      <div
-        className={styles.actionRow}
-        role="tablist"
-        aria-label="Download provider"
-      >
-        {(["Flow", "Vids"] as const).map((name) => (
-          <Button
-            key={name}
-            role="tab"
-            id={`downloads-tab-${name.toLowerCase()}`}
-            aria-selected={provider === name}
-            aria-controls={`downloads-panel-${name.toLowerCase()}`}
-            variant={provider === name ? "primary" : "secondary"}
-            onClick={() => setProvider(name)}
-          >
-            {name} Downloads
-          </Button>
-        ))}
-      </div>
+    <div className={styles.providerWorkspace}>
+      <fieldset className={styles.providerChoiceGroup}>
+        <legend>Choose a download provider</legend>
+        <div className={styles.providerChoices}>
+          {(["Flow", "Vids"] as const).map((name) => (
+            <label
+              className={styles.providerChoice}
+              data-selected={provider === name}
+              key={name}
+            >
+              <input
+                type="radio"
+                name="download-provider"
+                value={name}
+                checked={provider === name}
+                onChange={() => setProvider(name)}
+              />
+              <span className={styles.providerChoiceCopy}>
+                <span className={styles.providerChoiceEyebrow}>
+                  {provider === name ? "Selected provider" : "Provider"}
+                </span>
+                <span className={styles.providerChoiceTitle}>
+                  {name} Downloads
+                </span>
+                <span className={styles.providerChoiceDescription}>
+                  {name === "Flow"
+                    ? "Download imported clips from their exact verified Flow detail route."
+                    : "Vids download tools are not available in this build yet."}
+                </span>
+              </span>
+              <span className={styles.providerChoiceMark} aria-hidden="true">
+                {name === "Vids"
+                  ? "Unavailable"
+                  : provider === name
+                    ? "Selected"
+                    : "Choose"}
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       <section
-        role="tabpanel"
         id="downloads-panel-flow"
-        aria-labelledby="downloads-tab-flow"
+        aria-labelledby="flow-downloads-heading"
         hidden={provider !== "Flow"}
+        className={styles.providerPanel}
       >
         {error ? <p role="alert">{error}</p> : null}
         <FlowClipDownloads
@@ -85,21 +106,30 @@ export function ProviderDownloads({ client }: { client: Client }) {
               Stop monitoring
             </Button>
             <p className={styles.disabledReason}>
-              Stopping monitoring leaves any Flow upscale or Chrome download
-              running.
+              Stopping monitoring does not stop a Flow job or Chrome download.
             </p>
           </div>
         ) : null}
       </section>
       <section
-        role="tabpanel"
         id="downloads-panel-vids"
-        aria-labelledby="downloads-tab-vids"
+        aria-labelledby="vids-downloads-heading"
         hidden={provider !== "Vids"}
+        className={styles.providerPanel}
       >
-        <h3>Vids Downloads</h3>
-        <p>Vids download preparation is pending.</p>
+        <header className={styles.providerPanelHeading}>
+          <p className={styles.kicker}>VIDS PROVIDER</p>
+          <h2 id="vids-downloads-heading">Vids Downloads</h2>
+          <p>Vids download preparation is not implemented yet.</p>
+        </header>
+        <article className={styles.providerUnavailable}>
+          <span className={styles.fileIcon} aria-hidden="true">V</span>
+          <div>
+            <h3>Unavailable</h3>
+            <p>This area will show Vids download options when that workflow is supported.</p>
+          </div>
+        </article>
       </section>
-    </>
+    </div>
   );
 }

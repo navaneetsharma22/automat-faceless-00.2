@@ -46,7 +46,7 @@ describe("P01.3 workspace previews", () => {
 
   it("shows a truthful download empty state without fabricated files or progress", () => {
     const tree = DownloadsView();
-    const headings = findElements(tree, "h3").map(
+    const headings = findElements(tree, "h2").map(
       (heading) => heading.props.children,
     );
     expect(headings).toContain("No eligible downloads");

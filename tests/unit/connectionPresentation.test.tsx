@@ -8,7 +8,10 @@ import {
   hasVerifiedBindingForSelectedTarget,
   withPendingCleanup,
 } from "../../src/app/connectionAttempt";
-import { ConnectionError } from "../../src/app/components/ConnectionError";
+import {
+  ConnectionError,
+  connectionErrorParts,
+} from "../../src/app/components/ConnectionError";
 import { FoundationClientError } from "../../src/shared/messageClient";
 
 describe("connection feedback presentation", () => {
@@ -83,7 +86,7 @@ describe("connection feedback presentation", () => {
     expect(markup).toContain('hidden=""');
   });
 
-  it("renders the complete actionable error in an alert without truncation", () => {
+  it("shows readable connection errors and keeps the bounded code separate", () => {
     const detail =
       "connector_injection: Could not inject the packaged read-only connector into the selected Flow top frame. Check selected-site host access and the extension package; the page was not refreshed or navigated.";
     const markup = renderToStaticMarkup(
@@ -91,7 +94,12 @@ describe("connection feedback presentation", () => {
     );
 
     expect(markup).toContain('role="alert"');
-    expect(markup).toContain(detail);
+    expect(markup).toContain("Could not inject the packaged read-only connector");
+    expect(markup).not.toContain("connector_injection");
+    expect(connectionErrorParts(detail).code).toBe("connector_injection");
+    expect(
+      connectionErrorParts("connector_injection: Request https://host/path?token=secret failed").message,
+    ).toBe("Request [URL omitted] failed");
     expect(markup).not.toContain("…");
     expect(markup).not.toContain("...");
   });
