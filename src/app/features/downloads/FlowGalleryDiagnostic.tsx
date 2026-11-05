@@ -534,12 +534,14 @@ type FlowClipImportRow = {
 };
 
 type FlowClipDownloadProofResult = {
-  status: "blocked";
-  blocker: string;
+  status: "blocked" | "menu_recognized";
+  blocker?: string;
   routeStatus: "matched" | "mismatch" | "not_checked";
-  controlStatus: "observed_unverified" | "not_found" | "not_checked";
-  downloadMediaControlCount?: number;
-  explicit1080pControlCount?: number;
+  menuRecognitionStatus?: "recognized" | "not_recognized" | "not_checked";
+  qualityOptionStatus?:
+    | "visible_enabled"
+    | "not_verified"
+    | "not_checked";
   outputStatus: "unverified";
 };
 
@@ -556,11 +558,25 @@ function flowClipDownloadBlockerLabel(result: FlowClipDownloadProofResult) {
     case "page_clip_identity_mismatch":
       return "Blocked: the verified detail page did not identify this exact clip.";
     case "detail_download_control_not_found":
-      return "Blocked: no visible Download media or 1080p control was found on the detail page.";
-    case "detail_download_control_semantics_unverified":
-      return "Blocked: a download control is visible, but its 1080p action is not verified safe to activate.";
+      return "Blocked: the detail page's Download media control was not found.";
+    case "detail_download_control_ambiguous":
+      return "Blocked: more than one Download media control was found.";
+    case "detail_menu_not_open":
+      return "Blocked: the Download media menu is not open.";
+    case "detail_menu_binding_unresolved":
+      return "Blocked: the open menu could not be tied to the Download media control.";
+    case "quality_option_not_found_in_detail_menu":
+      return "Blocked: 1080p Upscaled was not found inside the Download media menu.";
+    case "quality_option_ambiguous_in_detail_menu":
+      return "Blocked: 1080p Upscaled appeared more than once inside that menu.";
+    case "quality_option_disabled_in_detail_menu":
+      return "Blocked: 1080p Upscaled is disabled in the bound menu.";
+    case "detail_menu_inspection_unavailable":
+      return "Blocked: the bound detail menu could not be inspected.";
     case "output_clip_identity_unverified":
       return "Blocked: Flow output identity cannot yet be linked to this clip.";
+    default:
+      return "Blocked: the detail menu was not verified.";
   }
 }
 
@@ -662,7 +678,8 @@ function FlowClipImportProofOfConcept({
           status: "blocked",
           blocker: "project_not_currently_verified",
           routeStatus: "not_checked",
-          controlStatus: "not_checked",
+          menuRecognitionStatus: "not_checked",
+          qualityOptionStatus: "not_checked",
           outputStatus: "unverified",
         },
       }));
@@ -678,6 +695,12 @@ function FlowClipImportProofOfConcept({
         On a verified Flow /edit/ detail view, import its route identity, title,
         and thumbnail metadata already present in the page. The full video is
         never fetched. Same-title clips remain separate by project and clip ID.
+      </p>
+      <p className={styles.disabledReason}>
+        For the single proof row, open that clip's Download media menu in the
+        verified detail tab, then check whether the 1080p Upscaled item is
+        inside the exact menu controlled by that detail-page button. This check
+        never selects a quality.
       </p>
       <div className={styles.actionRow}>
         <Button disabled={pending} loading={pending} onClick={() => void importCurrent()}>
@@ -720,11 +743,14 @@ function FlowClipImportProofOfConcept({
                     loading={downloadProofPending}
                     onClick={() => void inspectDownload1080p(row)}
                   >
-                    Download 1080p
+                    Check 1080p menu
                   </Button>
                   {downloadProofs[row.id] ? (
                     <p role="status">
-                      {flowClipDownloadBlockerLabel(downloadProofs[row.id]!)} Route: {downloadProofs[row.id]!.routeStatus}; detail controls: {downloadProofs[row.id]!.controlStatus}{downloadProofs[row.id]!.downloadMediaControlCount !== undefined ? ` (${downloadProofs[row.id]!.downloadMediaControlCount} Download media, ${downloadProofs[row.id]!.explicit1080pControlCount ?? 0} labeled 1080p)` : ""}; output-to-clip link: {downloadProofs[row.id]!.outputStatus} (no output asset/result identifier is linked to the route clip). No quality selection or download was started.
+                      {downloadProofs[row.id]!.status === "menu_recognized"
+                        ? "Recognized: 1080p Upscaled is visible and enabled inside the menu controlled by this detail page's Download media control."
+                        : flowClipDownloadBlockerLabel(downloadProofs[row.id]!)}{" "}
+                      Route: {downloadProofs[row.id]!.routeStatus}; menu: {downloadProofs[row.id]!.menuRecognitionStatus ?? "not checked"}; quality: {downloadProofs[row.id]!.qualityOptionStatus ?? "not checked"}; output-to-clip link: {downloadProofs[row.id]!.outputStatus} (still unverified). No quality selection or download was started.
                     </p>
                   ) : null}
                 </div>

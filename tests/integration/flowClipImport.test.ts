@@ -240,7 +240,12 @@ describe("verified Flow detail clip import", () => {
                   title: "make it",
                   thumbnail: { available: true },
                 }
-              : { downloadMediaControlCount: 1, explicit1080pControlCount: 0 },
+              : {
+                  status: "recognized",
+                  menuBoundToDownloadMedia: true,
+                  qualityOptionObserved: true,
+                  qualityOptionEnabled: true,
+                },
         },
       ],
     );
@@ -288,12 +293,10 @@ describe("verified Flow detail clip import", () => {
 
     const target = await manager.inspectClipDownloadProof(first.record.id);
     expect(target).toMatchObject({
-      status: "blocked",
-      blocker: "detail_download_control_semantics_unverified",
+      status: "menu_recognized",
       routeStatus: "matched",
-      controlStatus: "observed_unverified",
-      downloadMediaControlCount: 1,
-      explicit1080pControlCount: 0,
+      menuRecognitionStatus: "recognized",
+      qualityOptionStatus: "visible_enabled",
       outputStatus: "unverified",
     });
     expect(executeScript).toHaveBeenCalledTimes(2);

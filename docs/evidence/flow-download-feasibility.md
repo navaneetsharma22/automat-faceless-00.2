@@ -749,3 +749,19 @@ Source/evidence review still does not verify a detail-page 1080p control's activ
 - Build: **`automat-faceless-0.1.0-mw2z2289`**, four JavaScript bundles.
 
 Live check remains **NOT_RUN**; no Flow tab was available for route/control inspection. Manual test for this build: load the package, select/verify the Flow tab for the imported target, confirm that tab is on the target row's exact detail route, and click **Download 1080p** on that target row. Record the displayed sanitized route/control/output statuses, then stop. Confirm no quality selection occurred and Chrome reports zero new downloads. The second same-title row should have no Download 1080p button. Do not continue to an upscale or download until a safe 1080p action and a direct output-to-clip identity link are independently verified. P11.2 was not started.
+
+## P11.1 detail-page Download media menu recognition - 5 November 2026
+
+### Recognition boundary
+
+Extended the single-row proof check to inspect the exact selected `/edit/` page after revalidating the imported Flow project and clip route. It does not activate the provider control. Recognition requires one visible Download media control, one `aria-controls` ID on that control, exactly one visible DOM element with that ID, and one enabled `1080p Upscaled` button/menu item inside that controlled element. The 1080p label elsewhere on the page, an unbound popover, ambiguous IDs/controls/items, a disabled option, or a closed menu fails with a fixed sanitized blocker. No raw URL, project UUID, clip UUID, menu ID, or token is returned by the page inspector. Download association rules remain unchanged.
+
+The user-supplied screenshot visibly shows `720p Original size` and `1080p Upscaled` in the menu. The connected browser inventory was empty (`apps: []`, `browsers: []`), so there was no live DOM access to verify the menu's actual ARIA relationship. The implementation therefore treats that relation as a runtime condition; live DOM binding remains **NOT_RUN** and is not claimed from the screenshot alone.
+
+### Offline verification and manual live check
+
+- Focused Vitest: **2 files / 7 tests PASS**. Fixtures cover exact route binding, recognition inside the `Download media` controlled menu, rejection of the same 1080p label outside that menu, and rejection of the other imported clip before page script injection.
+- Typecheck, ESLint, production build/build-ID validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw2zjzhw`**, four JavaScript bundles.
+
+Manual live check: load `mw2zjzhw`; select/verify the Flow tab for the target imported clip; confirm its exact detail route; open its Download media menu; click **Check 1080p menu** on that row; confirm the result reports the controlled menu and enabled 1080p Upscaled item. Stop before selecting a quality. The other same-title row must not invoke the page inspector or report recognition. No quality selection, upscale, download, or P11.2 work occurred.

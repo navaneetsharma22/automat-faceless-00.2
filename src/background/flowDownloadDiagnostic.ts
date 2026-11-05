@@ -13,7 +13,7 @@ import {
   FlowClipPageMetadataSchema,
   inspectCurrentFlowClipInPage,
 } from "../platforms/flow/clipImport";
-import { inspectFlowClipDownloadControlsInPage } from "../platforms/flow/clipDownloadProof";
+import { inspectFlowClipDownloadMenuInPage } from "../platforms/flow/clipDownloadProof";
 import {
   FLOW_GALLERY_DIAGNOSTIC_ALARM,
   FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY,
@@ -468,31 +468,24 @@ export function createFlowDownloadDiagnosticManager(
         outputStatus: "unverified" as const,
       };
 
-    const controlResult = await dependencies.scripting.executeScript({
+    const menuResult = await dependencies.scripting.executeScript({
       target: targetScript,
       world: "ISOLATED",
-      func: inspectFlowClipDownloadControlsInPage,
-      args: [],
+      func: inspectFlowClipDownloadMenuInPage,
+      args: [row.projectId, row.clipId],
     });
-    const controls = controlResult[0]?.result as
-      | { downloadMediaControlCount?: unknown; explicit1080pControlCount?: unknown }
+    const inspectedMenu = menuResult[0]?.result as
+      | { status?: unknown; blocker?: unknown }
       | undefined;
-    if (controlResult[0]?.documentId !== target.binding.documentId)
+    if (menuResult[0]?.documentId !== target.binding.documentId)
       return {
         status: "blocked" as const,
         blocker: "page_clip_identity_mismatch" as const,
         routeStatus: "mismatch" as const,
-        controlStatus: "not_checked" as const,
+        menuRecognitionStatus: "not_checked" as const,
+        qualityOptionStatus: "not_checked" as const,
         outputStatus: "unverified" as const,
       };
-    const downloadMediaControlCount =
-      typeof controls?.downloadMediaControlCount === "number"
-        ? Math.max(0, Math.min(20, controls.downloadMediaControlCount))
-        : 0;
-    const explicit1080pControlCount =
-      typeof controls?.explicit1080pControlCount === "number"
-        ? Math.max(0, Math.min(20, controls.explicit1080pControlCount))
-        : 0;
     const finalTab = await dependencies.tabs.get(target.selected.tabId);
     const finalRoute = finalTab.url
       ? flowClipDetailIdentityFromUrl(finalTab.url)
@@ -506,20 +499,41 @@ export function createFlowDownloadDiagnosticManager(
         status: "blocked" as const,
         blocker: "detail_route_missing_or_changed" as const,
         routeStatus: "mismatch" as const,
-        controlStatus: "not_checked" as const,
+        menuRecognitionStatus: "not_checked" as const,
+        qualityOptionStatus: "not_checked" as const,
         outputStatus: "unverified" as const,
       };
+    const menuBlockers = new Set([
+      "detail_route_missing_or_changed",
+      "detail_download_control_not_found",
+      "detail_download_control_ambiguous",
+      "detail_menu_not_open",
+      "detail_menu_binding_unresolved",
+      "quality_option_not_found_in_detail_menu",
+      "quality_option_ambiguous_in_detail_menu",
+      "quality_option_disabled_in_detail_menu",
+      "detail_menu_inspection_unavailable",
+    ]);
+    if (inspectedMenu?.status === "recognized")
+      return {
+        status: "menu_recognized" as const,
+        routeStatus: "matched" as const,
+        menuRecognitionStatus: "recognized" as const,
+        qualityOptionStatus: "visible_enabled" as const,
+        outputStatus: "unverified" as const,
+      };
+    const blocker =
+      typeof inspectedMenu?.blocker === "string" &&
+      menuBlockers.has(inspectedMenu.blocker)
+        ? inspectedMenu.blocker
+        : "detail_menu_inspection_unavailable";
+    const menuRouteMatched = blocker !== "detail_route_missing_or_changed";
     return {
       status: "blocked" as const,
-      blocker: downloadMediaControlCount || explicit1080pControlCount
-        ? "detail_download_control_semantics_unverified" as const
-        : "detail_download_control_not_found" as const,
-      routeStatus: "matched" as const,
-      controlStatus: downloadMediaControlCount || explicit1080pControlCount
-        ? "observed_unverified" as const
-        : "not_found" as const,
-      downloadMediaControlCount,
-      explicit1080pControlCount,
+      blocker,
+      routeStatus: menuRouteMatched ? "matched" as const : "mismatch" as const,
+      menuRecognitionStatus: "not_recognized" as const,
+      qualityOptionStatus: "not_verified" as const,
       outputStatus: "unverified" as const,
     };
   }

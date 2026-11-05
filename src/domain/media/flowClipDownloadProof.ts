@@ -7,7 +7,13 @@ export type FlowClipDownloadBlocker =
   | "detail_route_missing_or_changed"
   | "page_clip_identity_mismatch"
   | "detail_download_control_not_found"
-  | "detail_download_control_semantics_unverified"
+  | "detail_download_control_ambiguous"
+  | "detail_menu_not_open"
+  | "detail_menu_binding_unresolved"
+  | "quality_option_not_found_in_detail_menu"
+  | "quality_option_ambiguous_in_detail_menu"
+  | "quality_option_disabled_in_detail_menu"
+  | "detail_menu_inspection_unavailable"
   | "output_clip_identity_unverified";
 
 export function isFlow1080pProofClip(clipId: string): boolean {
