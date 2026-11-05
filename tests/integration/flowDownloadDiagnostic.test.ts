@@ -15,12 +15,15 @@ import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 const sessionId = "33333333-3333-4333-8333-333333333333";
 const detailRouteUrl =
   "https://flow.google.com/project/project-test/edit/11111111-2222-4333-8444-555555555555";
+const otherDetailRouteUrl =
+  "https://flow.google.com/project/project-test/edit/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const mediaUrl =
   "https://media.example/8c53eca2/clip.mp4?signature=private-token";
 
 describe("Flow Gallery download diagnostic worker path", () => {
   it("arms only the verified Flow document and records the native-to-download evidence chain", async () => {
     let now = 10_000;
+    let currentTabUrl = "https://flow.google.com/project/project-test";
     const storage = new Map<string, unknown>();
     const debuggerEvents: FlowDownloadDiagnosticDebuggerEventListener[] = [];
     const debuggerDetaches: FlowDownloadDiagnosticDebuggerDetachListener[] = [];
@@ -68,7 +71,7 @@ describe("Flow Gallery download diagnostic worker path", () => {
         get: async (tabId) => ({
           id: tabId,
           title: "Flow project",
-          url: detailRouteUrl,
+          url: currentTabUrl,
         }),
       },
       scripting: { executeScript: executeScript as never },
@@ -114,6 +117,17 @@ describe("Flow Gallery download diagnostic worker path", () => {
       createSessionId: () => sessionId,
     });
 
+    const armedWithoutEditRoute = await manager.arm(true);
+    expect(armedWithoutEditRoute).toMatchObject({
+      identityCaptureEnabled: true,
+      assetRoutePreflight: {
+        matchStatus: "no_matching_edit_route",
+        selectedRouteMatchStatus: "not_checked",
+      },
+    });
+    await manager.stop();
+
+    currentTabUrl = detailRouteUrl;
     const armed = await manager.arm(true);
     expect(armed).toMatchObject({
       status: "armed",
@@ -125,7 +139,7 @@ describe("Flow Gallery download diagnostic worker path", () => {
       },
     });
     expect(JSON.stringify(armed)).not.toContain("11111111-2222");
-    expect(executeScript).toHaveBeenCalledTimes(1);
+    expect(executeScript).toHaveBeenCalledTimes(3);
 
     const sender = {
       id: "extension-test",
@@ -155,6 +169,40 @@ describe("Flow Gallery download diagnostic worker path", () => {
         matchStatus: "matched",
         selectedRouteMatchStatus: "matched",
       },
+    });
+    const otherClipFingerprint = await fingerprintFlowAssetPath(
+      sessionId,
+      otherDetailRouteUrl,
+      "project-test",
+    );
+    expect(otherClipFingerprint).not.toBe(
+      await fingerprintFlowAssetPath(sessionId, detailRouteUrl, "project-test"),
+    );
+    await pageEvent({
+      stage: "main_menu",
+      capturedAt: now + 1,
+      ownerFound: true,
+      stableIdAttributeObserved: false,
+      assetPathFingerprint: otherClipFingerprint,
+      mainMenuControlResolved: true,
+    });
+    expect(await manager.get()).toMatchObject({
+      assetRoutePreflight: {
+        matchStatus: "matched",
+        selectedRouteMatchStatus: "changed_or_missing",
+      },
+    });
+    await pageEvent({
+      stage: "main_menu",
+      capturedAt: now + 2,
+      ownerFound: true,
+      stableIdAttributeObserved: false,
+      assetPathFingerprint: await fingerprintFlowAssetPath(
+        sessionId,
+        detailRouteUrl,
+        "project-test",
+      ),
+      mainMenuControlResolved: true,
     });
     await pageEvent({
       stage: "download_row",
@@ -404,7 +452,7 @@ describe("Flow Gallery download diagnostic worker path", () => {
       });
     });
     expect(debuggerDetaches).toHaveLength(1);
-    expect(detachDebugger).toHaveBeenCalledTimes(1);
+    expect(detachDebugger).toHaveBeenCalledTimes(2);
 
     await manager.arm();
     await pageEvent({

@@ -675,3 +675,25 @@ The worker integration fixture arms on a synthetic verified `/edit/` route, conf
 - Build: **`automat-faceless-0.1.0-mw26ia9k`**, four JavaScript bundles.
 
 The live run was not repeated. Chrome ID `2790` remains **Complete / Association Unverified**. The next menu-only check can confirm the arm-time **Match** status and that it remains matched after opening More options, then stop before any quality selection. No upscale or download occurred. P11.2 remains pending; P11.3 is out of scope.
+
+## P11.1 separate arm/menu route status and detail-view observer review - 5 November 2026
+
+### Route-stage diagnostics
+
+The dashboard now displays two independent sanitized fields when the opt-in route identity capture is enabled. **Clip route at arm** reports `Match` or `No matching /edit/ UUID`. **Clip route when menu opened** reports `Not checked`, `Match`, `Changed or missing`, or `Not comparable (no matching /edit/ UUID at arm time)`. The second value is sampled from the current same-document URL when the Gallery More options menu resolves. It is not a continuous route watcher. The worker stores only the scoped route fingerprint and fixed status values; raw URLs and UUIDs are not included in the dashboard report or diagnostic logs.
+
+The worker fixture arms first on a verified project URL with no matching detail UUID, then stops and re-arms on one synthetic detail route. It verifies `no_matching_edit_route` at arm, `matched` for the same clip at the menu stage, and `changed_or_missing` when the menu event carries a different clip UUID fingerprint. The same-clip fingerprint matches exactly; the other clip fingerprint is rejected. These are synthetic identity/status regressions and do not prove a live Flow card-to-route relation. Download association rules are unchanged.
+
+### Detail-view and Gallery-link review
+
+Read-only source and existing-fixture review confirms the current observer starts only from a trusted control whose normalized label includes `More options`, finds a Gallery card owner, then follows the bound Download submenu and its quality menu. It does not recognize a direct `Download media` control on an `/edit/` detail view as an entry point. No checked-in detail-view DOM fixture demonstrates that control opening a quality menu, and the control was not activated.
+
+The observer does not inspect Gallery-card `href` or other links to derive the card's `/edit/` UUID. It reduces ID-like card attributes to a boolean, while the arm/menu UUID fingerprints come from the selected tab's current route. No existing fixture or captured live DOM establishes a reliable exact-card-to-route link. **Blocker:** without a demonstrated link, route identity cannot be attributed to the exact Gallery card; Gallery-to-detail identity remains **NOT_VERIFIED**. A live detail control/menu behavior check and exact-card route-link evidence remain outstanding. No route identity was inferred from title, order, tab ID, or prior navigation.
+
+### Checks and boundary
+
+- Focused Flow diagnostic tests: **2 files / 21 tests PASS**.
+- Typecheck: **PASS**; ESLint: **PASS**; production package build and shared build-ID validation: **PASS**; `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw2wlegj`**, four JavaScript bundles.
+
+No live browser interaction was performed. The supplied menu-only result remains stopped before quality selection with zero downloads. No upscale, download, or P11.2 work occurred. P11.1 is not live-verified; P11.2 remains pending and P11.3 remains out of scope.
