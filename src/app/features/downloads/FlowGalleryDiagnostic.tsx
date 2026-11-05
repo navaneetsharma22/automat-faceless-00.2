@@ -66,6 +66,8 @@ export function FlowGalleryDiagnostic({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [identityCaptureEnabled, setIdentityCaptureEnabled] = useState(false);
+  const [galleryCheck, setGalleryCheck] = useState<FlowProjectVideosImportProgress>();
+  const [galleryCheckPending, setGalleryCheckPending] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -111,6 +113,84 @@ export function FlowGalleryDiagnostic({
       window.clearInterval(interval);
     };
   }, [persistenceClient, snapshot.status]);
+
+  useEffect(() => {
+    let current = true;
+    const read = async () => {
+      try {
+        const next = (await persistenceClient.request(
+          "flow.projectVideos.import.get",
+          {},
+        )) as FlowProjectVideosImportProgress;
+        if (current) {
+          setGalleryCheck(next);
+          if (next.scope === "one_card_check" && next.status !== "scanning" && next.status !== "idle")
+            window.dispatchEvent(new Event("automat:flow-clip-import-updated"));
+        }
+      } catch {
+        // The focused diagnostic may be unavailable before the worker initializes.
+      }
+    };
+    void read();
+    if (galleryCheck?.status !== "scanning")
+      return () => { current = false; };
+    const timer = window.setInterval(() => void read(), 400);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [persistenceClient, galleryCheck?.status]);
+
+  const startOneCardCheck = async () => {
+    setGalleryCheckPending(true);
+    setError(undefined);
+    try {
+      const progress = (await persistenceClient.request(
+        "flow.projectVideos.import.start",
+        { singleCardCheck: true },
+      )) as FlowProjectVideosImportProgress;
+      setGalleryCheck(progress);
+    } catch (caught) {
+      const code = caught instanceof Error && "code" in caught
+        ? String((caught as Error & { code?: unknown }).code ?? "")
+        : caught instanceof Error ? caught.message : "";
+      setError(
+        code.includes("flow_project_video_import_download_active")
+          ? "One-card check blocked while a Flow download is active."
+          : code.includes("flow_project_video_import_already_active")
+            ? "A Gallery import is already running."
+            : code.includes("flow_project_video_import_gallery_required")
+              ? "Open the verified project’s Videos Gallery before testing one clip."
+              : "The one-card Gallery check could not start; no quality selection or download was requested.",
+      );
+      try {
+        const progress = (await persistenceClient.request(
+          "flow.projectVideos.import.get",
+          {},
+        )) as FlowProjectVideosImportProgress;
+        setGalleryCheck(progress);
+      } catch {
+        setGalleryCheck(undefined);
+      }
+    } finally {
+      setGalleryCheckPending(false);
+    }
+  };
+
+  const cancelOneCardCheck = async () => {
+    setGalleryCheckPending(true);
+    try {
+      const progress = (await persistenceClient.request(
+        "flow.projectVideos.import.cancel",
+        {},
+      )) as FlowProjectVideosImportProgress;
+      setGalleryCheck(progress);
+    } catch {
+      setError("The one-card Gallery check could not be cancelled.");
+    } finally {
+      setGalleryCheckPending(false);
+    }
+  };
 
   const arm = async () => {
     setPending(true);
@@ -588,6 +668,62 @@ export function FlowGalleryDiagnostic({
           </p>
         </div>
       ) : null}
+      <section aria-label="One-card Gallery importer check">
+        <strong>Test one Gallery clip</strong>
+        <p className={styles.disabledReason}>
+          Uses the production importer on at most one currently visible card. It verifies the detail route and selected rail asset, then imports or updates that row. This does not check Gallery coverage. It never selects a quality or starts a download.
+        </p>
+        <Button
+          variant="secondary"
+          disabled={galleryCheckPending || galleryCheck?.status === "scanning"}
+          loading={galleryCheckPending}
+          onClick={() => void startOneCardCheck()}
+        >
+          Test one Gallery clip
+        </Button>
+        {galleryCheck?.scope === "one_card_check" ? (
+          <div className={styles.galleryImportProgress} aria-live="polite">
+            <div className={styles.galleryImportProgressHeader}>
+              <strong>
+                {galleryCheck.status === "scanning"
+                  ? "Testing one Gallery clip"
+                  : galleryCheck.status === "completed"
+                    ? "One-card check complete"
+                    : `One-card check ${galleryCheck.status}`}
+              </strong>
+              {galleryCheck.status === "scanning" ? (
+                <Button variant="quiet" size="compact" disabled={galleryCheckPending} onClick={() => void cancelOneCardCheck()}>
+                  Cancel
+                </Button>
+              ) : null}
+            </div>
+            <p className={styles.clipMessage}>
+              Discovered {galleryCheck.discovered} · Imported {galleryCheck.imported} · Already present {galleryCheck.alreadyPresent} · Unresolved {galleryCheck.unresolved}
+            </p>
+            <p className={styles.disabledReason}>
+              {galleryCheck.discovered > 0
+                ? "At most one card checked. Full Gallery coverage was not evaluated."
+                : galleryCheck.status === "scanning"
+                  ? "At most one card will be checked. Full Gallery coverage is not being evaluated."
+                  : "No card reached the check. Full Gallery coverage was not evaluated."}
+            </p>
+            {galleryCheck.reason === "one_card_check_complete" ? (
+              <p className={styles.clipMessage}>The one-card check finished; the Gallery was not fully scanned.</p>
+            ) : null}
+            {galleryCheck.failureReason ? (
+              <p className={styles.clipMessage}>Preflight failure: {galleryFailureLabel(galleryCheck.failureReason)}</p>
+            ) : null}
+            {galleryCheck.reason && galleryCheck.reason !== "one_card_check_complete" ? (
+              <p className={styles.clipMessage}>Check stopped: {galleryCheck.reason.replaceAll("_", " ")}</p>
+            ) : null}
+            {galleryCheck.unresolvedCards.map((card, index) => (
+              <p className={styles.fieldError} key={`${card.reason}-${index}`}>
+                {card.title || "Untitled video"} · {card.reason.replaceAll("_", " ")}
+              </p>
+            ))}
+          </div>
+        ) : null}
+      </section>
       <Button
         variant="quiet"
         size="compact"
@@ -811,6 +947,12 @@ export function FlowClipDownloads({
       window.clearInterval(timer);
     };
   }, [galleryImport?.status, persistenceClient, refresh]);
+
+  useEffect(() => {
+    const refreshImportedRows = () => void refresh();
+    window.addEventListener("automat:flow-clip-import-updated", refreshImportedRows);
+    return () => window.removeEventListener("automat:flow-clip-import-updated", refreshImportedRows);
+  }, [refresh]);
 
   const importProjectVideos = async () => {
     setGalleryImportPending(true);
@@ -1067,7 +1209,13 @@ export function FlowClipDownloads({
         <section className={styles.galleryImportProgress} aria-label="Project video import progress" aria-live="polite">
           <div className={styles.galleryImportProgressHeader}>
             <strong>
-              {galleryImport.status === "scanning"
+              {galleryImport.scope === "one_card_check"
+                ? galleryImport.status === "scanning"
+                  ? "Testing one Gallery clip"
+                  : galleryImport.status === "completed"
+                    ? "One-card check complete"
+                    : `One-card check ${galleryImport.status}`
+                : galleryImport.status === "scanning"
                 ? "Scanning Flow Videos gallery"
                 : galleryImport.status === "completed"
                   ? "Gallery scan complete"
@@ -1090,6 +1238,13 @@ export function FlowClipDownloads({
           <p className={styles.clipMessage}>
             Discovered {galleryImport.discovered} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
           </p>
+          {galleryImport.scope === "one_card_check" ? (
+            <p className={styles.disabledReason}>
+              {galleryImport.discovered > 0
+                ? "At most one card checked. Full Gallery coverage was not evaluated."
+                : "No card reached the check. Full Gallery coverage was not evaluated."}
+            </p>
+          ) : null}
           {galleryImport.failureReason ? (
             <p className={styles.clipMessage}>
               Preflight failure: {galleryFailureLabel(galleryImport.failureReason)}

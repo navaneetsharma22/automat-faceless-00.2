@@ -206,7 +206,7 @@ export type RequestPayloads = {
   "flow.downloadDiagnostic.get": Record<string, never>;
   "flow.clipImport.importCurrent": Record<string, never>;
   "flow.clipImport.list": Record<string, never>;
-  "flow.projectVideos.import.start": Record<string, never>;
+  "flow.projectVideos.import.start": { singleCardCheck?: boolean };
   "flow.projectVideos.import.get": Record<string, never>;
   "flow.projectVideos.import.cancel": Record<string, never>;
   "flow.clipDownloadProof.inspect": { recordId: string };

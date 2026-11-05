@@ -368,10 +368,18 @@ async function makeProjectVideoImportManager(options: {
   nativeReacquireFailsFor?: string;
   rerenderCards?: boolean;
   initialVideosSelected?: boolean;
+  nativeRouteDelayReads?: number;
+  nativeConnectionPendingChecks?: number;
   wait?: (milliseconds: number) => Promise<void>;
 } = {}) {
   let now = 20_000;
   let tabUrl = `https://flow.google.com/project/${projectId}`;
+  let pendingNativeUrl: string | undefined;
+  let currentDocumentId = "document-test";
+  let routeReadsWhilePending = 0;
+  let pendingConnectionChecks = 0;
+  let replacementConnectionObserved = false;
+  const detailInjectionDocumentIds: string[] = [];
   const database = createMemoryRepositoryDatabase();
   const repositories = new ExtensionRepositories(database, () => now);
   await database.selectedTargets.put({
@@ -405,7 +413,7 @@ async function makeProjectVideoImportManager(options: {
   let rejectPreflight = Boolean(options.preflightRejection);
   let videosSelected = options.initialVideosSelected ?? true;
   const galleryActions: string[] = [];
-  const executeScript = vi.fn(async (input: { func: (...args: never[]) => unknown; args: unknown[] }) => {
+  const executeScript = vi.fn(async (input: { func: (...args: never[]) => unknown; args: unknown[]; target?: { documentIds?: string[] } }) => {
     let result: unknown;
     if (input.func === inspectFlowProjectVideosInPage) {
       const action = (input.args[0] as { action: string }).action;
@@ -425,7 +433,13 @@ async function makeProjectVideoImportManager(options: {
           const card = pageCards.find((candidate) => candidate.nativeCardToken === nativeCardToken) ?? unresolvedProjectVideoCard("make it", nativeCardToken);
           activeNativeMapping = options.nativeMappings?.find((mapping) => mapping.token === nativeCardToken);
           const routeProject = options.nativeWrongProject ? "other-project" : projectId;
-          tabUrl = `https://flow.google.com/project/${routeProject}/edit/${activeNativeMapping?.clipId ?? firstClip}`;
+          const destination = `https://flow.google.com/project/${routeProject}/edit/${activeNativeMapping?.clipId ?? firstClip}`;
+          if (options.nativeRouteDelayReads) {
+            pendingNativeUrl = destination;
+            routeReadsWhilePending = 0;
+          } else {
+            tabUrl = destination;
+          }
           videosSelected = false;
           result = { status: "opened", projectId, cards: [card], cardsCapped: false, scroll: { containerFound: true, top: 0, max: 0, moved: false, atBottom: true, busy: false }, card };
         } else {
@@ -444,7 +458,9 @@ async function makeProjectVideoImportManager(options: {
           return [{ documentId: "document-test", result }];
         }
         if (action === "scroll") snapshotIndex = Math.min(snapshotIndex + 1, snapshots.length - 1);
-        const cards = (snapshots[snapshotIndex] ?? []).map((card) => {
+        const sourceCards = snapshots[snapshotIndex] ?? [];
+        const maxCards = (input.args[0] as { maxCards?: number }).maxCards;
+        const cards = (maxCards === 1 ? sourceCards.slice(0, 1) : sourceCards).map((card) => {
           if (
             options.nativeReacquireFailsFor &&
             activeNativeMapping?.token === options.nativeReacquireFailsFor &&
@@ -460,24 +476,61 @@ async function makeProjectVideoImportManager(options: {
         result = { status: "ready", projectId, cards, cardsCapped: options.cardsCapped ?? false, scroll: { containerFound: true, top, max, moved: action === "scroll", atBottom: top >= max, busy: false } };
       }
     } else if (input.func === inspectCurrentFlowClipInPage) {
+      if (/\/edit\//i.test(tabUrl)) detailInjectionDocumentIds.push(input.target?.documentIds?.[0] ?? "missing-document");
       const clipId = /\/edit\/([0-9a-f-]{36})/i.exec(tabUrl)?.[1] ?? firstClip;
       result = { projectId, clipId, title: "make it", thumbnail: { available: true, width: 320, height: 180 } };
     } else if (input.func === prepareFlowClipDownloadInPage) {
+      if (/\/edit\//i.test(tabUrl)) detailInjectionDocumentIds.push(input.target?.documentIds?.[0] ?? "missing-document");
       result = options.nativeSelectionAmbiguous && activeNativeMapping
         ? { status: "blocked", reason: "flow_clip_selected_asset_unavailable" }
         : { status: "identity", assetId: activeNativeMapping?.selectedAssetId ?? options.selectedAssetId ?? secondAsset };
     }
-    return [{ documentId: "document-test", result }];
+    return [{ documentId: input.target?.documentIds?.[0] ?? currentDocumentId, result }];
   });
   const manager = createFlowDownloadDiagnosticManager({
     extensionId: "extension-test",
     repositories,
     permissions: { contains: async () => true },
     tabs: {
-      get: async (tabId) => ({ id: tabId, title: "Flow project", url: tabUrl }),
-      update: async (_tabId, properties) => { tabUrl = properties.url; videosSelected = false; return { id: 7, url: tabUrl }; },
+      get: async (tabId) => {
+        if (pendingNativeUrl) {
+          routeReadsWhilePending += 1;
+          if (routeReadsWhilePending >= (options.nativeRouteDelayReads ?? 1)) {
+            tabUrl = pendingNativeUrl;
+            pendingNativeUrl = undefined;
+            if (options.nativeRouteDelayReads) currentDocumentId = "detail-document-replaced";
+          }
+        }
+        return { id: tabId, title: "Flow project", url: tabUrl };
+      },
+      update: async (_tabId, properties) => { tabUrl = properties.url; pendingNativeUrl = undefined; if (options.nativeRouteDelayReads) currentDocumentId = "gallery-document-restored"; videosSelected = false; return { id: 7, url: tabUrl }; },
     },
-    revalidateFlowConnection: async () => ({ ok: true, state: "verified" }),
+    revalidateFlowConnection: async () => {
+      if (/\/edit\//i.test(tabUrl) && options.nativeConnectionPendingChecks && !replacementConnectionObserved) {
+        pendingConnectionChecks += 1;
+        if (pendingConnectionChecks <= options.nativeConnectionPendingChecks)
+          return { ok: false, state: "temporarily-unreachable" };
+        const selected = await database.selectedTargets.get("Flow");
+        if (selected?.verificationBinding) {
+          await database.selectedTargets.put({
+            ...selected,
+            verificationBinding: { ...selected.verificationBinding, documentId: currentDocumentId, documentToken: "detail-document-token" },
+            updatedAt: now,
+          });
+        }
+        replacementConnectionObserved = true;
+      } else if (!/\/edit\//i.test(tabUrl)) {
+        const selected = await database.selectedTargets.get("Flow");
+        if (selected?.verificationBinding && selected.verificationBinding.documentId !== currentDocumentId) {
+          await database.selectedTargets.put({
+            ...selected,
+            verificationBinding: { ...selected.verificationBinding, documentId: currentDocumentId, documentToken: "gallery-document-token" },
+            updatedAt: now,
+          });
+        }
+      }
+      return { ok: true, state: "verified" };
+    },
     scripting: { executeScript },
     debugger: {
       attach: vi.fn(), sendCommand: vi.fn(), detach: vi.fn(),
@@ -493,7 +546,14 @@ async function makeProjectVideoImportManager(options: {
     wait: options.wait ?? (async () => undefined),
     now: () => now++,
   });
-  return { manager, repositories, executeScript, galleryActions, getTabUrl: () => tabUrl };
+  return {
+    manager, repositories, executeScript, galleryActions,
+    getTabUrl: () => tabUrl,
+    getRouteReadsWhilePending: () => routeReadsWhilePending,
+    getPendingConnectionChecks: () => pendingConnectionChecks,
+    getReplacementConnectionObserved: () => replacementConnectionObserved,
+    getDetailInjectionDocumentIds: () => detailInjectionDocumentIds,
+  };
 }
 
 describe("Flow Videos Gallery import", () => {
@@ -638,6 +698,139 @@ describe("Flow Videos Gallery import", () => {
     expect(await repositories.listFlowClipImports()).toHaveLength(2);
   });
 
+  it("checks at most one production-importer card and terminates without claiming Gallery coverage", async () => {
+    const cards = liveNativeMappings.map((mapping) =>
+      unresolvedProjectVideoCard("make it", mapping.token),
+    );
+    const setup = await makeProjectVideoImportManager({
+      snapshots: [cards],
+      nativeMappings: liveNativeMappings,
+    });
+    await setup.manager.startProjectVideoImport({ singleCardCheck: true });
+    let progress = await setup.manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await setup.manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      scope: "one_card_check",
+      status: "completed",
+      discovered: 1,
+      imported: 1,
+      alreadyPresent: 0,
+      unresolved: 0,
+      scanCompleteness: "incomplete",
+      reason: "one_card_check_complete",
+    });
+    expect(setup.getTabUrl()).toBe(`https://flow.google.com/project/${projectId}`);
+    expect(setup.galleryActions.filter((action) => action === "open")).toHaveLength(1);
+    const firstRow = (await setup.repositories.listFlowClipImports())[0];
+    expect(firstRow?.clipId).toBe(liveNativeMappings[0]!.clipId);
+
+    await setup.manager.startProjectVideoImport({ singleCardCheck: true });
+    progress = await setup.manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await setup.manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      scope: "one_card_check",
+      status: "completed",
+      discovered: 1,
+      imported: 0,
+      alreadyPresent: 1,
+      unresolved: 0,
+      scanCompleteness: "incomplete",
+      reason: "one_card_check_complete",
+    });
+    expect(await setup.repositories.listFlowClipImports()).toHaveLength(1);
+    expect(setup.galleryActions.filter((action) => action === "open")).toHaveLength(2);
+  });
+
+  it("waits for a delayed detail route and replacement connection before reading identity", async () => {
+    const setup = await makeProjectVideoImportManager({
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.token)]],
+      nativeMappings: liveNativeMappings,
+      nativeRouteDelayReads: 3,
+      nativeConnectionPendingChecks: 2,
+    });
+    await setup.manager.startProjectVideoImport({ singleCardCheck: true });
+    let progress = await setup.manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await setup.manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      scope: "one_card_check",
+      status: "completed",
+      discovered: 1,
+      imported: 1,
+      alreadyPresent: 0,
+      unresolved: 0,
+      scanCompleteness: "incomplete",
+      reason: "one_card_check_complete",
+    });
+    expect(setup.getRouteReadsWhilePending()).toBeGreaterThanOrEqual(3);
+    expect(setup.getPendingConnectionChecks()).toBeGreaterThanOrEqual(3);
+    expect(setup.getReplacementConnectionObserved()).toBe(true);
+    expect(setup.getDetailInjectionDocumentIds().length).toBeGreaterThanOrEqual(2);
+    expect(setup.getDetailInjectionDocumentIds().every((id) => id === "detail-document-replaced")).toBe(true);
+    expect(await setup.repositories.listFlowClipImports()).toMatchObject([
+      {
+        projectId,
+        clipId: liveNativeMappings[0]!.clipId,
+        detailSelectedAssetId: liveNativeMappings[0]!.selectedAssetId,
+        galleryImportMethod: "native_card_navigation",
+      },
+    ]);
+  });
+
+  it("reports a route that never appears separately from an open-control rejection", async () => {
+    const setup = await makeProjectVideoImportManager({
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.token)]],
+      nativeMappings: liveNativeMappings,
+      nativeRouteDelayReads: 100,
+    });
+    await setup.manager.startProjectVideoImport({ singleCardCheck: true });
+    let progress = await setup.manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await setup.manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      scope: "one_card_check",
+      status: "incomplete",
+      imported: 0,
+      unresolved: 1,
+      unresolvedCards: [{ title: "make it", reason: "detail_route_not_observed_by_deadline" }],
+    });
+    expect(setup.getTabUrl()).toBe(`https://flow.google.com/project/${projectId}`);
+    expect(setup.getDetailInjectionDocumentIds()).toEqual([]);
+  });
+
+  it("reports a route whose verified document connection never becomes ready", async () => {
+    const setup = await makeProjectVideoImportManager({
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.token)]],
+      nativeMappings: liveNativeMappings,
+      nativeRouteDelayReads: 1,
+      nativeConnectionPendingChecks: 100,
+    });
+    await setup.manager.startProjectVideoImport({ singleCardCheck: true });
+    let progress = await setup.manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await setup.manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      scope: "one_card_check",
+      status: "incomplete",
+      imported: 0,
+      unresolved: 1,
+      unresolvedCards: [{ title: "make it", reason: "detail_connection_unavailable" }],
+    });
+    expect(setup.getDetailInjectionDocumentIds()).toEqual([]);
+  });
+
   it("rejects a native card that navigates into another project", async () => {
     const { manager, repositories } = await makeProjectVideoImportManager({
       snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.token)]],
@@ -681,7 +874,7 @@ describe("Flow Videos Gallery import", () => {
       progress = await manager.getProjectVideoImport();
     }
     expect(progress).toMatchObject({ status: "cancelled", scanCompleteness: "incomplete", reason: "cancelled" });
-    expect(setup.getTabUrl()).toBe(`https://flow.google.com/project/${projectId}`);
+    expect(setup.getTabUrl()).toBe(`https://flow.google.com/project/${projectId}/edit/${liveNativeMappings[0]!.clipId}`);
     expect(await setup.repositories.listFlowClipImports()).toHaveLength(0);
   });
 
@@ -697,7 +890,7 @@ describe("Flow Videos Gallery import", () => {
       await Promise.resolve();
       progress = await manager.getProjectVideoImport();
     }
-    expect(progress).toMatchObject({ status: "completed", imported: 0, unresolved: 1 });
+    expect(progress).toMatchObject({ status: "incomplete", imported: 0, unresolved: 1 });
     expect(progress.unresolvedCards).toContainEqual({
       title: "make it",
       reason: "detail_selected_asset_missing",

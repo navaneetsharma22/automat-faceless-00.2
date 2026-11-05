@@ -1080,7 +1080,7 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   }),
   requestBase.extend({
     type: z.literal("flow.projectVideos.import.start"),
-    payload: z.object({}).strict(),
+    payload: z.object({ singleCardCheck: z.boolean().optional() }).strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.projectVideos.import.get"),

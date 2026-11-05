@@ -77,6 +77,7 @@ export const FlowProjectVideosImportProgressSchema = z
   .object({
     jobId: z.string().uuid().optional(),
     projectId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+    scope: z.enum(["full_gallery", "one_card_check"]).optional(),
     status: z.enum([
       "idle",
       "scanning",
@@ -97,6 +98,7 @@ export const FlowProjectVideosImportProgressSchema = z
         "bound_reached",
         "coverage_unproven",
         "identity_deduplication_unavailable",
+        "one_card_check_complete",
         "cancelled",
         "connection_lost",
         "navigation_changed",
@@ -159,6 +161,7 @@ export async function inspectFlowProjectVideosInPage(input: {
   assetId?: string;
   nativeCardToken?: string;
   scrollTop?: number;
+  maxCards?: number;
 }): Promise<unknown> {
   const blocked = (
     reason: NonNullable<FlowProjectVideosPageResult["reason"]>,
@@ -377,6 +380,28 @@ export async function inspectFlowProjectVideosInPage(input: {
   const observedVideoCardOwner = (element: Element) =>
     element.matches('flow-grid-tile-container[role="group"]') &&
     Boolean(element.querySelector("flow-video-tile"));
+  const safeCardClickTarget = (owner: Element) => {
+    if (typeof document.elementFromPoint !== "function") return undefined;
+    const rect = owner.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return undefined;
+    const fractions = [0.5, 0.35, 0.65];
+    for (const yFraction of fractions) {
+      for (const xFraction of fractions) {
+        const hit = document.elementFromPoint(
+          rect.left + rect.width * xFraction,
+          rect.top + rect.height * yFraction,
+        );
+        if (!hit || !owner.contains(hit)) continue;
+        const nestedAction = hit.closest(
+          "button,a,[role='button'],[role='menuitem'],[data-card-action]",
+        );
+        if (nestedAction && nestedAction !== owner) continue;
+        if (excluded(hit)) continue;
+        return hit as HTMLElement;
+      }
+    }
+    return undefined;
+  };
   const eligible = (element: Element) => {
     if (!project.contains(element) || !element.isConnected || excluded(element))
       return false;
@@ -415,7 +440,8 @@ export async function inspectFlowProjectVideosInPage(input: {
   const fallbackCards = [...project.querySelectorAll("*")]
     .filter(eligible)
     .filter((card) => ![...card.querySelectorAll("*")].some(eligible));
-  const cards = observedGroupOwners.length ? nativeVideoCardOwners : fallbackCards;
+  const cardOwners = observedGroupOwners.length ? nativeVideoCardOwners : fallbackCards;
+  const cards = input.maxCards === 1 ? cardOwners.slice(0, 1) : cardOwners;
   const digest = async (value: string) => {
     try {
       const bytes = await crypto.subtle.digest(
@@ -670,6 +696,11 @@ export async function inspectFlowProjectVideosInPage(input: {
       ? boundOwner!
       : cards[snapshots.indexOf(card)]!;
     if (observedVideoCardOwner(cardElement)) {
+      const clickTarget = nativeNavigation
+        ? safeCardClickTarget(cardElement)
+        : cardElement as HTMLElement;
+      if (!clickTarget)
+        return blocked("native_open_control_unavailable", snapshots);
       if (
         nativeNavigation &&
         (!cardElement.isConnected ||
@@ -677,7 +708,7 @@ export async function inspectFlowProjectVideosInPage(input: {
           findCard(cardElement) !== cardElement)
       )
         return blocked("native_binding_stale", snapshots);
-      (cardElement as HTMLElement).click();
+      clickTarget.click();
       return {
         status: "opened",
         projectId: input.projectId,

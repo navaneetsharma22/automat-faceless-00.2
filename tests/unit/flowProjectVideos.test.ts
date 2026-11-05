@@ -243,6 +243,24 @@ describe("Flow project Videos gallery adapter", () => {
     expect(result.cards.map((card) => card.thumbnail.available)).toEqual([false, true]);
   });
 
+  it("limits the production Gallery reader to one card for a focused check", async () => {
+    installGallery(`<flow-gallery>
+      <flow-grid-tile-container role="group" aria-label="First clip"><flow-video-tile><video src="https://flow.google.com/media/first"></video></flow-video-tile></flow-grid-tile-container>
+      <flow-grid-tile-container role="group" aria-label="Second clip"><flow-video-tile><video src="https://flow.google.com/media/second"></video></flow-video-tile></flow-grid-tile-container>
+    </flow-gallery>`);
+    const result = await inspectFlowProjectVideosInPage({
+      projectId,
+      action: "snapshot",
+      scanId: "90000000-0000-4000-8000-000000000009",
+      documentId: "flow-document-one",
+      maxCards: 1,
+    }) as { status: string; cards: Array<{ title: string; nativeCardToken?: string }> };
+    expect(result.status).toBe("ready");
+    expect(result.cards).toHaveLength(1);
+    expect(result.cards[0]?.title).toBe("First clip");
+    expect(result.cards[0]?.nativeCardToken).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
   it("binds same-title owners separately and clicks only the discovered token target", async () => {
     const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
       <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>
@@ -258,6 +276,15 @@ describe("Flow project Videos gallery adapter", () => {
     const secondClick = vi.fn();
     const firstNestedClick = vi.fn();
     const secondNestedClick = vi.fn();
+    Object.defineProperty(owners[0]!, "getBoundingClientRect", { value: () => ({ x: 0, y: 0, width: 100, height: 100, top: 0, right: 100, bottom: 100, left: 0, toJSON: () => ({}) }) });
+    Object.defineProperty(owners[1]!, "getBoundingClientRect", { value: () => ({ x: 200, y: 0, width: 100, height: 100, top: 0, right: 300, bottom: 100, left: 200, toJSON: () => ({}) }) });
+    Object.defineProperty(dom.window.document, "elementFromPoint", {
+      configurable: true,
+      value: (x: number, y: number) => owners.find((owner) => {
+        const rect = owner.getBoundingClientRect();
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      }),
+    });
     owners[0]!.addEventListener("click", firstClick);
     owners[1]!.addEventListener("click", secondClick);
     nestedActions[0]!.addEventListener("click", firstNestedClick);
@@ -285,7 +312,7 @@ describe("Flow project Videos gallery adapter", () => {
         documentId,
         nativeCardToken: token,
       }) as { status: string };
-      expect(result.status).toBe("opened");
+      expect(result).toMatchObject({ status: "opened" });
     }
     expect(firstClick).toHaveBeenCalledTimes(1);
     expect(secondClick).toHaveBeenCalledTimes(1);

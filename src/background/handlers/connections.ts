@@ -167,7 +167,7 @@ export type FoundationDependencies = {
     inspectClipDownloadProof: (recordId: string) => Promise<unknown>;
     armClipDownloadProof: (recordId: string) => Promise<unknown>;
     startClipDownload?: (recordId: string, allowNewAttempt?: boolean) => Promise<unknown>;
-    startProjectVideoImport?: () => Promise<unknown>;
+    startProjectVideoImport?: (options?: { singleCardCheck?: boolean }) => Promise<unknown>;
     getProjectVideoImport?: () => Promise<unknown>;
     cancelProjectVideoImport?: () => Promise<unknown>;
     ingestPageEvent: (
@@ -927,7 +927,9 @@ async function dispatch(
       if (!dependencies.flowDownloadDiagnostic?.startProjectVideoImport)
         throw new FoundationOperationError("worker_error", "flow_project_video_import_unavailable", "Flow project video import is unavailable in this worker.");
       try {
-        return await dependencies.flowDownloadDiagnostic.startProjectVideoImport();
+        return await dependencies.flowDownloadDiagnostic.startProjectVideoImport({
+          singleCardCheck: request.payload.singleCardCheck === true,
+        });
       } catch (error) {
         const rawCode = error instanceof Error ? error.message : "";
         const messages: Record<string, string> = {
