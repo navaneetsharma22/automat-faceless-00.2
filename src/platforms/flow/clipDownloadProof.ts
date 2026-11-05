@@ -18,9 +18,11 @@ export function inspectFlowClipDownloadControlsInPage(): unknown {
       .trim()
       .slice(0, 120)
       .toLowerCase();
-  const controls = [...document.querySelectorAll<HTMLElement>(
-    'button, [role="button"], [role="menuitem"]',
-  )].filter(visible);
+  const controls = [
+    ...document.querySelectorAll<HTMLElement>(
+      'button, [role="button"], [role="menuitem"]',
+    ),
+  ].filter(visible);
   const downloadMediaCount = controls.filter((element) =>
     /\bdownload media\b/.test(label(element)),
   ).length;

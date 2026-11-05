@@ -1,5 +1,4 @@
-export const FLOW_1080P_PROOF_CLIP_ID =
-  "c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa";
+export const FLOW_1080P_PROOF_CLIP_ID = "c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa";
 
 export type FlowClipDownloadBlocker =
   | "clip_not_in_single_row_scope"

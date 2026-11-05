@@ -734,7 +734,7 @@ Live two-clip import/reimport verification: **NOT_RUN**. The connected browser i
 
 ### Row binding and click boundary
 
-The imported row for the requested target clip is the only row rendered with a **Download 1080p** action. The dashboard sends that exact row key only after the user clicks its button. The worker looks up the stored row, validates its project-plus-clip route, rejects any clip outside the fixed single-row allowlist, and revalidates the selected Flow target and `/edit/` route before inspecting the same verified document. It also compares the page's reported project and clip identity and rechecks the tab route after inspection. The other same-title clip is refused before `executeScript`, so it cannot trigger this action.
+The imported row for the requested target clip is the only row rendered with a **Download 1080p** action. The dashboard sends that exact row key only after the user clicks its button. The worker looks up the stored row, validates its project-plus-clip route, rejects any clip outside the fixed single-row allowlist, and revalidates the selected Flow target and `/edit/` route before inspecting the same verified document. It also compares the page's reported project and clip identity and rechecks the tab route after inspection. The other same-title clip is refused before `executeScript`, so it cannot trigger this action. The negative fixture uses a synthetic UUID with the supplied `bbc2bc82` prefix because the request abbreviated the full ID.
 
 The page probe only inventories visible button/menu labels such as `Download media` and `1080p`; it does not click, fetch, inspect media bytes, or start an upscale/download. An observed control label does not prove its behavior. The browser download association classifier and its rules remain unchanged.
 
@@ -746,6 +746,6 @@ Source/evidence review still does not verify a detail-page 1080p control's activ
 
 - Focused Vitest: **2 files / 6 tests PASS**. Fixtures cover two same-title rows where only the selected UUID is admitted, rejection of the other imported clip before page inspection, a visible `Download media` control read without activation, and rejection of incomplete or mismatched output evidence for Saved.
 - Typecheck, ESLint, production package build and build-ID validation, and `git diff --check`: **PASS**.
-- Build: **`automat-faceless-0.1.0-mw2yx3n0`**, four JavaScript bundles.
+- Build: **`automat-faceless-0.1.0-mw2z2289`**, four JavaScript bundles.
 
 Live check remains **NOT_RUN**; no Flow tab was available for route/control inspection. Manual test for this build: load the package, select/verify the Flow tab for the imported target, confirm that tab is on the target row's exact detail route, and click **Download 1080p** on that target row. Record the displayed sanitized route/control/output statuses, then stop. Confirm no quality selection occurred and Chrome reports zero new downloads. The second same-title row should have no Download 1080p button. Do not continue to an upscale or download until a safe 1080p action and a direct output-to-clip identity link are independently verified. P11.2 was not started.

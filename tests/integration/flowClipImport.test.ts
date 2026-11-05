@@ -226,12 +226,24 @@ describe("verified Flow detail clip import", () => {
       detailUrl: `https://flow.google.com/project/${projectId}/edit/${otherImportedClip}`,
       thumbnail: { available: true, fingerprint: "b".repeat(64) },
     });
-    const executeScript = vi.fn(async ({ func }: { func: (...args: never[]) => unknown }) => [{
-      documentId: "document-test",
-      result: func === (await import("../../src/platforms/flow/clipImport")).inspectCurrentFlowClipInPage
-        ? { projectId, clipId: proofClip, title: "make it", thumbnail: { available: true } }
-        : { downloadMediaControlCount: 1, explicit1080pControlCount: 0 },
-    }]);
+    const executeScript = vi.fn(
+      async ({ func }: { func: (...args: never[]) => unknown }) => [
+        {
+          documentId: "document-test",
+          result:
+            func ===
+            (await import("../../src/platforms/flow/clipImport"))
+              .inspectCurrentFlowClipInPage
+              ? {
+                  projectId,
+                  clipId: proofClip,
+                  title: "make it",
+                  thumbnail: { available: true },
+                }
+              : { downloadMediaControlCount: 1, explicit1080pControlCount: 0 },
+        },
+      ],
+    );
     const manager = createFlowDownloadDiagnosticManager({
       extensionId: "extension-test",
       repositories,
@@ -245,7 +257,9 @@ describe("verified Flow detail clip import", () => {
       },
       scripting: { executeScript: executeScript as never },
       debugger: {
-        attach: vi.fn(), sendCommand: vi.fn(), detach: vi.fn(),
+        attach: vi.fn(),
+        sendCommand: vi.fn(),
+        detach: vi.fn(),
         onEvent: { addListener: vi.fn(), removeListener: vi.fn() },
         onDetach: { addListener: vi.fn(), removeListener: vi.fn() },
       },
@@ -253,12 +267,18 @@ describe("verified Flow detail clip import", () => {
         onCreated: { addListener: vi.fn(), removeListener: vi.fn() },
         onChanged: { addListener: vi.fn(), removeListener: vi.fn() },
       },
-      storage: { get: async () => ({}), set: async () => undefined, remove: async () => undefined },
+      storage: {
+        get: async () => ({}),
+        set: async () => undefined,
+        remove: async () => undefined,
+      },
       alarms: {} as never,
       now: () => now,
     });
 
-    const rejectedOther = await manager.inspectClipDownloadProof(other.record.id);
+    const rejectedOther = await manager.inspectClipDownloadProof(
+      other.record.id,
+    );
     expect(rejectedOther).toMatchObject({
       status: "blocked",
       blocker: "clip_not_in_single_row_scope",
@@ -278,7 +298,9 @@ describe("verified Flow detail clip import", () => {
     });
     expect(executeScript).toHaveBeenCalledTimes(2);
     expect(JSON.stringify({ rejectedOther, target })).not.toContain(proofClip);
-    expect(JSON.stringify({ rejectedOther, target })).not.toContain(otherImportedClip);
+    expect(JSON.stringify({ rejectedOther, target })).not.toContain(
+      otherImportedClip,
+    );
     now += 1;
   });
 });

@@ -61,7 +61,7 @@ describe("single-row Flow 1080p proof gate", () => {
     const download = document.createElement("button");
     download.textContent = "Download media";
     download.getBoundingClientRect = () =>
-      ({ width: 100, height: 30 } as DOMRect);
+      ({ width: 100, height: 30 }) as DOMRect;
     download.addEventListener("click", click);
     document.body.append(download);
 
