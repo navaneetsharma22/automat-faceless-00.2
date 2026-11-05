@@ -30,6 +30,41 @@ export const FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY =
 export const FLOW_GALLERY_DIAGNOSTIC_EVENT =
   "AUTOMAT_FLOW_GALLERY_DOWNLOAD_DIAGNOSTIC_EVENT";
 
+export const FlowClipDownloadFailureStageSchema = z.enum([
+  "validation",
+  "initial_preparation",
+  "arming",
+  "final_preparation",
+  "native_input",
+  "identity_readback",
+]);
+export type FlowClipDownloadFailureStage = z.infer<typeof FlowClipDownloadFailureStageSchema>;
+export const FlowClipDownloadFailureCodeSchema = z.enum([
+  "flow_target_not_currently_verified",
+  "flow_target_document_changed",
+  "flow_clip_detail_route_mismatch",
+  "flow_clip_import_row_unverified",
+  "flow_clip_project_mismatch",
+  "flow_clip_document_changed",
+  "flow_clip_page_identity_mismatch",
+  "flow_clip_download_preparation_failed",
+  "flow_clip_selected_asset_changed",
+  "flow_clip_selected_asset_unavailable",
+  "flow_clip_download_control_unavailable",
+  "flow_clip_1080p_unavailable",
+  "flow_clip_quality_obscured",
+  "flow_detail_download_menu_not_ready",
+  "flow_diagnostic_already_active",
+  "flow_download_already_starting",
+  "flow_download_previous_outcome_needs_review",
+  "flow_diagnostic_permissions_missing",
+  "flow_downloads_api_unavailable",
+  "flow_clip_download_arm_failed",
+  "flow_download_dispatch_uncertain",
+  "flow_download_identity_readback_failed",
+]);
+export type FlowClipDownloadFailureCode = z.infer<typeof FlowClipDownloadFailureCodeSchema>;
+
 export const FlowDownloadCandidateSchema = z
   .object({
     downloadId: z.number().int().nonnegative(),
@@ -177,6 +212,9 @@ export const FlowGalleryDownloadDiagnosticSchema = z
       clipId: z.string().uuid(),
       selectedAssetFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
       dispatchState: z.enum(["preparing", "intent", "sent", "uncertain"]),
+      inputAttempted: z.boolean().optional(),
+      failureStage: FlowClipDownloadFailureStageSchema.optional(),
+      failureCode: FlowClipDownloadFailureCodeSchema.optional(),
       filenameMediaFingerprint: z.string().regex(/^[a-f0-9]{16}$/).optional(),
       ignoredPageEvents: z.number().int().nonnegative().max(100).optional(),
     }).strict().optional(),

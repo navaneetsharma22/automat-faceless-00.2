@@ -17,6 +17,7 @@ import {
   VideoBatchPreparationError,
 } from "../../storage/repositories";
 import { ImageQueueInspectionError } from "../generationQueue";
+import { FlowClipDownloadStartError } from "../flowDownloadDiagnostic";
 import { FLOW_REFERENCE_CANDIDATE_SELECTED_MESSAGE } from "../../shared/schemas";
 import { ReferenceSelectionError } from "./references";
 
@@ -925,18 +926,7 @@ async function dispatch(
       try {
         return await dependencies.flowDownloadDiagnostic.startClipDownload(request.payload.recordId, request.payload.allowNewAttempt);
       } catch (error) {
-        const code = error instanceof Error ? error.message : "";
-        const messages: Record<string, string> = {
-          flow_clip_detail_route_mismatch: "Open this row's exact Flow clip, verify its project connection, then click Download 1080p.",
-          flow_clip_import_row_unverified: "Reimport this clip from its verified Flow detail page.",
-          flow_clip_download_preflight_failed: "The selected clip asset or enabled 1080p menu could not be verified. Open the exact clip and try the preflight again.",
-          flow_clip_selected_asset_changed: "The clip, selected asset or menu changed during preparation. Review Flow before starting another attempt.",
-          flow_diagnostic_already_active: "A Flow observation or download is already active. Review it or stop observation before starting another clip.",
-          flow_download_already_starting: "A Flow download is already being prepared.",
-          flow_download_previous_outcome_needs_review: "The previous attempt may have started a download. Review Chrome downloads before explicitly starting another attempt.",
-          flow_diagnostic_permissions_missing: "Grant downloads permission and reconnect the intended Flow project.",
-        };
-        throw new FoundationOperationError("worker_error", code in messages ? code : "flow_download_dispatch_uncertain", messages[code] ?? "Download delivery is uncertain. Check Flow and Chrome downloads before starting another attempt.");
+        throw flowClipDownloadStartFailure(error);
       }
     }
     case "flow.clipDownloadProof.inspect":
@@ -989,6 +979,49 @@ export class FoundationOperationError extends Error {
     super(message);
     this.name = "FoundationOperationError";
   }
+}
+
+const FLOW_CLIP_DOWNLOAD_FAILURE_MESSAGES: Record<string, string> = {
+  flow_target_not_currently_verified: "Connect and verify the intended Flow project before preparing this download.",
+  flow_target_document_changed: "The verified Flow document changed. Reconnect to the intended project and review the clip route.",
+  flow_clip_detail_route_mismatch: "Open this row's exact Flow clip, verify its project connection, then click Download 1080p.",
+  flow_clip_import_row_unverified: "Reimport this clip from its verified Flow detail page.",
+  flow_clip_project_mismatch: "The imported clip belongs to a different Flow project. Open the matching project before preparing the download.",
+  flow_clip_document_changed: "The verified Flow document changed during preparation. Reconnect and review the exact clip before trying again.",
+  flow_clip_page_identity_mismatch: "The Flow detail page no longer matches the imported clip. Reopen the exact clip and reimport it.",
+  flow_clip_download_preparation_failed: "Download preparation failed before quality input was attempted. Review the exact clip and its 1080p menu before trying again.",
+  flow_clip_selected_asset_changed: "The clip, selected asset or menu changed during preparation. Review Flow before starting another attempt.",
+  flow_clip_selected_asset_unavailable: "The selected clip asset could not be verified. Review the exact Flow detail page before trying again.",
+  flow_clip_download_control_unavailable: "Flow's Download media control could not be verified. Review the exact detail page before trying again.",
+  flow_clip_1080p_unavailable: "The 1080p Upscaled option is unavailable. Review the Flow menu before trying again.",
+  flow_clip_quality_obscured: "The 1080p Upscaled option could not be safely targeted. Review the Flow menu before trying again.",
+  flow_detail_download_menu_not_ready: "The bound Flow download menu was not ready. Reopen the menu and review the clip before trying again.",
+  flow_diagnostic_already_active: "A Flow observation or download is already active. Review it or stop observation before starting another clip.",
+  flow_download_already_starting: "A Flow download is already being prepared.",
+  flow_download_previous_outcome_needs_review: "The previous attempt may have started a download. Review Chrome downloads before explicitly starting another attempt.",
+  flow_diagnostic_permissions_missing: "Grant downloads permission and reconnect the intended Flow project.",
+  flow_download_dispatch_uncertain: "Quality input may have reached Flow. Review the retained attempt and Chrome downloads before starting another attempt.",
+  flow_download_identity_readback_failed: "Quality input was attempted, but Flow identity readback failed. Review the retained attempt and Chrome downloads before starting another attempt.",
+};
+
+export function flowClipDownloadStartFailure(error: unknown): FoundationOperationError {
+  const code = error instanceof FlowClipDownloadStartError
+    ? error.code
+    : error instanceof Error
+      ? error.message
+      : "";
+  const failureStage = error instanceof FlowClipDownloadStartError
+    ? `${error.stage}_${error.inputAttempted ? "input_attempted" : "input_not_attempted"}`
+    : undefined;
+  const safeCode = Object.hasOwn(FLOW_CLIP_DOWNLOAD_FAILURE_MESSAGES, code)
+    ? code
+    : "flow_clip_download_preparation_failed";
+  return new FoundationOperationError(
+    "worker_error",
+    safeCode,
+    FLOW_CLIP_DOWNLOAD_FAILURE_MESSAGES[safeCode]!,
+    failureStage,
+  );
 }
 
 export function createConnectionMessageListener(

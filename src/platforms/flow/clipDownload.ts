@@ -20,7 +20,7 @@ export const FlowClipDownloadPointSchema = z
 export async function prepareFlowClipDownloadInPage(
   projectId: string,
   clipId: string,
-  expectedAssetId?: string,
+  expectedAssetId: string | null = null,
   openMenu = false,
   identityOnly = false,
 ): Promise<unknown> {

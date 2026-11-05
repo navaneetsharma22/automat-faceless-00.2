@@ -15,6 +15,7 @@ import {
 } from "../platforms/flow/clipImport";
 import { inspectFlowClipDownloadMenuInPage } from "../platforms/flow/clipDownloadProof";
 import { FlowClipAssetIdentitySchema, FlowClipDownloadPointSchema, prepareFlowClipDownloadInPage } from "../platforms/flow/clipDownload";
+import { FlowClipDownloadFailureCodeSchema, type FlowClipDownloadFailureCode, type FlowClipDownloadFailureStage } from "../platforms/flow/downloads";
 import {
   FLOW_GALLERY_DIAGNOSTIC_ALARM,
   FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY,
@@ -230,6 +231,20 @@ function publicSnapshot(
   const parsed = FlowGalleryDownloadDiagnosticSchema.safeParse(value);
   if (!parsed.success) return { status: "idle" };
   return parsed.data;
+}
+
+export class FlowClipDownloadStartError extends Error {
+  readonly code: FlowClipDownloadFailureCode;
+  readonly stage: FlowClipDownloadFailureStage;
+  readonly inputAttempted: boolean;
+
+  constructor(code: FlowClipDownloadFailureCode, stage: FlowClipDownloadFailureStage, inputAttempted: boolean) {
+    super(code);
+    this.name = "FlowClipDownloadStartError";
+    this.code = code;
+    this.stage = stage;
+    this.inputAttempted = inputAttempted;
+  }
 }
 
 /** One-shot Flow Gallery observation; stores only bounded, sanitized session evidence. */
@@ -936,6 +951,7 @@ export function createFlowDownloadDiagnosticManager(
             ),
             filenameMediaFingerprint: await fingerprintFlowMediaIdentifier(sessionId, automaticAssetId.split("-")[0]),
             dispatchState: "preparing",
+            inputAttempted: false,
           },
         } : {}),
         ...(detailClipRow
@@ -1110,6 +1126,7 @@ export function createFlowDownloadDiagnosticManager(
     automaticDownloadStarting = true;
     let armedSessionId: string | undefined;
     let inputAttempted = false;
+    let failureStage: FlowClipDownloadFailureStage = "validation";
     try {
       await loaded;
       if (isActive(current)) throw new Error("flow_diagnostic_already_active");
@@ -1139,15 +1156,22 @@ export function createFlowDownloadDiagnosticManager(
         }))
       )
         throw new Error("flow_diagnostic_permissions_missing");
+      failureStage = "initial_preparation";
       const prepared = await dependencies.scripting.executeScript({
         target: { tabId: selected.tabId, documentIds: [binding.documentId] },
         world: "ISOLATED",
         func: prepareFlowClipDownloadInPage,
-        args: [row.projectId, row.clipId, undefined, true],
+        args: [row.projectId, row.clipId, null, true],
       });
       const point = FlowClipDownloadPointSchema.safeParse(prepared[0]?.result);
-      if (prepared[0]?.documentId !== binding.documentId || !point.success)
-        throw new Error("flow_clip_download_preflight_failed");
+      if (prepared[0]?.documentId !== binding.documentId)
+        throw new Error("flow_clip_document_changed");
+      if (!point.success) {
+        const blockedReason = (prepared[0]?.result as { reason?: unknown } | undefined)?.reason;
+        const knownReason = FlowClipDownloadFailureCodeSchema.safeParse(blockedReason);
+        throw new Error(knownReason.success ? knownReason.data : "flow_clip_download_preparation_failed");
+      }
+      failureStage = "arming";
       const armed = await arm(true, recordId, point.data.assetId);
       if (armed.status === "idle")
         throw new Error("flow_clip_download_arm_failed");
@@ -1167,6 +1191,7 @@ export function createFlowDownloadDiagnosticManager(
             dispatchState: "intent",
           },
         });
+        failureStage = "final_preparation";
         const checked = await dependencies.scripting.executeScript({
           target: { tabId: selected.tabId, documentIds: [binding.documentId] },
           world: "ISOLATED",
@@ -1176,16 +1201,26 @@ export function createFlowDownloadDiagnosticManager(
         const finalPoint = FlowClipDownloadPointSchema.safeParse(
           checked[0]?.result,
         );
-        if (checked[0]?.documentId !== binding.documentId || !finalPoint.success)
-          throw new Error("flow_clip_selected_asset_changed");
+        if (checked[0]?.documentId !== binding.documentId)
+          throw new Error("flow_clip_document_changed");
+        if (!finalPoint.success) {
+          const blockedReason = (checked[0]?.result as { reason?: unknown } | undefined)?.reason;
+          const knownReason = FlowClipDownloadFailureCodeSchema.safeParse(blockedReason);
+          throw new Error(knownReason.success ? knownReason.data : "flow_clip_download_preparation_failed");
+        }
         const actionAt = now();
         await persist({
           ...current!,
           actionAt,
           requestedQuality: "1080p_upscaled",
+          automaticDownload: {
+            ...current!.automaticDownload!,
+            inputAttempted: true,
+          },
         });
         const { x, y } = finalPoint.data;
         inputAttempted = true;
+        failureStage = "native_input";
         await dependencies.debugger.sendCommand(
           { tabId: selected.tabId },
           "Input.dispatchMouseEvent",
@@ -1232,6 +1267,13 @@ export function createFlowDownloadDiagnosticManager(
         return publicSnapshot(next);
       });
     } catch (error) {
+      const rawCode = error instanceof Error ? error.message : "";
+      const parsedCode = FlowClipDownloadFailureCodeSchema.safeParse(rawCode);
+      const failureCode: FlowClipDownloadFailureCode = parsedCode.success
+        ? parsedCode.data
+        : inputAttempted
+          ? "flow_download_dispatch_uncertain"
+          : "flow_clip_download_preparation_failed";
       if (armedSessionId)
         await enqueue(async () => {
           if (!current || current.sessionId !== armedSessionId) return;
@@ -1242,6 +1284,9 @@ export function createFlowDownloadDiagnosticManager(
               dispatchState: inputAttempted
                 ? ("uncertain" as const)
                 : ("preparing" as const),
+              inputAttempted,
+              failureStage,
+              failureCode,
             },
             ...(inputAttempted
               ? {
@@ -1252,7 +1297,7 @@ export function createFlowDownloadDiagnosticManager(
           };
           await finish(failed, inputAttempted ? "interrupted" : "stopped");
         });
-      throw error;
+      throw new FlowClipDownloadStartError(failureCode, failureStage, inputAttempted);
     } finally {
       automaticDownloadStarting = false;
     }
@@ -2034,11 +2079,27 @@ export function createFlowDownloadDiagnosticManager(
           }
           const tab = await dependencies.tabs.get(record.tabId);
           const route = tab.url ? flowClipDetailIdentityFromUrl(tab.url) : undefined;
-          const identityResult = await dependencies.scripting.executeScript({
-            target: { tabId: record.tabId, documentIds: [record.documentId] },
-            world: "ISOLATED", func: prepareFlowClipDownloadInPage,
-            args: [record.projectId, record.automaticDownload.clipId, undefined, false, true],
-          }).catch(() => []);
+          let identityResult: Awaited<ReturnType<typeof dependencies.scripting.executeScript>>;
+          try {
+            identityResult = await dependencies.scripting.executeScript({
+              target: { tabId: record.tabId, documentIds: [record.documentId] },
+              world: "ISOLATED", func: prepareFlowClipDownloadInPage,
+              args: [record.projectId, record.automaticDownload.clipId, null, false, true],
+            });
+          } catch {
+            await finish({
+              ...observedRecord,
+              automaticDownload: {
+                ...record.automaticDownload,
+                dispatchState: "uncertain",
+                inputAttempted: true,
+                failureStage: "identity_readback",
+                failureCode: "flow_download_identity_readback_failed",
+              },
+              interruptionReason: "dashboard_download_context_changed",
+            }, "interrupted");
+            return;
+          }
           const identity = FlowClipAssetIdentitySchema.safeParse(identityResult[0]?.result);
           const assetFingerprint = identity.success ? await fingerprintFlowAssetPath(
             record.sessionId,

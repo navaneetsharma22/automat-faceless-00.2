@@ -33,6 +33,8 @@ import {
 } from "../../src/platforms/shared/connectionLifecycle";
 import { FOUNDATION_WORKER_RESTARTED } from "../../src/shared/messages";
 import { PROTOCOL_VERSION } from "../../src/shared/buildInfo";
+import { FlowClipDownloadStartError } from "../../src/background/flowDownloadDiagnostic";
+import { flowClipDownloadStartFailure } from "../../src/background/handlers/connections";
 import {
   connectionApiDiagnostic,
   getChromeExecutionContext,
@@ -1451,5 +1453,39 @@ describe("packaged connector listener lifecycle", () => {
 
     expect(runtime.onMessage.addListener).not.toHaveBeenCalled();
     expect(runtime.onMessage.removeListener).not.toHaveBeenCalled();
+  });
+
+  it("preserves known Flow connection, document and menu failures with bounded stage details", () => {
+    for (const [code, failureStage, responseStage] of [
+      ["flow_target_not_currently_verified", "validation", "validation_input_not_attempted"],
+      ["flow_target_document_changed", "validation", "validation_input_not_attempted"],
+      ["flow_clip_document_changed", "final_preparation", "final_preparation_input_not_attempted"],
+      ["flow_detail_download_menu_not_ready", "initial_preparation", "initial_preparation_input_not_attempted"],
+    ] as const) {
+      const mapped = flowClipDownloadStartFailure(
+        new FlowClipDownloadStartError(code, failureStage, false),
+      );
+      expect(mapped.code).toBe(code);
+      expect(mapped.stage).toBe(responseStage);
+      expect(mapped.message).not.toContain("delivery is uncertain");
+    }
+    const uncertain = flowClipDownloadStartFailure(
+      new FlowClipDownloadStartError(
+        "flow_download_dispatch_uncertain",
+        "native_input",
+        true,
+      ),
+    );
+    expect(uncertain).toMatchObject({
+      code: "flow_download_dispatch_uncertain",
+      stage: "native_input_input_attempted",
+    });
+    const sanitized = flowClipDownloadStartFailure(
+      new Error("Chrome included https://private.invalid/?token=secret"),
+    );
+    expect(sanitized).toMatchObject({
+      code: "flow_clip_download_preparation_failed",
+      message: expect.not.stringContaining("secret"),
+    });
   });
 });

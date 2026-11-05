@@ -60,9 +60,18 @@ async function fixture() {
       ? { frameTree: { frame: { id: "root" } } }
       : {},
   );
+  const containsUndefined = (value: unknown): boolean => {
+    if (value === undefined) return true;
+    if (Array.isArray(value)) return value.some(containsUndefined);
+    if (value && typeof value === "object")
+      return Object.values(value).some(containsUndefined);
+    return false;
+  };
   const executeScript = vi.fn(
-    async (input: { func: { name: string }; args: unknown[] }) => [
-      {
+    async (input: { func: { name: string }; args: unknown[] }) => {
+      if (containsUndefined(input.args) || JSON.stringify(input.args) === undefined)
+        throw new Error("chrome_scripting_args_not_json_serializable");
+      return [{
         documentId: "doc",
         result:
           input.func.name === "prepareFlowClipDownloadInPage" &&
@@ -76,8 +85,8 @@ async function fixture() {
                   thumbnail: { available: true },
                 }
               : { status: "ready", assetId, x: 50, y: 60 },
-      },
-    ],
+      }];
+    },
   );
   const dependencies: FlowDownloadDiagnosticDependencies = {
     extensionId: "extension",
@@ -196,6 +205,12 @@ describe("dashboard initiated Flow download", () => {
         (call) => call[1] === "Input.dispatchMouseEvent",
       ),
     ).toHaveLength(2);
+    expect(f.executeScript.mock.calls.map((call) => call[0].args)).toEqual([
+      [projectId, clipId, null, true],
+      [],
+      [projectId, clipId, assetId, false],
+      [projectId, clipId, assetId, false],
+    ]);
     await expect(f.manager.startClipDownload(f.row.id)).rejects.toThrow(
       "flow_diagnostic_already_active",
     );
@@ -223,6 +238,12 @@ describe("dashboard initiated Flow download", () => {
       detailTrackedDownloadId: 101,
       detailDownloadCompletionStatus: "in_progress",
     });
+    expect(f.executeScript.mock.calls).toContainEqual([
+      expect.objectContaining({
+        func: expect.objectContaining({ name: "prepareFlowClipDownloadInPage" }),
+        args: [projectId, clipId, null, false, true],
+      }),
+    ]);
     f.changed[0]!({ id: 100, state: { current: "complete" } });
     expect(await f.manager.get()).toMatchObject({ status: "action_observed" });
     f.changed[0]!({ id: 101, state: { current: "complete" } });
@@ -247,6 +268,23 @@ describe("dashboard initiated Flow download", () => {
     );
     expect(f.executeScript).not.toHaveBeenCalled();
     expect(f.sendCommand).not.toHaveBeenCalled();
+    f.manager.dispose();
+  });
+
+  it("does not send quality input when Chrome rejects initial script injection", async () => {
+    const f = await fixture();
+    f.executeScript.mockRejectedValueOnce(
+      new Error("Chrome message includes a private URL and token"),
+    );
+    await expect(f.manager.startClipDownload(f.row.id)).rejects.toMatchObject({
+      code: "flow_clip_download_preparation_failed",
+      stage: "initial_preparation",
+      inputAttempted: false,
+      message: "flow_clip_download_preparation_failed",
+    });
+    expect(f.sendCommand.mock.calls.filter((call) => call[1] === "Input.dispatchMouseEvent")).toHaveLength(0);
+    expect(JSON.stringify(f.storage)).not.toContain("private URL");
+    expect(JSON.stringify(f.storage)).not.toContain("token");
     f.manager.dispose();
   });
 
@@ -290,12 +328,20 @@ describe("dashboard initiated Flow download", () => {
         throw new Error("connection lost");
       return original(target, method);
     });
-    await expect(f.manager.startClipDownload(f.row.id)).rejects.toThrow(
-      "connection lost",
-    );
+    await expect(f.manager.startClipDownload(f.row.id)).rejects.toMatchObject({
+      code: "flow_download_dispatch_uncertain",
+      stage: "native_input",
+      inputAttempted: true,
+      message: "flow_download_dispatch_uncertain",
+    });
     expect(await f.manager.get()).toMatchObject({
       status: "interrupted",
-      automaticDownload: { dispatchState: "uncertain" },
+      automaticDownload: {
+        dispatchState: "uncertain",
+        inputAttempted: true,
+        failureStage: "native_input",
+        failureCode: "flow_download_dispatch_uncertain",
+      },
     });
     await expect(f.manager.startClipDownload(f.row.id)).rejects.toThrow(
       "flow_download_previous_outcome_needs_review",
