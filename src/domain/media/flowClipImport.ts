@@ -15,8 +15,10 @@ export type FlowClipImportRecord = {
   clipId: string;
   title: string;
   detailUrl: string;
+  galleryImportMethod?: "source_asset" | "native_card_navigation";
   galleryAssetId?: string;
   galleryIdentityEvidence?: "same_card_detail_link" | "detail_selected_asset_match";
+  detailSelectedAssetId?: string;
   thumbnail: FlowClipThumbnailMetadata;
   importedAt: number;
   updatedAt: number;
@@ -31,10 +33,14 @@ export const FlowClipImportRecordSchema: z.ZodType<FlowClipImportRecord> = z
       .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
     title: z.string().max(200),
     detailUrl: z.string().url().max(2048),
+    galleryImportMethod: z
+      .enum(["source_asset", "native_card_navigation"])
+      .optional(),
     galleryAssetId: z.string().uuid().optional(),
     galleryIdentityEvidence: z
       .enum(["same_card_detail_link", "detail_selected_asset_match"])
       .optional(),
+    detailSelectedAssetId: z.string().uuid().optional(),
     thumbnail: FlowClipThumbnailMetadataSchema,
     importedAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
@@ -52,6 +58,28 @@ export const FlowClipImportRecordSchema: z.ZodType<FlowClipImportRecord> = z
       (record.galleryAssetId === undefined) ===
       (record.galleryIdentityEvidence === undefined),
     { message: "clip_import_gallery_asset_evidence_must_be_paired" },
+  )
+  .refine(
+    (record) =>
+      record.galleryImportMethod !== "native_card_navigation" ||
+      (record.detailSelectedAssetId !== undefined &&
+        record.galleryAssetId === undefined &&
+        record.galleryIdentityEvidence === undefined),
+    { message: "native_gallery_import_must_not_claim_source_asset_equality" },
+  )
+  .refine(
+    (record) =>
+      record.galleryImportMethod !== "source_asset" ||
+      (record.galleryAssetId !== undefined &&
+        record.galleryIdentityEvidence !== undefined),
+    { message: "source_asset_gallery_import_requires_identity_evidence" },
+  )
+  .refine(
+    (record) =>
+      record.galleryIdentityEvidence !== "detail_selected_asset_match" ||
+      record.detailSelectedAssetId === undefined ||
+      record.detailSelectedAssetId === record.galleryAssetId,
+    { message: "selected_detail_asset_must_match_gallery_asset" },
   );
 
 export type FlowClipThumbnailMetadata = z.infer<

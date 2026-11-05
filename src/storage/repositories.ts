@@ -900,10 +900,22 @@ export class ExtensionRepositories {
       const previous = await this.tables.flowClipImports.get(id);
       const timestamp = this.now();
       const record = FlowClipImportRecordSchema.parse({
-        ...(previous?.galleryAssetId && input.galleryAssetId === undefined
+        ...(previous?.galleryAssetId &&
+        input.galleryAssetId === undefined &&
+        input.galleryImportMethod !== "native_card_navigation"
           ? {
               galleryAssetId: previous.galleryAssetId,
               galleryIdentityEvidence: previous.galleryIdentityEvidence,
+            }
+          : {}),
+        ...(previous && input.galleryImportMethod === undefined
+          ? {
+              ...(previous.galleryImportMethod
+                ? { galleryImportMethod: previous.galleryImportMethod }
+                : {}),
+              ...(previous.detailSelectedAssetId
+                ? { detailSelectedAssetId: previous.detailSelectedAssetId }
+                : {}),
             }
           : {}),
         ...input,

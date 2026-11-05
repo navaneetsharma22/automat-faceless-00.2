@@ -3,7 +3,7 @@ import { createFlowDownloadDiagnosticManager } from "../../src/background/flowDo
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
-import { inspectFlowProjectVideosInPage } from "../../src/platforms/flow/projectVideos";
+import { inspectFlowProjectVideosInPage, type FlowProjectVideoCard } from "../../src/platforms/flow/projectVideos";
 import { inspectCurrentFlowClipInPage } from "../../src/platforms/flow/clipImport";
 import { prepareFlowClipDownloadInPage } from "../../src/platforms/flow/clipDownload";
 
@@ -14,6 +14,18 @@ const proofClip = "c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa";
 const otherImportedClip = "bbc2bc82-0000-4000-8000-000000000000";
 const firstAsset = "11111111-2222-4333-8444-555555555555";
 const secondAsset = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const liveNativeMappings = [
+  {
+    fingerprint: "a".repeat(64),
+    clipId: "c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa",
+    selectedAssetId: "d8d91f05-e14d-4e15-964f-104981510af6",
+  },
+  {
+    fingerprint: "b".repeat(64),
+    clipId: "bbc2bc82-eccc-4cbe-b3bd-2c8ee2fbd7fa",
+    selectedAssetId: "5a796d9e-5c1a-414a-a961-ed77e35c78a3",
+  },
+];
 
 describe("verified Flow detail clip import", () => {
   it("imports two same-title detail routes separately and reimport updates the same row", async () => {
@@ -317,7 +329,7 @@ describe("verified Flow detail clip import", () => {
   });
 });
 
-function projectVideoCard(assetId: string, clipId: string, title = "Same title", routeStatus = "unique") {
+function projectVideoCard(assetId: string, clipId: string, title = "Same title", routeStatus = "unique"): FlowProjectVideoCard {
   return {
     observationFingerprint: assetId.replaceAll("-", "").padEnd(64, "a").slice(0, 64),
     assetId,
@@ -331,12 +343,31 @@ function projectVideoCard(assetId: string, clipId: string, title = "Same title",
   };
 }
 
+function unresolvedProjectVideoCard(
+  title: string,
+  nativeTraversalFingerprint?: string,
+): FlowProjectVideoCard {
+  return {
+    title,
+    ...(nativeTraversalFingerprint ? { nativeTraversalFingerprint } : {}),
+    assetStatus: "missing",
+    thumbnail: { available: false },
+    routeStatus: "none",
+  };
+}
+
 async function makeProjectVideoImportManager(options: {
   snapshots?: Array<ReturnType<typeof projectVideoCard>[]>;
   selectedAssetId?: string;
   lazy?: boolean;
   cardsCapped?: boolean;
   preflightRejection?: "project_missing" | "videos_section_not_selected";
+  nativeMappings?: typeof liveNativeMappings;
+  nativeWrongProject?: boolean;
+  nativeSelectionAmbiguous?: boolean;
+  nativeReacquireFailsFor?: string;
+  rerenderCards?: boolean;
+  initialVideosSelected?: boolean;
   wait?: (milliseconds: number) => Promise<void>;
 } = {}) {
   let now = 20_000;
@@ -370,31 +401,67 @@ async function makeProjectVideoImportManager(options: {
   const second = projectVideoCard(secondAsset, secondClip);
   const snapshots = options.snapshots ?? [[first, second]];
   let snapshotIndex = 0;
+  let activeNativeMapping: (typeof liveNativeMappings)[number] | undefined;
   let rejectPreflight = Boolean(options.preflightRejection);
+  let videosSelected = options.initialVideosSelected ?? true;
+  const galleryActions: string[] = [];
   const executeScript = vi.fn(async (input: { func: (...args: never[]) => unknown; args: unknown[] }) => {
     let result: unknown;
     if (input.func === inspectFlowProjectVideosInPage) {
       const action = (input.args[0] as { action: string }).action;
+      galleryActions.push(action);
+      if ((action === "start" || action === "restore") && !videosSelected) {
+        videosSelected = true;
+        galleryActions.push("select-videos");
+      }
       if (action === "open") {
-        const card = first;
-        result = { status: "opened", projectId, cards: [card], cardsCapped: false, scroll: { containerFound: true, top: 0, max: 0, moved: false, atBottom: true, busy: false }, card };
-        tabUrl = `https://flow.google.com/project/${projectId}/edit/${firstClip}`;
+        const nativeFingerprint = (input.args[0] as { nativeTraversalFingerprint?: string }).nativeTraversalFingerprint;
+        if (nativeFingerprint) {
+          const pageCards = snapshots[snapshotIndex] ?? [];
+          const card = pageCards.find((candidate) => candidate.nativeTraversalFingerprint === nativeFingerprint) ?? unresolvedProjectVideoCard("make it", nativeFingerprint);
+          activeNativeMapping = options.nativeMappings?.find((mapping) => mapping.fingerprint === nativeFingerprint);
+          const routeProject = options.nativeWrongProject ? "other-project" : projectId;
+          tabUrl = `https://flow.google.com/project/${routeProject}/edit/${activeNativeMapping?.clipId ?? firstClip}`;
+          videosSelected = false;
+          result = { status: "opened", projectId, cards: [card], cardsCapped: false, scroll: { containerFound: true, top: 0, max: 0, moved: false, atBottom: true, busy: false }, card };
+        } else {
+          const card = first;
+          result = { status: "opened", projectId, cards: [card], cardsCapped: false, scroll: { containerFound: true, top: 0, max: 0, moved: false, atBottom: true, busy: false }, card };
+          tabUrl = `https://flow.google.com/project/${projectId}/edit/${firstClip}`;
+        }
       } else {
-        if (action === "snapshot" && rejectPreflight) {
+        if (action === "snapshot" && !videosSelected) {
+          result = { status: "blocked", reason: "videos_section_not_selected", projectId, cards: [], cardsCapped: false, scroll: { containerFound: false, top: 0, max: 0, moved: false, atBottom: false, busy: false } };
+          return [{ documentId: "document-test", result }];
+        }
+        if ((action === "start" || action === "snapshot") && rejectPreflight) {
           rejectPreflight = false;
           result = { status: "blocked", reason: options.preflightRejection, projectId, cards: [], cardsCapped: false, scroll: { containerFound: false, top: 0, max: 0, moved: false, atBottom: false, busy: false } };
           return [{ documentId: "document-test", result }];
         }
         if (action === "scroll") snapshotIndex = Math.min(snapshotIndex + 1, snapshots.length - 1);
-        const cards = snapshots[snapshotIndex] ?? [];
+        const cards = (snapshots[snapshotIndex] ?? []).map((card) => {
+          if (
+            options.nativeReacquireFailsFor &&
+            activeNativeMapping?.fingerprint === options.nativeReacquireFailsFor &&
+            !/\/edit\//i.test(tabUrl) &&
+            card.nativeTraversalFingerprint === options.nativeReacquireFailsFor
+          )
+            return { ...card, nativeTraversalFingerprint: "f".repeat(64) };
+          return options.rerenderCards ? { ...card } : card;
+        });
         const max = options.lazy && snapshotIndex === 0 ? 100 : 0;
-        const top = options.lazy && snapshotIndex > 0 ? 100 : 0;
+        const requestedTop = (input.args[0] as { scrollTop?: number }).scrollTop;
+        const top = action === "restore" ? requestedTop ?? 0 : options.lazy && snapshotIndex > 0 ? 100 : 0;
         result = { status: "ready", projectId, cards, cardsCapped: options.cardsCapped ?? false, scroll: { containerFound: true, top, max, moved: action === "scroll", atBottom: top >= max, busy: false } };
       }
     } else if (input.func === inspectCurrentFlowClipInPage) {
-      result = { projectId, clipId: firstClip, title: "Same title", thumbnail: { available: true, width: 320, height: 180 } };
+      const clipId = /\/edit\/([0-9a-f-]{36})/i.exec(tabUrl)?.[1] ?? firstClip;
+      result = { projectId, clipId, title: "make it", thumbnail: { available: true, width: 320, height: 180 } };
     } else if (input.func === prepareFlowClipDownloadInPage) {
-      result = { status: "identity", assetId: options.selectedAssetId ?? secondAsset };
+      result = options.nativeSelectionAmbiguous && activeNativeMapping
+        ? { status: "blocked", reason: "flow_clip_selected_asset_unavailable" }
+        : { status: "identity", assetId: activeNativeMapping?.selectedAssetId ?? options.selectedAssetId ?? secondAsset };
     }
     return [{ documentId: "document-test", result }];
   });
@@ -404,7 +471,7 @@ async function makeProjectVideoImportManager(options: {
     permissions: { contains: async () => true },
     tabs: {
       get: async (tabId) => ({ id: tabId, title: "Flow project", url: tabUrl }),
-      update: async (_tabId, properties) => { tabUrl = properties.url; return { id: 7, url: tabUrl }; },
+      update: async (_tabId, properties) => { tabUrl = properties.url; videosSelected = false; return { id: 7, url: tabUrl }; },
     },
     revalidateFlowConnection: async () => ({ ok: true, state: "verified" }),
     scripting: { executeScript },
@@ -422,7 +489,7 @@ async function makeProjectVideoImportManager(options: {
     wait: options.wait ?? (async () => undefined),
     now: () => now++,
   });
-  return { manager, repositories, executeScript };
+  return { manager, repositories, executeScript, galleryActions, getTabUrl: () => tabUrl };
 }
 
 describe("Flow Videos Gallery import", () => {
@@ -487,6 +554,203 @@ describe("Flow Videos Gallery import", () => {
       progress = await manager.getProjectVideoImport();
     }
     expect(progress).toMatchObject({ discovered: 2, imported: 2, scanCompleteness: "complete" });
+  });
+
+  it("counts separate unresolved cards without collapsing missing identities", async () => {
+    const { manager } = await makeProjectVideoImportManager({
+      snapshots: [[
+        unresolvedProjectVideoCard("Untitled video"),
+        unresolvedProjectVideoCard("Untitled video"),
+      ]],
+    });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      status: "incomplete",
+      discovered: 2,
+      imported: 0,
+      alreadyPresent: 0,
+      unresolved: 2,
+      scanCompleteness: "incomplete",
+      reason: "identity_deduplication_unavailable",
+    });
+  });
+
+  it("imports same-title native cards by verified detail route and selected asset, then reimports by route key", async () => {
+    const cards = liveNativeMappings.map((mapping) =>
+      unresolvedProjectVideoCard("make it", mapping.fingerprint),
+    );
+    const { manager, repositories, galleryActions } = await makeProjectVideoImportManager({
+      snapshots: [cards],
+      nativeMappings: liveNativeMappings,
+      rerenderCards: true,
+      initialVideosSelected: false,
+    });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      status: "completed",
+      discovered: 2,
+      imported: 2,
+      alreadyPresent: 0,
+      unresolved: 0,
+      scanCompleteness: "complete",
+    });
+    const rows = await repositories.listFlowClipImports();
+    expect(rows.map((row) => [row.title, row.clipId, row.detailSelectedAssetId])).toEqual([
+      ["make it", liveNativeMappings[0]!.clipId, liveNativeMappings[0]!.selectedAssetId],
+      ["make it", liveNativeMappings[1]!.clipId, liveNativeMappings[1]!.selectedAssetId],
+    ]);
+    expect(rows.every((row) =>
+      row.galleryImportMethod === "native_card_navigation" &&
+      row.galleryAssetId === undefined &&
+      row.galleryIdentityEvidence === undefined,
+    )).toBe(true);
+    const firstOpen = galleryActions.indexOf("open");
+    const returnedRestore = galleryActions.indexOf("restore", firstOpen + 1);
+    expect(galleryActions.slice(0, 4)).toEqual(["start", "select-videos", "start", "snapshot"]);
+    expect(galleryActions.slice(returnedRestore, returnedRestore + 3)).toEqual([
+      "restore",
+      "select-videos",
+      "snapshot",
+    ]);
+    expect(galleryActions.slice(returnedRestore + 3)).toContain("open");
+
+    await manager.startProjectVideoImport();
+    progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 200; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ imported: 0, alreadyPresent: 2, unresolved: 0 });
+    expect(await repositories.listFlowClipImports()).toHaveLength(2);
+  });
+
+  it("rejects a native card that navigates into another project", async () => {
+    const { manager, repositories } = await makeProjectVideoImportManager({
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.fingerprint)]],
+      nativeMappings: liveNativeMappings,
+      nativeWrongProject: true,
+    });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "failed", reason: "navigation_changed", imported: 0 });
+    expect(await repositories.listFlowClipImports()).toHaveLength(0);
+  });
+
+  it("cancels native navigation, restores the Gallery, and saves no unverified row", async () => {
+    let enteredNativeWait!: () => void;
+    let releaseNativeWait!: () => void;
+    const nativeWaitEntered = new Promise<void>((resolve) => { enteredNativeWait = resolve; });
+    const nativeWaitGate = new Promise<void>((resolve) => { releaseNativeWait = resolve; });
+    const wait = async (milliseconds: number) => {
+      if (milliseconds === 150) {
+        enteredNativeWait();
+        await nativeWaitGate;
+      }
+    };
+    const setup = await makeProjectVideoImportManager({
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.fingerprint)]],
+      nativeMappings: liveNativeMappings,
+      wait,
+    });
+    const manager = setup.manager;
+    await manager.startProjectVideoImport();
+    await nativeWaitEntered;
+    await manager.cancelProjectVideoImport();
+    releaseNativeWait();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 200; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "cancelled", scanCompleteness: "incomplete", reason: "cancelled" });
+    expect(setup.getTabUrl()).toBe(`https://flow.google.com/project/${projectId}`);
+    expect(await setup.repositories.listFlowClipImports()).toHaveLength(0);
+  });
+
+  it("does not import a native card when detail rail selection is ambiguous or unavailable", async () => {
+    const { manager, repositories } = await makeProjectVideoImportManager({
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.fingerprint)]],
+      nativeMappings: liveNativeMappings,
+      nativeSelectionAmbiguous: true,
+    });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "completed", imported: 0, unresolved: 1 });
+    expect(progress.unresolvedCards).toContainEqual({
+      title: "make it",
+      reason: "detail_selected_asset_missing",
+    });
+    expect(await repositories.listFlowClipImports()).toHaveLength(0);
+  });
+
+  it("stops incomplete when rerendered owners cannot be uniquely reacquired", async () => {
+    const fingerprint = liveNativeMappings[0]!.fingerprint;
+    const { manager, repositories } = await makeProjectVideoImportManager({
+      snapshots: [[
+        unresolvedProjectVideoCard("make it", fingerprint),
+        unresolvedProjectVideoCard("make it", fingerprint),
+      ]],
+      nativeMappings: liveNativeMappings,
+      rerenderCards: true,
+    });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      status: "incomplete",
+      scanCompleteness: "incomplete",
+      reason: "ambiguous_identity",
+      discovered: 2,
+      unresolved: 2,
+    });
+    expect(await repositories.listFlowClipImports()).toHaveLength(0);
+  });
+
+  it("keeps prior imported rows and stops incomplete when a later owner changes during re-acquisition", async () => {
+    const cards = liveNativeMappings.map((mapping) =>
+      unresolvedProjectVideoCard("make it", mapping.fingerprint),
+    );
+    const { manager, repositories } = await makeProjectVideoImportManager({
+      snapshots: [cards],
+      nativeMappings: liveNativeMappings,
+      nativeReacquireFailsFor: liveNativeMappings[1]!.fingerprint,
+    });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({
+      status: "incomplete",
+      scanCompleteness: "incomplete",
+      reason: "coverage_unproven",
+      imported: 1,
+      unresolved: 1,
+    });
+    const rows = await repositories.listFlowClipImports();
+    expect(rows.map((row) => row.clipId)).toEqual([liveNativeMappings[0]!.clipId]);
   });
 
   it("rejects a source-card to selected-detail-asset mismatch", async () => {

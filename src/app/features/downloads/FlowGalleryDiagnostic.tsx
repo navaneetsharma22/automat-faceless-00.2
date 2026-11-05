@@ -606,8 +606,10 @@ type FlowClipImportRow = {
   clipId: string;
   title: string;
   detailUrl: string;
+  galleryImportMethod?: "source_asset" | "native_card_navigation";
   galleryAssetId?: string;
   galleryIdentityEvidence?: "same_card_detail_link" | "detail_selected_asset_match";
+  detailSelectedAssetId?: string;
   thumbnail: {
     available: boolean;
     width?: number;
@@ -1096,6 +1098,8 @@ export function FlowClipDownloads({
             <p className={styles.clipMessage}>
               {galleryImport.reason === "bound_reached"
                 ? "The configured scan bound was reached."
+                : galleryImport.reason === "identity_deduplication_unavailable"
+                  ? "Some cards lacked stable identities, so Gallery coverage could not be safely deduplicated."
                 : galleryImport.reason === "coverage_unproven"
                   ? "Gallery coverage could not be established."
                   : galleryImport.reason === "cancelled"
@@ -1216,7 +1220,9 @@ export function FlowClipDownloads({
                       <div><dt>Project UUID</dt><dd><code>{row.projectId}</code></dd></div>
                       <div><dt>Clip UUID</dt><dd><code>{row.clipId}</code></dd></div>
                       <div><dt>Imported route</dt><dd>{row.routeVerified ? "Verified for this imported row" : "Not verified"}</dd></div>
+                      {row.galleryImportMethod ? <div><dt>Gallery import method</dt><dd>{row.galleryImportMethod === "native_card_navigation" ? "Native card navigation; source Gallery asset unavailable" : "Source Gallery asset evidence"}</dd></div> : null}
                       <div><dt>Gallery asset UUID</dt><dd>{row.galleryAssetId ? <code>{row.galleryAssetId}</code> : "Not captured from Gallery"}</dd></div>
+                      {row.detailSelectedAssetId ? <div><dt>Detail selected asset UUID</dt><dd><code>{row.detailSelectedAssetId}</code></dd></div> : null}
                       {row.galleryIdentityEvidence ? <div><dt>Gallery mapping evidence</dt><dd>{row.galleryIdentityEvidence === "same_card_detail_link" ? "Detail link observed on the same Gallery card" : "Detail selected asset matched the source card"}</dd></div> : null}
                       <div><dt>Thumbnail metadata</dt><dd>{row.thumbnail.available
                         ? `${row.thumbnail.width ?? "Unknown"} × ${row.thumbnail.height ?? "Unknown"}; ${row.thumbnail.fingerprint ? `fingerprint ${row.thumbnail.fingerprint}` : "no fingerprint"}`
