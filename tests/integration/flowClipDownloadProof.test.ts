@@ -64,6 +64,13 @@ describe("single-row Flow detail download capture", () => {
     > = [];
     const downloadCreated: Array<(item: Record<string, unknown>) => void> = [];
     const downloadChanged: Array<(delta: Record<string, unknown>) => void> = [];
+    const sendCommand = vi.fn(async (_target: unknown, method: string) =>
+      method === "Page.getFrameTree"
+        ? { frameTree: { frame: { id: "main-frame-detail" } } }
+        : method === "Network.getResponseBody"
+          ? { body: JSON.stringify({ job: { id: "job-safe-42" }, result: { assetId: "77777777-2222-4333-8444-555555555555" } }), base64Encoded: false }
+          : {},
+    );
     const executeScript = vi.fn(
       async ({ func }: { func: (...args: never[]) => unknown }) => {
         const result =
@@ -97,10 +104,7 @@ describe("single-row Flow detail download capture", () => {
       scripting: { executeScript: executeScript as never },
       debugger: {
         attach: vi.fn(),
-        sendCommand: async (_target, method) =>
-          method === "Page.getFrameTree"
-            ? { frameTree: { frame: { id: "main-frame-detail" } } }
-            : {},
+        sendCommand: sendCommand as never,
         detach: vi.fn(),
         onEvent: {
           addListener: (listener) => debuggerEvents.push(listener),
@@ -179,6 +183,23 @@ describe("single-row Flow detail download capture", () => {
     now += 20;
     for (const listener of debuggerEvents) {
       listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "metadata-request-id-1",
+        type: "Fetch",
+        frameId: "main-frame-detail",
+        request: {
+          url: "https://flow.google.com/api/upscale",
+          method: "POST",
+          postData: JSON.stringify({ sourceClipId: clipId, upscaleJobId: "job-safe-42" }),
+        },
+      });
+      listener({ tabId: 7 }, "Network.responseReceived", {
+        requestId: "metadata-request-id-1",
+        response: { mimeType: "application/json" },
+      });
+      listener({ tabId: 7 }, "Network.loadingFinished", {
+        requestId: "metadata-request-id-1",
+      });
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
         type: "Media",
         frameId: "main-frame-detail",
         request: {
@@ -202,6 +223,15 @@ describe("single-row Flow detail download capture", () => {
         ],
       });
     });
+    await vi.waitFor(async () => {
+      const metadata = await manager.get();
+      expect(metadata?.detailMetadataFields?.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      "Network.getResponseBody",
+      { requestId: "metadata-request-id-1" },
+    );
     for (const listener of downloadCreated) {
       listener({
         id: 91,
@@ -240,6 +270,18 @@ describe("single-row Flow detail download capture", () => {
     expect(JSON.stringify(completed)).not.toContain(clipId);
     expect(JSON.stringify(completed)).not.toContain("flow.google.com");
     expect(JSON.stringify(completed)).not.toContain("C:\\Downloads");
+    expect(JSON.stringify(completed)).not.toContain("job-safe-42");
+    expect(completed.detailMetadataFields?.map((field) => field.fieldPath)).toEqual([
+      "sourceClipId",
+      "upscaleJobId",
+      "job.id",
+      "result.assetId",
+    ]);
+    expect(completed.detailMetadataFields?.find((field) => field.fieldPath === "sourceClipId")).toMatchObject({
+      routeEquality: true,
+      blobPathEquality: true,
+    });
+    expect(completed.detailMetadataFields?.find((field) => field.fieldPath === "upscaleJobId")?.requestResponseEquality).toBe(true);
     expect(debuggerDetaches).toHaveLength(1);
   });
 

@@ -23,6 +23,7 @@ import {
   fingerprintFlowAssetPath,
   fingerprintFlowDownloadUrl,
   fingerprintFlowAssetUrlPath,
+  fingerprintFlowDetailMetadataFields,
   fingerprintFlowMediaIdentifier,
   flowDownloadExtension,
   installFlowGalleryDownloadObserver,
@@ -237,6 +238,7 @@ export function createFlowDownloadDiagnosticManager(
   let current: FlowGalleryDownloadDiagnostic | undefined;
   let createdListenerRegistered = false;
   let changedListenerRegistered = false;
+  let metadataRequestCount = 0;
   let eventQueue: Promise<void> = Promise.resolve();
   // Raw URLs are kept only in bounded worker memory for exact equality checks.
   // Persisted diagnostics contain fingerprints, allowlisted schemes, and IDs only.
@@ -244,6 +246,10 @@ export function createFlowDownloadDiagnosticManager(
   const transientChromeDownloadUrls = new Map<
     number,
     { url?: string; finalUrl?: string }
+  >();
+  const metadataRequests = new Map<
+    string,
+    { token: string; frameId: string; offsetMs: number; responseJson: boolean }
   >();
   const clearTransientUrlComparisons = () => {
     transientPageDownloadUrls.clear();
@@ -343,7 +349,32 @@ export function createFlowDownloadDiagnosticManager(
   };
 
   const persist = async (next: FlowGalleryDownloadDiagnostic) => {
-    current = FlowGalleryDownloadDiagnosticSchema.parse(next);
+    const enriched =
+      next.captureMode === "detail_clip" && next.detailMetadataCaptureEnabled
+        ? {
+            ...next,
+            detailMetadataFields: (next.detailMetadataFields ?? []).map((field) => ({
+              ...field,
+              routeEquality:
+                field.valueKind === "uuid" &&
+                field.valueFingerprint ===
+                  next.assetRoutePreflight?.assetPathFingerprint,
+              requestResponseEquality: (next.detailMetadataFields ?? []).some(
+                (other) =>
+                  other.requestToken === field.requestToken &&
+                  other.role !== field.role &&
+                  other.valueFingerprint === field.valueFingerprint,
+              ),
+              blobPathEquality: next.pageDownloads.some(
+                (event) =>
+                  event.frameMatched &&
+                  event.afterAction &&
+                  event.assetPathFingerprint === field.valueFingerprint,
+              ),
+            })),
+          }
+        : next;
+    current = FlowGalleryDownloadDiagnosticSchema.parse(enriched);
     await dependencies.storage.set({
       [FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY]: current,
     });
@@ -746,6 +777,13 @@ export function createFlowDownloadDiagnosticManager(
         captureMode,
         ...(detailClipRow
           ? {
+              detailMetadataCaptureEnabled: true,
+              detailMetadataFields: [],
+              detailMetadataBodiesOmitted: 0,
+            }
+          : {}),
+        ...(detailClipRow
+          ? {
               detailMenuBoundAtArm: false,
               detailClipSelectionStatus: "waiting_for_user_selection",
               detailDownloadCompletionStatus: "not_observed",
@@ -784,7 +822,7 @@ export function createFlowDownloadDiagnosticManager(
         await dependencies.debugger.sendCommand(
           { tabId: selected.tabId },
           "Network.enable",
-          { maxTotalBufferSize: 0, maxResourceBufferSize: 0 },
+          { maxTotalBufferSize: 256 * 1024, maxResourceBufferSize: 64 * 1024 },
         );
         const frameTree = (await dependencies.debugger.sendCommand(
           { tabId: selected.tabId },
@@ -1089,7 +1127,7 @@ export function createFlowDownloadDiagnosticManager(
     if (source.tabId === undefined) return;
     await loaded;
     await enqueue(async () => {
-      const record = current;
+      let record = current;
       if (!record || !isActive(record) || now() >= record.expiresAt) return;
       if (
         method === "Page.downloadWillBegin" &&
@@ -1114,8 +1152,44 @@ export function createFlowDownloadDiagnosticManager(
         const type = params.type;
         if (type !== "Media" && type !== "Fetch" && type !== "XHR") return;
         if (params.frameId !== record.mainFrameId) return;
+        const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
         const request = params.request as
-          { url?: unknown; method?: unknown } | undefined;
+          { url?: unknown; method?: unknown; postData?: unknown } | undefined;
+        if (
+          record.captureMode === "detail_clip" &&
+          record.detailMetadataCaptureEnabled &&
+          record.detailClipSelectionStatus === "observed" &&
+          record.actionAt !== undefined &&
+          capturedAt >= record.actionAt &&
+          requestId &&
+          metadataRequestCount < 12
+        ) {
+          const requestCount = ++metadataRequestCount;
+          const requestToken = `metadata-request-${requestCount}` as const;
+          metadataRequests.set(requestId, {
+            token: requestToken,
+            frameId: record.mainFrameId,
+            offsetMs: Math.max(0, capturedAt - record.startedAt),
+            responseJson: false,
+          });
+          if (typeof request?.postData === "string") {
+            const candidates = await fingerprintFlowDetailMetadataFields(
+              record.sessionId,
+              requestToken,
+              "request_body",
+              request.postData,
+              Math.max(0, capturedAt - record.startedAt),
+            );
+            if (candidates.length) {
+              const fields = [...(record.detailMetadataFields ?? []), ...candidates]
+                .slice(0, 48)
+                .map((field, index) => ({ ...field, fieldToken: `metadata-field-${index + 1}` as const }));
+              record = await persist({ ...record, detailMetadataFields: fields });
+            }
+          }
+        }
+        if (!record || !isActive(record)) return;
+        const requestRecord = record;
         const fingerprints = await fingerprintFlowDownloadUrl(
           record.sessionId,
           request?.url,
@@ -1140,21 +1214,21 @@ export function createFlowDownloadDiagnosticManager(
             : {}),
           offsetMs: Math.max(0, capturedAt - record.startedAt),
         };
-        if (record.mediaRequests.length >= 16) {
-          const actionAt = record.actionAt ?? record.qualityActionAcceptedAt;
+        if (requestRecord.mediaRequests.length >= 16) {
+          const actionAt = requestRecord.actionAt ?? requestRecord.qualityActionAcceptedAt;
           const matchesActionIdentity = (candidate: FlowDownloadMediaRequest) =>
             actionAt !== undefined &&
-            record.startedAt + candidate.offsetMs >= actionAt &&
-            record.pageDownloads.some(
+            requestRecord.startedAt + candidate.offsetMs >= actionAt &&
+            requestRecord.pageDownloads.some(
               (event) =>
                 event.frameMatched &&
-                record.startedAt + event.offsetMs >= actionAt &&
+                requestRecord.startedAt + event.offsetMs >= actionAt &&
                 (candidate.urlFingerprint === event.urlFingerprint ||
                   (candidate.mediaIdFingerprint !== undefined &&
                     (candidate.mediaIdFingerprint ===
                       event.mediaIdFingerprint ||
                       event.exactDownloadIds?.some((downloadId) => {
-                        const download = record.downloads.find(
+                        const download = requestRecord.downloads.find(
                           (item) => item.downloadId === downloadId,
                         );
                         return (
@@ -1224,6 +1298,55 @@ export function createFlowDownloadDiagnosticManager(
           ...record,
           mediaRequests: [...record.mediaRequests, mediaRequest],
         });
+        return;
+      }
+      if (method === "Network.responseReceived") {
+        const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
+        const context = requestId ? metadataRequests.get(requestId) : undefined;
+        const response = params.response as { mimeType?: unknown } | undefined;
+        if (context && typeof response?.mimeType === "string")
+          context.responseJson = /(?:json|graphql)/i.test(response.mimeType);
+        return;
+      }
+      if (method === "Network.loadingFinished") {
+        const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
+        const context = requestId ? metadataRequests.get(requestId) : undefined;
+        if (!context) return;
+        metadataRequests.delete(requestId!);
+        if (!context.responseJson || (record.detailMetadataFields?.length ?? 0) >= 48) return;
+        let bodyResult: unknown;
+        try {
+          bodyResult = await dependencies.debugger.sendCommand(
+            { tabId: record.tabId },
+            "Network.getResponseBody",
+            { requestId },
+          );
+        } catch {
+          await persist({
+            ...record,
+            detailMetadataBodiesOmitted: Math.min(100, (record.detailMetadataBodiesOmitted ?? 0) + 1),
+          });
+          return;
+        }
+        const body = bodyResult as { body?: unknown; base64Encoded?: unknown } | undefined;
+        if (typeof body?.body !== "string" || body.body.length > 64 * 1024 || body.base64Encoded === true) {
+          await persist({
+            ...record,
+            detailMetadataBodiesOmitted: Math.min(100, (record.detailMetadataBodiesOmitted ?? 0) + 1),
+          });
+          return;
+        }
+        const candidates = await fingerprintFlowDetailMetadataFields(
+          record.sessionId,
+          context.token,
+          "response_body",
+          body.body,
+          Math.max(0, capturedAt - record.startedAt),
+        );
+        const fields = [...(record.detailMetadataFields ?? []), ...candidates]
+          .slice(0, 48)
+          .map((field, index) => ({ ...field, fieldToken: `metadata-field-${index + 1}` as const }));
+        await persist({ ...record, detailMetadataFields: fields });
         return;
       }
       if (method === "Page.downloadWillBegin") {

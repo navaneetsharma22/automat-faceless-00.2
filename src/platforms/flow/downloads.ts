@@ -94,6 +94,21 @@ export const FlowDownloadMediaRequestSchema = z
   })
   .strict();
 
+export const FlowDetailMetadataFieldSchema = z
+  .object({
+    fieldToken: z.string().regex(/^metadata-field-(?:[1-9]|[1-3][0-9]|4[0-8])$/),
+    requestToken: z.string().regex(/^metadata-request-(?:[1-9]|1[0-2])$/),
+    role: z.enum(["request_body", "response_body"]),
+    fieldPath: z.string().min(1).max(120),
+    valueKind: z.enum(["uuid", "identifier"]),
+    valueFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    routeEquality: z.boolean().optional(),
+    requestResponseEquality: z.boolean().optional(),
+    blobPathEquality: z.boolean().optional(),
+    offsetMs: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const FlowGalleryDownloadDiagnosticSchema = z
   .object({
     version: z.literal(1),
@@ -132,6 +147,9 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     detailFileResolutionStatus: z
       .enum(["not_checked", "resolved", "missing", "ambiguous", "unavailable"])
       .optional(),
+    detailMetadataCaptureEnabled: z.boolean().optional(),
+    detailMetadataFields: z.array(FlowDetailMetadataFieldSchema).max(48).optional(),
+    detailMetadataBodiesOmitted: z.number().int().nonnegative().max(100).optional(),
     identityCaptureEnabled: z.boolean().optional(),
     assetRoutePreflight: z
       .object({
@@ -365,6 +383,68 @@ export async function fingerprintFlowAssetUrlPath(
         `${sessionId}\nflow-asset-route\n${match[1]!.toLowerCase()}`,
       )
     : undefined;
+}
+
+/** Extracts only ID-shaped JSON scalar fields; values are immediately session-fingerprinted. */
+export async function fingerprintFlowDetailMetadataFields(
+  sessionId: string,
+  requestToken: string,
+  role: "request_body" | "response_body",
+  rawJson: unknown,
+  offsetMs: number,
+): Promise<Array<z.infer<typeof FlowDetailMetadataFieldSchema>>> {
+  if (typeof rawJson !== "string" || rawJson.length > 64 * 1024) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return [];
+  }
+  const found: Array<z.infer<typeof FlowDetailMetadataFieldSchema>> = [];
+  const idKey = /(id|uuid|asset|job|result|clip|media)(?:id)?$/i;
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const visit = async (value: unknown, path: string[], depth: number) => {
+    if (found.length >= 48 || depth > 8) return;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < Math.min(value.length, 16); index++)
+        await visit(value[index], [...path, String(index)], depth + 1);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (found.length >= 48) break;
+      const safeKey = key
+        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/ig, "uuid")
+        .replace(/[^A-Za-z0-9_-]/g, "_")
+        .slice(0, 32) || "field";
+      const nextPath = [...path, safeKey];
+      if (typeof nested === "string" || typeof nested === "number") {
+        const scalar = String(nested);
+        if (scalar.length > 128) continue;
+        const isUuid = uuidPattern.test(scalar);
+        if (!isUuid && !idKey.test(key)) continue;
+        const normalized = isUuid ? scalar.toLowerCase() : scalar;
+        const fingerprint = await sha256Hex(
+          isUuid
+            ? `${sessionId}\nflow-asset-route\n${normalized}`
+            : `${sessionId}\nflow-metadata-id\n${normalized}`,
+        );
+        found.push({
+          fieldToken: `metadata-field-${found.length + 1}`,
+          requestToken,
+          role,
+          fieldPath: nextPath.join(".").slice(0, 120),
+          valueKind: isUuid ? "uuid" : "identifier",
+          valueFingerprint: fingerprint,
+          offsetMs,
+        });
+      } else {
+        await visit(nested, nextPath, depth + 1);
+      }
+    }
+  };
+  await visit(parsed, [], 0);
+  return found;
 }
 
 /** Separate evidence-only route/output/blob trace; never used by matching. */

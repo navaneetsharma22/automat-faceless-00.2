@@ -7,6 +7,7 @@ import {
   fingerprintFlowDownloadUrl,
   fingerprintFlowAssetPath,
   fingerprintFlowAssetUrlPath,
+  fingerprintFlowDetailMetadataFields,
   FlowGalleryDownloadDiagnosticSchema,
   resolveFlowDownloadDiagnosticStatus,
   sanitizeFlowDownloadFilename,
@@ -527,6 +528,37 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       ),
     ).resolves.toBe(route);
     expect(route).not.toContain("11111111");
+  });
+
+  it("retains metadata field roles and equality fingerprints without storing scalar values", async () => {
+    const clipId = "11111111-2222-4333-8444-555555555555";
+    const requestFields = await fingerprintFlowDetailMetadataFields(
+      base.sessionId,
+      "metadata-request-1",
+      "request_body",
+      JSON.stringify({ sourceClipId: clipId, upscaleJobId: "job-opaque-42" }),
+      10,
+    );
+    const responseFields = await fingerprintFlowDetailMetadataFields(
+      base.sessionId,
+      "metadata-request-1",
+      "response_body",
+      JSON.stringify({ job: { id: "job-opaque-42" }, result: { assetId: "output-opaque-99" } }),
+      20,
+    );
+    const routeFingerprint = await fingerprintFlowAssetPath(
+      base.sessionId,
+      `https://flow.google.com/project/project-test/edit/${clipId}`,
+      "project-test",
+    );
+    expect(requestFields.find((field) => field.fieldPath === "sourceClipId")?.valueFingerprint).toBe(routeFingerprint);
+    expect(requestFields.find((field) => field.fieldPath === "upscaleJobId")?.valueFingerprint).toBe(
+      responseFields.find((field) => field.fieldPath === "job.id")?.valueFingerprint,
+    );
+    expect(responseFields.map((field) => field.fieldPath)).toEqual(["job.id", "result.assetId"]);
+    expect(JSON.stringify([...requestFields, ...responseFields])).not.toContain(clipId);
+    expect(JSON.stringify([...requestFields, ...responseFields])).not.toContain("job-opaque-42");
+    expect(JSON.stringify([...requestFields, ...responseFields])).not.toContain("output-opaque-99");
   });
 
   it("does not let unrelated output IDs or an exact but unrelated download satisfy the route-to-blob trace", async () => {

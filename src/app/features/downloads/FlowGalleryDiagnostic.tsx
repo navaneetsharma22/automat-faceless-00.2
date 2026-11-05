@@ -174,7 +174,7 @@ export function FlowGalleryDiagnostic({
       <h3 id="flow-download-diagnostic-title">
         Flow download diagnostic
       </h3>
-      <FlowClipImportProofOfConcept persistenceClient={persistenceClient} />
+      <FlowClipImportProofOfConcept persistenceClient={persistenceClient} report={report} />
       <p>
         Observe one manually selected 1080p Upscaled action. The extension will
         not click a quality option, start an upscale, or initiate a download.
@@ -304,12 +304,12 @@ export function FlowGalleryDiagnostic({
             <div>
               <dt>
                 {report.captureMode === "detail_clip"
-                  ? "File resolution"
+                  ? "Chrome file-exists check"
                   : "Saved-file resolution"}
               </dt>
               <dd>
                 {report.captureMode === "detail_clip"
-                  ? `${(report.detailFileResolutionStatus ?? "not_checked").replaceAll("_", " ")}; Chrome file existence only, media bytes not decoded`
+                  ? `${(report.detailFileResolutionStatus ?? "not_checked").replaceAll("_", " ")}; based on Chrome's file-exists metadata only; media bytes not decoded`
                   : "not inspected"}
               </dd>
             </div>
@@ -410,6 +410,20 @@ export function FlowGalleryDiagnostic({
                       </dd>
                     </div>
                   ) : null}
+                  {report.captureMode === "detail_clip" && report.detailMetadataCaptureEnabled ? (() => {
+                    const fields = report.detailMetadataFields ?? [];
+                    const routeMatches = fields.filter((field) => field.routeEquality).length;
+                    const requestResponseMatches = fields.filter((field) => field.requestResponseEquality).length / 2;
+                    const blobMatches = fields.filter((field) => field.blobPathEquality).length;
+                    return (
+                      <div>
+                        <dt>Request/response metadata trace</dt>
+                        <dd>
+                          {fields.length} ID-shaped JSON field(s) across at most 12 selected-frame Fetch/XHR requests; {routeMatches} route UUID equality match(es); {requestResponseMatches} request/response equal field pair(s); {blobMatches} equality match(es) to a blob URL path ID; {report.detailMetadataBodiesOmitted ?? 0} body capture(s) omitted. Field roles/paths and retained equality flags only: {fields.length ? fields.map((field) => field.requestToken + " " + field.role + "." + field.fieldPath + " [route=" + field.routeEquality + ", request-response=" + field.requestResponseEquality + ", blob=" + field.blobPathEquality + "]").join("; ") : "none observed"}.
+                        </dd>
+                      </div>
+                    );
+                  })() : null}
                 </>
               );
             })() : null}
@@ -589,8 +603,10 @@ type FlowClipDownloadProofResult = {
 
 function FlowClipImportProofOfConcept({
   persistenceClient,
+  report,
 }: {
   persistenceClient: Client;
+  report?: FlowGalleryDownloadDiagnostic;
 }) {
   const [rows, setRows] = useState<FlowClipImportRow[]>([]);
   const [pending, setPending] = useState(false);
@@ -769,9 +785,13 @@ function FlowClipImportProofOfConcept({
                   {downloadProofs[row.id] ? (
                     <p role="status">
                       {downloadProofs[row.id]!.status === "armed"
-                        ? "Armed: make one user-initiated 1080p Upscaled selection in the open, bound Download media menu."
-                        : `Capture state: ${downloadProofs[row.id]!.status.replaceAll("_", " ")}.`}{" "}
-                      No quality selection was made by the extension.
+                        ? report?.captureMode === "detail_clip" && report.status === "armed"
+                          ? "Capture is armed; make one user-initiated 1080p Upscaled selection in the bound Download media menu."
+                          : "Capture was armed; current outcome appears in the diagnostic above."
+                        : report?.captureMode === "detail_clip" && report.status === "completed"
+                          ? "Capture completed; see download, metadata, and file-exists evidence above."
+                          : "The one-shot capture is no longer armed; see the current diagnostic status above."}{" "}
+                      The extension did not select a quality.
                     </p>
                   ) : null}
                 </div>
