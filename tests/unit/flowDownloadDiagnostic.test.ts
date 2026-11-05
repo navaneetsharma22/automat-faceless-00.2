@@ -8,6 +8,7 @@ import {
   fingerprintFlowAssetPath,
   fingerprintFlowAssetUrlPath,
   fingerprintFlowDetailMetadataFields,
+  inspectFlowDetailMetadataBody,
   FlowGalleryDownloadDiagnosticSchema,
   resolveFlowDownloadDiagnosticStatus,
   sanitizeFlowDownloadFilename,
@@ -536,14 +537,14 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       base.sessionId,
       "metadata-request-1",
       "request_body",
-      JSON.stringify({ sourceClipId: clipId, upscaleJobId: "job-opaque-42" }),
+      JSON.stringify({ id: clipId, uuid: "job-opaque-42" }),
       10,
     );
     const responseFields = await fingerprintFlowDetailMetadataFields(
       base.sessionId,
       "metadata-request-1",
       "response_body",
-      JSON.stringify({ job: { id: "job-opaque-42" }, result: { assetId: "output-opaque-99" } }),
+      JSON.stringify({ id: "job-opaque-42", uuid: "output-opaque-99" }),
       20,
     );
     const routeFingerprint = await fingerprintFlowAssetPath(
@@ -551,14 +552,43 @@ describe("Flow Gallery download feasibility diagnostic", () => {
       `https://flow.google.com/project/project-test/edit/${clipId}`,
       "project-test",
     );
-    expect(requestFields.find((field) => field.fieldPath === "sourceClipId")?.valueFingerprint).toBe(routeFingerprint);
-    expect(requestFields.find((field) => field.fieldPath === "upscaleJobId")?.valueFingerprint).toBe(
-      responseFields.find((field) => field.fieldPath === "job.id")?.valueFingerprint,
+    expect(requestFields.find((field) => field.fieldPath === "id")?.valueFingerprint).toBe(routeFingerprint);
+    expect(requestFields.find((field) => field.fieldPath === "uuid")?.valueFingerprint).toBe(
+      responseFields.find((field) => field.fieldPath === "id")?.valueFingerprint,
     );
-    expect(responseFields.map((field) => field.fieldPath)).toEqual(["job.id", "result.assetId"]);
+    expect(requestFields.find((field) => field.fieldPath === "uuid")?.valueKind).toBe("identifier");
+    expect(requestFields.find((field) => field.fieldPath === "uuid")?.valueFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(responseFields.map((field) => field.fieldPath)).toEqual(["id", "uuid"]);
     expect(JSON.stringify([...requestFields, ...responseFields])).not.toContain(clipId);
     expect(JSON.stringify([...requestFields, ...responseFields])).not.toContain("job-opaque-42");
     expect(JSON.stringify([...requestFields, ...responseFields])).not.toContain("output-opaque-99");
+  });
+
+  it("distinguishes parsed bodies with no accepted fields from unavailable, invalid, and oversized bodies", async () => {
+    const inspect = (body: unknown) =>
+      inspectFlowDetailMetadataBody(
+        base.sessionId,
+        "metadata-request-1",
+        "response_body",
+        body,
+        0,
+      );
+    await expect(inspect('{"state":"ready"}')).resolves.toMatchObject({
+      status: "parsed",
+      fields: [],
+    });
+    await expect(inspect("not-json")).resolves.toMatchObject({
+      status: "invalid_json",
+      fields: [],
+    });
+    await expect(inspect(undefined)).resolves.toMatchObject({
+      status: "unavailable",
+      fields: [],
+    });
+    await expect(inspect("x".repeat(64 * 1024 + 1))).resolves.toMatchObject({
+      status: "too_large",
+      fields: [],
+    });
   });
 
   it("does not let unrelated output IDs or an exact but unrelated download satisfy the route-to-blob trace", async () => {

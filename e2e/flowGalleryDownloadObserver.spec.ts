@@ -715,6 +715,7 @@ test("captures only a trusted 1080p click inside the verified detail menu", asyn
         identityCaptureEnabled: boolean,
         captureMode: "gallery" | "detail_clip",
         expectedClipId: string,
+        expectedAssetPathFingerprint: string,
       ) => unknown;
       target.diagnosticInstallResult = install(
         sessionId,
@@ -722,6 +723,7 @@ test("captures only a trusted 1080p click inside the verified detail menu", asyn
         true,
         "detail_clip",
         clipId,
+        "a".repeat(64),
       );
     },
     {

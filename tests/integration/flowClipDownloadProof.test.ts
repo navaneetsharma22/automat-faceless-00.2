@@ -62,14 +62,28 @@ describe("single-row Flow detail download capture", () => {
     const debuggerDetaches: Array<
       (source: { tabId?: number }, reason: string) => void
     > = [];
+    const detachDebugger = vi.fn();
     const downloadCreated: Array<(item: Record<string, unknown>) => void> = [];
     const downloadChanged: Array<(delta: Record<string, unknown>) => void> = [];
-    const sendCommand = vi.fn(async (_target: unknown, method: string) =>
-      method === "Page.getFrameTree"
-        ? { frameTree: { frame: { id: "main-frame-detail" } } }
-        : method === "Network.getResponseBody"
-          ? { body: JSON.stringify({ job: { id: "job-safe-42" }, result: { assetId: "77777777-2222-4333-8444-555555555555" } }), base64Encoded: false }
-          : {},
+    const sendCommand = vi.fn(
+      async (_target: unknown, method: string, params?: Record<string, unknown>) =>
+        method === "Page.getFrameTree"
+          ? { frameTree: { frame: { id: "main-frame-detail" } } }
+          : method === "Network.getResponseBody" &&
+              params?.requestId === "metadata-failed-response"
+            ? Promise.reject(new Error("response body unavailable"))
+          : method === "Network.getResponseBody" &&
+              params?.requestId === "metadata-empty-response"
+            ? { body: JSON.stringify({ status: "ready" }), base64Encoded: false }
+            : method === "Network.getResponseBody" &&
+                params?.requestId === "metadata-oversized-response"
+              ? { body: "x".repeat(64 * 1024 + 1), base64Encoded: false }
+              : method === "Network.getResponseBody" &&
+                  params?.requestId === "metadata-invalid-response"
+                ? { body: "not-json", base64Encoded: false }
+            : method === "Network.getResponseBody"
+              ? { body: JSON.stringify({ id: "job-safe-42", uuid: "77777777-2222-4333-8444-555555555555" }), base64Encoded: false }
+              : {},
     );
     const executeScript = vi.fn(
       async ({ func }: { func: (...args: never[]) => unknown }) => {
@@ -105,7 +119,7 @@ describe("single-row Flow detail download capture", () => {
       debugger: {
         attach: vi.fn(),
         sendCommand: sendCommand as never,
-        detach: vi.fn(),
+        detach: detachDebugger,
         onEvent: {
           addListener: (listener) => debuggerEvents.push(listener),
           removeListener: vi.fn(),
@@ -161,6 +175,25 @@ describe("single-row Flow detail download capture", () => {
       frameId: 0,
       documentId: "document-detail-test",
     };
+    for (const listener of debuggerEvents) {
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "preselection-request",
+        type: "Fetch",
+        frameId: "main-frame-detail",
+        request: {
+          url: "https://flow.google.com/api/preselection",
+          method: "POST",
+          postData: JSON.stringify({ priorJobId: "loaded-before-click" }),
+        },
+      });
+      listener({ tabId: 7 }, "Network.responseReceived", {
+        requestId: "preselection-request",
+        response: { mimeType: "application/json" },
+      });
+      listener({ tabId: 7 }, "Network.loadingFinished", {
+        requestId: "preselection-request",
+      });
+    }
     const routeFingerprint = await fingerprintFlowAssetPath(
       sessionId,
       detailUrl,
@@ -189,16 +222,44 @@ describe("single-row Flow detail download capture", () => {
         request: {
           url: "https://flow.google.com/api/upscale",
           method: "POST",
-          postData: JSON.stringify({ sourceClipId: clipId, upscaleJobId: "job-safe-42" }),
+          postData: JSON.stringify({ id: clipId, uuid: "job-safe-42" }),
         },
       });
       listener({ tabId: 7 }, "Network.responseReceived", {
         requestId: "metadata-request-id-1",
         response: { mimeType: "application/json" },
       });
-      listener({ tabId: 7 }, "Network.loadingFinished", {
-        requestId: "metadata-request-id-1",
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "metadata-empty-response",
+        type: "XHR",
+        frameId: "main-frame-detail",
+        request: { url: "https://flow.google.com/api/state", method: "GET" },
       });
+      listener({ tabId: 7 }, "Network.responseReceived", {
+        requestId: "metadata-empty-response",
+        response: { mimeType: "application/json" },
+      });
+      listener({ tabId: 7 }, "Network.loadingFinished", {
+        requestId: "metadata-empty-response",
+      });
+      for (const [requestId, mimeType] of [
+        ["metadata-unsupported-response", "text/plain"],
+        ["metadata-failed-response", "application/json"],
+        ["metadata-oversized-response", "application/json"],
+        ["metadata-invalid-response", "application/json"],
+      ] as const) {
+        listener({ tabId: 7 }, "Network.requestWillBeSent", {
+          requestId,
+          type: "Fetch",
+          frameId: "main-frame-detail",
+          request: { url: "https://flow.google.com/api/read", method: "GET" },
+        });
+        listener({ tabId: 7 }, "Network.responseReceived", {
+          requestId,
+          response: { mimeType },
+        });
+        listener({ tabId: 7 }, "Network.loadingFinished", { requestId });
+      }
       listener({ tabId: 7 }, "Network.requestWillBeSent", {
         type: "Media",
         frameId: "main-frame-detail",
@@ -227,11 +288,6 @@ describe("single-row Flow detail download capture", () => {
       const metadata = await manager.get();
       expect(metadata?.detailMetadataFields?.length).toBeGreaterThanOrEqual(2);
     });
-    expect(sendCommand).toHaveBeenCalledWith(
-      { tabId: 7 },
-      "Network.getResponseBody",
-      { requestId: "metadata-request-id-1" },
-    );
     for (const listener of downloadCreated) {
       listener({
         id: 91,
@@ -256,6 +312,56 @@ describe("single-row Flow detail download capture", () => {
       expect(await manager.get()).toMatchObject({
         status: "completed",
         detailDownloadCompletionStatus: "complete",
+        detailMetadataPendingRequests: 1,
+        detailFileResolutionStatus: "resolved",
+      }),
+    );
+    expect(detachDebugger).not.toHaveBeenCalled();
+    expect(await manager.get()).toMatchObject({
+      status: "completed",
+      detailMetadataPendingRequests: 1,
+      detailMetadataEligibleRequestsSeen: 7,
+      detailMetadataRequestsAdmitted: 7,
+      detailMetadataRequestBodiesAvailable: 2,
+      detailMetadataRequestBodiesRead: 2,
+      detailMetadataJsonParseSucceeded: 4,
+      detailMetadataParsedBodiesWithoutIdentityFields: 1,
+      detailMetadataResponseBodiesAttempted: 5,
+      detailMetadataResponseBodiesRead: 4,
+      detailMetadataBodiesUnavailable: 0,
+      detailMetadataBodiesFailed: 1,
+      detailMetadataBodiesUnsupported: 1,
+      detailMetadataBodiesFiltered: 1,
+    });
+    expect(JSON.stringify(await manager.get())).not.toContain("loaded-before-click");
+    for (const listener of debuggerEvents) {
+      listener({ tabId: 7 }, "Network.loadingFinished", {
+        requestId: "metadata-request-id-1",
+      });
+    }
+    await vi.waitFor(async () => {
+      expect(await manager.get()).toMatchObject({
+        detailMetadataResponseBodiesAttempted: 6,
+        detailMetadataResponseBodiesRead: 5,
+        detailMetadataJsonParseSucceeded: 5,
+        detailMetadataJsonParseFailed: 1,
+        detailMetadataParsedBodiesWithoutIdentityFields: 1,
+        detailMetadataBodiesUnavailable: 0,
+        detailMetadataBodiesFailed: 1,
+        detailMetadataBodiesUnsupported: 1,
+        detailMetadataBodiesFiltered: 1,
+        detailMetadataPendingRequests: 0,
+      });
+    });
+    expect(sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      "Network.getResponseBody",
+      { requestId: "metadata-request-id-1" },
+    );
+    await vi.waitFor(async () =>
+      expect(await manager.get()).toMatchObject({
+        status: "completed",
+        detailDownloadCompletionStatus: "complete",
         detailFileResolutionStatus: "resolved",
         detailTrackedDownloadId: 91,
         association: "unverified",
@@ -272,17 +378,20 @@ describe("single-row Flow detail download capture", () => {
     expect(JSON.stringify(completed)).not.toContain("C:\\Downloads");
     expect(JSON.stringify(completed)).not.toContain("job-safe-42");
     expect(completed.detailMetadataFields?.map((field) => field.fieldPath)).toEqual([
-      "sourceClipId",
-      "upscaleJobId",
-      "job.id",
-      "result.assetId",
+      "priorJobId",
+      "id",
+      "uuid",
+      "id",
+      "uuid",
+      "id",
+      "uuid",
     ]);
-    expect(completed.detailMetadataFields?.find((field) => field.fieldPath === "sourceClipId")).toMatchObject({
+    expect(completed.detailMetadataFields?.find((field) => field.fieldPath === "id" && field.routeEquality)).toMatchObject({
       routeEquality: true,
       blobPathEquality: true,
     });
-    expect(completed.detailMetadataFields?.find((field) => field.fieldPath === "upscaleJobId")?.requestResponseEquality).toBe(true);
-    expect(debuggerDetaches).toHaveLength(1);
+    expect(completed.detailMetadataFields?.find((field) => field.fieldPath === "uuid" && field.requestResponseEquality)?.requestResponseEquality).toBe(true);
+    expect(detachDebugger).toHaveBeenCalledTimes(1);
   });
 
   it("refuses to arm for the other same-title imported clip", async () => {

@@ -23,7 +23,7 @@ import {
   fingerprintFlowAssetPath,
   fingerprintFlowDownloadUrl,
   fingerprintFlowAssetUrlPath,
-  fingerprintFlowDetailMetadataFields,
+  inspectFlowDetailMetadataBody,
   fingerprintFlowMediaIdentifier,
   flowDownloadExtension,
   installFlowGalleryDownloadObserver,
@@ -249,7 +249,13 @@ export function createFlowDownloadDiagnosticManager(
   >();
   const metadataRequests = new Map<
     string,
-    { token: string; frameId: string; offsetMs: number; responseJson: boolean }
+    {
+      token: string;
+      frameId: string;
+      offsetMs: number;
+      responseReceived: boolean;
+      responseJson: boolean;
+    }
   >();
   const clearTransientUrlComparisons = () => {
     transientPageDownloadUrls.clear();
@@ -353,6 +359,7 @@ export function createFlowDownloadDiagnosticManager(
       next.captureMode === "detail_clip" && next.detailMetadataCaptureEnabled
         ? {
             ...next,
+            detailMetadataPendingRequests: metadataRequests.size,
             detailMetadataFields: (next.detailMetadataFields ?? []).map((field) => ({
               ...field,
               routeEquality:
@@ -381,6 +388,84 @@ export function createFlowDownloadDiagnosticManager(
     return current;
   };
 
+  const incrementMetadataCounter = (
+    record: FlowGalleryDownloadDiagnostic,
+    key: keyof Pick<
+      FlowGalleryDownloadDiagnostic,
+      | "detailMetadataEligibleRequestsSeen"
+      | "detailMetadataRequestsAdmitted"
+      | "detailMetadataRequestsOmittedAtCap"
+      | "detailMetadataRequestBodiesAvailable"
+      | "detailMetadataRequestBodiesRead"
+      | "detailMetadataResponseBodiesAttempted"
+      | "detailMetadataResponseBodiesRead"
+      | "detailMetadataJsonParseSucceeded"
+      | "detailMetadataJsonParseFailed"
+      | "detailMetadataBodiesUnavailable"
+      | "detailMetadataBodiesFailed"
+      | "detailMetadataBodiesUnsupported"
+      | "detailMetadataBodiesFiltered"
+      | "detailMetadataParsedBodiesWithoutIdentityFields"
+      | "detailMetadataBodiesOmitted"
+    >,
+    amount = 1,
+  ) => ({
+    ...record,
+    [key]: Math.min(100, ((record[key] as number | undefined) ?? 0) + amount),
+  });
+
+  const inspectMetadataBody = async (
+    record: FlowGalleryDownloadDiagnostic,
+    requestToken: string,
+    role: "request_body" | "response_body",
+    body: unknown,
+    offsetMs: number,
+  ) => {
+    const inspection = await inspectFlowDetailMetadataBody(
+      record.sessionId,
+      requestToken,
+      role,
+      body,
+      offsetMs,
+    );
+    let next = record;
+    if (inspection.status === "parsed") {
+      next = incrementMetadataCounter(next, "detailMetadataJsonParseSucceeded");
+      if (!inspection.fields.length)
+        next = incrementMetadataCounter(
+          next,
+          "detailMetadataParsedBodiesWithoutIdentityFields",
+        );
+    } else if (inspection.status === "invalid_json") {
+      next = incrementMetadataCounter(next, "detailMetadataJsonParseFailed");
+    } else if (inspection.status === "too_large") {
+      next = incrementMetadataCounter(next, "detailMetadataBodiesFiltered");
+      next = incrementMetadataCounter(next, "detailMetadataBodiesOmitted");
+    } else {
+      next = incrementMetadataCounter(next, "detailMetadataBodiesUnavailable");
+      next = incrementMetadataCounter(next, "detailMetadataBodiesOmitted");
+    }
+    if (inspection.fields.length) {
+      const fields = [...(next.detailMetadataFields ?? []), ...inspection.fields]
+        .slice(0, 48)
+        .map((field, index) => ({
+          ...field,
+          fieldToken: `metadata-field-${index + 1}` as const,
+        }));
+      next = { ...next, detailMetadataFields: fields };
+    }
+    return persist(next);
+  };
+
+  const detachCompletedWhenDrained = async (
+    record: FlowGalleryDownloadDiagnostic,
+  ) => {
+    if (record.status === "completed" && metadataRequests.size === 0) {
+      await detach(record);
+      clearTransientUrlComparisons();
+    }
+  };
+
   const uninstall = async (record: FlowGalleryDownloadDiagnostic) => {
     await dependencies.scripting
       .executeScript({
@@ -405,7 +490,22 @@ export function createFlowDownloadDiagnosticManager(
     status: "completed" | "interrupted" | "expired" | "stopped",
   ) => {
     if (!isActive(record)) return record;
-    const next = await persist({ ...record, status });
+    let finalRecord = record;
+    if (metadataRequests.size > 0) {
+      const pending = metadataRequests.size;
+      metadataRequests.clear();
+      finalRecord = incrementMetadataCounter(
+        finalRecord,
+        "detailMetadataBodiesUnavailable",
+        pending,
+      );
+      finalRecord = incrementMetadataCounter(
+        finalRecord,
+        "detailMetadataBodiesOmitted",
+        pending,
+      );
+    }
+    const next = await persist({ ...finalRecord, status });
     await detach(next);
     if (
       status !== "interrupted" ||
@@ -694,8 +794,14 @@ export function createFlowDownloadDiagnosticManager(
   ) {
     await loaded;
     return enqueue(async () => {
-      if (isActive(current)) throw new Error("flow_diagnostic_already_active");
+      if (
+        isActive(current) ||
+        (current?.status === "completed" && metadataRequests.size > 0)
+      )
+        throw new Error("flow_diagnostic_already_active");
       clearTransientUrlComparisons();
+      metadataRequests.clear();
+      metadataRequestCount = 0;
       const permissions = await dependencies.permissions.contains({
         permissions: ["debugger", "tabs", "scripting", "downloads"],
       });
@@ -780,6 +886,21 @@ export function createFlowDownloadDiagnosticManager(
               detailMetadataCaptureEnabled: true,
               detailMetadataFields: [],
               detailMetadataBodiesOmitted: 0,
+              detailMetadataEligibleRequestsSeen: 0,
+              detailMetadataRequestsAdmitted: 0,
+              detailMetadataRequestsOmittedAtCap: 0,
+              detailMetadataRequestBodiesAvailable: 0,
+              detailMetadataRequestBodiesRead: 0,
+              detailMetadataResponseBodiesAttempted: 0,
+              detailMetadataResponseBodiesRead: 0,
+              detailMetadataJsonParseSucceeded: 0,
+              detailMetadataJsonParseFailed: 0,
+              detailMetadataBodiesUnavailable: 0,
+              detailMetadataBodiesFailed: 0,
+              detailMetadataBodiesUnsupported: 0,
+              detailMetadataBodiesFiltered: 0,
+              detailMetadataParsedBodiesWithoutIdentityFields: 0,
+              detailMetadataPendingRequests: 0,
             }
           : {}),
         ...(detailClipRow
@@ -844,6 +965,7 @@ export function createFlowDownloadDiagnosticManager(
             captureIdentityEnabled,
             captureMode,
             detailClipRow?.clipId,
+            assetPathFingerprint,
           ],
         });
         const observerResult = injected[0]?.result as
@@ -1113,8 +1235,9 @@ export function createFlowDownloadDiagnosticManager(
       }
       next = updateAssociation(next, now());
       await persist(next);
-      if (next.status === "completed" || next.status === "interrupted")
-        await detach(next);
+      if (next.status === "completed")
+        await detachCompletedWhenDrained(next);
+      else if (next.status === "interrupted") await detach(next);
       return true;
     });
   }
@@ -1128,7 +1251,21 @@ export function createFlowDownloadDiagnosticManager(
     await loaded;
     await enqueue(async () => {
       let record = current;
-      if (!record || !isActive(record) || now() >= record.expiresAt) return;
+      const eventRequestId =
+        typeof params.requestId === "string" ? params.requestId : undefined;
+      const drainingCompletedCapture =
+        record?.status === "completed" &&
+        eventRequestId !== undefined &&
+        metadataRequests.has(eventRequestId) &&
+        (method === "Network.responseReceived" ||
+          method === "Network.loadingFinished" ||
+          method === "Network.loadingFailed");
+      if (
+        !record ||
+        (!isActive(record) && !drainingCompletedCapture) ||
+        now() >= record.expiresAt
+      )
+        return;
       if (
         method === "Page.downloadWillBegin" &&
         record.tabId !== source.tabId
@@ -1154,39 +1291,102 @@ export function createFlowDownloadDiagnosticManager(
         if (params.frameId !== record.mainFrameId) return;
         const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
         const request = params.request as
-          { url?: unknown; method?: unknown; postData?: unknown } | undefined;
-        if (
+          {
+            url?: unknown;
+            method?: unknown;
+            postData?: unknown;
+            hasPostData?: unknown;
+          } | undefined;
+        const metadataEligible =
+          (type === "Fetch" || type === "XHR") &&
           record.captureMode === "detail_clip" &&
           record.detailMetadataCaptureEnabled &&
-          record.detailClipSelectionStatus === "observed" &&
-          record.actionAt !== undefined &&
-          capturedAt >= record.actionAt &&
-          requestId &&
-          metadataRequestCount < 12
-        ) {
+          capturedAt >= record.startedAt;
+        if (metadataEligible) {
+          record = incrementMetadataCounter(
+            record,
+            "detailMetadataEligibleRequestsSeen",
+          );
+        }
+        if (metadataEligible && requestId && metadataRequestCount < 12) {
           const requestCount = ++metadataRequestCount;
           const requestToken = `metadata-request-${requestCount}` as const;
           metadataRequests.set(requestId, {
             token: requestToken,
             frameId: record.mainFrameId,
             offsetMs: Math.max(0, capturedAt - record.startedAt),
+            responseReceived: false,
             responseJson: false,
           });
-          if (typeof request?.postData === "string") {
-            const candidates = await fingerprintFlowDetailMetadataFields(
-              record.sessionId,
-              requestToken,
-              "request_body",
-              request.postData,
-              Math.max(0, capturedAt - record.startedAt),
-            );
-            if (candidates.length) {
-              const fields = [...(record.detailMetadataFields ?? []), ...candidates]
-                .slice(0, 48)
-                .map((field, index) => ({ ...field, fieldToken: `metadata-field-${index + 1}` as const }));
-              record = await persist({ ...record, detailMetadataFields: fields });
+          record = incrementMetadataCounter(
+            record,
+            "detailMetadataRequestsAdmitted",
+          );
+          await persist(record);
+          const requestBodyExpected =
+            typeof request?.postData === "string" ||
+            request?.hasPostData === true ||
+            request?.method === "POST";
+          if (requestBodyExpected) {
+            let postData =
+              typeof request?.postData === "string"
+                ? request.postData
+                : undefined;
+            let requestBodyReadFailed = false;
+            if (postData === undefined && request?.hasPostData === true) {
+              try {
+                const bodyResult = (await dependencies.debugger.sendCommand(
+                  { tabId: record.tabId },
+                  "Network.getRequestPostData",
+                  { requestId },
+                )) as { postData?: unknown } | undefined;
+                postData =
+                  typeof bodyResult?.postData === "string"
+                    ? bodyResult.postData
+                    : undefined;
+              } catch {
+                requestBodyReadFailed = true;
+                record = incrementMetadataCounter(
+                  record,
+                  "detailMetadataBodiesFailed",
+                );
+              }
+            }
+            if (postData !== undefined) {
+              record = incrementMetadataCounter(
+                record,
+                "detailMetadataRequestBodiesAvailable",
+              );
+              record = incrementMetadataCounter(
+                record,
+                "detailMetadataRequestBodiesRead",
+              );
+              record = await inspectMetadataBody(
+                record,
+                requestToken,
+                "request_body",
+                postData,
+                Math.max(0, capturedAt - record.startedAt),
+              );
+            } else if (requestBodyExpected) {
+              if (!requestBodyReadFailed)
+                record = incrementMetadataCounter(
+                  record,
+                  "detailMetadataBodiesUnavailable",
+                );
+              record = incrementMetadataCounter(
+                record,
+                "detailMetadataBodiesOmitted",
+              );
             }
           }
+          await persist(record);
+        } else if (metadataEligible && metadataRequestCount >= 12) {
+          record = incrementMetadataCounter(
+            record,
+            "detailMetadataRequestsOmittedAtCap",
+          );
+          await persist(record);
         }
         if (!record || !isActive(record)) return;
         const requestRecord = record;
@@ -1304,16 +1504,65 @@ export function createFlowDownloadDiagnosticManager(
         const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
         const context = requestId ? metadataRequests.get(requestId) : undefined;
         const response = params.response as { mimeType?: unknown } | undefined;
-        if (context && typeof response?.mimeType === "string")
-          context.responseJson = /(?:json|graphql)/i.test(response.mimeType);
+        if (context) {
+          context.responseReceived = true;
+          context.responseJson =
+            typeof response?.mimeType === "string" &&
+            /(?:json|graphql)/i.test(response.mimeType);
+        }
         return;
       }
       if (method === "Network.loadingFinished") {
         const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
         const context = requestId ? metadataRequests.get(requestId) : undefined;
         if (!context) return;
-        metadataRequests.delete(requestId!);
-        if (!context.responseJson || (record.detailMetadataFields?.length ?? 0) >= 48) return;
+        let responseRecord = record;
+        if (!context.responseReceived) {
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesUnavailable",
+          );
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesOmitted",
+          );
+          metadataRequests.delete(requestId!);
+          responseRecord = await persist(responseRecord);
+          await detachCompletedWhenDrained(responseRecord);
+          return;
+        }
+        if (!context.responseJson) {
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesUnsupported",
+          );
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesOmitted",
+          );
+          metadataRequests.delete(requestId!);
+          responseRecord = await persist(responseRecord);
+          await detachCompletedWhenDrained(responseRecord);
+          return;
+        }
+        if ((record.detailMetadataFields?.length ?? 0) >= 48) {
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesFiltered",
+          );
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesOmitted",
+          );
+          metadataRequests.delete(requestId!);
+          responseRecord = await persist(responseRecord);
+          await detachCompletedWhenDrained(responseRecord);
+          return;
+        }
+        responseRecord = incrementMetadataCounter(
+          responseRecord,
+          "detailMetadataResponseBodiesAttempted",
+        );
         let bodyResult: unknown;
         try {
           bodyResult = await dependencies.debugger.sendCommand(
@@ -1322,31 +1571,92 @@ export function createFlowDownloadDiagnosticManager(
             { requestId },
           );
         } catch {
-          await persist({
-            ...record,
-            detailMetadataBodiesOmitted: Math.min(100, (record.detailMetadataBodiesOmitted ?? 0) + 1),
-          });
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesFailed",
+          );
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesOmitted",
+          );
+          metadataRequests.delete(requestId!);
+          responseRecord = await persist(responseRecord);
+          await detachCompletedWhenDrained(responseRecord);
           return;
         }
         const body = bodyResult as { body?: unknown; base64Encoded?: unknown } | undefined;
-        if (typeof body?.body !== "string" || body.body.length > 64 * 1024 || body.base64Encoded === true) {
-          await persist({
-            ...record,
-            detailMetadataBodiesOmitted: Math.min(100, (record.detailMetadataBodiesOmitted ?? 0) + 1),
-          });
+        if (typeof body?.body !== "string") {
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesUnavailable",
+          );
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesOmitted",
+          );
+          metadataRequests.delete(requestId!);
+          responseRecord = await persist(responseRecord);
+          await detachCompletedWhenDrained(responseRecord);
           return;
         }
-        const candidates = await fingerprintFlowDetailMetadataFields(
-          record.sessionId,
+        responseRecord = incrementMetadataCounter(
+          responseRecord,
+          "detailMetadataResponseBodiesRead",
+        );
+        if (body.base64Encoded === true) {
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesUnsupported",
+          );
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesOmitted",
+          );
+          metadataRequests.delete(requestId!);
+          responseRecord = await persist(responseRecord);
+          await detachCompletedWhenDrained(responseRecord);
+          return;
+        }
+        if (body.body.length > 64 * 1024) {
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesFiltered",
+          );
+          responseRecord = incrementMetadataCounter(
+            responseRecord,
+            "detailMetadataBodiesOmitted",
+          );
+          metadataRequests.delete(requestId!);
+          responseRecord = await persist(responseRecord);
+          await detachCompletedWhenDrained(responseRecord);
+          return;
+        }
+        responseRecord = await inspectMetadataBody(
+          responseRecord,
           context.token,
           "response_body",
           body.body,
-          Math.max(0, capturedAt - record.startedAt),
+          Math.max(0, capturedAt - responseRecord.startedAt),
         );
-        const fields = [...(record.detailMetadataFields ?? []), ...candidates]
-          .slice(0, 48)
-          .map((field, index) => ({ ...field, fieldToken: `metadata-field-${index + 1}` as const }));
-        await persist({ ...record, detailMetadataFields: fields });
+        metadataRequests.delete(requestId!);
+        responseRecord = await persist(responseRecord);
+        await detachCompletedWhenDrained(responseRecord);
+        return;
+      }
+      if (method === "Network.loadingFailed") {
+        const requestId = typeof params.requestId === "string" ? params.requestId : undefined;
+        if (!requestId || !metadataRequests.has(requestId)) return;
+        metadataRequests.delete(requestId);
+        let failedRecord = incrementMetadataCounter(
+          record,
+          "detailMetadataBodiesFailed",
+        );
+        failedRecord = incrementMetadataCounter(
+          failedRecord,
+          "detailMetadataBodiesOmitted",
+        );
+        failedRecord = await persist(failedRecord);
+        await detachCompletedWhenDrained(failedRecord);
         return;
       }
       if (method === "Page.downloadWillBegin") {
@@ -1442,8 +1752,9 @@ export function createFlowDownloadDiagnosticManager(
         });
         const next = updateAssociation(resolvedPageRecord, now());
         await persist(next);
-        if (next.status === "completed" || next.status === "interrupted")
-          await detach(next);
+        if (next.status === "completed")
+          await detachCompletedWhenDrained(next);
+        else if (next.status === "interrupted") await detach(next);
       }
     });
   }
@@ -1563,10 +1874,9 @@ export function createFlowDownloadDiagnosticManager(
       });
       const next = updateAssociation(resolvedDownloadRecord, now());
       await persist(next);
-      if (
-        next.status === "completed" ||
-        (next.status === "interrupted" && !collectingAfterDebuggerDetach)
-      )
+      if (next.status === "completed")
+        await detachCompletedWhenDrained(next);
+      else if (next.status === "interrupted" && !collectingAfterDebuggerDetach)
         await detach(next);
     });
   }
@@ -1615,7 +1925,8 @@ export function createFlowDownloadDiagnosticManager(
           ),
         });
         // The now-classified non-video ID is intentionally excluded from candidate association.
-        if (next.status === "completed") await detach(next);
+        if (next.status === "completed")
+          await detachCompletedWhenDrained(next);
         return;
       }
       downloads[index] = {
@@ -1635,10 +1946,9 @@ export function createFlowDownloadDiagnosticManager(
           : { ...record, downloads };
       const next = updateAssociation(resolvedDownloadRecord, now());
       await persist(next);
-      if (
-        next.status === "completed" ||
-        (next.status === "interrupted" && !collectingAfterDebuggerDetach)
-      )
+      if (next.status === "completed")
+        await detachCompletedWhenDrained(next);
+      else if (next.status === "interrupted" && !collectingAfterDebuggerDetach)
         await detach(next);
     });
   }
@@ -1647,6 +1957,28 @@ export function createFlowDownloadDiagnosticManager(
     if (name !== FLOW_GALLERY_DIAGNOSTIC_ALARM) return false;
     await loaded;
     await enqueue(async () => {
+      if (
+        current?.status === "completed" &&
+        metadataRequests.size > 0 &&
+        now() >= current.expiresAt
+      ) {
+        const pending = metadataRequests.size;
+        metadataRequests.clear();
+        let expiredRecord = incrementMetadataCounter(
+          current,
+          "detailMetadataBodiesUnavailable",
+          pending,
+        );
+        expiredRecord = incrementMetadataCounter(
+          expiredRecord,
+          "detailMetadataBodiesOmitted",
+          pending,
+        );
+        expiredRecord = await persist(expiredRecord);
+        await detach(expiredRecord);
+        clearTransientUrlComparisons();
+        return;
+      }
       if (current && isActive(current) && now() >= current.expiresAt)
         await finish(current, "expired");
     });
@@ -1665,6 +1997,27 @@ export function createFlowDownloadDiagnosticManager(
   ) => {
     void enqueue(async () => {
       const record = current;
+      if (
+        record?.status === "completed" &&
+        record.tabId === source.tabId &&
+        metadataRequests.size > 0
+      ) {
+        const pending = metadataRequests.size;
+        metadataRequests.clear();
+        let failedRecord = incrementMetadataCounter(
+          record,
+          "detailMetadataBodiesUnavailable",
+          pending,
+        );
+        failedRecord = incrementMetadataCounter(
+          failedRecord,
+          "detailMetadataBodiesOmitted",
+          pending,
+        );
+        await persist(failedRecord);
+        clearTransientUrlComparisons();
+        return;
+      }
       if (record && isActive(record) && record.tabId === source.tabId)
         await finish(
           { ...record, interruptionReason: "debugger_detached" },

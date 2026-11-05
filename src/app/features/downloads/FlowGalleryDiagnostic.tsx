@@ -406,7 +406,7 @@ export function FlowGalleryDiagnostic({
                           : "Temporary route asset trace"}
                       </dt>
                       <dd>
-                        route -&gt; action request path ID: {identityLink.routeToOutput.replaceAll("_", " ")}; asset ID -&gt; exact page blob/download: {identityLink.outputToBlob.replaceAll("_", " ")}. Path IDs are evidence only; no Flow job/result metadata or media bytes are inspected and this does not establish clip association.
+                        route -&gt; action request path ID: {identityLink.routeToOutput.replaceAll("_", " ")}; asset ID -&gt; exact page blob/download: {identityLink.outputToBlob.replaceAll("_", " ")}. URL path IDs alone do not identify a Flow job/result; see the metadata trace below. Media bytes are not inspected, and this path trace alone does not establish clip association.
                       </dd>
                     </div>
                   ) : null}
@@ -419,7 +419,7 @@ export function FlowGalleryDiagnostic({
                       <div>
                         <dt>Request/response metadata trace</dt>
                         <dd>
-                          {fields.length} ID-shaped JSON field(s) across at most 12 selected-frame Fetch/XHR requests; {routeMatches} route UUID equality match(es); {requestResponseMatches} request/response equal field pair(s); {blobMatches} equality match(es) to a blob URL path ID; {report.detailMetadataBodiesOmitted ?? 0} body capture(s) omitted. Field roles/paths and retained equality flags only: {fields.length ? fields.map((field) => field.requestToken + " " + field.role + "." + field.fieldPath + " [route=" + field.routeEquality + ", request-response=" + field.requestResponseEquality + ", blob=" + field.blobPathEquality + "]").join("; ") : "none observed"}.
+                          Eligible Fetch/XHR requests since arm: {report.detailMetadataEligibleRequestsSeen ?? 0}; admitted: {report.detailMetadataRequestsAdmitted ?? 0}; omitted at request cap: {report.detailMetadataRequestsOmittedAtCap ?? 0}. Request bodies available/read: {report.detailMetadataRequestBodiesAvailable ?? 0}/{report.detailMetadataRequestBodiesRead ?? 0}; response bodies attempted/read: {report.detailMetadataResponseBodiesAttempted ?? 0}/{report.detailMetadataResponseBodiesRead ?? 0}. JSON parses succeeded/failed: {report.detailMetadataJsonParseSucceeded ?? 0}/{report.detailMetadataJsonParseFailed ?? 0}; parsed bodies with zero accepted identity fields: {report.detailMetadataParsedBodiesWithoutIdentityFields ?? 0}. Bodies unavailable/failed/unsupported/filtered: {report.detailMetadataBodiesUnavailable ?? 0}/{report.detailMetadataBodiesFailed ?? 0}/{report.detailMetadataBodiesUnsupported ?? 0}/{report.detailMetadataBodiesFiltered ?? 0}; pending requests: {report.detailMetadataPendingRequests ?? 0}. Accepted fields: {fields.length}; route UUID equalities: {routeMatches}; same-request cross-role equalities: {requestResponseMatches}; blob-path UUID equalities: {blobMatches}. Field paths/roles and equality flags only: {fields.length ? fields.map((field) => field.requestToken + " " + field.role + "." + field.fieldPath + " [route=" + field.routeEquality + ", request-response=" + field.requestResponseEquality + ", blob-path=" + field.blobPathEquality + "]").join("; ") : "none observed"}. These equality observations do not prove an output-to-blob relationship; an opaque blob URL needs separate direct provenance.
                         </dd>
                       </div>
                     );
@@ -784,13 +784,15 @@ function FlowClipImportProofOfConcept({
                   </Button>
                   {downloadProofs[row.id] ? (
                     <p role="status">
-                      {downloadProofs[row.id]!.status === "armed"
-                        ? report?.captureMode === "detail_clip" && report.status === "armed"
-                          ? "Capture is armed; make one user-initiated 1080p Upscaled selection in the bound Download media menu."
-                          : "Capture was armed; current outcome appears in the diagnostic above."
-                        : report?.captureMode === "detail_clip" && report.status === "completed"
-                          ? "Capture completed; see download, metadata, and file-exists evidence above."
-                          : "The one-shot capture is no longer armed; see the current diagnostic status above."}{" "}
+                      {report?.captureMode === "detail_clip" && report.status === "completed"
+                        ? "Capture completed; see download, metadata, and file-exists evidence above."
+                        : report?.captureMode === "detail_clip" && report.detailClipSelectionStatus === "observed"
+                          ? "Quality selection observed; capture is monitoring the resulting download."
+                          : downloadProofs[row.id]!.status === "armed"
+                            ? report?.captureMode === "detail_clip" && report.status === "armed"
+                              ? "Capture is armed; make one user-initiated 1080p Upscaled selection in the bound Download media menu."
+                              : "Capture was armed; current outcome appears in the diagnostic above."
+                            : "The one-shot capture is no longer armed; see the current diagnostic status above."}{" "}
                       The extension did not select a quality.
                     </p>
                   ) : null}

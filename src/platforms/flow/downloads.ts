@@ -150,6 +150,21 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     detailMetadataCaptureEnabled: z.boolean().optional(),
     detailMetadataFields: z.array(FlowDetailMetadataFieldSchema).max(48).optional(),
     detailMetadataBodiesOmitted: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataEligibleRequestsSeen: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataRequestsAdmitted: z.number().int().nonnegative().max(12).optional(),
+    detailMetadataRequestsOmittedAtCap: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataRequestBodiesAvailable: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataRequestBodiesRead: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataResponseBodiesAttempted: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataResponseBodiesRead: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataJsonParseSucceeded: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataJsonParseFailed: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataBodiesUnavailable: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataBodiesFailed: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataBodiesUnsupported: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataBodiesFiltered: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataParsedBodiesWithoutIdentityFields: z.number().int().nonnegative().max(100).optional(),
+    detailMetadataPendingRequests: z.number().int().nonnegative().max(12).optional(),
     identityCaptureEnabled: z.boolean().optional(),
     assetRoutePreflight: z
       .object({
@@ -385,20 +400,26 @@ export async function fingerprintFlowAssetUrlPath(
     : undefined;
 }
 
-/** Extracts only ID-shaped JSON scalar fields; values are immediately session-fingerprinted. */
-export async function fingerprintFlowDetailMetadataFields(
+export type FlowDetailMetadataBodyInspection = {
+  status: "parsed" | "invalid_json" | "unavailable" | "too_large";
+  fields: Array<z.infer<typeof FlowDetailMetadataFieldSchema>>;
+};
+
+/** Parses a bounded JSON body and retains only scoped fingerprints of ID-like scalar fields. */
+export async function inspectFlowDetailMetadataBody(
   sessionId: string,
   requestToken: string,
   role: "request_body" | "response_body",
   rawJson: unknown,
   offsetMs: number,
-): Promise<Array<z.infer<typeof FlowDetailMetadataFieldSchema>>> {
-  if (typeof rawJson !== "string" || rawJson.length > 64 * 1024) return [];
+): Promise<FlowDetailMetadataBodyInspection> {
+  if (typeof rawJson !== "string") return { status: "unavailable", fields: [] };
+  if (rawJson.length > 64 * 1024) return { status: "too_large", fields: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawJson);
   } catch {
-    return [];
+    return { status: "invalid_json", fields: [] };
   }
   const found: Array<z.infer<typeof FlowDetailMetadataFieldSchema>> = [];
   const idKey = /(id|uuid|asset|job|result|clip|media)(?:id)?$/i;
@@ -444,7 +465,26 @@ export async function fingerprintFlowDetailMetadataFields(
     }
   };
   await visit(parsed, [], 0);
-  return found;
+  return { status: "parsed", fields: found };
+}
+
+/** Backward-compatible helper for focused fingerprint tests. */
+export async function fingerprintFlowDetailMetadataFields(
+  sessionId: string,
+  requestToken: string,
+  role: "request_body" | "response_body",
+  rawJson: unknown,
+  offsetMs: number,
+) {
+  return (
+    await inspectFlowDetailMetadataBody(
+      sessionId,
+      requestToken,
+      role,
+      rawJson,
+      offsetMs,
+    )
+  ).fields;
 }
 
 /** Separate evidence-only route/output/blob trace; never used by matching. */
@@ -955,6 +995,7 @@ export function installFlowGalleryDownloadObserver(
   identityCaptureEnabled = false,
   captureMode: "gallery" | "detail_clip" = "gallery",
   expectedClipId?: string,
+  expectedAssetPathFingerprint?: string,
 ): {
   installed: boolean;
   replaced: boolean;
@@ -1403,7 +1444,7 @@ export function installFlowGalleryDownloadObserver(
       return { installed: false, replaced: Boolean(previous), blocker: "detail_menu_unbound" };
     if (!preflightMenu.quality.observed || !preflightMenu.quality.enabled)
       return { installed: false, replaced: Boolean(previous), blocker: "quality_option_not_ready" };
-    detailClickHandler = async (event: MouseEvent) => {
+    detailClickHandler = (event: MouseEvent) => {
       if (stopped || !event.isTrusted) return;
       const path = clickablePath(event);
       const menuContext = resolveDetailMenu();
@@ -1418,30 +1459,9 @@ export function installFlowGalleryDownloadObserver(
         selectedOptions[0]!.getAttribute("aria-disabled") === "true"
       )
         return;
-      let assetPathFingerprint: string;
-      try {
-        const route = new URL(scope.location.href);
-        const routeMatch = /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/edit\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(
-          route.pathname,
-        );
-        if (
-          !routeMatch ||
-          routeMatch[1] !== projectId ||
-          routeMatch[2]!.toLowerCase() !== expectedId
-        )
-          return;
-        const digest = await crypto.subtle.digest(
-          "SHA-256",
-          new TextEncoder().encode(
-            `${sessionId}\nflow-asset-route\n${expectedId}`,
-          ),
-        );
-        assetPathFingerprint = Array.from(new Uint8Array(digest), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
-      } catch {
-        return;
-      }
+      const routeFingerprint = expectedAssetPathFingerprint;
+      if (!routeFingerprint || !/^[a-f0-9]{64}$/.test(routeFingerprint)) return;
+      if (!currentRouteMatches()) return;
       stopped = true;
       document.removeEventListener("click", detailClickHandler!, true);
       send({
@@ -1451,7 +1471,7 @@ export function installFlowGalleryDownloadObserver(
         trusted: true,
         requestedQuality: "1080p_upscaled",
         menuBound: true,
-        assetPathFingerprint,
+        assetPathFingerprint: routeFingerprint,
       });
     };
     document.addEventListener("click", detailClickHandler, {

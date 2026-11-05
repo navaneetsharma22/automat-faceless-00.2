@@ -788,3 +788,62 @@ The user reports that the prior live menu check passed. The connected browser in
 - Build: **`automat-faceless-0.1.0-mw30ocfv`**, four JavaScript bundles.
 
 Manual live test: load build `mw30ocfv`; select/verify the imported target clip's Flow tab and exact detail route; open the Download media menu; arm from that target row; confirm Armed; manually select 1080p Upscaled once; then wait for readback of clip-to-output path evidence, download completion, and file resolution. Stop after readback. If any result is missing or uncertain, leave it unverified and do not repeat the selection. Do not use the other same-title row except to confirm it is blocked. No live selection/upscale/download occurred in this implementation step; P11.2 remains unstarted.
+
+## P11.1 supplied completed capture and metadata-structure probe - 5 November 2026
+
+### Supplied run evidence
+
+For clip `c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa` in project `000936e1-dc7a-4421-988b-d4c66a804aed`, the user reports: exact clip route matched at arm and selection; a trusted 1080p Upscaled selection occurred in the bound detail menu; the selected-main-frame blob URL exactly matched Chrome download ID `2792`; Chrome reported the download complete; and Windows Properties for `make_it_d8d91f05_1080p (1).mp4` showed 1920×1080, 24 fps, and displayed duration 00:00:03. These are user-supplied live observations, not observations made by this offline implementation task.
+
+The blob URL equality explicitly links the selected-frame browser download event to Chrome download ID `2792`. Completion and the reported file properties describe that downloaded output. The available run evidence does **not** include request/response metadata or a direct output-asset-to-blob provenance record. It therefore does not yet explicitly link the selected clip to the Flow upscale job/result that produced the blob. A shared filename token, route match, or temporal proximity would be a hypothesis and does not fill this evidence gap. No run-specific metadata capture for this clip or download ID exists in the workspace.
+
+### Opt-in bounded metadata capture
+
+The target row's one-shot arm action now enables a structural metadata probe for that detail-clip session. The trusted selection handler rechecks the exact route and sends its already scoped route fingerprint immediately, without waiting for another hash operation. Metadata capture begins after the worker accepts that selection and is restricted to at most 12 selected-main-frame Fetch/XHR requests, at most 64 KiB per JSON body, eight object levels, 16 array entries per level, and 48 retained ID-shaped fields. The existing 20-minute capture expiry applies. It examines request `postData` when CDP provides it and retrieves JSON response bodies only after `Network.loadingFinished`; base64 bodies, oversized bodies, and unavailable bodies are omitted.
+
+No Flow-specific request schema is assumed. The probe retains sanitized field paths, request/response roles, value kinds, session-scoped fingerprints, and computed equality flags against the route UUID, the opposite request/response role within the same request, and selected-frame blob URL path IDs. Raw JSON values and body text are discarded after fingerprinting; raw URLs, URL parameters, and tokens remain outside storage and logs. This generic structure discovery is intended to reveal the live field shape before any Flow-specific ID extraction or interpretation is designed. A missing field, omitted body, or opaque blob path remains unlinked.
+
+The diagnostic now labels the prior file check **Chrome file-exists check** and states that it reflects Chrome metadata, not decoded media. The imported row's status text uses the current diagnostic state, so completion no longer leaves a stale “Armed” message. The diagnostic remains Flow-only; Vids Downloads were not changed.
+
+### Offline validation and remaining live check
+
+- Focused Vitest: **3 files / 26 tests PASS**. Coverage includes nested request/response ID field discovery, same-request job-field equality, route/blob equality, privacy of retained values, existing single-row guards, and download lifecycle evidence.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Targeted Playwright observer fixture: **NOT_RUN** because its configured Chromium executable is absent.
+- Final build: **`automat-faceless-0.1.0-mw35ibrf`**, four JavaScript bundles.
+- Live selection/upscale/download during this implementation task: **NOT_RUN**. The synthetic field structure does not establish Flow's actual live schema.
+
+Remaining live check: in a future explicitly authorized one-shot run on the same target clip, load `mw35ibrf`, arm from the exact imported row with the bound detail menu open, and make one user-initiated 1080p Upscaled selection. Read the sanitized field roles/paths and equality flags to see whether the source clip ID appears in metadata, whether a request/response relation identifies a job and output asset, and whether that output fingerprint equals a blob-path ID or has another direct provenance link to the selected-frame blob. Stop after readback; if any edge is absent or ambiguous, retain **clip-to-output mapping unverified** and do not repeat the selection. The already supplied completed run remains complete for Chrome download ID `2792`; this follow-up is needed only to establish the missing clip-to-output mapping. P11.2 remains unstarted.
+
+## P11.1 metadata zero-count interpretation and response-drain follow-up - 5 November 2026
+
+### Supplied run 2793 and what its zero means
+
+The user reports that Chrome download `2793` completed after the target route matched at arm and trusted detail-menu selection, and the selected-main-frame blob URL exactly matched that Chrome download. The existing action-time request list showed 3 retained / 0 omitted; the metadata trace showed 0 identity fields. These are user-supplied observations. The workspace has no request/response body records, field paths, or expanded counters for run 2793, so the summary cannot identify which capture stage yielded zero.
+
+In the previous implementation, a zero was only `detailMetadataFields.length === 0`. It could mean no eligible post-selection request, no request body available, no JSON response body, an unsupported/oversized body, a body read or parse failure, or successfully parsed JSON with no accepted fields. The 3 retained action-time requests are the separate URL-fingerprint list, which may contain Media as well as Fetch/XHR; that count does not establish that three JSON bodies were seen or read.
+
+The identity filter does **not** accept only UUID values. It accepts UUID-shaped strings under any field, plus string or numeric values up to 128 characters when the field key ends in `id`, `uuid`, `asset`, `job`, `result`, `clip`, or `media` (optionally followed by `id`). Those values are structurally tagged/fingerprinted; the code does not assert that any particular key is a Flow field or that values have job, result, clip, or output semantics. Thus 0 accepted fields is not evidence that no UUIDs or useful provider identifiers existed outside the captured/accepted bodies.
+
+### Capture window, response completion, and pending work
+
+The previous implementation admitted metadata only after the worker accepted the trusted quality-selection message. A Fetch/XHR request loaded before that click could be excluded. This is a confirmed cause of an observation gap; whether Flow loaded relevant metadata before selection in run 2793 is unknown. The opt-in capture now begins at arm while the debugger is attached, admitting same-main-frame Fetch/XHR requests through the existing bounded observation. It retains at most 12 requests, caps bodies at 64 KiB, and persists only sanitized field roles/paths and scoped fingerprints. The focused fixture captures a generic JSON request before selection and verifies its identifier is fingerprinted while the raw value is absent.
+
+Response body retrieval is correctly triggered by `Network.loadingFinished`, after the response body is complete. Source review found a separate confirmed race: browser download completion caused immediate debugger detach even when an admitted request was still waiting for `loadingFinished`. The subsequent completion event then failed the active-session guard and its response body was lost. The fix keeps the debugger attached after download completion while admitted requests remain, captures their completed or failed result, and detaches once the pending map drains. If the existing observation expiry or an external debugger detach ends the drain, pending requests are counted as unavailable. Request completion is not inferred from download completion.
+
+The current bounded counters separate: eligible same-main-frame Fetch/XHR requests seen since arm; requests admitted/omitted at the 12-request cap; request bodies available/read; response body retrieval attempted/read; JSON parses succeeded/failed; parsed bodies with zero accepted fields; unavailable, failed, unsupported, and filtered bodies; and currently pending requests. Request `postData` is used when present, with `Network.getRequestPostData` as a bounded fallback when CDP indicates post data exists. Response retrieval remains at `Network.loadingFinished`. The existing 64 KiB body and 48-field caps remain. Only sanitized field paths/roles, scoped fingerprints, equality flags, and these bounded counts persist.
+
+### Identity and output-to-blob limit
+
+UUID equality between an arbitrary JSON field and the UUID-looking part of an opaque `blob:` URL is not direct provenance. It does not prove that the field names the produced asset or that the asset's bytes created that blob. The metadata trace reports such equality as a comparison only. It does not set association or Saved status. No Flow-specific body schema or ID relationship was added. Clip-to-output mapping and output-to-blob provenance remain **unverified**.
+
+### Regression and validation
+
+- Focused Vitest: **2 files / 24 tests PASS** with `npx vitest run --configLoader native --pool=threads --maxWorkers=1 tests/unit/flowDownloadDiagnostic.test.ts tests/integration/flowClipDownloadProof.test.ts`. The worker integration fixture completes the Chrome download while one selected-frame JSON response remains pending, verifies no premature debugger detach, then emits `Network.loadingFinished` and verifies body capture, counters, and detach after drain. It demonstrates that a pre-selection request since arm is admitted and fingerprinted, with no raw value retained, and counts a parsed no-ID body separately. Unit fixtures distinguish successful zero-field JSON, invalid JSON, unavailable input, and oversized input; an ID-keyed non-UUID value is accepted and fingerprinted without storing the raw value. The default forked Vitest runner hit Windows `spawn EPERM`; the single-thread run passed after selecting Vite's native config loader.
+- Typecheck, ESLint, production build/package validation, and `git diff --check`: **PASS**.
+- Final build: **`automat-faceless-0.1.0-mw36pcjn`**, four JavaScript bundles.
+- Live inspection or provider action: **NOT_RUN**. The supplied run 2793 remains download-complete with clip-to-output mapping **unverified**.
+
+Exact remaining live check: load build `automat-faceless-0.1.0-mw36pcjn`, arm the opt-in observer on project `000936e1-dc7a-4421-988b-d4c66a804aed`, clip `c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa`, with its bound detail menu open before the user makes one 1080p Upscaled selection. After Chrome completion, read the bounded counters and sanitized request/response field roles. Check whether observed fields directly connect the clip to a job/result and whether that output has direct provenance to the selected-frame blob. Stop after readback; do not repeat if either edge remains missing or ambiguous. The supplied run 2793 cannot be retroactively explained by the new counters.
+
+No further live action is part of this change. On a future explicitly authorized one-shot capture, inspect the new stage counters first. A zero field count is meaningful as “parsed bodies had no accepted fields” only when parsed-body and zero-field counts support that interpretation; otherwise use the separate unavailable/failed/unsupported/filtered counts. Any equality with an opaque blob UUID remains insufficient to claim output-to-blob provenance. Keep Vids Downloads separate; P11.2 remains unstarted.
