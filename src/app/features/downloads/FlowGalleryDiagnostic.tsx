@@ -694,6 +694,33 @@ function fileExistsLabel(status: string | undefined) {
   return labels[status ?? "not_checked"] ?? "Not checked";
 }
 
+function galleryFailureLabel(
+  reason: FlowProjectVideosImportProgress["failureReason"],
+) {
+  const messages: Record<
+    NonNullable<FlowProjectVideosImportProgress["failureReason"]>,
+    string
+  > = {
+    project_missing: "The Flow project content root was not found in this page.",
+    project_ambiguous: "More than one visible Flow project root was found.",
+    project_mismatch: "The page route did not match the verified Flow project.",
+    videos_section_not_selected: "The selected Videos navigation control could not be verified.",
+    gallery_unavailable: "The Videos gallery container could not be identified.",
+    card_missing: "The target video card was no longer present.",
+    card_ambiguous: "More than one card matched the target asset.",
+    asset_identity_missing: "The card did not expose a reliable asset UUID.",
+    asset_identity_ambiguous: "The card exposed ambiguous asset identity.",
+    route_ambiguous: "The card exposed more than one detail route.",
+    route_project_mismatch: "The card's detail route belonged to another project.",
+    native_open_control_unavailable: "The exact card had no unique safe open control.",
+    page_result_invalid: "The Gallery page returned an unsupported inspection result.",
+    page_injection_failed: "The Gallery page could not be inspected in the verified document.",
+    unexpected_page_status: "The Gallery page returned an unexpected inspection state.",
+    document_changed: "The verified Flow document changed during Gallery preflight.",
+  };
+  return reason ? messages[reason] : undefined;
+}
+
 export function FlowClipDownloads({
   persistenceClient,
   report,
@@ -806,6 +833,16 @@ export function FlowClipDownloads({
                 ? "A project video import is already running."
                 : "Project videos could not be imported from the selected Flow tab.",
       );
+      try {
+        const progress = (await persistenceClient.request(
+          "flow.projectVideos.import.get",
+          {},
+        )) as FlowProjectVideosImportProgress;
+        setGalleryImport(progress);
+      } catch {
+        setGalleryImport(undefined);
+        setError("The Gallery import failed, and its latest status could not be read.");
+      }
     } finally {
       setGalleryImportPending(false);
     }
@@ -1030,9 +1067,13 @@ export function FlowClipDownloads({
               {galleryImport.status === "scanning"
                 ? "Scanning Flow Videos gallery"
                 : galleryImport.status === "completed"
-                  ? "Gallery scan finished"
+                  ? "Gallery scan complete"
+                  : galleryImport.status === "incomplete"
+                    ? "Gallery scan incomplete"
                   : galleryImport.status === "cancelled"
                     ? "Gallery scan cancelled"
+                    : galleryImport.status === "failed"
+                      ? "Gallery scan failed"
                     : galleryImport.status === "stopped"
                       ? "Gallery scan stopped"
                       : "Gallery scan"}
@@ -1046,7 +1087,12 @@ export function FlowClipDownloads({
           <p className={styles.clipMessage}>
             Discovered {galleryImport.discovered} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
           </p>
-          {galleryImport.reason ? (
+          {galleryImport.failureReason ? (
+            <p className={styles.clipMessage}>
+              Preflight failure: {galleryFailureLabel(galleryImport.failureReason)}
+            </p>
+          ) : null}
+          {galleryImport.reason && !galleryImport.failureReason ? (
             <p className={styles.clipMessage}>
               {galleryImport.reason === "bound_reached"
                 ? "The configured scan bound was reached."

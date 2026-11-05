@@ -336,6 +336,7 @@ async function makeProjectVideoImportManager(options: {
   selectedAssetId?: string;
   lazy?: boolean;
   cardsCapped?: boolean;
+  preflightRejection?: "project_missing" | "videos_section_not_selected";
   wait?: (milliseconds: number) => Promise<void>;
 } = {}) {
   let now = 20_000;
@@ -369,6 +370,7 @@ async function makeProjectVideoImportManager(options: {
   const second = projectVideoCard(secondAsset, secondClip);
   const snapshots = options.snapshots ?? [[first, second]];
   let snapshotIndex = 0;
+  let rejectPreflight = Boolean(options.preflightRejection);
   const executeScript = vi.fn(async (input: { func: (...args: never[]) => unknown; args: unknown[] }) => {
     let result: unknown;
     if (input.func === inspectFlowProjectVideosInPage) {
@@ -378,6 +380,11 @@ async function makeProjectVideoImportManager(options: {
         result = { status: "opened", projectId, cards: [card], cardsCapped: false, scroll: { containerFound: true, top: 0, max: 0, moved: false, atBottom: true, busy: false }, card };
         tabUrl = `https://flow.google.com/project/${projectId}/edit/${firstClip}`;
       } else {
+        if (action === "snapshot" && rejectPreflight) {
+          rejectPreflight = false;
+          result = { status: "blocked", reason: options.preflightRejection, projectId, cards: [], cardsCapped: false, scroll: { containerFound: false, top: 0, max: 0, moved: false, atBottom: false, busy: false } };
+          return [{ documentId: "document-test", result }];
+        }
         if (action === "scroll") snapshotIndex = Math.min(snapshotIndex + 1, snapshots.length - 1);
         const cards = snapshots[snapshotIndex] ?? [];
         const max = options.lazy && snapshotIndex === 0 ? 100 : 0;
@@ -419,6 +426,31 @@ async function makeProjectVideoImportManager(options: {
 }
 
 describe("Flow Videos Gallery import", () => {
+  it("retains the exact bounded preflight rejection, terminates, and allows a fresh scan", async () => {
+    const { manager } = await makeProjectVideoImportManager({
+      preflightRejection: "videos_section_not_selected",
+    });
+    const failed = await manager.startProjectVideoImport();
+    expect(failed).toMatchObject({
+      status: "failed",
+      discovered: 0,
+      imported: 0,
+      alreadyPresent: 0,
+      unresolved: 0,
+      scanCompleteness: "incomplete",
+      failureReason: "videos_section_not_selected",
+    });
+    expect((await manager.getProjectVideoImport()).status).toBe("failed");
+
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "completed", scanCompleteness: "complete" });
+  });
+
   it("imports same-title clips as separate rows and reimport updates without duplicates", async () => {
     const { manager, repositories } = await makeProjectVideoImportManager();
     await manager.startProjectVideoImport();
@@ -495,6 +527,6 @@ describe("Flow Videos Gallery import", () => {
       await Promise.resolve();
       progress = await manager.getProjectVideoImport();
     }
-    expect(progress).toMatchObject({ status: "completed", scanCompleteness: "incomplete", reason: "bound_reached" });
+    expect(progress).toMatchObject({ status: "incomplete", scanCompleteness: "incomplete", reason: "bound_reached" });
   });
 });

@@ -1017,12 +1017,10 @@ export function createFlowDownloadDiagnosticManager(
         if (job.cancelRequested) throw new Error("flow_project_video_import_cancelled");
         target = await verifyImportTarget(job);
         const page = await importPageResult(job, target.binding, "snapshot");
-        if (page.status === "blocked") {
-          const reason = page.reason === "videos_section_not_selected"
-            ? "gallery_unavailable"
-            : "navigation_changed";
-          throw new Error(`flow_project_video_import_${reason}`);
-        }
+        if (page.status === "blocked")
+          throw new Error(
+            `flow_project_video_import_${page.reason ?? "gallery_unavailable"}`,
+          );
         mergeProjectVideoSnapshot(job, page);
         if (page.cardsCapped || job.candidates.size + job.unresolvedKeys.size >= FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS) {
           stopReason = "bound_reached";
@@ -1099,25 +1097,45 @@ export function createFlowDownloadDiagnosticManager(
           ),
         };
       }
+      if (!scanComplete) terminal = "incomplete";
     } catch (error) {
       const code = error instanceof Error ? error.message : "";
+      const pageFailureReasons = [
+        "project_missing",
+        "project_ambiguous",
+        "project_mismatch",
+        "videos_section_not_selected",
+        "gallery_unavailable",
+        "card_missing",
+        "card_ambiguous",
+        "asset_identity_missing",
+        "asset_identity_ambiguous",
+        "route_ambiguous",
+        "route_project_mismatch",
+        "native_open_control_unavailable",
+      ] as const;
+      const failureReason = pageFailureReasons.find((reason) =>
+        code.endsWith(`_${reason}`),
+      );
+      if (failureReason)
+        job.progress = { ...job.progress, failureReason };
       if (code.includes("cancelled")) {
         terminal = "cancelled";
         stopReason = "cancelled";
       } else if (code.includes("navigation_changed")) {
-        terminal = "stopped";
+        terminal = "failed";
         stopReason = "navigation_changed";
       } else if (code.includes("connection_lost") || code.includes("document_changed")) {
-        terminal = "stopped";
+        terminal = "failed";
         stopReason = "connection_lost";
       } else if (code.includes("identity_ambiguous") || code.includes("identity_mismatch")) {
-        terminal = "stopped";
+        terminal = "failed";
         stopReason = "ambiguous_identity";
       } else if (code.includes("gallery")) {
-        terminal = "stopped";
+        terminal = "failed";
         stopReason = "gallery_unavailable";
       } else {
-        terminal = "stopped";
+        terminal = "failed";
         stopReason = "coverage_unproven";
       }
       scanComplete = false;
@@ -1160,22 +1178,62 @@ export function createFlowDownloadDiagnosticManager(
       }))
     )
       throw new Error("flow_project_video_import_permissions_missing");
-    const initialized = await dependencies.scripting.executeScript({
-      target: {
-        tabId: target.selected.tabId,
-        documentIds: [target.binding.documentId],
-      },
-      world: "ISOLATED",
-      func: inspectFlowProjectVideosInPage,
-      args: [{ projectId: target.binding.projectId, action: "snapshot" }],
-    });
+    const failPreflight = (
+      failureReason: NonNullable<FlowProjectVideosImportProgress["failureReason"]>,
+    ) => {
+      const failedJob: FlowProjectVideoImportJob = {
+        progress: FlowProjectVideosImportProgressSchema.parse({
+          jobId: crypto.randomUUID(),
+          projectId: target.binding.projectId,
+          status: "failed",
+          discovered: 0,
+          imported: 0,
+          alreadyPresent: 0,
+          unresolved: 0,
+          scanCompleteness: "incomplete",
+          cancelRequested: false,
+          reason: "gallery_unavailable",
+          failureReason,
+          unresolvedCards: [],
+        }),
+        galleryUrl: target.verifiedTabUrl!,
+        selectedTabId: target.selected.tabId,
+        canonicalTarget: target.selected.canonicalTarget,
+        cancelRequested: false,
+        candidates: new Map(),
+        unresolvedKeys: new Set(),
+      };
+      projectVideoImportJob = failedJob;
+      return projectVideoImportSnapshot(failedJob);
+    };
+    let initialized: Awaited<ReturnType<typeof dependencies.scripting.executeScript>>;
+    try {
+      initialized = await dependencies.scripting.executeScript({
+        target: {
+          tabId: target.selected.tabId,
+          documentIds: [target.binding.documentId],
+        },
+        world: "ISOLATED",
+        func: inspectFlowProjectVideosInPage,
+        args: [{ projectId: target.binding.projectId, action: "snapshot" }],
+      });
+    } catch {
+      return failPreflight("page_injection_failed");
+    }
     if (initialized[0]?.documentId !== target.binding.documentId)
-      throw new Error("flow_project_video_import_document_changed");
+      return failPreflight("document_changed");
     const initial = FlowProjectVideosPageResultSchema.safeParse(
       initialized[0]?.result,
     );
-    if (!initial.success || initial.data.status !== "ready")
-      throw new Error("flow_project_video_import_gallery_unavailable");
+    if (!initial.success) return failPreflight("page_result_invalid");
+    if (initial.data.status !== "ready")
+      return failPreflight(
+        initial.data.status === "blocked"
+          ? initial.data.reason ?? "gallery_unavailable"
+          : "unexpected_page_status",
+      );
+    if (initial.data.projectId !== target.binding.projectId)
+      return failPreflight("project_mismatch");
     const job: FlowProjectVideoImportJob = {
       progress: {
         jobId: crypto.randomUUID(),
@@ -1198,7 +1256,6 @@ export function createFlowDownloadDiagnosticManager(
     };
     projectVideoImportJob = job;
     projectVideoImportStarting = false;
-    mergeProjectVideoSnapshot(job, initial.data);
     void runProjectVideoImport(job);
     return projectVideoImportSnapshot(job);
     } finally {

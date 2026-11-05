@@ -74,7 +74,15 @@ export const FlowProjectVideosImportProgressSchema = z
   .object({
     jobId: z.string().uuid().optional(),
     projectId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
-    status: z.enum(["idle", "scanning", "completed", "cancelled", "stopped"]),
+    status: z.enum([
+      "idle",
+      "scanning",
+      "completed",
+      "incomplete",
+      "cancelled",
+      "failed",
+      "stopped",
+    ]),
     discovered: z.number().int().nonnegative().max(200),
     imported: z.number().int().nonnegative().max(200),
     alreadyPresent: z.number().int().nonnegative().max(200),
@@ -91,6 +99,26 @@ export const FlowProjectVideosImportProgressSchema = z
         "ambiguous_identity",
         "gallery_unavailable",
         "download_active",
+      ])
+      .optional(),
+    failureReason: z
+      .enum([
+        "project_missing",
+        "project_ambiguous",
+        "project_mismatch",
+        "videos_section_not_selected",
+        "gallery_unavailable",
+        "card_missing",
+        "card_ambiguous",
+        "asset_identity_missing",
+        "asset_identity_ambiguous",
+        "route_ambiguous",
+        "route_project_mismatch",
+        "native_open_control_unavailable",
+        "page_result_invalid",
+        "page_injection_failed",
+        "unexpected_page_status",
+        "document_changed",
       ])
       .optional(),
     unresolvedCards: z
