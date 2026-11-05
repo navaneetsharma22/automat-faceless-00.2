@@ -715,6 +715,7 @@ function galleryFailureLabel(
     route_ambiguous: "The card exposed more than one detail route.",
     route_project_mismatch: "The card's detail route belonged to another project.",
     native_open_control_unavailable: "The exact card had no unique safe open control.",
+    native_binding_stale: "The exact card changed before it could be opened; the scan rediscovered it and stopped safely.",
     page_result_invalid: "The Gallery page returned an unsupported inspection result.",
     page_injection_failed: "The Gallery page could not be inspected in the verified document.",
     unexpected_page_status: "The Gallery page returned an unexpected inspection state.",

@@ -6,8 +6,8 @@ const uuidPattern =
 export const FlowProjectVideoCardSchema = z
   .object({
     observationFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-    /** In-memory traversal handle only; never used as a clip identity or persisted. */
-    nativeTraversalFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    /** Exact DOM-owner binding for one scan/document; never persisted as clip identity. */
+    nativeCardToken: z.string().uuid().optional(),
     assetId: z.string().uuid().optional(),
     assetStatus: z.enum(["unique", "missing", "ambiguous"]),
     title: z.string().max(200),
@@ -48,6 +48,7 @@ export const FlowProjectVideosPageResultSchema = z
         "route_ambiguous",
         "route_project_mismatch",
         "native_open_control_unavailable",
+        "native_binding_stale",
       ])
       .optional(),
     projectId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -118,6 +119,7 @@ export const FlowProjectVideosImportProgressSchema = z
         "route_ambiguous",
         "route_project_mismatch",
         "native_open_control_unavailable",
+        "native_binding_stale",
         "page_result_invalid",
         "page_injection_failed",
         "unexpected_page_status",
@@ -152,8 +154,10 @@ export function sanitizeFlowProjectVideoTitle(value: string) {
 export async function inspectFlowProjectVideosInPage(input: {
   projectId: string;
   action: "start" | "snapshot" | "scroll" | "restore" | "open";
+  scanId?: string;
+  documentId?: string;
   assetId?: string;
-  nativeTraversalFingerprint?: string;
+  nativeCardToken?: string;
   scrollTop?: number;
 }): Promise<unknown> {
   const blocked = (
@@ -328,6 +332,44 @@ export async function inspectFlowProjectVideosInPage(input: {
   if (!selectedNavigation.root || !selectedNavigation.button || !selectedNavigation.selected)
     return blocked("videos_section_not_selected");
 
+  type NativeBindingRegistry = {
+    scope: string;
+    byOwner: WeakMap<Element, string>;
+    byToken: Map<string, Element>;
+  };
+  const expectedBindingScope = input.scanId && input.documentId
+    ? `${input.scanId}:${input.documentId}`
+    : undefined;
+  const isolatedGlobal = globalThis as typeof globalThis & {
+    __automatFlowNativeCardBindings?: NativeBindingRegistry;
+  };
+  let nativeBindings = isolatedGlobal.__automatFlowNativeCardBindings;
+  if (
+    !expectedBindingScope ||
+    !nativeBindings ||
+    nativeBindings.scope !== expectedBindingScope ||
+    input.action === "start"
+  ) {
+    nativeBindings = expectedBindingScope
+      ? {
+          scope: expectedBindingScope,
+          byOwner: new WeakMap<Element, string>(),
+          byToken: new Map<string, Element>(),
+        }
+      : undefined;
+    isolatedGlobal.__automatFlowNativeCardBindings = nativeBindings;
+  }
+  const bindNativeOwner = (owner: Element) => {
+    const bindings = nativeBindings;
+    if (!bindings) return undefined;
+    const existing = bindings.byOwner.get(owner);
+    if (existing) return existing;
+    const token = crypto.randomUUID();
+    bindings.byOwner.set(owner, token);
+    bindings.byToken.set(token, owner);
+    return token;
+  };
+
   const excluded = (element: Element) =>
     element.closest(
       "nav,header,[role='navigation'],[role='dialog'],dialog,[aria-modal='true'],flow-base-prompt-box,[class*='avatar' i],[class*='profile' i],[class*='account' i]",
@@ -425,18 +467,6 @@ export async function inspectFlowProjectVideosInPage(input: {
     });
     // This hash is only a short-lived traversal handle. It is neither persisted
     // nor trusted as a clip or Gallery asset identity; query strings are omitted.
-    const traversalPaths = rawMediaUrls.flatMap((rawUrl) => {
-      if (!rawUrl) return [];
-      try {
-        const url = new URL(rawUrl);
-        return ["https:", "http:"].includes(url.protocol) &&
-          !url.username && !url.password
-          ? [`${url.origin}${url.pathname}`]
-          : [];
-      } catch {
-        return [];
-      }
-    });
     const observationSource = [...new Set(safeMediaPaths)].sort().join("\n");
     let thumbnailSourceKey = "";
     let width: number | undefined;
@@ -494,26 +524,15 @@ export async function inspectFlowProjectVideosInPage(input: {
     const observationFingerprint = observationSource
       ? await digest(observationSource)
       : undefined;
-    const traversalSource = [...new Set(traversalPaths)].sort().join("\n");
-    const traversalScroller = project.closest<HTMLElement>(
-      ".cdk-virtual-scrollable.page-container",
-    );
-    const ownerRect = card.getBoundingClientRect();
-    const scrollRect = traversalScroller?.getBoundingClientRect();
-    const transientOwnerOffset = traversalScroller && scrollRect
-      ? `${Math.round(ownerRect.top - scrollRect.top + traversalScroller.scrollTop)}:${Math.round(ownerRect.left - scrollRect.left)}`
-      : "no-observed-scroll-offset";
-    const nativeTraversalFingerprint = traversalSource
-      ? await digest(`native-traversal\n${traversalSource}\n${transientOwnerOffset}`)
+    const nativeCardToken = assetIds.length !== 1
+      ? bindNativeOwner(card)
       : undefined;
     const thumbnailFingerprint = thumbnailSourceKey
       ? await digest(`thumbnail\n${thumbnailSourceKey}`)
       : undefined;
     return {
       ...(observationFingerprint ? { observationFingerprint } : {}),
-      ...(assetIds.length !== 1 && nativeTraversalFingerprint
-        ? { nativeTraversalFingerprint }
-        : {}),
+      ...(nativeCardToken ? { nativeCardToken } : {}),
       ...(assetIds.length === 1 ? { assetId: assetIds[0] } : {}),
       assetStatus:
         assetIds.length === 1
@@ -602,17 +621,18 @@ export async function inspectFlowProjectVideosInPage(input: {
     project.querySelector('[aria-busy="true"], [role="progressbar"]'),
   );
   if (input.action === "open") {
-    const nativeTraversal = Boolean(input.nativeTraversalFingerprint);
+    const nativeNavigation = Boolean(input.nativeCardToken);
     if (
-      nativeTraversal
-        ? !/^[a-f0-9]{64}$/i.test(input.nativeTraversalFingerprint ?? "")
+      nativeNavigation
+        ? !uuidPattern.test(input.nativeCardToken ?? "")
         : !input.assetId || !uuidPattern.test(input.assetId)
     )
       return blocked("asset_identity_missing", snapshots);
-    const matches = snapshots.filter((card) => nativeTraversal
-      ? card.nativeTraversalFingerprint === input.nativeTraversalFingerprint
+    const matches = snapshots.filter((card) => nativeNavigation
+      ? card.nativeCardToken === input.nativeCardToken
       : card.assetId === input.assetId);
-    if (!matches.length) return blocked("card_missing", snapshots);
+    if (!matches.length)
+      return blocked(nativeNavigation ? "native_binding_stale" : "card_missing", snapshots);
     if (matches.length !== 1)
       return blocked("card_ambiguous", snapshots);
     const card = matches[0]!;
@@ -620,7 +640,7 @@ export async function inspectFlowProjectVideosInPage(input: {
       return blocked("route_ambiguous", snapshots);
     if (card.routeStatus === "mismatch")
       return blocked("route_project_mismatch", snapshots);
-    if (!nativeTraversal && card.routeStatus === "unique")
+    if (!nativeNavigation && card.routeStatus === "unique")
       return {
         status: "route",
         projectId: input.projectId,
@@ -629,8 +649,34 @@ export async function inspectFlowProjectVideosInPage(input: {
         scroll: { containerFound: Boolean(scrollTarget), top, max, moved, atBottom: Boolean(scrollTarget && top >= max), busy },
         card,
       };
-    const cardElement = cards[snapshots.indexOf(card)]!;
+    const bindingsForOpen = nativeBindings;
+    let boundOwner: Element | undefined;
+    if (
+      nativeNavigation &&
+      bindingsForOpen &&
+      bindingsForOpen.scope === expectedBindingScope
+    )
+      boundOwner = bindingsForOpen.byToken.get(input.nativeCardToken!);
+    if (
+      nativeNavigation &&
+      (!boundOwner ||
+        !boundOwner.isConnected ||
+        !project.contains(boundOwner) ||
+        !observedVideoCardOwner(boundOwner) ||
+        findCard(boundOwner) !== boundOwner)
+    )
+      return blocked("native_binding_stale", snapshots);
+    const cardElement = nativeNavigation
+      ? boundOwner!
+      : cards[snapshots.indexOf(card)]!;
     if (observedVideoCardOwner(cardElement)) {
+      if (
+        nativeNavigation &&
+        (!cardElement.isConnected ||
+          !project.contains(cardElement) ||
+          findCard(cardElement) !== cardElement)
+      )
+        return blocked("native_binding_stale", snapshots);
       (cardElement as HTMLElement).click();
       return {
         status: "opened",
@@ -641,7 +687,7 @@ export async function inspectFlowProjectVideosInPage(input: {
         card,
       };
     }
-    if (nativeTraversal)
+    if (nativeNavigation)
       return blocked("native_open_control_unavailable", snapshots);
     const controls = [
       ...(cardElement.matches("button,[role='button']") ? [cardElement] : []),

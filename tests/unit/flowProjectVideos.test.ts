@@ -243,32 +243,121 @@ describe("Flow project Videos gallery adapter", () => {
     expect(result.cards.map((card) => card.thumbnail.available)).toEqual([false, true]);
   });
 
-  it("opens only the exact observed group card owner, not nested actions", async () => {
-    const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="Same title">
-      <flow-video-tile><video src="https://flow.google.com/media/rendered-video"></video></flow-video-tile>
+  it("binds same-title owners separately and clicks only the discovered token target", async () => {
+    const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
+      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>
+      <button aria-label="More options">More options</button>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="make it">
+      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>
       <button aria-label="More options">More options</button>
     </flow-grid-tile-container>`);
-    const staleOwner = dom.window.document.querySelector("flow-grid-tile-container")!;
-    const snapshot = await inspectFlowProjectVideosInPage({ projectId, action: "snapshot" }) as {
-      cards: Array<{ nativeTraversalFingerprint?: string }>;
-    };
-    const fingerprint = snapshot.cards[0]?.nativeTraversalFingerprint;
-    expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
-    const owner = staleOwner.cloneNode(true) as Element;
-    staleOwner.replaceWith(owner);
-    const nestedAction = dom.window.document.querySelector("button[aria-label='More options']")!;
-    const click = vi.fn();
-    const nestedClick = vi.fn();
-    owner.addEventListener("click", click);
-    nestedAction.addEventListener("click", nestedClick);
+    const owners = [...dom.window.document.querySelectorAll("flow-grid-tile-container")];
+    const nestedActions = [...dom.window.document.querySelectorAll("button[aria-label='More options']")];
+    const firstClick = vi.fn();
+    const secondClick = vi.fn();
+    const firstNestedClick = vi.fn();
+    const secondNestedClick = vi.fn();
+    owners[0]!.addEventListener("click", firstClick);
+    owners[1]!.addEventListener("click", secondClick);
+    nestedActions[0]!.addEventListener("click", firstNestedClick);
+    nestedActions[1]!.addEventListener("click", secondNestedClick);
+    const scanId = "90000000-0000-4000-8000-000000000001";
+    const documentId = "flow-document-one";
+    const snapshot = await inspectFlowProjectVideosInPage({
+      projectId,
+      action: "start",
+      scanId,
+      documentId,
+    }) as { status: string; cards: Array<{ title: string; nativeCardToken?: string }> };
+    const tokens = snapshot.cards.map((card) => card.nativeCardToken);
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.cards.map((card) => card.title)).toEqual(["make it", "make it"]);
+    expect(tokens[0]).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(tokens[1]).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(new Set(tokens).size).toBe(2);
+
+    for (const token of tokens) {
+      const result = await inspectFlowProjectVideosInPage({
+        projectId,
+        action: "open",
+        scanId,
+        documentId,
+        nativeCardToken: token,
+      }) as { status: string };
+      expect(result.status).toBe("opened");
+    }
+    expect(firstClick).toHaveBeenCalledTimes(1);
+    expect(secondClick).toHaveBeenCalledTimes(1);
+    expect(firstNestedClick).not.toHaveBeenCalled();
+    expect(secondNestedClick).not.toHaveBeenCalled();
+  });
+
+  it("rediscovering after a stale owner binding never clicks another same-title card", async () => {
+    const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
+      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="make it">
+      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-b"></video></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const owners = [...dom.window.document.querySelectorAll("flow-grid-tile-container")];
+    const clickFirst = vi.fn();
+    const clickSecond = vi.fn();
+    owners[0]!.addEventListener("click", clickFirst);
+    owners[1]!.addEventListener("click", clickSecond);
+    const scanId = "90000000-0000-4000-8000-000000000002";
+    const documentId = "flow-document-one";
+    const discovered = await inspectFlowProjectVideosInPage({
+      projectId,
+      action: "start",
+      scanId,
+      documentId,
+    }) as { cards: Array<{ nativeCardToken?: string }> };
+    const staleToken = discovered.cards[0]!.nativeCardToken;
+    const replacement = owners[0]!.cloneNode(true);
+    owners[0]!.replaceWith(replacement);
+    // This snapshot rediscoveries the replacement under a new token.
+    const rediscovered = await inspectFlowProjectVideosInPage({
+      projectId,
+      action: "snapshot",
+      scanId,
+      documentId,
+    }) as { cards: Array<{ nativeCardToken?: string }> };
+    expect(rediscovered.cards[0]!.nativeCardToken).not.toBe(staleToken);
     const result = await inspectFlowProjectVideosInPage({
       projectId,
       action: "open",
-      nativeTraversalFingerprint: fingerprint,
-    }) as { status: string };
-    expect(result.status).toBe("opened");
-    expect(click).toHaveBeenCalledTimes(1);
-    expect(nestedClick).not.toHaveBeenCalled();
+      scanId,
+      documentId,
+      nativeCardToken: staleToken,
+    }) as { status: string; reason?: string };
+    expect(result).toMatchObject({ status: "blocked", reason: "native_binding_stale" });
+    expect(clickFirst).not.toHaveBeenCalled();
+    expect(clickSecond).not.toHaveBeenCalled();
+  });
+
+  it("rejects a native owner token from another scan document", async () => {
+    const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
+      <flow-video-tile><video src="https://flow.google.com/media/rendered-video"></video></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const owner = dom.window.document.querySelector("flow-grid-tile-container")!;
+    const click = vi.fn();
+    owner.addEventListener("click", click);
+    const snapshot = await inspectFlowProjectVideosInPage({
+      projectId,
+      action: "start",
+      scanId: "90000000-0000-4000-8000-000000000003",
+      documentId: "flow-document-one",
+    }) as { cards: Array<{ nativeCardToken?: string }> };
+    const result = await inspectFlowProjectVideosInPage({
+      projectId,
+      action: "open",
+      scanId: "90000000-0000-4000-8000-000000000003",
+      documentId: "flow-document-two",
+      nativeCardToken: snapshot.cards[0]?.nativeCardToken,
+    }) as { status: string; reason?: string };
+    expect(result).toMatchObject({ status: "blocked", reason: "native_binding_stale" });
+    expect(click).not.toHaveBeenCalled();
   });
 
   it("does not treat an image-only group without the video discriminator as a video card", async () => {

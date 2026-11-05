@@ -154,7 +154,7 @@ type FlowProjectVideoImportJob = {
   canonicalTarget: string;
   cancelRequested: boolean;
   candidates: Map<string, FlowProjectVideoCard>;
-  nativeCandidates: Map<string, { card: FlowProjectVideoCard; scrollTop: number }>;
+  nativeCandidates: Map<string, { card: FlowProjectVideoCard; scrollTop: number; documentId: string }>;
   unresolvedKeys: Set<string>;
   unresolvedObservationSequence: number;
   resolving?: boolean;
@@ -694,8 +694,8 @@ export function createFlowDownloadDiagnosticManager(
     const countKey = key ?? `unkeyed:${job.unresolvedObservationSequence}:${reason}`;
     job.unresolvedKeys.add(countKey);
     job.candidates.delete(card.assetId ?? "");
-    if (card.nativeTraversalFingerprint)
-      job.nativeCandidates.delete(card.nativeTraversalFingerprint);
+    if (card.nativeCardToken)
+      job.nativeCandidates.delete(card.nativeCardToken);
     job.progress = {
       ...job.progress,
       discovered: Math.min(
@@ -719,7 +719,7 @@ export function createFlowDownloadDiagnosticManager(
     binding: NonNullable<Awaited<ReturnType<typeof verifySelectedFlowTarget>>["binding"]>,
     action: "start" | "snapshot" | "scroll" | "restore" | "open",
     assetId?: string,
-    options: { nativeTraversalFingerprint?: string; scrollTop?: number } = {},
+    options: { nativeCardToken?: string; scrollTop?: number } = {},
   ) => {
     const injected = await dependencies.scripting.executeScript({
       target: {
@@ -731,6 +731,8 @@ export function createFlowDownloadDiagnosticManager(
       args: [{
         projectId: job.progress.projectId!,
         action,
+        scanId: job.progress.jobId!,
+        documentId: binding.documentId,
         ...(assetId ? { assetId } : {}),
         ...options,
       }],
@@ -768,14 +770,15 @@ export function createFlowDownloadDiagnosticManager(
   const mergeProjectVideoSnapshot = (
     job: FlowProjectVideoImportJob,
     page: FlowProjectVideosPageResult,
+    documentId: string,
   ) => {
     let traversalUnavailable = false;
     let traversalAmbiguous = false;
     const byAsset = new Map<string, FlowProjectVideoCard[]>();
-    const byTraversal = new Map<string, FlowProjectVideoCard[]>();
+    const byNativeToken = new Map<string, FlowProjectVideoCard[]>();
     for (const card of page.cards) {
       if (!card.assetId || card.assetStatus !== "unique") {
-        if (!card.nativeTraversalFingerprint) {
+        if (!card.nativeCardToken) {
           addProjectVideoUnresolved(
             job,
             card,
@@ -784,9 +787,9 @@ export function createFlowDownloadDiagnosticManager(
           traversalUnavailable = true;
           continue;
         }
-        const group = byTraversal.get(card.nativeTraversalFingerprint) ?? [];
+        const group = byNativeToken.get(card.nativeCardToken) ?? [];
         group.push(card);
-        byTraversal.set(card.nativeTraversalFingerprint, group);
+        byNativeToken.set(card.nativeCardToken, group);
         continue;
       }
       const grouped = byAsset.get(card.assetId) ?? [];
@@ -820,17 +823,18 @@ export function createFlowDownloadDiagnosticManager(
       if (!job.unresolvedKeys.has(`asset:${assetId}`))
         job.candidates.set(assetId, card);
     }
-    for (const [fingerprint, group] of byTraversal) {
+    for (const [token, group] of byNativeToken) {
       if (group.length !== 1) {
         traversalAmbiguous = true;
         for (const card of group)
           addProjectVideoUnresolved(job, card, "native_traversal_ambiguous");
         continue;
       }
-      if (!job.nativeCandidates.has(fingerprint))
-        job.nativeCandidates.set(fingerprint, {
+      if (!job.nativeCandidates.has(token))
+        job.nativeCandidates.set(token, {
           card: group[0]!,
           scrollTop: page.scroll.top,
+          documentId,
         });
     }
     job.progress = {
@@ -1052,11 +1056,11 @@ export function createFlowDownloadDiagnosticManager(
 
   const resolveNativeNavigationCandidate = async (
     job: FlowProjectVideoImportJob,
-    candidate: { card: FlowProjectVideoCard; scrollTop: number },
+    candidate: { card: FlowProjectVideoCard; scrollTop: number; documentId: string },
   ) => {
     const projectId = job.progress.projectId!;
-    const fingerprint = candidate.card.nativeTraversalFingerprint;
-    if (!fingerprint)
+    const token = candidate.card.nativeCardToken;
+    if (!token)
       throw new Error("flow_project_video_import_native_traversal_unavailable");
     let resolved:
       | {
@@ -1072,6 +1076,7 @@ export function createFlowDownloadDiagnosticManager(
     let restorationFailure: string | undefined;
     let detailRouteObserved = false;
     let selectedDetailIdentityMissing = false;
+    let detailPageMayHaveOpened = false;
     try {
       const galleryTarget = await verifyImportTarget(job);
       const restoredPosition = await importPageResult(
@@ -1082,28 +1087,37 @@ export function createFlowDownloadDiagnosticManager(
         { scrollTop: candidate.scrollTop },
       );
       if (restoredPosition.status !== "ready" || restoredPosition.projectId !== projectId)
-        throw new Error("flow_project_video_import_native_traversal_ambiguous");
+        throw new Error("flow_project_video_import_gallery_unavailable");
+      if (galleryTarget.binding.documentId !== candidate.documentId)
+        throw new Error("flow_project_video_import_native_binding_document_changed");
       const gallery = await importPageResult(job, galleryTarget.binding, "snapshot");
       if (gallery.status !== "ready" || gallery.projectId !== projectId)
         throw new Error("flow_project_video_import_gallery_unavailable");
       const matches = gallery.cards.filter(
-        (card) => card.nativeTraversalFingerprint === fingerprint,
+        (card) => card.nativeCardToken === token,
       );
-      if (matches.length !== 1)
+      // This snapshot is the required rediscovery point. A zero match means the
+      // exact bound node was replaced; never substitute another same-title row.
+      if (matches.length === 0)
+        throw new Error("flow_project_video_import_native_binding_stale");
+      if (matches.length > 1)
         throw new Error("flow_project_video_import_native_traversal_ambiguous");
       const opened = await importPageResult(
         job,
         galleryTarget.binding,
         "open",
         undefined,
-        { nativeTraversalFingerprint: fingerprint },
+        { nativeCardToken: token },
       );
       if (opened.status !== "opened" || !opened.card)
         throw new Error(
-          opened.reason === "native_open_control_unavailable"
+          opened.reason === "native_binding_stale"
+            ? "flow_project_video_import_native_binding_stale"
+            : opened.reason === "card_ambiguous"
             ? "flow_project_video_import_native_traversal_ambiguous"
             : "flow_project_video_import_card_open_unavailable",
         );
+      detailPageMayHaveOpened = true;
 
       let previousStableRead = "";
       let stableReads = 0;
@@ -1191,6 +1205,7 @@ export function createFlowDownloadDiagnosticManager(
         await sleepForImport(150);
       }
     } finally {
+      if (detailPageMayHaveOpened) {
       const currentTab = await dependencies.tabs
         .get(job.selectedTabId)
         .catch(() => undefined);
@@ -1211,7 +1226,7 @@ export function createFlowDownloadDiagnosticManager(
               await dependencies.tabs.update(job.selectedTabId, { url: job.galleryUrl });
             }
           }
-          let restoredCard = false;
+          let restoredGallery = false;
           for (let attempt = 0; !restorationFailure && attempt < 40; attempt += 1) {
             const restoredTarget = await verifyImportTarget(job, true);
             const position = await importPageResult(
@@ -1228,29 +1243,21 @@ export function createFlowDownloadDiagnosticManager(
                 "snapshot",
               );
               if (snapshot.status === "ready" && snapshot.projectId === projectId) {
-                const reselected = snapshot.cards.filter(
-                  (card) => card.nativeTraversalFingerprint === fingerprint,
-                );
-                if (reselected.length === 1) {
-                  restoredCard = true;
-                  break;
-                }
-                if (reselected.length > 1) {
-                  restorationFailure = "flow_project_video_import_native_traversal_ambiguous";
-                  break;
-                }
+                restoredGallery = true;
+                break;
               }
             }
             await sleepForImport(150);
           }
-          if (!restoredCard && !restorationFailure)
-            restorationFailure = "flow_project_video_import_native_traversal_ambiguous";
+          if (!restoredGallery && !restorationFailure)
+            restorationFailure = "flow_project_video_import_gallery_unavailable";
         } catch (error) {
           restorationFailure = error instanceof Error &&
             error.message.includes("navigation_changed")
             ? "flow_project_video_import_navigation_changed"
-            : "flow_project_video_import_native_traversal_ambiguous";
+            : "flow_project_video_import_gallery_unavailable";
         }
+      }
       }
     }
     if (restorationFailure) throw new Error(restorationFailure);
@@ -1283,7 +1290,7 @@ export function createFlowDownloadDiagnosticManager(
           throw new Error(
             `flow_project_video_import_${page.reason ?? "gallery_unavailable"}`,
           );
-        const traversal = mergeProjectVideoSnapshot(job, page);
+        const traversal = mergeProjectVideoSnapshot(job, page, target.binding.documentId);
         if (traversal.traversalUnavailable) {
           stopReason = "identity_deduplication_unavailable";
           break;
@@ -1374,6 +1381,8 @@ export function createFlowDownloadDiagnosticManager(
             ...resolved,
             title: sanitizeFlowProjectVideoTitle(resolved.title),
           });
+          if (candidate.card.nativeCardToken)
+            job.nativeCandidates.delete(candidate.card.nativeCardToken);
           job.progress = {
             ...job.progress,
             imported: Math.min(
@@ -1395,6 +1404,31 @@ export function createFlowDownloadDiagnosticManager(
               candidate.card,
               "native_card_reacquire_ambiguous",
             );
+            terminal = "incomplete";
+            scanComplete = false;
+            stopReason = "coverage_unproven";
+            break;
+          }
+          if (code.includes("native_binding_stale")) {
+            addProjectVideoUnresolved(
+              job,
+              candidate.card,
+              "native_card_binding_stale",
+            );
+            terminal = "incomplete";
+            scanComplete = false;
+            stopReason = "coverage_unproven";
+            continue;
+          }
+          if (code.includes("native_binding_document_changed")) {
+            for (const staleCandidate of job.nativeCandidates.values()) {
+              if (staleCandidate.documentId === candidate.documentId)
+                addProjectVideoUnresolved(
+                  job,
+                  staleCandidate.card,
+                  "native_card_binding_stale",
+                );
+            }
             terminal = "incomplete";
             scanComplete = false;
             stopReason = "coverage_unproven";
@@ -1490,12 +1524,13 @@ export function createFlowDownloadDiagnosticManager(
       }))
     )
       throw new Error("flow_project_video_import_permissions_missing");
+    const scanId = crypto.randomUUID();
     const failPreflight = (
       failureReason: NonNullable<FlowProjectVideosImportProgress["failureReason"]>,
     ) => {
       const failedJob: FlowProjectVideoImportJob = {
         progress: FlowProjectVideosImportProgressSchema.parse({
-          jobId: crypto.randomUUID(),
+          jobId: scanId,
           projectId: target.binding.projectId,
           status: "failed",
           discovered: 0,
@@ -1529,7 +1564,12 @@ export function createFlowDownloadDiagnosticManager(
         },
         world: "ISOLATED",
         func: inspectFlowProjectVideosInPage,
-        args: [{ projectId: target.binding.projectId, action: "start" }],
+        args: [{
+          projectId: target.binding.projectId,
+          action: "start",
+          scanId,
+          documentId: target.binding.documentId,
+        }],
       });
     } catch {
       return failPreflight("page_injection_failed");
@@ -1550,7 +1590,7 @@ export function createFlowDownloadDiagnosticManager(
       return failPreflight("project_mismatch");
     const job: FlowProjectVideoImportJob = {
       progress: {
-        jobId: crypto.randomUUID(),
+        jobId: scanId,
         projectId: target.binding.projectId,
         status: "scanning",
         discovered: 0,

@@ -16,12 +16,12 @@ const firstAsset = "11111111-2222-4333-8444-555555555555";
 const secondAsset = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const liveNativeMappings = [
   {
-    fingerprint: "a".repeat(64),
+    token: "10000000-0000-4000-8000-000000000001",
     clipId: "c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa",
     selectedAssetId: "d8d91f05-e14d-4e15-964f-104981510af6",
   },
   {
-    fingerprint: "b".repeat(64),
+    token: "10000000-0000-4000-8000-000000000002",
     clipId: "bbc2bc82-eccc-4cbe-b3bd-2c8ee2fbd7fa",
     selectedAssetId: "5a796d9e-5c1a-414a-a961-ed77e35c78a3",
   },
@@ -345,11 +345,11 @@ function projectVideoCard(assetId: string, clipId: string, title = "Same title",
 
 function unresolvedProjectVideoCard(
   title: string,
-  nativeTraversalFingerprint?: string,
+  nativeCardToken?: string,
 ): FlowProjectVideoCard {
   return {
     title,
-    ...(nativeTraversalFingerprint ? { nativeTraversalFingerprint } : {}),
+    ...(nativeCardToken ? { nativeCardToken } : {}),
     assetStatus: "missing",
     thumbnail: { available: false },
     routeStatus: "none",
@@ -415,11 +415,15 @@ async function makeProjectVideoImportManager(options: {
         galleryActions.push("select-videos");
       }
       if (action === "open") {
-        const nativeFingerprint = (input.args[0] as { nativeTraversalFingerprint?: string }).nativeTraversalFingerprint;
-        if (nativeFingerprint) {
+        const nativeCardToken = (input.args[0] as { nativeCardToken?: string }).nativeCardToken;
+        if (nativeCardToken && nativeCardToken === options.nativeReacquireFailsFor) {
+          result = { status: "blocked", reason: "native_binding_stale", projectId, cards: [], cardsCapped: false, scroll: { containerFound: true, top: 0, max: 0, moved: false, atBottom: true, busy: false } };
+          return [{ documentId: "document-test", result }];
+        }
+        if (nativeCardToken) {
           const pageCards = snapshots[snapshotIndex] ?? [];
-          const card = pageCards.find((candidate) => candidate.nativeTraversalFingerprint === nativeFingerprint) ?? unresolvedProjectVideoCard("make it", nativeFingerprint);
-          activeNativeMapping = options.nativeMappings?.find((mapping) => mapping.fingerprint === nativeFingerprint);
+          const card = pageCards.find((candidate) => candidate.nativeCardToken === nativeCardToken) ?? unresolvedProjectVideoCard("make it", nativeCardToken);
+          activeNativeMapping = options.nativeMappings?.find((mapping) => mapping.token === nativeCardToken);
           const routeProject = options.nativeWrongProject ? "other-project" : projectId;
           tabUrl = `https://flow.google.com/project/${routeProject}/edit/${activeNativeMapping?.clipId ?? firstClip}`;
           videosSelected = false;
@@ -443,11 +447,11 @@ async function makeProjectVideoImportManager(options: {
         const cards = (snapshots[snapshotIndex] ?? []).map((card) => {
           if (
             options.nativeReacquireFailsFor &&
-            activeNativeMapping?.fingerprint === options.nativeReacquireFailsFor &&
+            activeNativeMapping?.token === options.nativeReacquireFailsFor &&
             !/\/edit\//i.test(tabUrl) &&
-            card.nativeTraversalFingerprint === options.nativeReacquireFailsFor
+            card.nativeCardToken === options.nativeReacquireFailsFor
           )
-            return { ...card, nativeTraversalFingerprint: "f".repeat(64) };
+            return { ...card, nativeCardToken: "ffffffff-ffff-4fff-8fff-ffffffffffff" };
           return options.rerenderCards ? { ...card } : card;
         });
         const max = options.lazy && snapshotIndex === 0 ? 100 : 0;
@@ -582,7 +586,7 @@ describe("Flow Videos Gallery import", () => {
 
   it("imports same-title native cards by verified detail route and selected asset, then reimports by route key", async () => {
     const cards = liveNativeMappings.map((mapping) =>
-      unresolvedProjectVideoCard("make it", mapping.fingerprint),
+      unresolvedProjectVideoCard("make it", mapping.token),
     );
     const { manager, repositories, galleryActions } = await makeProjectVideoImportManager({
       snapshots: [cards],
@@ -636,7 +640,7 @@ describe("Flow Videos Gallery import", () => {
 
   it("rejects a native card that navigates into another project", async () => {
     const { manager, repositories } = await makeProjectVideoImportManager({
-      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.fingerprint)]],
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.token)]],
       nativeMappings: liveNativeMappings,
       nativeWrongProject: true,
     });
@@ -662,7 +666,7 @@ describe("Flow Videos Gallery import", () => {
       }
     };
     const setup = await makeProjectVideoImportManager({
-      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.fingerprint)]],
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.token)]],
       nativeMappings: liveNativeMappings,
       wait,
     });
@@ -683,7 +687,7 @@ describe("Flow Videos Gallery import", () => {
 
   it("does not import a native card when detail rail selection is ambiguous or unavailable", async () => {
     const { manager, repositories } = await makeProjectVideoImportManager({
-      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.fingerprint)]],
+      snapshots: [[unresolvedProjectVideoCard("make it", liveNativeMappings[0]!.token)]],
       nativeMappings: liveNativeMappings,
       nativeSelectionAmbiguous: true,
     });
@@ -702,11 +706,11 @@ describe("Flow Videos Gallery import", () => {
   });
 
   it("stops incomplete when rerendered owners cannot be uniquely reacquired", async () => {
-    const fingerprint = liveNativeMappings[0]!.fingerprint;
+    const token = liveNativeMappings[0]!.token;
     const { manager, repositories } = await makeProjectVideoImportManager({
       snapshots: [[
-        unresolvedProjectVideoCard("make it", fingerprint),
-        unresolvedProjectVideoCard("make it", fingerprint),
+        unresolvedProjectVideoCard("make it", token),
+        unresolvedProjectVideoCard("make it", token),
       ]],
       nativeMappings: liveNativeMappings,
       rerenderCards: true,
@@ -727,14 +731,14 @@ describe("Flow Videos Gallery import", () => {
     expect(await repositories.listFlowClipImports()).toHaveLength(0);
   });
 
-  it("keeps prior imported rows and stops incomplete when a later owner changes during re-acquisition", async () => {
+  it("keeps prior rows and stops before clicking when a later owner binding is stale", async () => {
     const cards = liveNativeMappings.map((mapping) =>
-      unresolvedProjectVideoCard("make it", mapping.fingerprint),
+      unresolvedProjectVideoCard("make it", mapping.token),
     );
     const { manager, repositories } = await makeProjectVideoImportManager({
       snapshots: [cards],
       nativeMappings: liveNativeMappings,
-      nativeReacquireFailsFor: liveNativeMappings[1]!.fingerprint,
+      nativeReacquireFailsFor: liveNativeMappings[1]!.token,
     });
     await manager.startProjectVideoImport();
     let progress = await manager.getProjectVideoImport();
