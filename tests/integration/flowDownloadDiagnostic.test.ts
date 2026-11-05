@@ -65,6 +65,8 @@ describe("Flow Gallery download diagnostic worker path", () => {
               verifiedAt: 1,
             },
           }) as never,
+        upsertFlowClipImport: vi.fn(),
+        listFlowClipImports: vi.fn(async () => []),
       },
       permissions: { contains: async () => true },
       tabs: {

@@ -161,6 +161,9 @@ export type FoundationDependencies = {
     arm: (identityCaptureEnabled?: boolean) => Promise<unknown>;
     stop: () => Promise<unknown>;
     get: () => Promise<unknown>;
+    importCurrentClip: () => Promise<unknown>;
+    listImportedClips: () => Promise<unknown>;
+    inspectClipDownloadProof: (recordId: string) => Promise<unknown>;
     ingestPageEvent: (
       raw: unknown,
       sender: ExtensionMessageSender,
@@ -884,6 +887,42 @@ async function dispatch(
       if (!dependencies.flowDownloadDiagnostic)
         throw new FoundationOperationError("worker_error", "flow_download_diagnostic_unavailable", "The Flow download diagnostic is unavailable in this worker.");
       return await dependencies.flowDownloadDiagnostic.get();
+    case "flow.clipImport.importCurrent":
+      if (!dependencies.flowDownloadDiagnostic)
+        throw new FoundationOperationError("worker_error", "flow_clip_import_unavailable", "Flow clip import is unavailable in this worker.");
+      try {
+        return await dependencies.flowDownloadDiagnostic.importCurrentClip();
+      } catch (error) {
+        const rawCode = error instanceof Error ? error.message : "";
+        const messages: Record<string, string> = {
+          flow_target_not_currently_verified: "Import blocked: the selected Flow project is not currently verified.",
+          flow_target_document_changed: "Import blocked: the selected Flow page no longer matches its verified project.",
+          flow_clip_detail_route_required: "Open a Flow /edit/ detail view before importing a clip.",
+          flow_clip_project_mismatch: "Import blocked: the clip belongs to a different Flow project.",
+          flow_clip_document_changed: "Import blocked: the verified Flow document or clip changed during inspection.",
+          flow_clip_identity_missing: "Import blocked: the detail page did not expose a clip UUID.",
+          flow_clip_route_identity_mismatch: "Import blocked: the detail page clip UUID did not match the current route.",
+          flow_clip_import_route_identity_mismatch: "Import blocked: the stored Flow route did not match its project and clip identity.",
+        };
+        const code = Object.hasOwn(messages, rawCode)
+          ? rawCode
+          : "flow_clip_import_failed";
+        throw new FoundationOperationError(
+          "invalid_request",
+          code,
+          messages[code] ?? "Flow clip import failed validation.",
+        );
+      }
+    case "flow.clipImport.list":
+      if (!dependencies.flowDownloadDiagnostic)
+        throw new FoundationOperationError("worker_error", "flow_clip_import_unavailable", "Flow clip import is unavailable in this worker.");
+      return await dependencies.flowDownloadDiagnostic.listImportedClips();
+    case "flow.clipDownloadProof.inspect":
+      if (!dependencies.flowDownloadDiagnostic)
+        throw new FoundationOperationError("worker_error", "flow_clip_download_proof_unavailable", "Flow clip download proof is unavailable in this worker.");
+      return await dependencies.flowDownloadDiagnostic.inspectClipDownloadProof(
+        request.payload.recordId,
+      );
   }
 }
 

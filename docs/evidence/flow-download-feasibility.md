@@ -697,3 +697,55 @@ The observer does not inspect Gallery-card `href` or other links to derive the c
 - Build: **`automat-faceless-0.1.0-mw2wlegj`**, four JavaScript bundles.
 
 No live browser interaction was performed. The supplied menu-only result remains stopped before quality selection with zero downloads. No upscale, download, or P11.2 work occurred. P11.1 is not live-verified; P11.2 remains pending and P11.3 remains out of scope.
+
+## P11.1 normal clip navigation card-to-route check - 5 November 2026
+
+### Build and observation availability
+
+Checked the packaged extension files for build `automat-faceless-0.1.0-mw2wlegj`; the ID is present in the worker, connection probe, and the current dashboard/download bundles. The connected browser inventory returned no browser tabs or apps, so this build could not be confirmed as loaded in a live Flow tab. No normal clip navigation or two-card comparison was possible in this session.
+
+### Available signal and blocker
+
+Source review finds one candidate signal: the observer fingerprints the current same-tab `/project/<project>/edit/<UUID>` URL at the More options event, and the worker compares it with the route captured at arm time. That can distinguish a same-route observation from a changed/missing route. However, the Gallery owner check retains only whether an ID-like attribute exists; it does not retain its value or inspect an anchor/link from that exact card to the detail route. No live observation establishes that navigating from a specific Gallery card changes the URL to that card's UUID or that the same relation can be rechecked at More options.
+
+**Blocker:** exact Gallery card → `/edit/` UUID identity is not demonstrated. The route fingerprint alone is not sufficient evidence that it belongs to the exact card. A read-only run with build `mw2wlegj` must compare two cards through normal navigation and observe a clip-specific card signal that remains checkable when More options opens. Until that evidence exists, card-to-route identity remains **NOT_VERIFIED**. No title, position, tab ID, or previously visited route was used as a substitute.
+
+No Flow page was opened or navigated, and no menu/control was activated. No quality selection, upscale, download, association-rule change, or P11.2 work occurred. P11.1 remains not live-verified.
+
+## P11.1 read-only Flow detail clip import proof of concept - 5 November 2026
+
+### Import behavior
+
+Added a Flow clip import panel to the existing dashboard diagnostic surface. Import is available only for the currently selected, currently verified Flow document and an exact `/project/<projectId>/edit/<clipUUID>` detail route. The worker rechecks the selected tab/project connection, targets its verified document ID for a read-only DOM inspection, validates the page route identity against the tab route, then checks the tab route again before storing the row. Missing clip identity, a different project, or a route/document change fails visibly without adding a row.
+
+The in-page inspection reads a title from the existing heading/Open Graph/document title and metadata from the largest already visible image. It does not issue a network request or read the video element/file. Thumbnail URLs and signed query parameters are not returned or stored; only availability, dimensions, and an optional fingerprint of origin plus path are retained. Each row stores a deterministic key from Flow project ID plus clip UUID and a clean detail URL without query/hash. The title is display text only. Reimport updates that row while preserving its original import time; two clips with the same title remain separate. List readback validates each row's stored detail URL against its own project and clip identity and exposes the exact Flow link.
+
+### Checks and live status
+
+The user reports that live Flow inspection found two Gallery cards with the same title but different detail-route UUIDs in one project. That user-supplied observation motivates the project-plus-UUID key; the POC imports and deduplication were not exercised against those live pages in this session.
+
+- Offline repository/worker and DOM fixtures: **3 files / 6 tests PASS**. They cover two same-title clips with different UUIDs, reimporting one without duplication, exact route verification, rejection of mismatched project/clip routes, missing clip UUID, thumbnail metadata extraction, omission of raw URL/query token, and zero `fetch` calls.
+- Typecheck: **PASS**; ESLint: **PASS**; production build and shared build-ID validation: **PASS**; `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw2y72ln`**, four JavaScript bundles.
+
+Live two-clip import/reimport verification: **NOT_RUN**. The connected browser inventory contained no tabs or apps, so neither of the two Flow detail views could be imported in the live dashboard. The synthetic fixtures do not establish that Flow's current live DOM exposes the title and thumbnail metadata in the same shape. No automatic Gallery scan, full-video fetch, quality selection, upscale, download, or P11.2 work occurred. P11.1 is not live-verified.
+
+## P11.1 single-row Download 1080p proof gate - 5 November 2026
+
+### Row binding and click boundary
+
+The imported row for the requested target clip is the only row rendered with a **Download 1080p** action. The dashboard sends that exact row key only after the user clicks its button. The worker looks up the stored row, validates its project-plus-clip route, rejects any clip outside the fixed single-row allowlist, and revalidates the selected Flow target and `/edit/` route before inspecting the same verified document. It also compares the page's reported project and clip identity and rechecks the tab route after inspection. The other same-title clip is refused before `executeScript`, so it cannot trigger this action.
+
+The page probe only inventories visible button/menu labels such as `Download media` and `1080p`; it does not click, fetch, inspect media bytes, or start an upscale/download. An observed control label does not prove its behavior. The browser download association classifier and its rules remain unchanged.
+
+### Stop conditions and Saved evidence
+
+Source/evidence review still does not verify a detail-page 1080p control's activation semantics. It also does not provide an explicit link from the selected `/edit/` clip UUID through a Flow output/result asset to the MP4 bytes delivered to Chrome. Consequently the proof action stops with one of these sanitized control blockers: no matching visible control, or a visible control whose semantics remain unverified. In both cases output-to-clip identity is reported **Unverified** and no Saved status is available. A completed browser download, filename pattern, or timing alone is not sufficient. The Saved predicate fixture requires a completed MP4 and exact equality of both selected/output project ID and selected/output clip UUID.
+
+### Fixtures, checks, and live procedure
+
+- Focused Vitest: **2 files / 6 tests PASS**. Fixtures cover two same-title rows where only the selected UUID is admitted, rejection of the other imported clip before page inspection, a visible `Download media` control read without activation, and rejection of incomplete or mismatched output evidence for Saved.
+- Typecheck, ESLint, production package build and build-ID validation, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw2yx3n0`**, four JavaScript bundles.
+
+Live check remains **NOT_RUN**; no Flow tab was available for route/control inspection. Manual test for this build: load the package, select/verify the Flow tab for the imported target, confirm that tab is on the target row's exact detail route, and click **Download 1080p** on that target row. Record the displayed sanitized route/control/output statuses, then stop. Confirm no quality selection occurred and Chrome reports zero new downloads. The second same-title row should have no Download 1080p button. Do not continue to an upscale or download until a safe 1080p action and a direct output-to-clip identity link are independently verified. P11.2 was not started.

@@ -204,6 +204,9 @@ export type RequestPayloads = {
   "flow.downloadDiagnostic.arm": { identityCaptureEnabled?: boolean };
   "flow.downloadDiagnostic.stop": Record<string, never>;
   "flow.downloadDiagnostic.get": Record<string, never>;
+  "flow.clipImport.importCurrent": Record<string, never>;
+  "flow.clipImport.list": Record<string, never>;
+  "flow.clipDownloadProof.inspect": { recordId: string };
 };
 
 export type RequestTypes = keyof RequestPayloads;
@@ -288,6 +291,9 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.downloadDiagnostic.arm": 30_000,
   "flow.downloadDiagnostic.stop": 10_000,
   "flow.downloadDiagnostic.get": 5_000,
+  "flow.clipImport.importCurrent": 15_000,
+  "flow.clipImport.list": 5_000,
+  "flow.clipDownloadProof.inspect": 15_000,
 };
 
 export function makeRequest<T extends RequestTypes>(

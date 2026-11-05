@@ -2,6 +2,19 @@ import type { ExtensionRepositories } from "../storage/repositories";
 import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import { flowTabFromUrl, sameFlowDocument } from "../platforms/flow/connection";
 import {
+  FlowClipImportRecordSchema,
+  flowClipDetailIdentityFromUrl,
+  flowClipImportRouteMatches,
+} from "../domain/media/flowClipImport";
+import {
+  isFlow1080pProofClip,
+} from "../domain/media/flowClipDownloadProof";
+import {
+  FlowClipPageMetadataSchema,
+  inspectCurrentFlowClipInPage,
+} from "../platforms/flow/clipImport";
+import { inspectFlowClipDownloadControlsInPage } from "../platforms/flow/clipDownloadProof";
+import {
   FLOW_GALLERY_DIAGNOSTIC_ALARM,
   FLOW_GALLERY_DIAGNOSTIC_STORAGE_KEY,
   FLOW_GALLERY_DIAGNOSTIC_TTL_MS,
@@ -63,7 +76,10 @@ export type FlowDownloadDiagnosticDownloadChangedListener = (delta: {
 
 export type FlowDownloadDiagnosticDependencies = {
   extensionId: string;
-  repositories: Pick<ExtensionRepositories, "getSelectedTarget">;
+  repositories: Pick<
+    ExtensionRepositories,
+    "getSelectedTarget" | "upsertFlowClipImport" | "listFlowClipImports"
+  >;
   permissions: {
     contains(input: { permissions: string[] }): Promise<boolean>;
   };
@@ -285,6 +301,228 @@ export function createFlowDownloadDiagnosticManager(
       throw new Error("flow_target_document_changed");
     return { selected, binding, verifiedTabUrl: tab.url };
   };
+
+  async function importCurrentClip() {
+    const { selected, binding, verifiedTabUrl } =
+      await verifySelectedFlowTarget();
+    const routeIdentity = verifiedTabUrl
+      ? flowClipDetailIdentityFromUrl(verifiedTabUrl)
+      : undefined;
+    if (!routeIdentity) throw new Error("flow_clip_detail_route_required");
+    if (routeIdentity.projectId !== binding.projectId)
+      throw new Error("flow_clip_project_mismatch");
+    const injected = await dependencies.scripting.executeScript({
+      target: {
+        tabId: selected.tabId,
+        documentIds: [binding.documentId],
+      },
+      world: "ISOLATED",
+      func: inspectCurrentFlowClipInPage,
+      args: [],
+    });
+    if (injected[0]?.documentId !== binding.documentId)
+      throw new Error("flow_clip_document_changed");
+    const metadata = FlowClipPageMetadataSchema.safeParse(injected[0]?.result);
+    if (!metadata.success) throw new Error("flow_clip_identity_missing");
+    if (metadata.data.projectId !== binding.projectId)
+      throw new Error("flow_clip_project_mismatch");
+    if (metadata.data.clipId.toLowerCase() !== routeIdentity.clipId)
+      throw new Error("flow_clip_route_identity_mismatch");
+    const currentTab = await dependencies.tabs.get(selected.tabId);
+    const currentRoute = currentTab.url
+      ? flowClipDetailIdentityFromUrl(currentTab.url)
+      : undefined;
+    if (
+      !currentRoute ||
+      currentRoute.projectId !== routeIdentity.projectId ||
+      currentRoute.clipId !== routeIdentity.clipId
+    )
+      throw new Error("flow_clip_document_changed");
+    const saved = await dependencies.repositories.upsertFlowClipImport({
+      projectId: routeIdentity.projectId,
+      clipId: routeIdentity.clipId,
+      title: metadata.data.title,
+      detailUrl: routeIdentity.detailUrl,
+      thumbnail: metadata.data.thumbnail,
+    });
+    return {
+      status: "imported" as const,
+      reimported: saved.reimported,
+      routeVerified: flowClipImportRouteMatches(saved.record),
+      record: saved.record,
+    };
+  }
+
+  async function listImportedClips() {
+    return (await dependencies.repositories.listFlowClipImports()).map(
+      (record) => ({
+        ...record,
+        routeVerified:
+          FlowClipImportRecordSchema.safeParse(record).success &&
+          flowClipImportRouteMatches(record),
+      }),
+    );
+  }
+
+  async function inspectClipDownloadProof(recordId: string) {
+    const rows = await dependencies.repositories.listFlowClipImports();
+    const row = rows.find((candidate) => candidate.id === recordId);
+    if (
+      !row ||
+      !FlowClipImportRecordSchema.safeParse(row).success ||
+      !flowClipImportRouteMatches(row)
+    )
+      return {
+        status: "blocked" as const,
+        blocker: "imported_row_missing_or_unverified" as const,
+        routeStatus: "not_checked" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+    if (!isFlow1080pProofClip(row.clipId))
+      return {
+        status: "blocked" as const,
+        blocker: "clip_not_in_single_row_scope" as const,
+        routeStatus: "not_checked" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+
+    let target: Awaited<ReturnType<typeof verifySelectedFlowTarget>>;
+    try {
+      target = await verifySelectedFlowTarget();
+    } catch {
+      return {
+        status: "blocked" as const,
+        blocker: "project_not_currently_verified" as const,
+        routeStatus: "not_checked" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+    }
+    if (target.binding.projectId !== row.projectId)
+      return {
+        status: "blocked" as const,
+        blocker: "project_not_currently_verified" as const,
+        routeStatus: "mismatch" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+    const routeIdentity = target.verifiedTabUrl
+      ? flowClipDetailIdentityFromUrl(target.verifiedTabUrl)
+      : undefined;
+    if (
+      !routeIdentity ||
+      routeIdentity.projectId !== row.projectId ||
+      routeIdentity.clipId !== row.clipId.toLowerCase()
+    )
+      return {
+        status: "blocked" as const,
+        blocker: "detail_route_missing_or_changed" as const,
+        routeStatus: "mismatch" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+
+    const targetScript = {
+      tabId: target.selected.tabId,
+      documentIds: [target.binding.documentId],
+    };
+    const identityResult = await dependencies.scripting.executeScript({
+      target: targetScript,
+      world: "ISOLATED",
+      func: inspectCurrentFlowClipInPage,
+      args: [],
+    });
+    const pageIdentity = FlowClipPageMetadataSchema.safeParse(
+      identityResult[0]?.result,
+    );
+    if (
+      identityResult[0]?.documentId !== target.binding.documentId ||
+      !pageIdentity.success ||
+      pageIdentity.data.projectId !== row.projectId ||
+      pageIdentity.data.clipId.toLowerCase() !== row.clipId.toLowerCase()
+    )
+      return {
+        status: "blocked" as const,
+        blocker: "page_clip_identity_mismatch" as const,
+        routeStatus: "mismatch" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+
+    const afterInspectionTab = await dependencies.tabs.get(target.selected.tabId);
+    const afterInspectionRoute = afterInspectionTab.url
+      ? flowClipDetailIdentityFromUrl(afterInspectionTab.url)
+      : undefined;
+    if (
+      !afterInspectionRoute ||
+      afterInspectionRoute.projectId !== row.projectId ||
+      afterInspectionRoute.clipId !== row.clipId.toLowerCase()
+    )
+      return {
+        status: "blocked" as const,
+        blocker: "detail_route_missing_or_changed" as const,
+        routeStatus: "mismatch" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+
+    const controlResult = await dependencies.scripting.executeScript({
+      target: targetScript,
+      world: "ISOLATED",
+      func: inspectFlowClipDownloadControlsInPage,
+      args: [],
+    });
+    const controls = controlResult[0]?.result as
+      | { downloadMediaControlCount?: unknown; explicit1080pControlCount?: unknown }
+      | undefined;
+    if (controlResult[0]?.documentId !== target.binding.documentId)
+      return {
+        status: "blocked" as const,
+        blocker: "page_clip_identity_mismatch" as const,
+        routeStatus: "mismatch" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+    const downloadMediaControlCount =
+      typeof controls?.downloadMediaControlCount === "number"
+        ? Math.max(0, Math.min(20, controls.downloadMediaControlCount))
+        : 0;
+    const explicit1080pControlCount =
+      typeof controls?.explicit1080pControlCount === "number"
+        ? Math.max(0, Math.min(20, controls.explicit1080pControlCount))
+        : 0;
+    const finalTab = await dependencies.tabs.get(target.selected.tabId);
+    const finalRoute = finalTab.url
+      ? flowClipDetailIdentityFromUrl(finalTab.url)
+      : undefined;
+    if (
+      !finalRoute ||
+      finalRoute.projectId !== row.projectId ||
+      finalRoute.clipId !== row.clipId.toLowerCase()
+    )
+      return {
+        status: "blocked" as const,
+        blocker: "detail_route_missing_or_changed" as const,
+        routeStatus: "mismatch" as const,
+        controlStatus: "not_checked" as const,
+        outputStatus: "unverified" as const,
+      };
+    return {
+      status: "blocked" as const,
+      blocker: downloadMediaControlCount || explicit1080pControlCount
+        ? "detail_download_control_semantics_unverified" as const
+        : "detail_download_control_not_found" as const,
+      routeStatus: "matched" as const,
+      controlStatus: downloadMediaControlCount || explicit1080pControlCount
+        ? "observed_unverified" as const
+        : "not_found" as const,
+      downloadMediaControlCount,
+      explicit1080pControlCount,
+      outputStatus: "unverified" as const,
+    };
+  }
 
   async function arm(identityCaptureEnabled = false) {
     await loaded;
@@ -1055,6 +1293,9 @@ export function createFlowDownloadDiagnosticManager(
     arm,
     stop,
     get,
+    importCurrentClip,
+    listImportedClips,
+    inspectClipDownloadProof,
     ingestPageEvent,
     onAlarm,
     dispose() {

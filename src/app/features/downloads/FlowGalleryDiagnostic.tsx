@@ -5,6 +5,7 @@ import {
   type FlowGalleryDownloadDiagnostic,
 } from "../../../platforms/flow/downloads";
 import type { createFoundationClient } from "../../../shared/messageClient";
+import { isFlow1080pProofClip } from "../../../domain/media/flowClipDownloadProof";
 import { Button } from "../../components/Button";
 import styles from "../../Dashboard.module.css";
 
@@ -173,6 +174,7 @@ export function FlowGalleryDiagnostic({
       <h3 id="flow-download-diagnostic-title">
         Flow Gallery upscale diagnostic
       </h3>
+      <FlowClipImportProofOfConcept persistenceClient={persistenceClient} />
       <p>
         Observe one manually selected 1080p Upscaled action. The extension will
         not click a quality option, start an upscale, or initiate a download.
@@ -511,5 +513,228 @@ export function FlowGalleryDiagnostic({
         Refresh diagnostic status
       </Button>
     </article>
+  );
+}
+
+type FlowClipImportRow = {
+  id: string;
+  projectId: string;
+  clipId: string;
+  title: string;
+  detailUrl: string;
+  thumbnail: {
+    available: boolean;
+    width?: number;
+    height?: number;
+    fingerprint?: string;
+  };
+  importedAt: number;
+  updatedAt: number;
+  routeVerified: boolean;
+};
+
+type FlowClipDownloadProofResult = {
+  status: "blocked";
+  blocker: string;
+  routeStatus: "matched" | "mismatch" | "not_checked";
+  controlStatus: "observed_unverified" | "not_found" | "not_checked";
+  downloadMediaControlCount?: number;
+  explicit1080pControlCount?: number;
+  outputStatus: "unverified";
+};
+
+function flowClipDownloadBlockerLabel(result: FlowClipDownloadProofResult) {
+  switch (result.blocker) {
+    case "clip_not_in_single_row_scope":
+      return "Blocked: this clip is outside the single-row proof scope.";
+    case "imported_row_missing_or_unverified":
+      return "Blocked: the imported row is missing or its exact route is unverified.";
+    case "project_not_currently_verified":
+      return "Blocked: the selected Flow project is not currently verified for this row.";
+    case "detail_route_missing_or_changed":
+      return "Blocked: the selected tab is no longer on this row's exact /edit/ route.";
+    case "page_clip_identity_mismatch":
+      return "Blocked: the verified detail page did not identify this exact clip.";
+    case "detail_download_control_not_found":
+      return "Blocked: no visible Download media or 1080p control was found on the detail page.";
+    case "detail_download_control_semantics_unverified":
+      return "Blocked: a download control is visible, but its 1080p action is not verified safe to activate.";
+    case "output_clip_identity_unverified":
+      return "Blocked: Flow output identity cannot yet be linked to this clip.";
+  }
+}
+
+function FlowClipImportProofOfConcept({
+  persistenceClient,
+}: {
+  persistenceClient: Client;
+}) {
+  const [rows, setRows] = useState<FlowClipImportRow[]>([]);
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [downloadProofPending, setDownloadProofPending] = useState(false);
+  const [downloadProofs, setDownloadProofs] = useState<
+    Record<string, FlowClipDownloadProofResult | undefined>
+  >({});
+
+  const refresh = useCallback(async () => {
+    try {
+      const result = (await persistenceClient.request(
+        "flow.clipImport.list",
+        {},
+      )) as FlowClipImportRow[];
+      setRows(result);
+      setError(undefined);
+    } catch {
+      setError("Imported Flow clips could not be read from local storage.");
+    }
+  }, [persistenceClient]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const importCurrent = async () => {
+    setPending(true);
+    setMessage(undefined);
+    setError(undefined);
+    try {
+      const result = (await persistenceClient.request(
+        "flow.clipImport.importCurrent",
+        {},
+      )) as {
+        status: "imported";
+        reimported: boolean;
+        routeVerified: boolean;
+        record: FlowClipImportRow;
+      };
+      await refresh();
+      setMessage(
+        result.reimported
+          ? "Clip reimported; the existing project and clip row was updated."
+          : "Clip imported and its exact Flow route verified.",
+      );
+      if (!result.routeVerified)
+        setError("The imported row did not pass exact route verification.");
+    } catch (caught) {
+      const code =
+        caught instanceof Error && "code" in caught
+          ? String((caught as Error & { code?: unknown }).code ?? "")
+          : caught instanceof Error
+            ? caught.message
+            : "";
+      setError(
+        code.includes("flow_clip_project_mismatch")
+          ? "Import blocked: the detail route belongs to a different Flow project."
+          : code.includes("flow_clip_identity_missing")
+            ? "Import blocked: the current detail page did not expose a clip UUID."
+            : code.includes("flow_clip_route_identity_mismatch")
+              ? "Import blocked: the page clip UUID did not match its detail route."
+              : code.includes("flow_clip_document_changed")
+                ? "Import blocked: the verified Flow document or clip changed during inspection."
+                : code.includes("flow_target_document_changed")
+                  ? "Import blocked: the selected Flow page no longer matches its verified project."
+                  : code.includes("flow_clip_detail_route_required")
+                    ? "Open a verified Flow /edit/ detail view before importing a clip."
+                    : "Flow clip import failed; no row was added unless readback confirms it.",
+      );
+      await refresh();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const inspectDownload1080p = async (row: FlowClipImportRow) => {
+    setDownloadProofPending(true);
+    setDownloadProofs((previous) => ({ ...previous, [row.id]: undefined }));
+    setError(undefined);
+    try {
+      const result = (await persistenceClient.request(
+        "flow.clipDownloadProof.inspect",
+        { recordId: row.id },
+      )) as FlowClipDownloadProofResult;
+      setDownloadProofs((previous) => ({ ...previous, [row.id]: result }));
+    } catch {
+      setDownloadProofs((previous) => ({
+        ...previous,
+        [row.id]: {
+          status: "blocked",
+          blocker: "project_not_currently_verified",
+          routeStatus: "not_checked",
+          controlStatus: "not_checked",
+          outputStatus: "unverified",
+        },
+      }));
+    } finally {
+      setDownloadProofPending(false);
+    }
+  };
+
+  return (
+    <section aria-labelledby="flow-clip-import-title">
+      <h4 id="flow-clip-import-title">Flow video clip import · proof of concept</h4>
+      <p className={styles.disabledReason}>
+        On a verified Flow /edit/ detail view, import its route identity, title,
+        and thumbnail metadata already present in the page. The full video is
+        never fetched. Same-title clips remain separate by project and clip ID.
+      </p>
+      <div className={styles.actionRow}>
+        <Button disabled={pending} loading={pending} onClick={() => void importCurrent()}>
+          Import current detail clip
+        </Button>
+        <Button variant="secondary" disabled={pending} onClick={() => void refresh()}>
+          Refresh imported clips
+        </Button>
+      </div>
+      {message ? <p role="status">{message}</p> : null}
+      {error ? (
+        <p className={styles.fieldError} role="alert">
+          {error}
+        </p>
+      ) : null}
+      {rows.length ? (
+        <ul aria-label="Imported Flow clips">
+          {rows.map((row) => (
+            <li key={row.id}>
+              <strong>{row.title || "Untitled Flow clip"}</strong>
+              <div>
+                Flow project <code>{row.projectId}</code> · clip <code>{row.clipId}</code>
+              </div>
+              <div>
+                Thumbnail metadata: {row.thumbnail.available
+                  ? `${row.thumbnail.width ?? "?"} × ${row.thumbnail.height ?? "?"}${row.thumbnail.fingerprint ? " · fingerprint recorded" : " · fingerprint unavailable"}`
+                  : "not available"}
+              </div>
+              <div>
+                {row.routeVerified ? "Exact detail route verified" : "Unverified route"} ·{" "}
+                <a href={row.detailUrl} target="_blank" rel="noreferrer">
+                  Open this Flow clip
+                </a>
+              </div>
+              {isFlow1080pProofClip(row.clipId) ? (
+                <div>
+                  <Button
+                    variant="secondary"
+                    disabled={downloadProofPending || !row.routeVerified}
+                    loading={downloadProofPending}
+                    onClick={() => void inspectDownload1080p(row)}
+                  >
+                    Download 1080p
+                  </Button>
+                  {downloadProofs[row.id] ? (
+                    <p role="status">
+                      {flowClipDownloadBlockerLabel(downloadProofs[row.id]!)} Route: {downloadProofs[row.id]!.routeStatus}; detail controls: {downloadProofs[row.id]!.controlStatus}{downloadProofs[row.id]!.downloadMediaControlCount !== undefined ? ` (${downloadProofs[row.id]!.downloadMediaControlCount} Download media, ${downloadProofs[row.id]!.explicit1080pControlCount ?? 0} labeled 1080p)` : ""}; output-to-clip link: {downloadProofs[row.id]!.outputStatus} (no output asset/result identifier is linked to the route clip). No quality selection or download was started.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className={styles.disabledReason}>No Flow clips imported yet.</p>
+      )}
+    </section>
   );
 }

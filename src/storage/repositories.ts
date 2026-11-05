@@ -85,6 +85,12 @@ import { BUILD_ID, PROTOCOL_VERSION } from "../shared/buildInfo";
 import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
 import { flowImagePromptSnapshotId } from "../domain/batches/flowImagePromptSnapshot";
 import {
+  FlowClipImportRecordSchema,
+  flowClipImportId,
+  flowClipImportRouteMatches,
+  type FlowClipImportRecord,
+} from "../domain/media/flowClipImport";
+import {
   canTransitionFlowImageAttempt,
   flowImageAttemptActiveKey,
   isBlockingFlowImageAttempt,
@@ -349,6 +355,7 @@ export type RepositoryDatabase = {
   vidsVideoAttachmentOperations: Pick<Table<VidsVideoAttachmentOperation, string>, "get" | "put" | "add">;
   vidsVideoGenerationOperations: Pick<Table<VidsVideoGenerationOperation, string>, "get" | "put" | "add">;
   vidsVideoQueues: Pick<Table<VidsVideoQueueRecord, string>, "get" | "put" | "add" | "toArray">;
+  flowClipImports: Pick<Table<FlowClipImportRecord, string>, "get" | "put" | "toArray">;
   transaction: <T>(
     tableNames: string[],
     operation: () => Promise<T>,
@@ -377,6 +384,7 @@ export function createDexieRepositoryDatabase(
     vidsVideoAttachmentOperations: database.vidsVideoAttachmentOperations,
     vidsVideoGenerationOperations: database.vidsVideoGenerationOperations,
     vidsVideoQueues: database.vidsVideoQueues,
+    flowClipImports: database.flowClipImports,
     transaction: (tableNames, operation) => {
       switch (tableNames[0]) {
         case "promptDrafts":
@@ -532,6 +540,8 @@ export function createDexieRepositoryDatabase(
           return database.transaction("rw", database.vidsVideoAttachmentOperations, database.vidsVideoGenerationOperations, operation);
         case "vidsVideoAttachmentOperations+vidsVideoGenerationOperations+vidsVideoQueues":
           return database.transaction("rw", database.vidsVideoAttachmentOperations, database.vidsVideoGenerationOperations, database.vidsVideoQueues, operation);
+        case "flowClipImports":
+          return database.transaction("rw", database.flowClipImports, operation);
         default:
           return Promise.reject(
             new Error("Unsupported repository transaction."),
@@ -878,6 +888,33 @@ export class ExtensionRepositories {
           ? { ...record, reconnectEnabled: record.reconnectEnabled !== false }
           : undefined,
       );
+  }
+
+  async upsertFlowClipImport(
+    input: Omit<FlowClipImportRecord, "id" | "importedAt" | "updatedAt">,
+  ): Promise<{ record: FlowClipImportRecord; reimported: boolean }> {
+    if (!flowClipImportRouteMatches(input))
+      throw new Error("flow_clip_import_route_identity_mismatch");
+    const id = flowClipImportId(input.projectId, input.clipId);
+    return this.tables.transaction(["flowClipImports"], async () => {
+      const previous = await this.tables.flowClipImports.get(id);
+      const timestamp = this.now();
+      const record = FlowClipImportRecordSchema.parse({
+        ...input,
+        id,
+        importedAt: previous?.importedAt ?? timestamp,
+        updatedAt: timestamp,
+      });
+      await this.tables.flowClipImports.put(record);
+      return { record, reimported: Boolean(previous) };
+    });
+  }
+
+  async listFlowClipImports(): Promise<FlowClipImportRecord[]> {
+    const records = await this.tables.flowClipImports.toArray();
+    return records
+      .filter((record) => FlowClipImportRecordSchema.safeParse(record).success)
+      .sort((left, right) => left.importedAt - right.importedAt);
   }
 
   async setReconnectIntent(
