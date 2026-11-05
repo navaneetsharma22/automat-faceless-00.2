@@ -585,3 +585,93 @@ The worker fixture fills all 16 slots with action-time Media requests without me
 - Build: **`automat-faceless-0.1.0-mw24y49t`**, four JavaScript bundles.
 
 Chrome ID `2789` remains complete but unassociated. The supplied evidence does not establish an asset/job identifier bridge or whether a suitable identity was never extracted, mismatched among retained requests, or omitted at capacity. No live Flow page was inspected and no upscale or download was triggered. P11.2 remains pending; P11.3 is out of scope.
+
+## P11.1 selected-clip identity trace for download 2790 - 4 November 2026
+
+### Status and inspection boundary
+
+Keep Chrome download ID `2790` **Complete / Association Unverified**, as directed. This pass made no live Flow changes. Read-only connected-browser inspection was attempted through the computer-use workflow, but the Windows native pipe remained unavailable after its prescribed recovery; live DOM and route inspection are **NOT_RUN**. The repository contains no separate captured card DOM, media element, detail route, or upscale-result trace for run `2790`.
+
+### Identity surfaces in the available source and traces
+
+The P11.1 Gallery observer identifies the clicked owner (including `flow-video-tile`) and checks whether that element has an `id`, `data-id`, `data-video-id`, or `data-asset-id`. It reports only `stableIdAttributeObserved: true/false`; it does not retain the attribute value, inspect an `href` or detail route, or read an image/video element's source or identity. Therefore source review confirms that this diagnostic does not extract a selected video card ID. It cannot establish whether the live card or route actually exposes one.
+
+Other Flow identity code is for the input ingredient image. The video attachment path reads a pinned `providerAssetId` and checks that the attached Ingredient chip resolves to the same source image media ID. That identity belongs to the prepared input reference; no existing trace connects it to the generated Gallery video or its downloaded file. Separately, the Flow result identity schemas describe result/asset/group-variant IDs and attribution for Flow image-result observation. Those image lifecycle records are not emitted by the P11.1 video Gallery observer, and no such record for the selected video or ID `2790` was found. The legacy video queue's optional `resultIdentity` has no production writer or consumer in `src`.
+
+The P11.1 worker can compare sanitized, session-scoped request/event/download fingerprints under its existing strict rules. Those fingerprints can link action-time media evidence to the page download event and exact Chrome download record when they agree, but they do not encode which Gallery card was selected. The available identity chain therefore ends before the clip: there is no demonstrated stable card ID, no observed video upscale job/result ID, and no same-ID trace from card to result/blob. A detail-route ID, if present live, remains uninspected. Timing, filename, download completion, and blob URL equality cannot fill that gap.
+
+### Finding
+
+Confirmed from source: the current P11.1 observer reduces ID-like card attributes to a boolean and has no card-to-media or card-to-result identity comparison. Confirmed from the inspected repository traces: no video result identity for ID `2790` is available to complete that bridge. Not confirmed: whether the live card/media/detail route exposes a stable ID or whether Flow's upscale response contains a corresponding ID. ID `2790` remains **Complete / Association Unverified**. No matching fallback or weakened rule was added; no upscale or download was triggered. P11.2 remains pending and P11.3 remains out of scope.
+
+## P11.1 route-to-output identity trace for download 2790 - 4 November 2026
+
+### Supplied identifiers and local evidence
+
+The user identifies the selected clip by title and supplies its Flow detail-route UUID; the user separately identifies a token embedded in the download filename. Treat the route UUID and filename token as distinct values. They are not evidence of equality or a mapping. To keep the evidence record sanitized, the raw route UUID and filename token are not copied here.
+
+Searched the existing P11.1 evidence, project status, source, tests/fixtures, e2e, artifacts, and test-results for the supplied route UUID, filename token, clip title, and download ID. No run-specific log or capture containing the route UUID, clip title, or filename token is present. The only local `2790` record is the prior status/evidence entry retaining **Complete / Association Unverified**. Available browser fixtures are synthetic and do not represent this live run. The previously reported blob-to-Chrome-ID match is user-supplied evidence; its raw capture is not present in the workspace.
+
+### Missing links
+
+1. **Route clip → upscale job/output asset:** no capture explicitly records the supplied route UUID as the source of an upscale job, or maps that job ID to a returned output asset/result ID. The filename token is separate and does not fill this link.
+2. **Output asset → downloaded blob:** no capture maps a returned output asset/result ID to the media response or blob URL that produced the download event for Chrome ID `2790`. The reported blob URL ↔ Chrome download mapping reaches the browser download record, but by itself does not identify the clip or output asset.
+
+### One future capture needed
+
+A single bounded capture around one already-authorized trusted quality action would need to preserve these explicit relations, all bound to the same selected tab, main frame, project, and action:
+
+- a sanitized fingerprint for the clicked card's detail-route UUID, recorded at trusted click time;
+- the upscale request/response correlation that explicitly relates that source route UUID to one job ID, and that job ID to one output asset/result ID;
+- the media request/response or object-URL creation evidence that explicitly relates that output asset/result ID to the selected-frame blob URL (compare exact values in memory; retain only scoped fingerprints/equality flags);
+- the existing selected-frame `Page.downloadWillBegin` record and exact Chrome DownloadItem ID/URL comparison, so the final output-to-blob-to-download edge remains exact and unique.
+
+Record only bounded event types, relation/equality outcomes, and scoped fingerprints; do not persist raw URLs, signed parameters, tokens, or raw media identifiers. The capture must show each edge directly, not infer it from the filename token, title, timing, or a shared download. Until those links are observed, ID `2790` remains **Complete / Association Unverified**. No matching rule changed, and no upscale or download was triggered. P11.2 remains pending; P11.3 remains out of scope.
+
+## P11.1 opt-in route-asset identity capture readiness - 4 November 2026
+
+### Flow surfaces and trace boundary
+
+Source review confirms Flow's `/project/<project>/edit/<UUID>` route is its project-scoped read-only asset detail route. `providerRoute.ts` retains the project as the canonical target and intentionally strips this UUID, so the P11.1 capture must fingerprint the detail UUID separately while staying bound to the already verified project, tab, document, main frame, and trusted action.
+
+The existing debugger surface captures selected-main-frame `Network.requestWillBeSent` URL metadata for Media/Fetch/XHR, `Page.downloadWillBegin`, and exact in-memory URL equality to Chrome DownloadItems. It does not receive request/response bodies, parse job or result metadata, or observe which bytes are passed to `URL.createObjectURL`. The asset route UUID can therefore be compared to UUID path components on action-time request/download URLs, but a job ID in a JSON payload or a source relation held only in response data is not currently visible.
+
+### Temporary opt-in trace
+
+Added an unchecked **Capture sanitized /edit asset path identity** option to the existing one-observation arm. When enabled, the trusted More options click captures only a session-scoped SHA-256 fingerprint of the current Flow detail-route UUID, after validating that the route is for the selected project. The selected main-frame request URLs, page download URL, and Chrome URL/final URL are independently examined in memory for UUID path components. Persisted values are only full-length scoped fingerprints; raw route values, URLs, signed parameters, and tokens are not added to this evidence. The trace is bounded by the existing one-shot session, request/download caps, selected document/frame checks, and expiry.
+
+The new display is separate from association. It reports whether the route UUID appeared in an action-time request path and whether that same UUID appeared in a selected-main-frame `blob:` download URL with an exact Chrome DownloadItem URL match. It never substitutes the route UUID or filename for the existing association evidence and does not change the production matcher.
+
+### Offline regressions and remaining stop
+
+Focused fixtures verify that an unrelated action request/output ID plus an otherwise exact page-event-to-Chrome-ID pair leaves the route trace unlinked; a route-matching request with a different blob path ID stops at `blob_id_not_observed`; and the direct route-ID-on-blob-path case requires a selected-frame after-action blob event plus an exact Chrome URL/ID pair. The latter is a synthetic positive case, not evidence that Flow uses this URL shape.
+
+Capture readiness is partial. It can test route UUID -> action request URL path ID. It cannot prove that such a request is an upscale job or output asset when the relation is only in request/response metadata, because the observer does not capture those bodies. It can test output asset ID -> blob only when the exact route asset UUID is present in the page-created blob URL path and the existing exact Chrome URL comparison succeeds. For an opaque/random blob UUID, capture stops at the page blob URL; proving which output bytes created it would require a separate bounded response-body/blob-content fingerprint link, which is not implemented here.
+
+- Focused identity/worker tests: **2 files / 21 tests PASS**.
+- Typecheck, full ESLint, production package build, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw27jykf`**, four JavaScript bundles.
+
+No live capture, upscale, or download was performed. Chrome ID `2790` remains **Complete / Association Unverified**. P11.1 is not live-verified; the next controlled run would only test whether Flow exposes route identity in URL paths. P11.2 remains pending; P11.3 remains out of scope.
+
+## P11.1 arm-time Flow detail-route preflight - 4 November 2026
+
+### Sampling cause
+
+The prior opt-in route fingerprint was sampled only in `installFlowGalleryDownloadObserver` after a trusted More options click on a recognized card owner. It was not sampled by `arm()` and there is no route-navigation listener. Before that menu click, `selectedCard.assetPathFingerprint` was unset, so the route trace correctly displayed `route_not_observed`; that status did not establish that the open tab lacked an `/edit/` UUID. The live report does not say whether More options had already been clicked, so this source cause explains the pre-click state but does not reconstruct the exact live sequence.
+
+### Read-only arm preflight
+
+The opt-in capture now fingerprints the `/project/<selected-project>/edit/<UUID>` route from the same current tab URL that passed selected Flow target validation, before debugger attachment or page-observer installation. It stores only the session-scoped fingerprint and a bounded `matched`/`not_matched` status. A route only matches when it is the recognized Flow detail route and its project segment matches the verified selected project. The dashboard exposes only **Match** or **No match**, never the UUID or fingerprint.
+
+When More options is clicked, the page observer samples that route again and sends only its scoped fingerprint. The worker compares it to the arm-time fingerprint and retains only the equality status. A route that changed, disappeared, or moved to another project reports **No match** before a quality action can be accepted. There is still no continuous navigation listener; the arm-time status is immediate and the second check occurs at the menu-opening click. The diagnostic remains passive and the association classifier is unchanged.
+
+### Regression and checks
+
+The worker integration fixture arms on a synthetic verified `/edit/` route, confirms the arm-time preflight is matched before any menu or quality action, verifies the UUID is absent from the persisted snapshot, then sends a matching menu observation and checks the equality status. Unit coverage rejects a non-detail project URL and a route from another project. The existing unrelated output/blob-chain regressions remain in place.
+
+- Focused Flow diagnostic tests: **2 files / 21 tests PASS**.
+- Typecheck, full ESLint, production package build, and `git diff --check`: **PASS**.
+- Build: **`automat-faceless-0.1.0-mw26ia9k`**, four JavaScript bundles.
+
+The live run was not repeated. Chrome ID `2790` remains **Complete / Association Unverified**. The next menu-only check can confirm the arm-time **Match** status and that it remains matched after opening More options, then stop before any quality selection. No upscale or download occurred. P11.2 remains pending; P11.3 is out of scope.

@@ -201,7 +201,7 @@ export type RequestPayloads = {
     expectedReferenceId: string;
     expectedUpdatedAt: number;
   };
-  "flow.downloadDiagnostic.arm": Record<string, never>;
+  "flow.downloadDiagnostic.arm": { identityCaptureEnabled?: boolean };
   "flow.downloadDiagnostic.stop": Record<string, never>;
   "flow.downloadDiagnostic.get": Record<string, never>;
 };

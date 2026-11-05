@@ -52,6 +52,7 @@ export const FlowDownloadCandidateSchema = z
       .string()
       .regex(/^[a-f0-9]{16}$/)
       .optional(),
+    assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     startedOffsetMs: z.number().int().nonnegative(),
     interruptCode: z
       .string()
@@ -71,6 +72,7 @@ export const FlowDownloadPageEventSchema = z
       .string()
       .regex(/^[a-f0-9]{16}$/)
       .optional(),
+    assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     frameMatched: z.boolean(),
     afterAction: z.boolean(),
     offsetMs: z.number().int().nonnegative(),
@@ -87,6 +89,7 @@ export const FlowDownloadMediaRequestSchema = z
       .string()
       .regex(/^[a-f0-9]{16}$/)
       .optional(),
+    assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     offsetMs: z.number().int().nonnegative(),
   })
   .strict();
@@ -109,6 +112,27 @@ export const FlowGalleryDownloadDiagnosticSchema = z
     projectId: z.string().min(1).max(128),
     documentId: z.string().min(1).max(128),
     mainFrameId: z.string().min(1).max(128),
+    identityCaptureEnabled: z.boolean().optional(),
+    assetRoutePreflight: z
+      .object({
+        matchStatus: z.enum([
+          "matched",
+          "no_matching_edit_route",
+          "not_matched",
+        ]),
+        assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        selectedRouteMatchStatus: z
+          .enum([
+            "not_checked",
+            "matched",
+            "changed_or_missing",
+            "not_comparable",
+            "not_matched",
+          ])
+          .optional(),
+      })
+      .strict()
+      .optional(),
     actionAt: z.number().int().nonnegative().optional(),
     qualityActionAcceptedAt: z.number().int().nonnegative().optional(),
     nativeActionObserved: z.literal(true).optional(),
@@ -136,6 +160,7 @@ export const FlowGalleryDownloadDiagnosticSchema = z
         token: z.literal("selected-card-1"),
         ownerFound: z.boolean(),
         stableIdAttributeObserved: z.boolean(),
+        assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       })
       .strict()
       .optional(),
@@ -264,6 +289,159 @@ export async function fingerprintFlowMediaIdentifier(
     : undefined;
 }
 
+/** Fingerprints the asset UUID in Flow's project-scoped detail route. */
+export async function fingerprintFlowAssetPath(
+  sessionId: string,
+  rawUrl: unknown,
+  projectId?: string,
+): Promise<string | undefined> {
+  if (typeof rawUrl !== "string" || rawUrl.length > 8192) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return undefined;
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname !== "flow.google.com" ||
+    parsed.username ||
+    parsed.password
+  )
+    return undefined;
+  const match = /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/edit\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(
+    parsed.pathname,
+  );
+  if (!match || (projectId !== undefined && match[1] !== projectId))
+    return undefined;
+  return sha256Hex(
+    `${sessionId}\nflow-asset-route\n${match[2]!.toLowerCase()}`,
+  );
+}
+
+/** Fingerprints UUID path components on captured Flow media/download URLs. */
+export async function fingerprintFlowAssetUrlPath(
+  sessionId: string,
+  rawUrl: unknown,
+): Promise<string | undefined> {
+  if (typeof rawUrl !== "string" || rawUrl.length > 8192) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return undefined;
+  }
+  if (
+    parsed.username ||
+    parsed.password ||
+    !["https:", "http:", "blob:"].includes(parsed.protocol)
+  )
+    return undefined;
+  const match = /(?:^|\/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=\/|$)/i.exec(
+    parsed.pathname,
+  );
+  return match
+    ? sha256Hex(
+        `${sessionId}\nflow-asset-route\n${match[1]!.toLowerCase()}`,
+      )
+    : undefined;
+}
+
+/** Separate evidence-only route/output/blob trace; never used by matching. */
+export function diagnoseFlowRouteAssetBlobLink(
+  record: Pick<
+    FlowGalleryDownloadDiagnostic,
+    | "identityCaptureEnabled"
+    | "assetRoutePreflight"
+    | "startedAt"
+    | "actionAt"
+    | "selectedCard"
+    | "mediaRequests"
+    | "pageDownloads"
+    | "downloads"
+  >,
+): {
+  routeToOutput:
+    | "off"
+    | "route_not_observed"
+    | "route_id_not_in_action_request"
+    | "route_id_on_action_request"
+    | "ambiguous_action_requests";
+  outputToBlob:
+    | "off"
+    | "route_not_observed"
+    | "route_id_not_in_action_request"
+    | "blob_id_not_observed"
+    | "blob_id_matches_exact_chrome_download"
+    | "ambiguous_blob_matches";
+} {
+  if (!record.identityCaptureEnabled)
+    return { routeToOutput: "off", outputToBlob: "off" };
+  const routeFingerprint = record.selectedCard?.assetPathFingerprint;
+  const preflight = record.assetRoutePreflight;
+  if (
+    !preflight ||
+    preflight.matchStatus !== "matched" ||
+    !preflight.assetPathFingerprint ||
+    ["not_matched", "changed_or_missing", "not_comparable"].includes(
+      preflight.selectedRouteMatchStatus ?? "",
+    ) ||
+    routeFingerprint !== preflight.assetPathFingerprint
+  )
+    return {
+      routeToOutput: "route_not_observed",
+      outputToBlob: "route_not_observed",
+    };
+  if (record.actionAt === undefined)
+    return {
+      routeToOutput: "route_id_not_in_action_request",
+      outputToBlob: "route_id_not_in_action_request",
+    };
+  const assetRequests = record.mediaRequests.filter(
+    (request) =>
+      record.startedAt + request.offsetMs >= record.actionAt! &&
+      request.assetPathFingerprint === routeFingerprint,
+  );
+  if (assetRequests.length > 1)
+    return {
+      routeToOutput: "ambiguous_action_requests",
+      outputToBlob: "route_id_not_in_action_request",
+    };
+  if (!assetRequests.length)
+    return {
+      routeToOutput: "route_id_not_in_action_request",
+      outputToBlob: "route_id_not_in_action_request",
+    };
+  const exactBlobPairs = record.pageDownloads.flatMap((event) => {
+    if (
+      event.urlScheme !== "blob" ||
+      !event.frameMatched ||
+      !event.afterAction ||
+      event.assetPathFingerprint !== routeFingerprint
+    )
+      return [];
+    return record.downloads
+      .filter(
+        (download) =>
+          (event.exactDownloadIds ?? []).includes(download.downloadId) &&
+          (download.urlFingerprint === event.urlFingerprint ||
+            download.finalUrlFingerprint === event.urlFingerprint),
+      )
+      .map((download) => ({ event, download }));
+  });
+  if (exactBlobPairs.length > 1)
+    return {
+      routeToOutput: "route_id_on_action_request",
+      outputToBlob: "ambiguous_blob_matches",
+    };
+  return {
+    routeToOutput: "route_id_on_action_request",
+    outputToBlob: exactBlobPairs.length
+      ? "blob_id_matches_exact_chrome_download"
+      : "blob_id_not_observed",
+  };
+}
+
 export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
   "stage",
   [
@@ -274,6 +452,7 @@ export const FlowGalleryDiagnosticPageMessageSchema = z.discriminatedUnion(
         capturedAt: z.number().int().nonnegative(),
         ownerFound: z.boolean(),
         stableIdAttributeObserved: z.boolean(),
+        assetPathFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
         mainMenuControlResolved: z.boolean(),
       })
       .strict(),
@@ -652,7 +831,11 @@ export function resolveFlowDownloadDiagnosticStatus(
 }
 
 /** Passive, one-shot DOM observer. It never prevents, changes, or synthesizes provider input. */
-export function installFlowGalleryDownloadObserver(sessionId: string): {
+export function installFlowGalleryDownloadObserver(
+  sessionId: string,
+  projectId?: string,
+  identityCaptureEnabled = false,
+): {
   installed: boolean;
   replaced: boolean;
 } {
@@ -844,7 +1027,7 @@ export function installFlowGalleryDownloadObserver(sessionId: string): {
     };
   };
   let bindingPending = false;
-  const onClick = (event: MouseEvent) => {
+  const onClick = async (event: MouseEvent) => {
     if (stopped || stage === "done" || !event.isTrusted) return;
     const path = clickablePath(event);
     if (stage === "main_menu") {
@@ -869,6 +1052,28 @@ export function installFlowGalleryDownloadObserver(sessionId: string): {
       }
       bindingPending = true;
       const owner = selectedCard;
+      let assetPathFingerprint: string | undefined;
+      if (identityCaptureEnabled) {
+        try {
+          const route = new URL(scope.location.href);
+          const match = /^\/(?:u\/[0-9]+\/)?project\/([A-Za-z0-9_-]+)\/edit\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(
+            route.pathname,
+          );
+          if (match && (!projectId || match[1] === projectId)) {
+            const digest = await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(
+                `${sessionId}\nflow-asset-route\n${match[2]!.toLowerCase()}`,
+              ),
+            );
+            assetPathFingerprint = Array.from(new Uint8Array(digest), (byte) =>
+              byte.toString(16).padStart(2, "0"),
+            ).join("");
+          }
+        } catch {
+          assetPathFingerprint = undefined;
+        }
+      }
       waitForUniqueControlledMenu(
         target,
         owner,
@@ -883,6 +1088,7 @@ export function installFlowGalleryDownloadObserver(sessionId: string): {
             capturedAt: Date.now(),
             ownerFound: true,
             stableIdAttributeObserved: stableCardIdObserved(owner),
+            ...(assetPathFingerprint ? { assetPathFingerprint } : {}),
             mainMenuControlResolved: true,
           });
         },

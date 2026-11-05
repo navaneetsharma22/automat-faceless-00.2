@@ -2,8 +2,11 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
 import {
   classifyFlowDownloadAssociation,
+  diagnoseFlowRouteAssetBlobLink,
   diagnoseFlowDownloadMediaIdentity,
   fingerprintFlowDownloadUrl,
+  fingerprintFlowAssetPath,
+  fingerprintFlowAssetUrlPath,
   FlowGalleryDownloadDiagnosticSchema,
   resolveFlowDownloadDiagnosticStatus,
   sanitizeFlowDownloadFilename,
@@ -76,7 +79,7 @@ describe("Flow Gallery download feasibility diagnostic", () => {
   it("reads changing aria-controls and recognizes icon-duplicated Download without acting", async () => {
     const dom = new JSDOM(
       `<article data-video-id="private-clip-id">
-        <button aria-label="More options" aria-controls="gallery-menu">⋮</button>
+        <button aria-label="More options" aria-controls="gallery-menu">&#x22ee;</button>
       </article>`,
       { url: "https://flow.google.com/project/test" },
     );
@@ -494,5 +497,160 @@ describe("Flow Gallery download feasibility diagnostic", () => {
         "blob:https://flow.example/opaque-token",
       ),
     ).resolves.toMatchObject({ accepted: true, schemeCategory: "blob" });
+  });
+
+  it("fingerprints only the selected project's /edit asset route and matching URL path IDs", async () => {
+    const route = await fingerprintFlowAssetPath(
+      base.sessionId,
+      "https://flow.google.com/project/project-test/edit/11111111-2222-4333-8444-555555555555",
+      "project-test",
+    );
+    expect(route).toMatch(/^[a-f0-9]{64}$/);
+    await expect(
+      fingerprintFlowAssetPath(
+        base.sessionId,
+        "https://flow.google.com/project/other/edit/11111111-2222-4333-8444-555555555555",
+        "project-test",
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      fingerprintFlowAssetPath(
+        base.sessionId,
+        "https://flow.google.com/project/project-test",
+        "project-test",
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      fingerprintFlowAssetUrlPath(
+        base.sessionId,
+        "https://media.example/assets/11111111-2222-4333-8444-555555555555/video",
+      ),
+    ).resolves.toBe(route);
+    expect(route).not.toContain("11111111");
+  });
+
+  it("does not let unrelated output IDs or an exact but unrelated download satisfy the route-to-blob trace", async () => {
+    const routeFingerprint = await fingerprintFlowAssetPath(
+      base.sessionId,
+      "https://flow.google.com/project/project-test/edit/11111111-2222-4333-8444-555555555555",
+      "project-test",
+    );
+    const unrelatedAsset = await fingerprintFlowAssetUrlPath(
+      base.sessionId,
+      "https://media.example/assets/eeeeeeee-1111-4111-8111-111111111111/video",
+    );
+    const unrelated = {
+      ...base,
+      identityCaptureEnabled: true,
+      assetRoutePreflight: {
+        matchStatus: "matched",
+        assetPathFingerprint: routeFingerprint,
+      },
+      selectedCard: {
+        ...base.selectedCard!,
+        assetPathFingerprint: routeFingerprint,
+      },
+      mediaRequests: [
+        {
+          ...base.mediaRequests[0]!,
+          urlFingerprint: "bbbbbbbbbbbbbbbb",
+          assetPathFingerprint: unrelatedAsset,
+        },
+      ],
+      pageDownloads: [
+        { ...base.pageDownloads[0]!, assetPathFingerprint: unrelatedAsset },
+      ],
+      downloads: [
+        { ...base.downloads[0]!, assetPathFingerprint: unrelatedAsset },
+      ],
+    };
+    expect(diagnoseFlowRouteAssetBlobLink(unrelated)).toEqual({
+      routeToOutput: "route_id_not_in_action_request",
+      outputToBlob: "route_id_not_in_action_request",
+    });
+    expect(classifyFlowDownloadAssociation(unrelated)).toMatchObject({
+      association: "unverified",
+      associationReason: "no_action_media_identity_link",
+    });
+  });
+
+  it("reports the exact stop when a route-matching asset request has no route-matching blob download", async () => {
+    const routeFingerprint = await fingerprintFlowAssetPath(
+      base.sessionId,
+      "https://flow.google.com/project/project-test/edit/11111111-2222-4333-8444-555555555555",
+      "project-test",
+    );
+    const unrelatedBlobAsset = await fingerprintFlowAssetUrlPath(
+      base.sessionId,
+      "blob:https://flow.google.com/eeeeeeee-1111-4111-8111-111111111111",
+    );
+    expect(
+      diagnoseFlowRouteAssetBlobLink({
+        ...base,
+        identityCaptureEnabled: true,
+        assetRoutePreflight: {
+          matchStatus: "matched",
+          assetPathFingerprint: routeFingerprint,
+        },
+        selectedCard: {
+          ...base.selectedCard!,
+          assetPathFingerprint: routeFingerprint,
+        },
+        mediaRequests: [
+          { ...base.mediaRequests[0]!, assetPathFingerprint: routeFingerprint },
+        ],
+        pageDownloads: [
+          { ...base.pageDownloads[0]!, assetPathFingerprint: unrelatedBlobAsset },
+        ],
+        downloads: [
+          { ...base.downloads[0]!, assetPathFingerprint: unrelatedBlobAsset },
+        ],
+      }),
+    ).toEqual({
+      routeToOutput: "route_id_on_action_request",
+      outputToBlob: "blob_id_not_observed",
+    });
+  });
+
+  it("requires the route UUID on the blob URL and exact Chrome ID for the final identity edge", async () => {
+    const routeFingerprint = await fingerprintFlowAssetPath(
+      base.sessionId,
+      "https://flow.google.com/project/project-test/edit/11111111-2222-4333-8444-555555555555",
+      "project-test",
+    );
+    const blobAssetFingerprint = await fingerprintFlowAssetUrlPath(
+      base.sessionId,
+      "blob:https://flow.google.com/11111111-2222-4333-8444-555555555555",
+    );
+    expect(
+      diagnoseFlowRouteAssetBlobLink({
+        ...base,
+        identityCaptureEnabled: true,
+        assetRoutePreflight: {
+          matchStatus: "matched",
+          assetPathFingerprint: routeFingerprint,
+        },
+        selectedCard: {
+          ...base.selectedCard!,
+          assetPathFingerprint: routeFingerprint,
+        },
+        mediaRequests: [
+          { ...base.mediaRequests[0]!, assetPathFingerprint: routeFingerprint },
+        ],
+        pageDownloads: [
+          {
+            ...base.pageDownloads[0]!,
+            urlScheme: "blob",
+            assetPathFingerprint: blobAssetFingerprint,
+          },
+        ],
+        downloads: [
+          { ...base.downloads[0]!, assetPathFingerprint: blobAssetFingerprint },
+        ],
+      }),
+    ).toEqual({
+      routeToOutput: "route_id_on_action_request",
+      outputToBlob: "blob_id_matches_exact_chrome_download",
+    });
   });
 });

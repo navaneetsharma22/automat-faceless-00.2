@@ -1058,7 +1058,9 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   }),
   requestBase.extend({
     type: z.literal("flow.downloadDiagnostic.arm"),
-    payload: z.object({}).strict(),
+    payload: z
+      .object({ identityCaptureEnabled: z.boolean().optional() })
+      .strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.downloadDiagnostic.stop"),

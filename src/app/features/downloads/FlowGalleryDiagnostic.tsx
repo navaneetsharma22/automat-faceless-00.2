@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  diagnoseFlowRouteAssetBlobLink,
   diagnoseFlowDownloadMediaIdentity,
   type FlowGalleryDownloadDiagnostic,
 } from "../../../platforms/flow/downloads";
@@ -62,6 +63,7 @@ export function FlowGalleryDiagnostic({
   });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [identityCaptureEnabled, setIdentityCaptureEnabled] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -130,7 +132,7 @@ export function FlowGalleryDiagnostic({
       }
       const next = (await persistenceClient.request(
         "flow.downloadDiagnostic.arm",
-        {},
+        { identityCaptureEnabled },
       )) as DiagnosticSnapshot;
       setSnapshot(next);
     } catch {
@@ -207,6 +209,19 @@ export function FlowGalleryDiagnostic({
               : snapshot.status.replaceAll("_", " ")}
         </span>
       </div>
+      {!active ? (
+        <label className={styles.disabledReason}>
+          <input
+            type="checkbox"
+            checked={identityCaptureEnabled}
+            onChange={(event) =>
+              setIdentityCaptureEnabled(event.currentTarget.checked)
+            }
+          />{" "}
+          Capture sanitized /edit asset path identity for one manual action
+          (experimental; does not affect association)
+        </label>
+      ) : null}
       <p className={styles.disabledReason}>
         For menu-only verification, open one card&apos;s More options menu and
         hover Download. Confirm the pre-click evidence below, then stop before
@@ -314,6 +329,49 @@ export function FlowGalleryDiagnostic({
                 session.
               </dd>
             </div>
+            {report.identityCaptureEnabled ? (() => {
+              const identityLink = diagnoseFlowRouteAssetBlobLink(report);
+              const armStatus =
+                report.assetRoutePreflight?.matchStatus === "matched"
+                  ? "Match"
+                  : report.assetRoutePreflight?.matchStatus ===
+                      "no_matching_edit_route"
+                    ? "No matching /edit/ UUID"
+                    : "No match";
+              const menuStatus =
+                report.assetRoutePreflight?.selectedRouteMatchStatus ??
+                "not checked";
+              const menuStatusLabel =
+                menuStatus === "matched"
+                  ? "Match"
+                  : menuStatus === "changed_or_missing"
+                    ? "Changed or missing"
+                    : menuStatus === "not_comparable"
+                      ? "Not comparable (no matching /edit/ UUID at arm time)"
+                      : menuStatus === "not_checked"
+                        ? "Not checked"
+                        : "No match";
+              return (
+                <>
+                  <div>
+                    <dt>Clip route at arm</dt>
+                    <dd>{armStatus}</dd>
+                  </div>
+                  <div>
+                    <dt>Clip route when menu opened</dt>
+                    <dd>{menuStatusLabel}</dd>
+                  </div>
+                  {report.selectedCard ? (
+                    <div>
+                      <dt>Temporary route asset trace</dt>
+                      <dd>
+                        route -&gt; action request path ID: {identityLink.routeToOutput.replaceAll("_", " ")}; asset ID -&gt; exact page blob/download: {identityLink.outputToBlob.replaceAll("_", " ")}. This checks URL path IDs only; it does not inspect response metadata or blob bytes, and it does not change the clip association result.
+                      </dd>
+                    </div>
+                  ) : null}
+                </>
+              );
+            })() : null}
             {report.lastPageDownloadUrlRejection ? (
               <div>
                 <dt>Last rejected Flow event URL</dt>

@@ -6,10 +6,15 @@ import {
   type FlowDownloadDiagnosticDownloadChangedListener,
   type FlowDownloadDiagnosticDownloadCreatedListener,
 } from "../../src/background/flowDownloadDiagnostic";
-import { FLOW_GALLERY_DIAGNOSTIC_EVENT } from "../../src/platforms/flow/downloads";
+import {
+  fingerprintFlowAssetPath,
+  FLOW_GALLERY_DIAGNOSTIC_EVENT,
+} from "../../src/platforms/flow/downloads";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 
 const sessionId = "33333333-3333-4333-8333-333333333333";
+const detailRouteUrl =
+  "https://flow.google.com/project/project-test/edit/11111111-2222-4333-8444-555555555555";
 const mediaUrl =
   "https://media.example/8c53eca2/clip.mp4?signature=private-token";
 
@@ -63,7 +68,7 @@ describe("Flow Gallery download diagnostic worker path", () => {
         get: async (tabId) => ({
           id: tabId,
           title: "Flow project",
-          url: "https://flow.google.com/project/project-test",
+          url: detailRouteUrl,
         }),
       },
       scripting: { executeScript: executeScript as never },
@@ -109,8 +114,17 @@ describe("Flow Gallery download diagnostic worker path", () => {
       createSessionId: () => sessionId,
     });
 
-    const armed = await manager.arm();
-    expect(armed).toMatchObject({ status: "armed", tabId: 7 });
+    const armed = await manager.arm(true);
+    expect(armed).toMatchObject({
+      status: "armed",
+      tabId: 7,
+      identityCaptureEnabled: true,
+      assetRoutePreflight: {
+        matchStatus: "matched",
+        assetPathFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(JSON.stringify(armed)).not.toContain("11111111-2222");
     expect(executeScript).toHaveBeenCalledTimes(1);
 
     const sender = {
@@ -129,7 +143,18 @@ describe("Flow Gallery download diagnostic worker path", () => {
       capturedAt: now,
       ownerFound: true,
       stableIdAttributeObserved: false,
+      assetPathFingerprint: await fingerprintFlowAssetPath(
+        sessionId,
+        detailRouteUrl,
+        "project-test",
+      ),
       mainMenuControlResolved: true,
+    });
+    expect(await manager.get()).toMatchObject({
+      assetRoutePreflight: {
+        matchStatus: "matched",
+        selectedRouteMatchStatus: "matched",
+      },
     });
     await pageEvent({
       stage: "download_row",

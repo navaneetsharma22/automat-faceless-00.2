@@ -158,7 +158,7 @@ export type FoundationDependencies = {
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
   };
   flowDownloadDiagnostic?: {
-    arm: () => Promise<unknown>;
+    arm: (identityCaptureEnabled?: boolean) => Promise<unknown>;
     stop: () => Promise<unknown>;
     get: () => Promise<unknown>;
     ingestPageEvent: (
@@ -873,7 +873,9 @@ async function dispatch(
     case "flow.downloadDiagnostic.arm":
       if (!dependencies.flowDownloadDiagnostic)
         throw new FoundationOperationError("worker_error", "flow_download_diagnostic_unavailable", "The Flow download diagnostic is unavailable in this worker.");
-      return await dependencies.flowDownloadDiagnostic.arm();
+      return await dependencies.flowDownloadDiagnostic.arm(
+        request.payload.identityCaptureEnabled ?? false,
+      );
     case "flow.downloadDiagnostic.stop":
       if (!dependencies.flowDownloadDiagnostic)
         throw new FoundationOperationError("worker_error", "flow_download_diagnostic_unavailable", "The Flow download diagnostic is unavailable in this worker.");

@@ -7,7 +7,9 @@ import {
   FLOW_GALLERY_DIAGNOSTIC_TTL_MS,
   FlowGalleryDiagnosticPageMessageSchema,
   FlowGalleryDownloadDiagnosticSchema,
+  fingerprintFlowAssetPath,
   fingerprintFlowDownloadUrl,
+  fingerprintFlowAssetUrlPath,
   fingerprintFlowMediaIdentifier,
   flowDownloadExtension,
   installFlowGalleryDownloadObserver,
@@ -281,10 +283,10 @@ export function createFlowDownloadDiagnosticManager(
       )
     )
       throw new Error("flow_target_document_changed");
-    return { selected, binding };
+    return { selected, binding, verifiedTabUrl: tab.url };
   };
 
-  async function arm() {
+  async function arm(identityCaptureEnabled = false) {
     await loaded;
     return enqueue(async () => {
       if (isActive(current)) throw new Error("flow_diagnostic_already_active");
@@ -295,8 +297,16 @@ export function createFlowDownloadDiagnosticManager(
       if (!permissions) throw new Error("flow_diagnostic_permissions_missing");
       if (!registerDownloadListeners())
         throw new Error("flow_downloads_api_unavailable");
-      const { selected, binding } = await verifySelectedFlowTarget();
+      const { selected, binding, verifiedTabUrl } =
+        await verifySelectedFlowTarget();
       const sessionId = createSessionId();
+      const assetPathFingerprint = identityCaptureEnabled
+        ? await fingerprintFlowAssetPath(
+            sessionId,
+            verifiedTabUrl,
+            binding.projectId,
+          )
+        : undefined;
       const startedAt = now();
       const expiresAt = startedAt + FLOW_GALLERY_DIAGNOSTIC_TTL_MS;
       const record = FlowGalleryDownloadDiagnosticSchema.parse({
@@ -309,6 +319,18 @@ export function createFlowDownloadDiagnosticManager(
         projectId: binding.projectId,
         documentId: binding.documentId,
         mainFrameId: "pending",
+        identityCaptureEnabled,
+        ...(identityCaptureEnabled
+          ? {
+              assetRoutePreflight: {
+                matchStatus: assetPathFingerprint
+                  ? "matched"
+                  : "no_matching_edit_route",
+                ...(assetPathFingerprint ? { assetPathFingerprint } : {}),
+                selectedRouteMatchStatus: "not_checked",
+              },
+            }
+          : {}),
         mediaRequests: [],
         pageDownloads: [],
         downloads: [],
@@ -346,7 +368,7 @@ export function createFlowDownloadDiagnosticManager(
           },
           world: "ISOLATED",
           func: installFlowGalleryDownloadObserver,
-          args: [sessionId],
+          args: [sessionId, binding.projectId, identityCaptureEnabled],
         });
         if (
           injected[0]?.documentId !== binding.documentId ||
@@ -429,10 +451,27 @@ export function createFlowDownloadDiagnosticManager(
       if (message.stage === "main_menu") {
         next = {
           ...record,
+          ...(record.assetRoutePreflight
+            ? {
+                assetRoutePreflight: {
+                  ...record.assetRoutePreflight,
+                  selectedRouteMatchStatus:
+                    record.assetRoutePreflight.matchStatus !== "matched"
+                      ? "not_comparable"
+                      : message.assetPathFingerprint ===
+                          record.assetRoutePreflight.assetPathFingerprint
+                        ? "matched"
+                        : "changed_or_missing",
+                },
+              }
+            : {}),
           selectedCard: {
             token: "selected-card-1",
             ownerFound: message.ownerFound,
             stableIdAttributeObserved: message.stableIdAttributeObserved,
+            ...(message.assetPathFingerprint
+              ? { assetPathFingerprint: message.assetPathFingerprint }
+              : {}),
           },
           menuBinding: {
             mainMenuControlResolved: message.mainMenuControlResolved,
@@ -553,6 +592,9 @@ export function createFlowDownloadDiagnosticManager(
           request?.url,
         );
         if (!fingerprints.accepted) return;
+        const assetPathFingerprint = record.identityCaptureEnabled
+          ? await fingerprintFlowAssetUrlPath(record.sessionId, request?.url)
+          : undefined;
         const token =
           `media-request-${record.mediaRequests.length + 1}` as const;
         const mediaRequest: FlowDownloadMediaRequest = {
@@ -563,6 +605,7 @@ export function createFlowDownloadDiagnosticManager(
               ? request.method
               : "OTHER",
           urlFingerprint: fingerprints.urlFingerprint,
+          ...(assetPathFingerprint ? { assetPathFingerprint } : {}),
           ...(fingerprints.mediaIdFingerprint
             ? { mediaIdFingerprint: fingerprints.mediaIdFingerprint }
             : {}),
@@ -702,6 +745,9 @@ export function createFlowDownloadDiagnosticManager(
           return;
         }
         const rawPageUrl = params.url as string;
+        const assetPathFingerprint = record.identityCaptureEnabled
+          ? await fingerprintFlowAssetUrlPath(record.sessionId, rawPageUrl)
+          : undefined;
         const filename = sanitizeFlowDownloadFilename(params.suggestedFilename);
         const filenameUnavailable = filename === "unknown-file";
         const filenameMediaId = await fingerprintFlowMediaIdentifier(
@@ -723,6 +769,7 @@ export function createFlowDownloadDiagnosticManager(
           eventToken: `page-download-${record.pageDownloads.length + 1}`,
           filename,
           urlFingerprint: fingerprints.urlFingerprint,
+          ...(assetPathFingerprint ? { assetPathFingerprint } : {}),
           urlScheme: fingerprints.schemeCategory,
           exactDownloadIds: exactDownloadIdsForUrl(rawPageUrl),
           ...((fingerprints.mediaIdFingerprint ?? filenameMediaId)
@@ -797,6 +844,10 @@ export function createFlowDownloadDiagnosticManager(
         fingerprintFlowDownloadUrl(record.sessionId, item.url),
         fingerprintFlowDownloadUrl(record.sessionId, item.finalUrl),
       ]);
+      const assetPathFingerprint = record.identityCaptureEnabled
+        ? (await fingerprintFlowAssetUrlPath(record.sessionId, item.url)) ??
+          (await fingerprintFlowAssetUrlPath(record.sessionId, item.finalUrl))
+        : undefined;
       const transientUrls = {
         ...(url.accepted && typeof item.url === "string"
           ? { url: item.url }
@@ -848,6 +899,7 @@ export function createFlowDownloadDiagnosticManager(
             }
           : { finalUrlRejection: finalUrl.rejection }),
         ...(mediaIdFingerprint ? { mediaIdFingerprint } : {}),
+        ...(assetPathFingerprint ? { assetPathFingerprint } : {}),
         startedOffsetMs: Math.max(0, now() - record.startedAt),
         ...(item.error
           ? { interruptCode: sanitizeInterruptCode(item.error) }
