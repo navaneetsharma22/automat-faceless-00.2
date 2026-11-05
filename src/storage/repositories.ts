@@ -900,6 +900,12 @@ export class ExtensionRepositories {
       const previous = await this.tables.flowClipImports.get(id);
       const timestamp = this.now();
       const record = FlowClipImportRecordSchema.parse({
+        ...(previous?.galleryAssetId && input.galleryAssetId === undefined
+          ? {
+              galleryAssetId: previous.galleryAssetId,
+              galleryIdentityEvidence: previous.galleryIdentityEvidence,
+            }
+          : {}),
         ...input,
         id,
         importedAt: previous?.importedAt ?? timestamp,

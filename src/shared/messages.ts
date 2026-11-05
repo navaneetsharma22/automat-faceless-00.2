@@ -206,6 +206,9 @@ export type RequestPayloads = {
   "flow.downloadDiagnostic.get": Record<string, never>;
   "flow.clipImport.importCurrent": Record<string, never>;
   "flow.clipImport.list": Record<string, never>;
+  "flow.projectVideos.import.start": Record<string, never>;
+  "flow.projectVideos.import.get": Record<string, never>;
+  "flow.projectVideos.import.cancel": Record<string, never>;
   "flow.clipDownloadProof.inspect": { recordId: string };
   "flow.clipDownloadProof.arm": { recordId: string };
   "flow.clipDownload.start": { recordId: string; allowNewAttempt?: boolean };
@@ -295,6 +298,9 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.downloadDiagnostic.get": 5_000,
   "flow.clipImport.importCurrent": 15_000,
   "flow.clipImport.list": 5_000,
+  "flow.projectVideos.import.start": 15_000,
+  "flow.projectVideos.import.get": 5_000,
+  "flow.projectVideos.import.cancel": 5_000,
   "flow.clipDownloadProof.inspect": 15_000,
   "flow.clipDownloadProof.arm": 30_000,
   "flow.clipDownload.start": 30_000,

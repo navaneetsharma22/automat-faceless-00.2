@@ -3,12 +3,17 @@ import { createFlowDownloadDiagnosticManager } from "../../src/background/flowDo
 import { createMemoryRepositoryDatabase } from "../unit/repositoryTestSupport";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { BUILD_ID, PROTOCOL_VERSION } from "../../src/shared/buildInfo";
+import { inspectFlowProjectVideosInPage } from "../../src/platforms/flow/projectVideos";
+import { inspectCurrentFlowClipInPage } from "../../src/platforms/flow/clipImport";
+import { prepareFlowClipDownloadInPage } from "../../src/platforms/flow/clipDownload";
 
 const projectId = "project-test";
 const firstClip = "11111111-2222-4333-8444-555555555555";
 const secondClip = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const proofClip = "c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa";
 const otherImportedClip = "bbc2bc82-0000-4000-8000-000000000000";
+const firstAsset = "11111111-2222-4333-8444-555555555555";
+const secondAsset = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 
 describe("verified Flow detail clip import", () => {
   it("imports two same-title detail routes separately and reimport updates the same row", async () => {
@@ -309,5 +314,187 @@ describe("verified Flow detail clip import", () => {
       otherImportedClip,
     );
     now += 1;
+  });
+});
+
+function projectVideoCard(assetId: string, clipId: string, title = "Same title", routeStatus = "unique") {
+  return {
+    observationFingerprint: assetId.replaceAll("-", "").padEnd(64, "a").slice(0, 64),
+    assetId,
+    assetStatus: "unique" as const,
+    title,
+    thumbnail: { available: true, width: 320, height: 180, fingerprint: "f".repeat(64) },
+    routeStatus: routeStatus as "unique" | "none",
+    ...(routeStatus === "unique"
+      ? { detailRoute: { projectId, clipId, detailUrl: `https://flow.google.com/project/${projectId}/edit/${clipId}` } }
+      : {}),
+  };
+}
+
+async function makeProjectVideoImportManager(options: {
+  snapshots?: Array<ReturnType<typeof projectVideoCard>[]>;
+  selectedAssetId?: string;
+  lazy?: boolean;
+  cardsCapped?: boolean;
+  wait?: (milliseconds: number) => Promise<void>;
+} = {}) {
+  let now = 20_000;
+  let tabUrl = `https://flow.google.com/project/${projectId}`;
+  const database = createMemoryRepositoryDatabase();
+  const repositories = new ExtensionRepositories(database, () => now);
+  await database.selectedTargets.put({
+    provider: "Flow",
+    tabId: 7,
+    canonicalTarget: `https://flow.google.com/project/${projectId}`,
+    verification: "verified",
+    connectionState: "verified",
+    verificationBinding: {
+      provider: "Flow",
+      tabId: 7,
+      canonicalTarget: `https://flow.google.com/project/${projectId}`,
+      projectId,
+      frameId: 0,
+      documentId: "document-test",
+      documentToken: "document-token",
+      extensionBuildId: BUILD_ID,
+      extensionProtocolVersion: PROTOCOL_VERSION,
+      connectorBuildId: BUILD_ID,
+      connectorProtocolVersion: 1,
+      capability: "read-only-connection-v1",
+      verifiedAt: now,
+    },
+    updatedAt: now,
+  });
+  const first = projectVideoCard(firstAsset, firstClip);
+  const second = projectVideoCard(secondAsset, secondClip);
+  const snapshots = options.snapshots ?? [[first, second]];
+  let snapshotIndex = 0;
+  const executeScript = vi.fn(async (input: { func: (...args: never[]) => unknown; args: unknown[] }) => {
+    let result: unknown;
+    if (input.func === inspectFlowProjectVideosInPage) {
+      const action = (input.args[0] as { action: string }).action;
+      if (action === "open") {
+        const card = first;
+        result = { status: "opened", projectId, cards: [card], cardsCapped: false, scroll: { containerFound: true, top: 0, max: 0, moved: false, atBottom: true, busy: false }, card };
+        tabUrl = `https://flow.google.com/project/${projectId}/edit/${firstClip}`;
+      } else {
+        if (action === "scroll") snapshotIndex = Math.min(snapshotIndex + 1, snapshots.length - 1);
+        const cards = snapshots[snapshotIndex] ?? [];
+        const max = options.lazy && snapshotIndex === 0 ? 100 : 0;
+        const top = options.lazy && snapshotIndex > 0 ? 100 : 0;
+        result = { status: "ready", projectId, cards, cardsCapped: options.cardsCapped ?? false, scroll: { containerFound: true, top, max, moved: action === "scroll", atBottom: top >= max, busy: false } };
+      }
+    } else if (input.func === inspectCurrentFlowClipInPage) {
+      result = { projectId, clipId: firstClip, title: "Same title", thumbnail: { available: true, width: 320, height: 180 } };
+    } else if (input.func === prepareFlowClipDownloadInPage) {
+      result = { status: "identity", assetId: options.selectedAssetId ?? secondAsset };
+    }
+    return [{ documentId: "document-test", result }];
+  });
+  const manager = createFlowDownloadDiagnosticManager({
+    extensionId: "extension-test",
+    repositories,
+    permissions: { contains: async () => true },
+    tabs: {
+      get: async (tabId) => ({ id: tabId, title: "Flow project", url: tabUrl }),
+      update: async (_tabId, properties) => { tabUrl = properties.url; return { id: 7, url: tabUrl }; },
+    },
+    revalidateFlowConnection: async () => ({ ok: true, state: "verified" }),
+    scripting: { executeScript },
+    debugger: {
+      attach: vi.fn(), sendCommand: vi.fn(), detach: vi.fn(),
+      onEvent: { addListener: vi.fn(), removeListener: vi.fn() },
+      onDetach: { addListener: vi.fn(), removeListener: vi.fn() },
+    },
+    downloads: {
+      onCreated: { addListener: vi.fn(), removeListener: vi.fn() },
+      onChanged: { addListener: vi.fn(), removeListener: vi.fn() },
+    },
+    storage: { get: async () => ({}), set: async () => undefined, remove: async () => undefined },
+    alarms: {} as never,
+    wait: options.wait ?? (async () => undefined),
+    now: () => now++,
+  });
+  return { manager, repositories, executeScript };
+}
+
+describe("Flow Videos Gallery import", () => {
+  it("imports same-title clips as separate rows and reimport updates without duplicates", async () => {
+    const { manager, repositories } = await makeProjectVideoImportManager();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "completed", discovered: 2, imported: 2, alreadyPresent: 0, unresolved: 0, scanCompleteness: "complete" });
+    const rows = await manager.listImportedClips();
+    expect(rows.map((row) => [row.title, row.clipId, row.galleryAssetId])).toEqual([
+      ["Same title", firstClip, firstAsset],
+      ["Same title", secondClip, secondAsset],
+    ]);
+    await manager.startProjectVideoImport();
+    progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ imported: 0, alreadyPresent: 2 });
+    expect(await repositories.listFlowClipImports()).toHaveLength(2);
+  });
+
+  it("discovers a lazily loaded card after an incremental scroll", async () => {
+    const { manager } = await makeProjectVideoImportManager({
+      snapshots: [[projectVideoCard(firstAsset, firstClip)], [projectVideoCard(secondAsset, secondClip)]],
+      lazy: true,
+    });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ discovered: 2, imported: 2, scanCompleteness: "complete" });
+  });
+
+  it("rejects a source-card to selected-detail-asset mismatch", async () => {
+    const card = projectVideoCard(firstAsset, firstClip, "Same title", "none");
+    const { manager, repositories } = await makeProjectVideoImportManager({ snapshots: [[card]], selectedAssetId: secondAsset });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "completed", scanCompleteness: "complete", unresolved: 1 });
+    expect(progress.unresolvedCards).toContainEqual({ title: "Same title", reason: "detail_asset_identity_mismatch" });
+    expect(await repositories.listFlowClipImports()).toHaveLength(0);
+  });
+
+  it("cancels a bounded scan and reports incomplete coverage", async () => {
+    let releaseWait: (() => void) | undefined;
+    const wait = () => new Promise<void>((resolve) => { releaseWait = resolve; });
+    const { manager } = await makeProjectVideoImportManager({ wait });
+    await manager.startProjectVideoImport();
+    const cancelled = await manager.cancelProjectVideoImport();
+    expect(cancelled.cancelRequested).toBe(true);
+    releaseWait?.();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "cancelled", scanCompleteness: "incomplete", reason: "cancelled" });
+  });
+
+  it("reports an incomplete scan when the card cap is reached", async () => {
+    const { manager } = await makeProjectVideoImportManager({ cardsCapped: true });
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 100; index += 1) {
+      await Promise.resolve();
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "completed", scanCompleteness: "incomplete", reason: "bound_reached" });
   });
 });

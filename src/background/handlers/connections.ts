@@ -167,6 +167,9 @@ export type FoundationDependencies = {
     inspectClipDownloadProof: (recordId: string) => Promise<unknown>;
     armClipDownloadProof: (recordId: string) => Promise<unknown>;
     startClipDownload?: (recordId: string, allowNewAttempt?: boolean) => Promise<unknown>;
+    startProjectVideoImport?: () => Promise<unknown>;
+    getProjectVideoImport?: () => Promise<unknown>;
+    cancelProjectVideoImport?: () => Promise<unknown>;
     ingestPageEvent: (
       raw: unknown,
       sender: ExtensionMessageSender,
@@ -920,6 +923,34 @@ async function dispatch(
       if (!dependencies.flowDownloadDiagnostic)
         throw new FoundationOperationError("worker_error", "flow_clip_import_unavailable", "Flow clip import is unavailable in this worker.");
       return await dependencies.flowDownloadDiagnostic.listImportedClips();
+    case "flow.projectVideos.import.start":
+      if (!dependencies.flowDownloadDiagnostic?.startProjectVideoImport)
+        throw new FoundationOperationError("worker_error", "flow_project_video_import_unavailable", "Flow project video import is unavailable in this worker.");
+      try {
+        return await dependencies.flowDownloadDiagnostic.startProjectVideoImport();
+      } catch (error) {
+        const rawCode = error instanceof Error ? error.message : "";
+        const messages: Record<string, string> = {
+          flow_target_not_currently_verified: "Import blocked: the selected Flow project is not currently verified.",
+          flow_target_document_changed: "Import blocked: the selected Flow page no longer matches its verified project.",
+          flow_project_video_import_already_active: "A project video import is already running.",
+          flow_project_video_import_download_active: "Import blocked while a Flow download is active.",
+          flow_project_video_import_gallery_required: "Open the Videos section of the verified Flow project before importing project videos.",
+          flow_project_video_import_permissions_missing: "Import needs tab and page access for the selected Flow tab.",
+          flow_project_video_import_gallery_unavailable: "The Videos gallery could not be safely identified; no guessed clips were imported.",
+          flow_project_video_import_document_changed: "Import stopped because the Flow page changed during inspection.",
+        };
+        const code = Object.hasOwn(messages, rawCode) ? rawCode : "flow_project_video_import_failed";
+        throw new FoundationOperationError("invalid_request", code, messages[code] ?? "Flow project video import stopped safely.");
+      }
+    case "flow.projectVideos.import.get":
+      if (!dependencies.flowDownloadDiagnostic?.getProjectVideoImport)
+        throw new FoundationOperationError("worker_error", "flow_project_video_import_unavailable", "Flow project video import is unavailable in this worker.");
+      return await dependencies.flowDownloadDiagnostic.getProjectVideoImport();
+    case "flow.projectVideos.import.cancel":
+      if (!dependencies.flowDownloadDiagnostic?.cancelProjectVideoImport)
+        throw new FoundationOperationError("worker_error", "flow_project_video_import_unavailable", "Flow project video import is unavailable in this worker.");
+      return await dependencies.flowDownloadDiagnostic.cancelProjectVideoImport();
     case "flow.clipDownload.start": {
       if (!dependencies.flowDownloadDiagnostic?.startClipDownload)
         throw new FoundationOperationError("worker_error", "flow_download_unavailable", "Flow download is unavailable in this build.");
@@ -998,6 +1029,7 @@ const FLOW_CLIP_DOWNLOAD_FAILURE_MESSAGES: Record<string, string> = {
   flow_detail_download_menu_not_ready: "The bound Flow download menu was not ready. Reopen the menu and review the clip before trying again.",
   flow_diagnostic_already_active: "A Flow observation or download is already active. Review it or stop observation before starting another clip.",
   flow_download_already_starting: "A Flow download is already being prepared.",
+  flow_project_video_import_active: "A Flow project video import is active. Wait for it to finish before downloading.",
   flow_download_previous_outcome_needs_review: "The previous attempt may have started a download. Review Chrome downloads before explicitly starting another attempt.",
   flow_diagnostic_permissions_missing: "Grant downloads permission and reconnect the intended Flow project.",
   flow_download_dispatch_uncertain: "Quality input may have reached Flow. Review the retained attempt and Chrome downloads before starting another attempt.",

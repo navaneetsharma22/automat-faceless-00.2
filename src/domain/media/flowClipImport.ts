@@ -15,6 +15,8 @@ export type FlowClipImportRecord = {
   clipId: string;
   title: string;
   detailUrl: string;
+  galleryAssetId?: string;
+  galleryIdentityEvidence?: "same_card_detail_link" | "detail_selected_asset_match";
   thumbnail: FlowClipThumbnailMetadata;
   importedAt: number;
   updatedAt: number;
@@ -29,6 +31,10 @@ export const FlowClipImportRecordSchema: z.ZodType<FlowClipImportRecord> = z
       .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
     title: z.string().max(200),
     detailUrl: z.string().url().max(2048),
+    galleryAssetId: z.string().uuid().optional(),
+    galleryIdentityEvidence: z
+      .enum(["same_card_detail_link", "detail_selected_asset_match"])
+      .optional(),
     thumbnail: FlowClipThumbnailMetadataSchema,
     importedAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
@@ -40,7 +46,13 @@ export const FlowClipImportRecordSchema: z.ZodType<FlowClipImportRecord> = z
   )
   .refine((record) => flowClipImportRouteMatches(record), {
     message: "clip_import_route_must_match_identity",
-  });
+  })
+  .refine(
+    (record) =>
+      (record.galleryAssetId === undefined) ===
+      (record.galleryIdentityEvidence === undefined),
+    { message: "clip_import_gallery_asset_evidence_must_be_paired" },
+  );
 
 export type FlowClipThumbnailMetadata = z.infer<
   typeof FlowClipThumbnailMetadataSchema

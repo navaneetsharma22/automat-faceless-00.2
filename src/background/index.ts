@@ -221,6 +221,11 @@ const flowDownloadDiagnostic = createFlowDownloadDiagnosticManager({
     contains: (input) => chrome.permissions.contains(input as never),
   },
   tabs: chrome.tabs,
+  revalidateFlowConnection: () =>
+    connectionLifecycle.revalidate("Flow", false).then((result) => ({
+      ok: result.state === "verified",
+      state: result.state,
+    })),
   scripting: {
     executeScript: (input) => chrome.scripting.executeScript(input as never),
   },

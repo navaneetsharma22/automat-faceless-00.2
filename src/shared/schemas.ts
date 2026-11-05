@@ -1079,6 +1079,18 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({}).strict(),
   }),
   requestBase.extend({
+    type: z.literal("flow.projectVideos.import.start"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.projectVideos.import.get"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("flow.projectVideos.import.cancel"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
     type: z.literal("flow.clipDownloadProof.inspect"),
     payload: z.object({ recordId: z.string().min(1).max(256) }).strict(),
   }),

@@ -8,6 +8,7 @@ import type { createFoundationClient } from "../../../shared/messageClient";
 import { isFlow1080pProofClip } from "../../../domain/media/flowClipDownloadProof";
 import { Button } from "../../components/Button";
 import styles from "../../Dashboard.module.css";
+import type { FlowProjectVideosImportProgress } from "../../../platforms/flow/projectVideos";
 
 type DiagnosticSnapshot = FlowGalleryDownloadDiagnostic | { status: "idle" };
 type Client = ReturnType<typeof createFoundationClient>;
@@ -605,6 +606,8 @@ type FlowClipImportRow = {
   clipId: string;
   title: string;
   detailUrl: string;
+  galleryAssetId?: string;
+  galleryIdentityEvidence?: "same_card_detail_link" | "detail_selected_asset_match";
   thumbnail: {
     available: boolean;
     width?: number;
@@ -708,10 +711,19 @@ export function FlowClipDownloads({
   const [error, setError] = useState<string>();
   const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
   const [downloadProofPending, setDownloadProofPending] = useState(false);
+  const [galleryImport, setGalleryImport] = useState<FlowProjectVideosImportProgress>();
+  const [galleryImportPending, setGalleryImportPending] = useState(false);
   const [lastStartedDownload, setLastStartedDownload] = useState<FlowGalleryDownloadDiagnostic>();
   const downloadReport = report && (!lastStartedDownload || report.startedAt >= lastStartedDownload.startedAt)
     ? report : lastStartedDownload;
-  const downloadActive = downloadReport?.status === "armed" || downloadReport?.status === "action_observed";
+  const downloadActive = Boolean(
+    downloadReport?.status === "armed" ||
+      downloadReport?.status === "action_observed" ||
+      downloadReport?.detailDownloadCompletionStatus === "in_progress" ||
+      (downloadReport?.automaticDownload &&
+        downloadReport.detailDownloadCompletionStatus !== "complete" &&
+        downloadReport.detailDownloadCompletionStatus !== "interrupted"),
+  );
   const [downloadProofs, setDownloadProofs] = useState<
     Record<string, FlowClipDownloadProofResult | undefined>
   >({});
@@ -735,7 +747,84 @@ export function FlowClipDownloads({
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    let current = true;
+    void persistenceClient.request("flow.projectVideos.import.get", {}).then(
+      (result) => {
+        if (current) setGalleryImport(result as FlowProjectVideosImportProgress);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [persistenceClient, refresh]);
+
+  useEffect(() => {
+    if (galleryImport?.status !== "scanning") return;
+    let current = true;
+    const read = async () => {
+      try {
+        const next = (await persistenceClient.request(
+          "flow.projectVideos.import.get",
+          {},
+        )) as FlowProjectVideosImportProgress;
+        if (current) {
+          setGalleryImport(next);
+          if (next.status !== "scanning") await refresh();
+        }
+      } catch {
+        if (current) setError("Gallery import progress could not be read.");
+      }
+    };
+    const timer = window.setInterval(() => void read(), 500);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [galleryImport?.status, persistenceClient, refresh]);
+
+  const importProjectVideos = async () => {
+    setGalleryImportPending(true);
+    setError(undefined);
+    try {
+      const progress = (await persistenceClient.request(
+        "flow.projectVideos.import.start",
+        {},
+      )) as FlowProjectVideosImportProgress;
+      setGalleryImport(progress);
+    } catch (caught) {
+      const code = caught instanceof Error && "code" in caught
+        ? String((caught as Error & { code?: unknown }).code ?? "")
+        : caught instanceof Error ? caught.message : "";
+      setError(
+        code.includes("flow_project_video_import_download_active")
+          ? "Import cannot run while a Flow download is active."
+          : code.includes("flow_project_video_import_gallery_required")
+            ? "Open the Videos section of the verified Flow project before importing project videos."
+            : code.includes("flow_project_video_import_gallery_unavailable")
+              ? "The Videos gallery could not be safely identified; no guessed clips were imported."
+              : code.includes("flow_project_video_import_already_active")
+                ? "A project video import is already running."
+                : "Project videos could not be imported from the selected Flow tab.",
+      );
+    } finally {
+      setGalleryImportPending(false);
+    }
+  };
+
+  const cancelProjectVideoImport = async () => {
+    setGalleryImportPending(true);
+    try {
+      const progress = (await persistenceClient.request(
+        "flow.projectVideos.import.cancel",
+        {},
+      )) as FlowProjectVideosImportProgress;
+      setGalleryImport(progress);
+    } catch {
+      setError("The Gallery import could not be cancelled from this dashboard.");
+    } finally {
+      setGalleryImportPending(false);
+    }
+  };
 
   const importCurrent = async () => {
     setPending(true);
@@ -883,12 +972,21 @@ export function FlowClipDownloads({
             </div>
             <div className={styles.clipToolbarActions}>
               <Button
-                disabled={pending}
+                variant="secondary"
+                disabled={pending || galleryImport?.status === "scanning" || downloadActive}
                 loading={pending}
                 aria-describedby="flow-clip-workflow"
                 onClick={() => void importCurrent()}
               >
                 Import open clip
+              </Button>
+              <Button
+                disabled={pending || galleryImportPending || galleryImport?.status === "scanning" || downloadActive || downloadProofPending}
+                loading={galleryImportPending}
+                aria-describedby="flow-clip-workflow"
+                onClick={() => void importProjectVideos()}
+              >
+                Import project videos
               </Button>
               <Button
                 variant="secondary"
@@ -925,6 +1023,59 @@ export function FlowClipDownloads({
       )}
       {message ? <p className={styles.clipMessage} role="status">{message}</p> : null}
       {error ? <p className={styles.fieldError} role="alert">{error}</p> : null}
+      {downloadMode && galleryImport ? (
+        <section className={styles.galleryImportProgress} aria-label="Project video import progress" aria-live="polite">
+          <div className={styles.galleryImportProgressHeader}>
+            <strong>
+              {galleryImport.status === "scanning"
+                ? "Scanning Flow Videos gallery"
+                : galleryImport.status === "completed"
+                  ? "Gallery scan finished"
+                  : galleryImport.status === "cancelled"
+                    ? "Gallery scan cancelled"
+                    : galleryImport.status === "stopped"
+                      ? "Gallery scan stopped"
+                      : "Gallery scan"}
+            </strong>
+            {galleryImport.status === "scanning" ? (
+              <Button variant="quiet" size="compact" disabled={galleryImportPending} onClick={() => void cancelProjectVideoImport()}>
+                Cancel
+              </Button>
+            ) : null}
+          </div>
+          <p className={styles.clipMessage}>
+            Discovered {galleryImport.discovered} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
+          </p>
+          {galleryImport.reason ? (
+            <p className={styles.clipMessage}>
+              {galleryImport.reason === "bound_reached"
+                ? "The configured scan bound was reached."
+                : galleryImport.reason === "coverage_unproven"
+                  ? "Gallery coverage could not be established."
+                  : galleryImport.reason === "cancelled"
+                    ? "Import stopped at your request."
+                    : galleryImport.reason === "connection_lost"
+                      ? "The verified Flow connection was lost."
+                      : galleryImport.reason === "navigation_changed"
+                        ? "The selected Flow page changed during scanning."
+                        : galleryImport.reason === "ambiguous_identity"
+                          ? "Import stopped because a card identity was ambiguous."
+                          : galleryImport.reason === "gallery_unavailable"
+                            ? "The Videos gallery could not be safely read."
+                            : "Import stopped because a Flow download is active."}
+            </p>
+          ) : null}
+          {galleryImport.unresolvedCards.length ? (
+            <ul className={styles.galleryImportUnresolved} aria-label="Unresolved project video cards">
+              {galleryImport.unresolvedCards.map((card, index) => (
+                <li key={`${card.reason}-${index}`}>
+                  {card.title || "Untitled video"} · {card.reason.replaceAll("_", " ")}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
       {rows.length ? (
         <ul className={styles.clipList} aria-label="Imported Flow clips">
           {rows.map((row) => {
@@ -1019,6 +1170,8 @@ export function FlowClipDownloads({
                       <div><dt>Project UUID</dt><dd><code>{row.projectId}</code></dd></div>
                       <div><dt>Clip UUID</dt><dd><code>{row.clipId}</code></dd></div>
                       <div><dt>Imported route</dt><dd>{row.routeVerified ? "Verified for this imported row" : "Not verified"}</dd></div>
+                      <div><dt>Gallery asset UUID</dt><dd>{row.galleryAssetId ? <code>{row.galleryAssetId}</code> : "Not captured from Gallery"}</dd></div>
+                      {row.galleryIdentityEvidence ? <div><dt>Gallery mapping evidence</dt><dd>{row.galleryIdentityEvidence === "same_card_detail_link" ? "Detail link observed on the same Gallery card" : "Detail selected asset matched the source card"}</dd></div> : null}
                       <div><dt>Thumbnail metadata</dt><dd>{row.thumbnail.available
                         ? `${row.thumbnail.width ?? "Unknown"} × ${row.thumbnail.height ?? "Unknown"}; ${row.thumbnail.fingerprint ? `fingerprint ${row.thumbnail.fingerprint}` : "no fingerprint"}`
                         : "Not available"}</dd></div>
