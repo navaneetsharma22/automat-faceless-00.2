@@ -320,6 +320,43 @@ describe("Flow project Videos gallery adapter", () => {
     expect(secondNestedClick).not.toHaveBeenCalled();
   });
 
+  it("runs discovery and one exact-owner click from the production serialized function", async () => {
+    const dom = new JSDOM(
+      `<!doctype html><body>
+        <nav aria-label="Project navigation">
+          <button>All media</button><button>Images</button>
+          <button class="mdc-list-item--activated"><span>videocam</span><span>Videos</span></button>
+        </nav>
+        <flow-project-page><flow-grid-tile-container role="group" aria-label="make it">
+          <flow-video-tile><video src="https://flow-content.google/video/no-id"></video></flow-video-tile>
+        </flow-grid-tile-container></flow-project-page>
+      </body>`,
+      { url: `https://flow.google.com/project/${projectId}`, runScripts: "outside-only" },
+    );
+    const owner = dom.window.document.querySelector("flow-grid-tile-container")!;
+    vi.spyOn(dom.window.HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { x: 0, y: 0, width: 180, height: 100, top: 0, right: 180, bottom: 100, left: 0, toJSON: () => ({}) },
+    );
+    Object.defineProperty(dom.window.document, "elementFromPoint", { value: () => owner });
+    let clicks = 0;
+    owner.addEventListener("click", () => { clicks += 1; });
+    const serializedReader = dom.window.eval(`(${inspectFlowProjectVideosInPage.toString()})`) as
+      (input: Record<string, unknown>) => Promise<unknown>;
+    const scope = { projectId, scanId: "20000000-0000-4000-8000-000000000001", documentId: "gallery-doc" };
+    const discovered = await serializedReader({ ...scope, action: "snapshot" }) as {
+      cards: Array<{ nativeCardToken?: string }>;
+    };
+    const token = discovered.cards[0]?.nativeCardToken;
+    expect(token).toMatch(/^[0-9a-f-]{36}$/i);
+    const opened = await serializedReader({ ...scope, action: "open", nativeCardToken: token }) as {
+      status: string;
+      card?: { nativeCardToken?: string };
+    };
+    expect(opened).toMatchObject({ status: "opened", card: { nativeCardToken: token } });
+    expect(clicks).toBe(1);
+    dom.window.close();
+  });
+
   it("rediscovering after a stale owner binding never clicks another same-title card", async () => {
     const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
       <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>

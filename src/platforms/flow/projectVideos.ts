@@ -1,8 +1,5 @@
 import { z } from "zod";
 
-const uuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export const FlowProjectVideoCardSchema = z
   .object({
     observationFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
@@ -88,6 +85,10 @@ export const FlowProjectVideosImportProgressSchema = z
       "stopped",
     ]),
     discovered: z.number().int().nonnegative().max(200),
+    /** Additional sightings of already counted traversal candidates. */
+    repeatedDiscoveries: z.number().int().nonnegative().max(100_000).optional(),
+    /** Number of fresh-owner open dispatches attempted during this run. */
+    openAttempts: z.number().int().nonnegative().max(200).optional(),
     imported: z.number().int().nonnegative().max(200),
     alreadyPresent: z.number().int().nonnegative().max(200),
     unresolved: z.number().int().nonnegative().max(200),
@@ -105,7 +106,11 @@ export const FlowProjectVideosImportProgressSchema = z
         "ambiguous_identity",
         "gallery_unavailable",
         "download_active",
+        "gallery_restore_failed",
       ])
+      .optional(),
+    restorationWarning: z
+      .enum(["gallery_restore_failed", "navigation_changed", "cancelled"])
       .optional(),
     failureReason: z
       .enum([
@@ -163,6 +168,11 @@ export async function inspectFlowProjectVideosInPage(input: {
   scrollTop?: number;
   maxCards?: number;
 }): Promise<unknown> {
+  // Chrome serializes `func` into the target execution context. Keep helpers
+  // referenced by the injected function inside its body; module-scope values
+  // are not captured by executeScript.
+  const uuidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const blocked = (
     reason: NonNullable<FlowProjectVideosPageResult["reason"]>,
     cards: FlowProjectVideoCard[] = [],

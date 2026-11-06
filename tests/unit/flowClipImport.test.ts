@@ -5,6 +5,7 @@ import {
   flowClipImportRouteMatches,
 } from "../../src/domain/media/flowClipImport";
 import { inspectCurrentFlowClipInPage } from "../../src/platforms/flow/clipImport";
+import { prepareFlowClipDownloadInPage } from "../../src/platforms/flow/clipDownload";
 import { ExtensionRepositories } from "../../src/storage/repositories";
 import { createMemoryRepositoryDatabase } from "./repositoryTestSupport";
 
@@ -125,5 +126,39 @@ describe("Flow detail clip import proof of concept", () => {
       if (previousFetch === undefined) delete scope.fetch;
       else scope.fetch = previousFetch;
     }
+  });
+
+  it("runs both production identity readers after serialization and waits for the selected rail thumbnail", async () => {
+    const detailAsset = "d8d91f05-e14d-4e15-964f-104981510af6";
+    const dom = new JSDOM(
+      `<title>make it</title><h1>make it</h1>`,
+      {
+        url: `https://flow.google.com/project/project-test/edit/${clipOne}`,
+        runScripts: "outside-only",
+      },
+    );
+    dom.window.HTMLElement.prototype.getBoundingClientRect = () =>
+      ({ x: 0, y: 0, width: 640, height: 360, top: 0, right: 640, bottom: 360, left: 0, toJSON: () => ({}) }) as DOMRect;
+    const serializedMetadataReader = dom.window.eval(
+      `(${inspectCurrentFlowClipInPage.toString()})`,
+    ) as () => Promise<unknown>;
+    const serializedAssetReader = dom.window.eval(
+      `(${prepareFlowClipDownloadInPage.toString()})`,
+    ) as (...args: [string, string, null, boolean, boolean]) => Promise<unknown>;
+
+    const metadata = await serializedMetadataReader();
+    expect(metadata).toMatchObject({ projectId: "project-test", clipId: clipOne, title: "make it" });
+    const beforeRail = await serializedAssetReader("project-test", clipOne, null, false, true);
+    expect(beforeRail).toMatchObject({ status: "blocked", reason: "flow_clip_selected_rail_missing" });
+
+    dom.window.document.body.insertAdjacentHTML(
+      "beforeend",
+      `<flow-navigation-rail-thumbnail><button aria-current="true"><img src="https://storage.googleapis.com/flow-content.google/video/${detailAsset}_upsampled"></button></flow-navigation-rail-thumbnail>`,
+    );
+    const afterRail = await serializedAssetReader("project-test", clipOne, null, false, true);
+    expect(afterRail).toEqual({ status: "identity", assetId: detailAsset });
+    dom.window.history.pushState({}, "", `/project/project-test`);
+    expect(await serializedMetadataReader()).toBeUndefined();
+    dom.window.close();
   });
 });

@@ -716,6 +716,15 @@ export function FlowGalleryDiagnostic({
             {galleryCheck.reason && galleryCheck.reason !== "one_card_check_complete" ? (
               <p className={styles.clipMessage}>Check stopped: {galleryCheck.reason.replaceAll("_", " ")}</p>
             ) : null}
+            {galleryCheck.restorationWarning ? (
+              <p className={styles.clipMessage}>
+                {galleryCheck.restorationWarning === "gallery_restore_failed"
+                  ? "Clip identity was saved, but the Videos Gallery could not be restored."
+                  : galleryCheck.restorationWarning === "navigation_changed"
+                    ? "Clip identity was saved, but the selected Flow page changed during restoration."
+                    : "Clip identity was saved; Gallery restoration was cancelled."}
+              </p>
+            ) : null}
             {galleryCheck.unresolvedCards.map((card, index) => (
               <p className={styles.fieldError} key={`${card.reason}-${index}`}>
                 {card.title || "Untitled video"} · {card.reason.replaceAll("_", " ")}
@@ -1236,7 +1245,7 @@ export function FlowClipDownloads({
             ) : null}
           </div>
           <p className={styles.clipMessage}>
-            Discovered {galleryImport.discovered} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
+            Discovered {galleryImport.discovered} · Processed {galleryImport.imported + galleryImport.alreadyPresent + galleryImport.unresolved} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Repeated discoveries {galleryImport.repeatedDiscoveries ?? 0} · Open attempts {galleryImport.openAttempts ?? 0} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
           </p>
           {galleryImport.scope === "one_card_check" ? (
             <p className={styles.disabledReason}>
@@ -1248,6 +1257,15 @@ export function FlowClipDownloads({
           {galleryImport.failureReason ? (
             <p className={styles.clipMessage}>
               Preflight failure: {galleryFailureLabel(galleryImport.failureReason)}
+            </p>
+          ) : null}
+          {galleryImport.restorationWarning ? (
+            <p className={styles.clipMessage}>
+              {galleryImport.restorationWarning === "gallery_restore_failed"
+                ? "Verified clip identity was saved, but the Videos Gallery could not be restored."
+                : galleryImport.restorationWarning === "navigation_changed"
+                  ? "Verified clip identity was saved, but the selected Flow page changed during restoration."
+                  : "Verified clip identity was saved; Gallery restoration was cancelled."}
             </p>
           ) : null}
           {galleryImport.reason && !galleryImport.failureReason ? (
@@ -1268,7 +1286,9 @@ export function FlowClipDownloads({
                           ? "Import stopped because a card identity was ambiguous."
                           : galleryImport.reason === "gallery_unavailable"
                             ? "The Videos gallery could not be safely read."
-                            : "Import stopped because a Flow download is active."}
+                            : galleryImport.reason === "gallery_restore_failed"
+                              ? "Gallery restoration did not finish after clip identity was captured."
+                              : "Import stopped because a Flow download is active."}
             </p>
           ) : null}
           {galleryImport.unresolvedCards.length ? (

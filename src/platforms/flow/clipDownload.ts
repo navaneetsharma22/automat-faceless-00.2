@@ -51,15 +51,21 @@ export async function prepareFlowClipDownloadInPage(
       style.visibility !== "hidden"
     );
   };
-  const selectedAsset = () => {
+  const selectedAsset = (): { assetId?: string; reason?: string } => {
     const buttons = [
       ...document.querySelectorAll(
         'flow-navigation-rail-thumbnail button[aria-current="true"]',
       ),
     ].filter(visible);
-    if (buttons.length !== 1) return undefined;
+    if (!buttons.length)
+      return { reason: "flow_clip_selected_rail_missing" as const };
+    if (buttons.length !== 1)
+      return { reason: "flow_clip_selected_rail_ambiguous" as const };
     const images = [...buttons[0]!.querySelectorAll<HTMLImageElement>("img")];
-    if (images.length !== 1) return undefined;
+    if (!images.length)
+      return { reason: "flow_clip_selected_thumbnail_missing" as const };
+    if (images.length !== 1)
+      return { reason: "flow_clip_selected_thumbnail_ambiguous" as const };
     try {
       const imageUrl = new URL(images[0]!.currentSrc || images[0]!.src);
       if (
@@ -67,13 +73,13 @@ export async function prepareFlowClipDownloadInPage(
         imageUrl.username ||
         imageUrl.password
       )
-        return undefined;
+        return { reason: "flow_clip_selected_asset_source_invalid" as const };
       if (
         !["storage.googleapis.com", "flow-content.google"].includes(
           imageUrl.hostname,
         )
       )
-        return undefined;
+        return { reason: "flow_clip_selected_asset_source_invalid" };
       const ids = [
         ...new Set(
           imageUrl.pathname
@@ -83,14 +89,24 @@ export async function prepareFlowClipDownloadInPage(
             ?.map((id) => id.toLowerCase()) ?? [],
         ),
       ];
-      return ids.length === 1 ? ids[0] : undefined;
+      if (!ids.length)
+        return { reason: "flow_clip_selected_asset_id_missing" as const };
+      if (ids.length !== 1)
+        return { reason: "flow_clip_selected_asset_id_ambiguous" as const };
+      return { assetId: ids[0]! };
     } catch {
-      return undefined;
+      return { reason: "flow_clip_selected_asset_source_invalid" as const };
     }
   };
   if (!routeMatches()) return blocked("flow_clip_detail_route_mismatch");
-  const assetId = selectedAsset();
-  if (!assetId) return blocked("flow_clip_selected_asset_unavailable");
+  const selected = selectedAsset();
+  if (!selected.assetId)
+    return blocked(
+      identityOnly
+        ? selected.reason ?? "flow_clip_selected_asset_unavailable"
+        : "flow_clip_selected_asset_unavailable",
+    );
+  const assetId = selected.assetId;
   if (expectedAssetId && assetId !== expectedAssetId)
     return blocked("flow_clip_selected_asset_changed");
 
@@ -108,7 +124,7 @@ export async function prepareFlowClipDownloadInPage(
     trigger.click();
 
   const findPoint = () => {
-    if (!routeMatches() || selectedAsset() !== assetId)
+    if (!routeMatches() || selectedAsset().assetId !== assetId)
       return blocked("flow_clip_selected_asset_changed");
     if (
       !trigger.isConnected ||

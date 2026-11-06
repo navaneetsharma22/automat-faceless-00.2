@@ -101,7 +101,7 @@ export type FlowDownloadDiagnosticDependencies = {
     contains(input: { permissions: string[] }): Promise<boolean>;
   };
   tabs: {
-    get(tabId: number): Promise<{ id?: number; title?: string; url?: string }>;
+    get(tabId: number): Promise<{ id?: number; title?: string; url?: string; status?: string }>;
     update?(tabId: number, properties: { url: string }): Promise<unknown>;
   };
   revalidateFlowConnection?(): Promise<{ ok: boolean; state?: string }>;
@@ -156,9 +156,13 @@ type FlowProjectVideoImportJob = {
   canonicalTarget: string;
   cancelRequested: boolean;
   candidates: Map<string, FlowProjectVideoCard>;
-  nativeCandidates: Map<string, { card: FlowProjectVideoCard; scrollTop: number; documentId: string }>;
+  // Native cards retain only a transient traversal descriptor. DOM owner tokens
+  // are deliberately discarded when discovery leaves the current Gallery DOM.
+  nativeCandidates: Map<string, { card: Omit<FlowProjectVideoCard, "nativeCardToken">; scrollTop: number }>;
   unresolvedKeys: Set<string>;
+  discoveredKeys: Set<string>;
   unresolvedObservationSequence: number;
+  discoveryObservationSequence: number;
   resolving?: boolean;
 };
 
@@ -689,21 +693,21 @@ export function createFlowDownloadDiagnosticManager(
       ? `asset:${card.assetId}`
       : card.routeStatus === "unique" && card.detailRoute
         ? `clip:${card.detailRoute.clipId}`
+        : card.nativeCardToken
+          ? `owner:${card.nativeCardToken}`
+        : card.observationFingerprint
+          ? `fingerprint:${card.observationFingerprint}`
         : undefined;
     if (key && job.unresolvedKeys.has(key)) return false;
     if (key) job.unresolvedKeys.add(key);
     else job.unresolvedObservationSequence += 1;
-    const countKey = key ?? `unkeyed:${job.unresolvedObservationSequence}:${reason}`;
-    job.unresolvedKeys.add(countKey);
+    if (!key) job.unresolvedKeys.add(`unkeyed:${job.unresolvedObservationSequence}:${reason}`);
     job.candidates.delete(card.assetId ?? "");
-    if (card.nativeCardToken)
-      job.nativeCandidates.delete(card.nativeCardToken);
+    if (card.observationFingerprint)
+      job.nativeCandidates.delete(`fingerprint:${card.observationFingerprint}`);
     job.progress = {
       ...job.progress,
-      discovered: Math.min(
-        FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
-        job.candidates.size + job.nativeCandidates.size + job.unresolvedKeys.size,
-      ),
+      discovered: Math.min(FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS, job.discoveredKeys.size),
       unresolved: Math.min(
         FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
         job.unresolvedKeys.size,
@@ -773,13 +777,37 @@ export function createFlowDownloadDiagnosticManager(
   const mergeProjectVideoSnapshot = (
     job: FlowProjectVideoImportJob,
     page: FlowProjectVideosPageResult,
-    documentId: string,
   ) => {
     let traversalUnavailable = false;
     let traversalAmbiguous = false;
+    const nativeFingerprintCounts = new Map<string, number>();
+    for (const card of job.oneCardCheck ? page.cards.slice(0, 1) : page.cards) {
+      if (!card.assetId && card.observationFingerprint)
+        nativeFingerprintCounts.set(card.observationFingerprint, (nativeFingerprintCounts.get(card.observationFingerprint) ?? 0) + 1);
+    }
+    const nativeFingerprintIndices = new Map<string, number>();
     const byAsset = new Map<string, FlowProjectVideoCard[]>();
     const byNativeToken = new Map<string, FlowProjectVideoCard[]>();
     for (const card of job.oneCardCheck ? page.cards.slice(0, 1) : page.cards) {
+      const discoveryKey = card.assetId
+        ? `asset:${card.assetId}`
+        : card.routeStatus === "unique" && card.detailRoute
+          ? `clip:${card.detailRoute.clipId}`
+          : card.observationFingerprint
+            ? (() => {
+                const index = (nativeFingerprintIndices.get(card.observationFingerprint!) ?? 0) + 1;
+                nativeFingerprintIndices.set(card.observationFingerprint!, index);
+                return nativeFingerprintCounts.get(card.observationFingerprint!)! > 1 && card.nativeCardToken
+                  ? `owner:${card.nativeCardToken}`
+                  : `fingerprint:${card.observationFingerprint}`;
+              })()
+            : `observation:${++job.discoveryObservationSequence}`;
+      if (job.discoveredKeys.has(discoveryKey))
+        job.progress = {
+          ...job.progress,
+          repeatedDiscoveries: Math.min(100_000, (job.progress.repeatedDiscoveries ?? 0) + 1),
+        };
+      else job.discoveredKeys.add(discoveryKey);
       if (!card.assetId || card.assetStatus !== "unique") {
         if (!card.nativeCardToken) {
           addProjectVideoUnresolved(
@@ -826,26 +854,30 @@ export function createFlowDownloadDiagnosticManager(
       if (!job.unresolvedKeys.has(`asset:${assetId}`))
         job.candidates.set(assetId, card);
     }
-    for (const [token, group] of byNativeToken) {
+    for (const group of byNativeToken.values()) {
       if (group.length !== 1) {
         traversalAmbiguous = true;
         for (const card of group)
           addProjectVideoUnresolved(job, card, "native_traversal_ambiguous");
         continue;
       }
-      if (!job.nativeCandidates.has(token))
-        job.nativeCandidates.set(token, {
-          card: group[0]!,
-          scrollTop: page.scroll.top,
-          documentId,
-        });
+      const card = group[0]!;
+      // Without a stable observation fingerprint we cannot safely reacquire
+      // this card after the detail navigation. Never fall back to title/order.
+      if (!card.observationFingerprint) {
+        addProjectVideoUnresolved(job, card, "native_traversal_evidence_unavailable");
+        traversalUnavailable = true;
+        continue;
+      }
+      const descriptor = { ...card };
+      delete descriptor.nativeCardToken;
+      const key = `fingerprint:${card.observationFingerprint}`;
+      if (!job.nativeCandidates.has(key))
+        job.nativeCandidates.set(key, { card: descriptor, scrollTop: page.scroll.top });
     }
     job.progress = {
       ...job.progress,
-      discovered: Math.min(
-        FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
-        job.candidates.size + job.nativeCandidates.size + job.unresolvedKeys.size,
-      ),
+      discovered: Math.min(FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS, job.discoveredKeys.size),
       unresolved: Math.min(
         FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
         job.unresolvedKeys.size,
@@ -859,6 +891,93 @@ export function createFlowDownloadDiagnosticManager(
       ? dependencies.wait(milliseconds)
       : new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
+  const restoreProjectVideosGallery = async (
+    job: FlowProjectVideoImportJob,
+    scrollTop: number,
+  ): Promise<NonNullable<FlowProjectVideosImportProgress["restorationWarning"]> | undefined> => {
+    const projectId = job.progress.projectId!;
+    const deadline = Date.now() + 30_000;
+    let rootNavigationStarted = false;
+    let connectionRevalidationAttempted = false;
+    for (let attempt = 0; attempt < 200 && Date.now() < deadline; attempt += 1) {
+      if (job.cancelRequested) return "cancelled";
+      const tab = await dependencies.tabs.get(job.selectedTabId).catch(() => undefined);
+      if (!tab) {
+        await sleepForImport(150);
+        continue;
+      }
+      const route = tab.url
+        ? flowTabFromUrl(job.selectedTabId, tab.title ?? "", tab.url)
+        : undefined;
+      if (!route || route.canonicalTarget !== job.canonicalTarget || route.projectId !== projectId)
+        return "navigation_changed";
+      const detail = tab.url ? flowClipDetailIdentityFromUrl(tab.url) : undefined;
+      if (detail) {
+        if (detail.projectId !== projectId) return "navigation_changed";
+        if (rootNavigationStarted) {
+          await sleepForImport(150);
+          continue;
+        }
+        if (!dependencies.tabs.update)
+          return "gallery_restore_failed";
+        try {
+          rootNavigationStarted = true;
+          await dependencies.tabs.update(job.selectedTabId, { url: job.galleryUrl });
+        } catch {
+          return "gallery_restore_failed";
+        }
+        await sleepForImport(150);
+        continue;
+      }
+      if (tab.status === "loading") {
+        await sleepForImport(150);
+        continue;
+      }
+
+      let target: Awaited<ReturnType<typeof verifyImportTarget>>;
+      try {
+        const revalidate = !connectionRevalidationAttempted;
+        connectionRevalidationAttempted = true;
+        target = await verifyImportTarget(job, revalidate);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code.includes("navigation_changed") || code.includes("document_changed"))
+          return "navigation_changed";
+        await sleepForImport(150);
+        continue;
+      }
+      const verifiedRoute = target.verifiedTabUrl
+        ? flowTabFromUrl(job.selectedTabId, "", target.verifiedTabUrl)
+        : undefined;
+      if (!verifiedRoute || verifiedRoute.canonicalTarget !== job.canonicalTarget ||
+          verifiedRoute.projectId !== projectId || flowClipDetailIdentityFromUrl(target.verifiedTabUrl!))
+        return "navigation_changed";
+      try {
+        const restored = await importPageResult(
+          job,
+          target.binding,
+          "restore",
+          undefined,
+          { scrollTop },
+        );
+        if (restored.status !== "ready" || restored.projectId !== projectId) {
+          await sleepForImport(150);
+          continue;
+        }
+        const snapshot = await importPageResult(job, target.binding, "snapshot");
+        if (snapshot.status === "ready" && snapshot.projectId === projectId)
+          return undefined;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code.includes("navigation_changed") || code.includes("document_changed"))
+          return "navigation_changed";
+        return "gallery_restore_failed";
+      }
+      await sleepForImport(150);
+    }
+    return job.cancelRequested ? "cancelled" : "gallery_restore_failed";
+  };
+
   const resolveProjectVideoCandidate = async (
     job: FlowProjectVideoImportJob,
     galleryBinding: NonNullable<Awaited<ReturnType<typeof verifySelectedFlowTarget>>["binding"]>,
@@ -869,7 +988,7 @@ export function createFlowDownloadDiagnosticManager(
     if (card.routeStatus === "unique" && card.detailRoute) {
       if (card.detailRoute.projectId !== projectId)
         throw new Error("flow_project_video_import_card_route_mismatch");
-      return {
+      return { clip: {
         projectId,
         clipId: card.detailRoute.clipId.toLowerCase(),
         detailUrl: card.detailRoute.detailUrl,
@@ -878,7 +997,7 @@ export function createFlowDownloadDiagnosticManager(
         galleryImportMethod: "source_asset" as const,
         galleryAssetId: card.assetId,
         galleryIdentityEvidence: "same_card_detail_link" as const,
-      };
+      }, restorationWarning: undefined };
     }
     if (card.routeStatus !== "none")
       throw new Error("flow_project_video_import_card_route_mismatch");
@@ -922,7 +1041,7 @@ export function createFlowDownloadDiagnosticManager(
       throw new Error("flow_project_video_import_card_open_unavailable");
     }
     if (opened.status === "route" && opened.card?.detailRoute) {
-      return {
+        return { clip: {
         projectId,
         clipId: opened.card.detailRoute.clipId.toLowerCase(),
         detailUrl: opened.card.detailRoute.detailUrl,
@@ -931,7 +1050,7 @@ export function createFlowDownloadDiagnosticManager(
         galleryImportMethod: "source_asset" as const,
         galleryAssetId: card.assetId,
         galleryIdentityEvidence: "same_card_detail_link" as const,
-      };
+      }, restorationWarning: undefined };
     }
     if (opened.status !== "opened")
       throw new Error("flow_project_video_import_card_open_unavailable");
@@ -951,7 +1070,7 @@ export function createFlowDownloadDiagnosticManager(
       | undefined;
     let resolutionFailure = "flow_project_video_import_detail_route_not_observed";
     let detailReadCompleted = false;
-    let restorationFailure: string | undefined;
+    let restorationFailure: FlowProjectVideosImportProgress["restorationWarning"];
     try {
       for (let attempt = 0; attempt < 40; attempt += 1) {
         if (job.cancelRequested) break;
@@ -1028,45 +1147,31 @@ export function createFlowDownloadDiagnosticManager(
         await sleepForImport(150);
       }
     } finally {
-      const currentTab = await dependencies.tabs.get(job.selectedTabId).catch(() => undefined);
-      const currentRoute = currentTab?.url
-        ? flowTabFromUrl(job.selectedTabId, currentTab.title ?? "", currentTab.url)
-        : undefined;
-      const currentIdentity = currentTab?.url
-        ? flowClipDetailIdentityFromUrl(currentTab.url)
-        : undefined;
-      if (detailReadCompleted && (!currentRoute || currentRoute.canonicalTarget !== job.canonicalTarget)) {
-        restorationFailure = "flow_project_video_import_navigation_changed";
-      } else if (detailReadCompleted && currentIdentity?.projectId === projectId) {
+      if (detailReadCompleted) {
         try {
-          if (!dependencies.tabs.update) {
-            restorationFailure = "flow_project_video_import_navigation_changed";
-          } else {
-            await dependencies.tabs.update(job.selectedTabId, { url: job.galleryUrl });
-            const restored = await verifyImportTarget(job, true);
-            const gallery = await importPageResult(job, restored.binding, "start");
-            if (gallery.status !== "ready" || gallery.projectId !== projectId)
-              restorationFailure = "flow_project_video_import_navigation_changed";
-          }
+          restorationFailure = await restoreProjectVideosGallery(job, 0);
         } catch {
-          restorationFailure = "flow_project_video_import_navigation_changed";
+          restorationFailure = "gallery_restore_failed";
         }
       }
     }
-    if (restorationFailure) throw new Error(restorationFailure);
-    if (job.cancelRequested) throw new Error("flow_project_video_import_cancelled");
+    if (job.cancelRequested && !resolved) throw new Error("flow_project_video_import_cancelled");
     if (!resolved) throw new Error(resolutionFailure);
-    return resolved;
+    return {
+      clip: resolved,
+      ...(restorationFailure ? { restorationWarning: restorationFailure } : {}),
+    };
   };
 
   const resolveNativeNavigationCandidate = async (
     job: FlowProjectVideoImportJob,
-    candidate: { card: FlowProjectVideoCard; scrollTop: number; documentId: string },
+    candidate: { card: Omit<FlowProjectVideoCard, "nativeCardToken">; scrollTop: number },
   ) => {
     const projectId = job.progress.projectId!;
-    const token = candidate.card.nativeCardToken;
-    if (!token)
+    const fingerprint = candidate.card.observationFingerprint;
+    if (!fingerprint)
       throw new Error("flow_project_video_import_native_traversal_unavailable");
+    let token: string | undefined;
     let resolved:
       | {
           projectId: string;
@@ -1078,14 +1183,13 @@ export function createFlowDownloadDiagnosticManager(
           detailSelectedAssetId: string;
         }
       | undefined;
-    let restorationFailure: string | undefined;
+    let restorationFailure: FlowProjectVideosImportProgress["restorationWarning"];
     let detailRouteObserved = false;
     let detailConnectionReady = false;
     let detailDocumentRead = false;
-    let selectedDetailIdentityMissing = false;
+    let detailReadFailure = "flow_project_video_import_detail_reader_not_ready";
     let detailPageMayHaveOpened = false;
     let detailReadCompleted = false;
-    let detailRouteRejected = false;
     let detailConnectionRouteMismatch = false;
     try {
       const galleryTarget = await verifyImportTarget(job);
@@ -1098,53 +1202,187 @@ export function createFlowDownloadDiagnosticManager(
       );
       if (restoredPosition.status !== "ready" || restoredPosition.projectId !== projectId)
         throw new Error("flow_project_video_import_gallery_unavailable");
-      if (galleryTarget.binding.documentId !== candidate.documentId)
-        throw new Error("flow_project_video_import_native_binding_document_changed");
-      const gallery = await importPageResult(job, galleryTarget.binding, "snapshot");
-      if (gallery.status !== "ready" || gallery.projectId !== projectId)
+      // Restoration creates a new binding generation, even when the document
+      // ID is unchanged. Re-scan current owners and use the transient media
+      // fingerprint only as a traversal cursor; it is never persisted identity.
+      let match: FlowProjectVideoCard | undefined;
+      let scan = await importPageResult(job, galleryTarget.binding, "snapshot");
+      if (scan.status !== "ready" || scan.projectId !== projectId)
         throw new Error("flow_project_video_import_gallery_unavailable");
-      const matches = gallery.cards.filter(
-        (card) => card.nativeCardToken === token,
-      );
-      // This snapshot is the required rediscovery point. A zero match means the
-      // exact bound node was replaced; never substitute another same-title row.
-      if (matches.length === 0)
-        throw new Error("flow_project_video_import_native_binding_stale");
-      if (matches.length > 1)
-        throw new Error("flow_project_video_import_native_traversal_ambiguous");
-      let opened: FlowProjectVideosPageResult;
-      try {
-        opened = await importPageResult(
-          job,
-          galleryTarget.binding,
-          "open",
-          undefined,
-          { nativeCardToken: token },
-        );
-      } catch {
-        throw new Error("flow_project_video_import_native_open_outcome_unknown");
-      }
-      if (opened.status !== "opened" || !opened.card) {
-        if (opened.reason === "native_open_control_unavailable")
-          throw new Error("flow_project_video_import_native_open_not_attempted");
-        if (opened.reason === "native_binding_stale")
-          throw new Error("flow_project_video_import_native_binding_stale");
-        if (opened.reason === "card_ambiguous")
+      for (let step = 0; step <= FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS; step += 1) {
+        const matches = scan.cards.filter((card) => card.observationFingerprint === fingerprint);
+        if (matches.length > 1)
           throw new Error("flow_project_video_import_native_traversal_ambiguous");
-        throw new Error(
-          "flow_project_video_import_native_open_outcome_unknown",
-        );
+        if (matches.length === 1) {
+          match = matches[0];
+          break;
+        }
+        if (scan.scroll.atBottom || !scan.scroll.containerFound || step === FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS)
+          break;
+        const moved = await importPageResult(job, galleryTarget.binding, "scroll");
+        if (moved.status !== "ready" || !moved.scroll.moved) break;
+        await sleepForImport(200);
+        scan = await importPageResult(job, galleryTarget.binding, "snapshot");
+        if (scan.status !== "ready" || scan.projectId !== projectId)
+          throw new Error("flow_project_video_import_gallery_unavailable");
       }
-      detailPageMayHaveOpened = true;
+      if (!match?.nativeCardToken)
+        throw new Error("flow_project_video_import_native_binding_stale");
+      token = match.nativeCardToken;
+      job.progress = {
+        ...job.progress,
+        repeatedDiscoveries: Math.min(100_000, (job.progress.repeatedDiscoveries ?? 0) + 1),
+      };
+      const detailWaitDeadline = Date.now() + FLOW_PROJECT_VIDEO_DETAIL_WAIT_DEADLINE_MS;
+      let observerStopped = false;
+      let resolveObserverReady!: (ready: boolean) => void;
+      const observerReady = new Promise<boolean>((resolve) => {
+        resolveObserverReady = resolve;
+      });
+      let observerReadyResolved = false;
+      const settleObserverReady = (ready: boolean) => {
+        if (observerReadyResolved) return;
+        observerReadyResolved = true;
+        resolveObserverReady(ready);
+      };
+      const routeObservation = (async () => {
+        let previousDetailRoute = "";
+        let stableRouteReads = 0;
+        let rejectedEditRoute = false;
+        try {
+          for (
+            let attempt = 0;
+            attempt < 40 && Date.now() < detailWaitDeadline;
+            attempt += 1
+          ) {
+            if (job.cancelRequested)
+              throw new Error("flow_project_video_import_cancelled");
+            if (observerStopped)
+              throw new Error("flow_project_video_import_native_open_not_attempted");
+            const tab = await dependencies.tabs.get(job.selectedTabId);
+            const current = flowTabFromUrl(
+              tab.id ?? job.selectedTabId,
+              tab.title ?? "",
+              tab.url,
+            );
+            if (!current || current.canonicalTarget !== job.canonicalTarget)
+              throw new Error("flow_project_video_import_navigation_changed");
+            const identity = tab.url
+              ? flowClipDetailIdentityFromUrl(tab.url)
+              : undefined;
+            if (!observerReadyResolved) {
+              const editRoutePresent = Boolean(tab.url && /\/edit(?:\/|$)/i.test(new URL(tab.url).pathname));
+              settleObserverReady(!identity && !editRoutePresent);
+              if (identity || editRoutePresent)
+                throw new Error("flow_project_video_import_navigation_changed");
+            }
+            if (!identity || identity.projectId !== projectId) {
+              if (tab.url) {
+                try {
+                  rejectedEditRoute ||= /\/edit(?:\/|$)/i.test(new URL(tab.url).pathname);
+                } catch {
+                  // Chrome supplies the URL; malformed values remain untrusted.
+                }
+              }
+              previousDetailRoute = "";
+              stableRouteReads = 0;
+              await sleepForImport(150);
+              continue;
+            }
+            detailRouteObserved = true;
+            stableRouteReads = identity.detailUrl === previousDetailRoute
+              ? stableRouteReads + 1
+              : 1;
+            previousDetailRoute = identity.detailUrl;
+            if (stableRouteReads >= 2)
+              return { ok: true as const, identity };
+            await sleepForImport(150);
+          }
+          if (rejectedEditRoute)
+            throw new Error("flow_project_video_import_detail_route_rejected");
+          throw new Error("flow_project_video_import_detail_route_not_observed_by_deadline");
+        } catch (error) {
+          settleObserverReady(false);
+          return {
+            ok: false as const,
+            code: error instanceof Error
+              ? error.message
+              : "flow_project_video_import_detail_route_not_observed_by_deadline",
+          };
+        }
+      })();
 
-      let previousDetailRoute = "";
-      let stableRouteReads = 0;
+      // Start polling and confirm the same project root before dispatching the
+      // single page-side click. The observer remains active if the injection
+      // result is lost during SPA or full-document navigation.
+      if (!(await observerReady)) {
+        const initialObservation = await routeObservation;
+        throw new Error(initialObservation.ok
+          ? "flow_project_video_import_navigation_changed"
+          : initialObservation.code);
+      }
+      let openOutcome: "pending" | "confirmed" | "blocked" | "unknown" = "pending";
+      job.progress = {
+        ...job.progress,
+        openAttempts: Math.min(200, (job.progress.openAttempts ?? 0) + 1),
+      };
+      const openOutcomePromise = importPageResult(
+        job,
+        galleryTarget.binding,
+        "open",
+        undefined,
+        { nativeCardToken: token },
+      ).then(
+        (opened) => {
+          if (opened.status === "opened" && opened.card) {
+            openOutcome = "confirmed";
+            return { kind: "confirmed" as const };
+          }
+          if (opened.status === "blocked") {
+            openOutcome = "blocked";
+            const code = opened.reason === "native_open_control_unavailable"
+              ? "flow_project_video_import_native_open_not_attempted"
+              : opened.reason === "native_binding_stale"
+                ? "flow_project_video_import_native_binding_stale"
+                : opened.reason === "card_ambiguous"
+                  ? "flow_project_video_import_native_traversal_ambiguous"
+                  : "flow_project_video_import_native_open_not_attempted";
+            observerStopped = true;
+            return { kind: "blocked" as const, code };
+          }
+          openOutcome = "unknown";
+          return { kind: "unknown" as const };
+        },
+        () => {
+          openOutcome = "unknown";
+          return { kind: "unknown" as const };
+        },
+      );
+      const firstOpenOutcome = await Promise.race([
+        openOutcomePromise.then((outcome) => ({ kind: "open" as const, outcome })),
+        routeObservation.then((route) => ({ kind: "route" as const, route })),
+      ]);
+      if (firstOpenOutcome.kind === "open" && firstOpenOutcome.outcome.kind === "blocked")
+        throw new Error(firstOpenOutcome.outcome.code);
+      const observedRoute = firstOpenOutcome.kind === "route"
+        ? firstOpenOutcome.route
+        : await routeObservation;
+      if (!observedRoute.ok) {
+        if (openOutcome === "pending" || openOutcome === "unknown")
+          throw new Error("flow_project_video_import_native_open_outcome_unknown");
+        throw new Error(observedRoute.code);
+      }
+      // A click may have raced with a navigation before its executeScript
+      // result reached the worker. Only an observed, stable detail route means
+      // the page may now need to remain open for inspection.
+      detailPageMayHaveOpened = true;
+      const initialDetailIdentity = observedRoute.identity;
+
       let previousStableRead = "";
       let stableIdentityReads = 0;
-      const detailWaitDeadline = Date.now() + FLOW_PROJECT_VIDEO_DETAIL_WAIT_DEADLINE_MS;
       for (
         let attempt = 0;
-        attempt < 40 && Date.now() < detailWaitDeadline;
+        attempt < 200 && Date.now() < detailWaitDeadline;
         attempt += 1
       ) {
         if (job.cancelRequested)
@@ -1160,28 +1398,9 @@ export function createFlowDownloadDiagnosticManager(
         const identity = tab.url
           ? flowClipDetailIdentityFromUrl(tab.url)
           : undefined;
-        if (!identity || identity.projectId !== projectId) {
-          if (tab.url) {
-            try {
-              detailRouteRejected ||= /\/edit(?:\/|$)/i.test(new URL(tab.url).pathname);
-            } catch {
-              // tab.url came from Chrome; malformed values remain untrusted.
-            }
-          }
-          previousDetailRoute = "";
-          stableRouteReads = 0;
-          await sleepForImport(150);
-          continue;
-        }
+        if (!identity || identity.projectId !== projectId || identity.detailUrl !== initialDetailIdentity.detailUrl)
+          throw new Error("flow_project_video_import_navigation_changed");
         detailRouteObserved = true;
-        stableRouteReads = identity.detailUrl === previousDetailRoute
-          ? stableRouteReads + 1
-          : 1;
-        previousDetailRoute = identity.detailUrl;
-        if (stableRouteReads < 2) {
-          await sleepForImport(150);
-          continue;
-        }
 
         let detailTarget: Awaited<ReturnType<typeof verifyImportTarget>>;
         try {
@@ -1238,6 +1457,19 @@ export function createFlowDownloadDiagnosticManager(
           ]);
         } catch {
           detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_reader_injection_failed";
+          await sleepForImport(150);
+          continue;
+        }
+        if (!Array.isArray(metadataResult) || !metadataResult[0]) {
+          detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_reader_result_missing";
+          await sleepForImport(150);
+          continue;
+        }
+        if (!Array.isArray(assetResult) || !assetResult[0]) {
+          detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_selected_asset_result_missing";
           await sleepForImport(150);
           continue;
         }
@@ -1246,6 +1478,7 @@ export function createFlowDownloadDiagnosticManager(
           assetResult[0]?.documentId !== detailTarget.binding.documentId
         ) {
           detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_document_changed";
           await sleepForImport(150);
           continue;
         }
@@ -1256,25 +1489,123 @@ export function createFlowDownloadDiagnosticManager(
           assetResult[0]?.result,
         );
         if (
-          !metadata.success ||
+          !metadata.success
+        ) {
+          detailDocumentRead = false;
+          stableIdentityReads = 0;
+          previousStableRead = "";
+          detailReadFailure = metadataResult[0]?.result === undefined
+            ? "flow_project_video_import_detail_route_parse_failed"
+            : "flow_project_video_import_detail_metadata_schema_invalid";
+          await sleepForImport(150);
+          continue;
+        }
+        if (
           metadata.data.projectId !== projectId ||
           metadata.data.clipId.toLowerCase() !== connectedIdentity.clipId
         ) {
           detailDocumentRead = false;
           stableIdentityReads = 0;
           previousStableRead = "";
+          detailReadFailure = "flow_project_video_import_detail_route_identity_mismatch";
           await sleepForImport(150);
           continue;
         }
         if (!selectedAsset.success) {
-          selectedDetailIdentityMissing = true;
           detailDocumentRead = false;
+          stableIdentityReads = 0;
+          previousStableRead = "";
+          const assetResultValue = assetResult[0]?.result;
+          const assetReason =
+            assetResultValue && typeof assetResultValue === "object" &&
+              "reason" in assetResultValue && typeof assetResultValue.reason === "string"
+              ? assetResultValue.reason
+              : "";
+          const assetFailure = assetReason === "flow_clip_detail_route_mismatch"
+            ? "flow_project_video_import_detail_route_identity_mismatch"
+            : assetReason === "flow_clip_selected_rail_missing"
+            ? "flow_project_video_import_detail_selected_rail_missing"
+            : assetReason === "flow_clip_selected_rail_ambiguous"
+              ? "flow_project_video_import_detail_selected_rail_ambiguous"
+              : assetReason === "flow_clip_selected_thumbnail_missing"
+                ? "flow_project_video_import_detail_selected_thumbnail_missing"
+                : assetReason === "flow_clip_selected_thumbnail_ambiguous"
+                  ? "flow_project_video_import_detail_selected_thumbnail_ambiguous"
+                  : assetReason === "flow_clip_selected_asset_id_missing"
+                    ? "flow_project_video_import_detail_selected_asset_id_missing"
+                    : assetReason === "flow_clip_selected_asset_id_ambiguous"
+                      ? "flow_project_video_import_detail_selected_asset_id_ambiguous"
+                      : assetReason === "flow_clip_selected_asset_source_invalid"
+                        ? "flow_project_video_import_detail_selected_asset_extraction_failed"
+                        : assetResult[0]?.result === undefined
+                          ? "flow_project_video_import_detail_selected_asset_result_missing"
+                          : "flow_project_video_import_detail_selected_asset_schema_invalid";
+          detailReadFailure = assetFailure;
+          await sleepForImport(150);
+          continue;
+        }
+        let afterReadTab: Awaited<ReturnType<typeof dependencies.tabs.get>>;
+        try {
+          afterReadTab = await dependencies.tabs.get(job.selectedTabId);
+        } catch {
+          detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_tab_read_failed";
+          await sleepForImport(150);
+          continue;
+        }
+        const afterReadIdentity = afterReadTab.url
+          ? flowClipDetailIdentityFromUrl(afterReadTab.url)
+          : undefined;
+        if (
+          !afterReadIdentity ||
+          afterReadIdentity.projectId !== projectId ||
+          afterReadIdentity.detailUrl !== connectedIdentity.detailUrl ||
+          afterReadIdentity.clipId !== metadata.data.clipId.toLowerCase()
+        ) {
+          detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_route_identity_mismatch";
           stableIdentityReads = 0;
           previousStableRead = "";
           await sleepForImport(150);
           continue;
         }
+        let afterReadTarget: Awaited<ReturnType<typeof verifyImportTarget>>;
+        try {
+          afterReadTarget = await verifyImportTarget(job, true);
+        } catch {
+          detailConnectionReady = false;
+          detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_connection_unavailable";
+          await sleepForImport(150);
+          continue;
+        }
+        const afterReadConnectedIdentity = afterReadTarget.verifiedTabUrl
+          ? flowClipDetailIdentityFromUrl(afterReadTarget.verifiedTabUrl)
+          : undefined;
+        if (
+          afterReadTarget.binding.documentId !== detailTarget.binding.documentId
+        ) {
+          detailConnectionReady = false;
+          detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_document_changed";
+          await sleepForImport(150);
+          continue;
+        }
+        if (
+          !afterReadConnectedIdentity ||
+          afterReadConnectedIdentity.projectId !== projectId ||
+          afterReadConnectedIdentity.detailUrl !== connectedIdentity.detailUrl ||
+          afterReadConnectedIdentity.clipId !== metadata.data.clipId.toLowerCase()
+        ) {
+          detailConnectionRouteMismatch = true;
+          detailConnectionReady = false;
+          detailDocumentRead = false;
+          detailReadFailure = "flow_project_video_import_detail_connection_route_mismatch";
+          await sleepForImport(150);
+          continue;
+        }
         detailDocumentRead = true;
+        detailReadFailure = "flow_project_video_import_detail_identity_unstable";
         const stableRead = `${connectedIdentity.detailUrl}:${connectedIdentity.clipId}:${selectedAsset.data.assetId}:${detailTarget.binding.documentId}`;
         stableIdentityReads = stableRead === previousStableRead
           ? stableIdentityReads + 1
@@ -1297,85 +1628,90 @@ export function createFlowDownloadDiagnosticManager(
       }
     } finally {
       if (detailPageMayHaveOpened && detailReadCompleted) {
-      const currentTab = await dependencies.tabs
-        .get(job.selectedTabId)
-        .catch(() => undefined);
-      const currentRoute = currentTab?.url
-        ? flowTabFromUrl(job.selectedTabId, currentTab.title ?? "", currentTab.url)
-        : undefined;
-      const currentIdentity = currentTab?.url
-        ? flowClipDetailIdentityFromUrl(currentTab.url)
-        : undefined;
-      if (!currentRoute || currentRoute.canonicalTarget !== job.canonicalTarget) {
-        restorationFailure = "flow_project_video_import_navigation_changed";
-      } else {
         try {
-          if (currentIdentity?.projectId === projectId) {
-            if (!dependencies.tabs.update) {
-              restorationFailure = "flow_project_video_import_navigation_changed";
-            } else {
-              await dependencies.tabs.update(job.selectedTabId, { url: job.galleryUrl });
-            }
-          }
-          let restoredGallery = false;
-          for (let attempt = 0; !restorationFailure && attempt < 40; attempt += 1) {
-            const restoredTarget = await verifyImportTarget(job, true);
-            const position = await importPageResult(
-              job,
-              restoredTarget.binding,
-              "restore",
-              undefined,
-              { scrollTop: candidate.scrollTop },
-            );
-            if (position.status === "ready" && position.projectId === projectId) {
-              const snapshot = await importPageResult(
-                job,
-                restoredTarget.binding,
-                "snapshot",
-              );
-              if (snapshot.status === "ready" && snapshot.projectId === projectId) {
-                restoredGallery = true;
-                break;
-              }
-            }
-            await sleepForImport(150);
-          }
-          if (!restoredGallery && !restorationFailure)
-            restorationFailure = "flow_project_video_import_gallery_unavailable";
-        } catch (error) {
-          restorationFailure = error instanceof Error &&
-            error.message.includes("navigation_changed")
-            ? "flow_project_video_import_navigation_changed"
-            : "flow_project_video_import_gallery_unavailable";
+          restorationFailure = await restoreProjectVideosGallery(job, candidate.scrollTop);
+        } catch {
+          restorationFailure = "gallery_restore_failed";
         }
       }
-      }
     }
-    if (restorationFailure) throw new Error(restorationFailure);
-    if (job.cancelRequested)
+    if (job.cancelRequested && !resolved)
       throw new Error("flow_project_video_import_cancelled");
     if (!resolved) {
-      if (detailRouteRejected)
-        throw new Error("flow_project_video_import_detail_route_rejected");
       if (!detailRouteObserved)
         throw new Error("flow_project_video_import_detail_route_not_observed_by_deadline");
       if (detailConnectionRouteMismatch)
         throw new Error("flow_project_video_import_detail_connection_route_mismatch");
       if (!detailConnectionReady)
         throw new Error("flow_project_video_import_detail_connection_unavailable");
-      if (selectedDetailIdentityMissing)
-        throw new Error("flow_project_video_import_selected_detail_identity_missing");
       if (!detailDocumentRead)
-        throw new Error("flow_project_video_import_detail_page_not_ready");
+        throw new Error(detailReadFailure);
       throw new Error("flow_project_video_import_detail_identity_unstable");
     }
-    return resolved;
+    return {
+      clip: resolved,
+      ...(restorationFailure ? { restorationWarning: restorationFailure } : {}),
+    };
+  };
+
+  const nativeCandidateFailureReason = (code: string) => {
+    const stages: Array<[string, string]> = [
+      ["native_open_control_unavailable", "native_open_control_unavailable"],
+      ["native_open_not_attempted", "native_open_not_attempted"],
+      ["native_open_outcome_unknown", "native_open_outcome_unknown"],
+      ["native_traversal_unavailable", "native_card_traversal_unavailable"],
+      ["card_open_unavailable", "card_open_not_confirmed"],
+      ["detail_route_not_observed", "detail_route_not_observed_by_deadline"],
+      ["detail_route_rejected", "detail_route_rejected"],
+      ["detail_connection_unavailable", "detail_connection_unavailable"],
+      ["connection_lost", "detail_connection_unavailable"],
+      ["target_not_currently_verified", "detail_connection_unavailable"],
+      ["detail_connection_route_mismatch", "detail_connection_route_mismatch"],
+      ["detail_reader_injection_failed", "detail_reader_injection_failed"],
+      ["detail_reader_result_missing", "detail_reader_result_missing"],
+      ["detail_document_changed", "detail_document_changed"],
+      ["detail_reader_not_ready", "detail_reader_not_ready"],
+      ["detail_tab_read_failed", "detail_tab_read_failed"],
+      ["detail_route_parse_failed", "detail_route_parse_failed"],
+      ["detail_metadata_schema_invalid", "detail_metadata_schema_invalid"],
+      ["detail_route_identity_mismatch", "detail_route_identity_mismatch"],
+      ["detail_selected_rail_missing", "detail_selected_rail_missing"],
+      ["detail_selected_rail_ambiguous", "detail_selected_rail_ambiguous"],
+      ["detail_selected_thumbnail_missing", "detail_selected_thumbnail_missing"],
+      ["detail_selected_thumbnail_ambiguous", "detail_selected_thumbnail_ambiguous"],
+      ["detail_selected_asset_result_missing", "detail_selected_asset_result_missing"],
+      ["detail_selected_asset_id_missing", "detail_selected_asset_id_missing"],
+      ["detail_selected_asset_id_ambiguous", "detail_selected_asset_id_ambiguous"],
+      ["detail_selected_asset_extraction_failed", "detail_selected_asset_extraction_failed"],
+      ["detail_selected_asset_schema_invalid", "detail_selected_asset_schema_invalid"],
+      ["selected_detail_identity_missing", "detail_selected_asset_missing"],
+      ["detail_page_not_ready", "detail_page_not_ready"],
+      ["detail_identity_unstable", "detail_identity_unstable"],
+      ["gallery_unavailable", "gallery_restore_failed"],
+    ];
+    return stages.find(([needle]) => code.includes(needle))?.[1] ?? "detail_stage_unclassified";
   };
 
   const runProjectVideoImport = async (job: FlowProjectVideoImportJob) => {
     let terminal: FlowProjectVideosImportProgress["status"] = "completed";
     let stopReason: FlowProjectVideosImportProgress["reason"];
     let scanComplete = false;
+    const recordRestorationWarning = (
+      warning: FlowProjectVideosImportProgress["restorationWarning"],
+    ) => {
+      if (!warning) return;
+      job.progress = { ...job.progress, restorationWarning: warning };
+      scanComplete = false;
+      if (warning === "cancelled") {
+        terminal = "cancelled";
+        stopReason = "cancelled";
+      } else {
+        terminal = warning === "navigation_changed" ? "failed" : "incomplete";
+        stopReason = warning === "navigation_changed"
+          ? "navigation_changed"
+          : "gallery_restore_failed";
+      }
+    };
     try {
       let target = await verifyImportTarget(job);
       const started = await importPageResult(job, target.binding, "start");
@@ -1391,7 +1727,7 @@ export function createFlowDownloadDiagnosticManager(
           throw new Error(
             `flow_project_video_import_${page.reason ?? "gallery_unavailable"}`,
           );
-        const traversal = mergeProjectVideoSnapshot(job, page, target.binding.documentId);
+        const traversal = mergeProjectVideoSnapshot(job, page);
         if (job.oneCardCheck) {
           if (traversal.traversalUnavailable)
             stopReason = "identity_deduplication_unavailable";
@@ -1411,7 +1747,7 @@ export function createFlowDownloadDiagnosticManager(
           stopReason = "ambiguous_identity";
           break;
         }
-        if (page.cardsCapped || job.candidates.size + job.nativeCandidates.size + job.unresolvedKeys.size >= FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS) {
+        if (page.cardsCapped || job.progress.discovered >= FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS) {
           stopReason = "bound_reached";
           break;
         }
@@ -1425,7 +1761,7 @@ export function createFlowDownloadDiagnosticManager(
           break;
         }
         if (page.scroll.atBottom) {
-          const boundary = `${page.scroll.top}:${page.scroll.max}:${job.candidates.size}:${job.nativeCandidates.size}:${job.unresolvedKeys.size}`;
+          const boundary = `${page.scroll.top}:${page.scroll.max}:${job.progress.discovered}`;
           if (boundary === previousBoundary) stableBoundaryReads += 1;
           else stableBoundaryReads = 1;
           previousBoundary = boundary;
@@ -1484,14 +1820,14 @@ export function createFlowDownloadDiagnosticManager(
                         ? "detail_selected_asset_missing"
                         : code.includes("detail_page")
                           ? "detail_page_not_ready"
-                          : "detail_identity_unresolved";
+                          : "detail_stage_unclassified";
           addProjectVideoUnresolved(job, card, reason);
           if (reason === "navigation_changed") throw error;
           continue;
         }
         const saved = await dependencies.repositories.upsertFlowClipImport({
-          ...resolved,
-          title: sanitizeFlowProjectVideoTitle(resolved.title),
+          ...resolved.clip,
+          title: sanitizeFlowProjectVideoTitle(resolved.clip.title),
         });
         job.progress = {
           ...job.progress,
@@ -1504,29 +1840,19 @@ export function createFlowDownloadDiagnosticManager(
             job.progress.alreadyPresent + (saved.reimported ? 1 : 0),
           ),
         };
+        recordRestorationWarning(resolved.restorationWarning);
+        if (resolved.restorationWarning) break;
       }
-      for (const candidate of [...job.nativeCandidates.values()]) {
+      // The map is run progress only. Select one descriptor at a time; each
+      // resolver performs a fresh Gallery discovery and produces a new owner
+      // binding immediately before its click.
+      while (job.nativeCandidates.size > 0) {
+        const [candidateKey, candidate] = job.nativeCandidates.entries().next().value!;
         if (job.cancelRequested)
           throw new Error("flow_project_video_import_cancelled");
+        let resolved: Awaited<ReturnType<typeof resolveNativeNavigationCandidate>>;
         try {
-          const resolved = await resolveNativeNavigationCandidate(job, candidate);
-          const saved = await dependencies.repositories.upsertFlowClipImport({
-            ...resolved,
-            title: sanitizeFlowProjectVideoTitle(resolved.title),
-          });
-          if (candidate.card.nativeCardToken)
-            job.nativeCandidates.delete(candidate.card.nativeCardToken);
-          job.progress = {
-            ...job.progress,
-            imported: Math.min(
-              FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
-              job.progress.imported + (saved.reimported ? 0 : 1),
-            ),
-            alreadyPresent: Math.min(
-              FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
-              job.progress.alreadyPresent + (saved.reimported ? 1 : 0),
-            ),
-          };
+          resolved = await resolveNativeNavigationCandidate(job, candidate);
         } catch (error) {
           const code = error instanceof Error ? error.message : "";
           if (code.includes("cancelled") || code.includes("navigation_changed"))
@@ -1554,53 +1880,49 @@ export function createFlowDownloadDiagnosticManager(
             continue;
           }
           if (code.includes("native_binding_document_changed")) {
-            for (const staleCandidate of job.nativeCandidates.values()) {
-              if (staleCandidate.documentId === candidate.documentId)
-                addProjectVideoUnresolved(
-                  job,
-                  staleCandidate.card,
-                  "native_card_binding_stale",
-                );
-            }
+            addProjectVideoUnresolved(job, candidate.card, "native_card_binding_stale");
             terminal = "incomplete";
             scanComplete = false;
             stopReason = "coverage_unproven";
-            break;
+            continue;
           }
           addProjectVideoUnresolved(
             job,
             candidate.card,
-            code.includes("native_open_control_unavailable")
-              ? "native_open_control_unavailable"
-              : code.includes("native_open_not_attempted")
-                ? "native_open_not_attempted"
-                : code.includes("native_open_outcome_unknown")
-                  ? "native_open_outcome_unknown"
-              : code.includes("card_open_unavailable")
-                ? "card_open_not_confirmed"
-                : code.includes("detail_route_not_observed")
-                  ? "detail_route_not_observed_by_deadline"
-                  : code.includes("detail_route_rejected")
-                    ? "detail_route_rejected"
-                  : code.includes("detail_connection_unavailable")
-                    ? "detail_connection_unavailable"
-                    : code.includes("detail_connection_route_mismatch")
-                      ? "detail_connection_route_mismatch"
-                    : code.includes("selected_detail_identity_missing")
-                      ? "detail_selected_asset_missing"
-                      : code.includes("detail_page_not_ready")
-                        ? "detail_page_not_ready"
-                        : code.includes("detail_identity_unstable")
-                          ? "detail_identity_unstable"
-                          : code.includes("document_changed")
-                            ? "detail_document_changed"
-                            : "detail_identity_unresolved",
+            nativeCandidateFailureReason(code),
           );
           terminal = "incomplete";
           scanComplete = false;
           stopReason = "coverage_unproven";
           break;
         }
+        let saved: Awaited<ReturnType<typeof dependencies.repositories.upsertFlowClipImport>>;
+        try {
+          saved = await dependencies.repositories.upsertFlowClipImport({
+            ...resolved.clip,
+            title: sanitizeFlowProjectVideoTitle(resolved.clip.title),
+          });
+        } catch {
+          addProjectVideoUnresolved(job, candidate.card, "row_persistence_failed");
+          terminal = "incomplete";
+          scanComplete = false;
+          stopReason = "coverage_unproven";
+          break;
+        }
+        job.nativeCandidates.delete(candidateKey);
+        job.progress = {
+          ...job.progress,
+          imported: Math.min(
+            FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
+            job.progress.imported + (saved.reimported ? 0 : 1),
+          ),
+          alreadyPresent: Math.min(
+            FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS,
+            job.progress.alreadyPresent + (saved.reimported ? 1 : 0),
+          ),
+        };
+        recordRestorationWarning(resolved.restorationWarning);
+        if (resolved.restorationWarning) break;
       }
       if (job.oneCardCheck) {
         if (
@@ -1710,6 +2032,8 @@ export function createFlowDownloadDiagnosticManager(
           scope: oneCardCheck ? "one_card_check" : "full_gallery",
           status: "failed",
           discovered: 0,
+          repeatedDiscoveries: 0,
+          openAttempts: 0,
           imported: 0,
           alreadyPresent: 0,
           unresolved: 0,
@@ -1727,7 +2051,9 @@ export function createFlowDownloadDiagnosticManager(
         candidates: new Map(),
         nativeCandidates: new Map(),
         unresolvedKeys: new Set(),
+        discoveredKeys: new Set(),
         unresolvedObservationSequence: 0,
+        discoveryObservationSequence: 0,
       };
       projectVideoImportJob = failedJob;
       return projectVideoImportSnapshot(failedJob);
@@ -1773,6 +2099,8 @@ export function createFlowDownloadDiagnosticManager(
         scope: oneCardCheck ? "one_card_check" : "full_gallery",
         status: "scanning",
         discovered: 0,
+        repeatedDiscoveries: 0,
+        openAttempts: 0,
         imported: 0,
         alreadyPresent: 0,
         unresolved: 0,
@@ -1788,7 +2116,9 @@ export function createFlowDownloadDiagnosticManager(
       candidates: new Map(),
       nativeCandidates: new Map(),
       unresolvedKeys: new Set(),
+      discoveredKeys: new Set(),
       unresolvedObservationSequence: 0,
+      discoveryObservationSequence: 0,
     };
     projectVideoImportJob = job;
     projectVideoImportStarting = false;

@@ -6,7 +6,7 @@ This note combines the user-provided Flow observations below with offline implem
 
 The offline package produced by this task is **`automat-faceless-0.1.0-mw0vqugh`**. It has not yet been loaded or confirmed in Chrome.
 
-## P11.1 offline follow-up — 4 November 2026
+## P11.1 offline follow-up â€” 4 November 2026
 
 The user reports that build `automat-faceless-0.1.0-mw0vqugh` was armed for Flow tab `1957329822`, and that Chrome history showed `animate_d35cfe17_1080p.mp4` (5.0 MB) after a newly generated clip. The diagnostic reported `interrupted`, no card owner/menu binding, no native action, and no candidate MP4/WebM. The exact Chrome download ID and the association with the observed action remain unverified. This is user-supplied live evidence; Chrome remained inaccessible during this offline follow-up.
 
@@ -22,17 +22,17 @@ For the next live run, load and confirm build `automat-faceless-0.1.0-mw1ix2hs`,
 
 ## Previously collected Flow evidence
 
-- In Gallery → Videos → a clip's More options → Download, **1080p Upscaled** was visible and enabled for a 720p clip.
+- In Gallery â†’ Videos â†’ a clip's More options â†’ Download, **1080p Upscaled** was visible and enabled for a 720p clip.
 - The More options control is hover-dependent and its `aria-controls` identifies the main menu. The expanded Download row has its own `aria-controls` for the quality submenu. The diagnostic resolves both control IDs from the live DOM instead of hard-coding them.
 - The Download row can render raw text as `downloadDownload` because its icon contributes text. The diagnostic normalizes the in-memory label and checks for the `download` substring; it does not save the label.
-- A manual Edit View upscale produced a Chrome download after processing. The resulting MP4 was reported as **1920 × 1080 at 24 fps**.
+- A manual Edit View upscale produced a Chrome download after processing. The resulting MP4 was reported as **1920 Ã— 1080 at 24 fps**.
 - For that Edit View run, route ID `5b16d176-835d-43af-a177-f72457f2ac92`, media request evidence, and the downloaded filename were separately reported. The request and filename shared prefix `8c53eca2`. The Gallery card did not expose a usable stable ID in the inspected attributes, and its video source did not contain that prefix. These observations do **not** establish a Gallery-card-to-download-ID association.
 
 The verified Edit View file properties are a separate historical observation. The new diagnostic does not inspect or verify a saved file's dimensions, frame rate, or playability.
 
 ## Offline diagnostic behavior
 
-The Flow-only diagnostic is available under **Advanced details → Flow Gallery upscale diagnostic**. It arms against the currently selected, currently verified Flow tab and its exact document binding. It captures one trusted click on the selected card's More options menu path, records whether the card owner was found and whether a stable-ID attribute existed, resolves the two dynamic `aria-controls` bindings, and records whether 1080p Upscaled was present and enabled. It never prevents or synthesizes a click.
+The Flow-only diagnostic is available under **Advanced details â†’ Flow Gallery upscale diagnostic**. It arms against the currently selected, currently verified Flow tab and its exact document binding. It captures one trusted click on the selected card's More options menu path, records whether the card owner was found and whether a stable-ID attribute existed, resolves the two dynamic `aria-controls` bindings, and records whether 1080p Upscaled was present and enabled. It never prevents or synthesizes a click.
 
 During the observation, the worker uses the existing debugger capability for read-only `Network` and `Page` events on that Flow tab. It retains at most 16 relevant Media/Fetch/XHR request fingerprints, four page download events, six MP4/WebM candidates, and a capped count of other file downloads. URL fingerprints and any hex-like media identifier are salted to the diagnostic session and hashed in memory. Raw URLs, query strings, headers, response bodies, prompts, cookies, and credentials are not stored or displayed. Candidate filenames are reduced to a sanitized basename.
 
@@ -56,7 +56,7 @@ These results use synthetic DOM, fake Chrome event ports, and the offline build.
 
 1. Load the built extension from this repository's `dist/` directory. In the extension dashboard, open **Advanced details** and confirm Build state `automat-faceless-0.1.0-mw0vqugh`.
 2. In Videos, select and connect the intended Google Flow project tab. Return to **Advanced details** in the dashboard and choose **Arm one observation**. Grant the optional Chrome downloads permission when Chrome prompts. The panel must show **Armed** and the selected tab ID before proceeding.
-3. In that same Flow tab, hover the one target Gallery clip and manually choose **More options → Download → 1080p Upscaled** once. The extension only observes the native clicks; it does not choose the quality or initiate the upscale/download.
+3. In that same Flow tab, hover the one target Gallery clip and manually choose **More options â†’ Download â†’ 1080p Upscaled** once. The extension only observes the native clicks; it does not choose the quality or initiate the upscale/download.
 4. Wait for the panel to show its observed action, request fingerprints, candidate Chrome download ID/name/state, and association result. Stop the observation if you are ending the run early. Do not repeat the upscale based on an unverified or interrupted result.
 5. Record browser completion separately. If actual output properties are needed, verify the downloaded file in a later approved media-verification step; this diagnostic does not read or decode the file.
 
@@ -218,7 +218,7 @@ No live menu retest or provider action occurred. The fix is verified for the rep
 
 ### Supplied live evidence
 
-The user reports build `mw1mmq40` on Flow tab `1957329822`. The trusted click path began at `mat-icon` → More options button; `flow-video-tile` was at composed-path index 8 and the enclosing `flow-grid-tile-container[role=group]` at index 11. `productionClosestOwnerFound` was false and the then-current composed-path owner count was zero. `aria-controls` was absent at capture. Separate live inspection verified that opening More options links the trigger to the main menu and hovering Download links the row to a distinct quality submenu. These are user-supplied live observations; they were not independently reread in Chrome during this offline implementation.
+The user reports build `mw1mmq40` on Flow tab `1957329822`. The trusted click path began at `mat-icon` â†’ More options button; `flow-video-tile` was at composed-path index 8 and the enclosing `flow-grid-tile-container[role=group]` at index 11. `productionClosestOwnerFound` was false and the then-current composed-path owner count was zero. `aria-controls` was absent at capture. Separate live inspection verified that opening More options links the trigger to the main menu and hovering Download links the row to a distinct quality submenu. These are user-supplied live observations; they were not independently reread in Chrome during this offline implementation.
 
 ### Cause and correction
 
@@ -349,7 +349,7 @@ The competing fixture produced two selected-tab page events and two Chrome downl
 - `Dinosaur_turning_head_5f43c1f9.mp4`
 - `Dinosaur_lowering_head_to_inspect_6f0c5678.mp4`
 - `Animal_breathing_and_blinking_7d96c2b5.mp4`
-- `Tyrannosaurus_breathing_and_shif…_14ae0c64.mp4`
+- `Tyrannosaurus_breathing_and_shifâ€¦_14ae0c64.mp4`
 - `Dinosaur_shifting_weight_a1799825.mp4`
 
 Separate local comparison files probe as H.264 1920x1080 at 5.970 seconds (`animated_4a4a3508_1080p.mp4`) and H.264 1728x960 at 8 seconds (`tnik3odvt5y3sah5byxjpujsem (4)_2x_upscaled.mp4`). Neither is established as a paired output of an archive entry. The browser fixtures establish browser download completion and URL-to-DownloadItem equality; they do not produce valid media for dimension analysis. No Flow clip-to-download association or live file dimension was established in this pass.
@@ -614,8 +614,8 @@ Searched the existing P11.1 evidence, project status, source, tests/fixtures, e2
 
 ### Missing links
 
-1. **Route clip → upscale job/output asset:** no capture explicitly records the supplied route UUID as the source of an upscale job, or maps that job ID to a returned output asset/result ID. The filename token is separate and does not fill this link.
-2. **Output asset → downloaded blob:** no capture maps a returned output asset/result ID to the media response or blob URL that produced the download event for Chrome ID `2790`. The reported blob URL ↔ Chrome download mapping reaches the browser download record, but by itself does not identify the clip or output asset.
+1. **Route clip â†’ upscale job/output asset:** no capture explicitly records the supplied route UUID as the source of an upscale job, or maps that job ID to a returned output asset/result ID. The filename token is separate and does not fill this link.
+2. **Output asset â†’ downloaded blob:** no capture maps a returned output asset/result ID to the media response or blob URL that produced the download event for Chrome ID `2790`. The reported blob URL â†” Chrome download mapping reaches the browser download record, but by itself does not identify the clip or output asset.
 
 ### One future capture needed
 
@@ -708,7 +708,7 @@ Checked the packaged extension files for build `automat-faceless-0.1.0-mw2wlegj`
 
 Source review finds one candidate signal: the observer fingerprints the current same-tab `/project/<project>/edit/<UUID>` URL at the More options event, and the worker compares it with the route captured at arm time. That can distinguish a same-route observation from a changed/missing route. However, the Gallery owner check retains only whether an ID-like attribute exists; it does not retain its value or inspect an anchor/link from that exact card to the detail route. No live observation establishes that navigating from a specific Gallery card changes the URL to that card's UUID or that the same relation can be rechecked at More options.
 
-**Blocker:** exact Gallery card → `/edit/` UUID identity is not demonstrated. The route fingerprint alone is not sufficient evidence that it belongs to the exact card. A read-only run with build `mw2wlegj` must compare two cards through normal navigation and observe a clip-specific card signal that remains checkable when More options opens. Until that evidence exists, card-to-route identity remains **NOT_VERIFIED**. No title, position, tab ID, or previously visited route was used as a substitute.
+**Blocker:** exact Gallery card â†’ `/edit/` UUID identity is not demonstrated. The route fingerprint alone is not sufficient evidence that it belongs to the exact card. A read-only run with build `mw2wlegj` must compare two cards through normal navigation and observe a clip-specific card signal that remains checkable when More options opens. Until that evidence exists, card-to-route identity remains **NOT_VERIFIED**. No title, position, tab ID, or previously visited route was used as a substitute.
 
 No Flow page was opened or navigated, and no menu/control was activated. No quality selection, upscale, download, association-rule change, or P11.2 work occurred. P11.1 remains not live-verified.
 
@@ -793,7 +793,7 @@ Manual live test: load build `mw30ocfv`; select/verify the imported target clip'
 
 ### Supplied run evidence
 
-For clip `c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa` in project `000936e1-dc7a-4421-988b-d4c66a804aed`, the user reports: exact clip route matched at arm and selection; a trusted 1080p Upscaled selection occurred in the bound detail menu; the selected-main-frame blob URL exactly matched Chrome download ID `2792`; Chrome reported the download complete; and Windows Properties for `make_it_d8d91f05_1080p (1).mp4` showed 1920×1080, 24 fps, and displayed duration 00:00:03. These are user-supplied live observations, not observations made by this offline implementation task.
+For clip `c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa` in project `000936e1-dc7a-4421-988b-d4c66a804aed`, the user reports: exact clip route matched at arm and selection; a trusted 1080p Upscaled selection occurred in the bound detail menu; the selected-main-frame blob URL exactly matched Chrome download ID `2792`; Chrome reported the download complete; and Windows Properties for `make_it_d8d91f05_1080p (1).mp4` showed 1920Ã—1080, 24 fps, and displayed duration 00:00:03. These are user-supplied live observations, not observations made by this offline implementation task.
 
 The blob URL equality explicitly links the selected-frame browser download event to Chrome download ID `2792`. Completion and the reported file properties describe that downloaded output. The available run evidence does **not** include request/response metadata or a direct output-asset-to-blob provenance record. It therefore does not yet explicitly link the selected clip to the Flow upscale job/result that produced the blob. A shared filename token, route match, or temporal proximity would be a hypothesis and does not fill this evidence gap. No run-specific metadata capture for this clip or download ID exists in the workspace.
 
@@ -803,7 +803,7 @@ The target row's one-shot arm action now enables a structural metadata probe for
 
 No Flow-specific request schema is assumed. The probe retains sanitized field paths, request/response roles, value kinds, session-scoped fingerprints, and computed equality flags against the route UUID, the opposite request/response role within the same request, and selected-frame blob URL path IDs. Raw JSON values and body text are discarded after fingerprinting; raw URLs, URL parameters, and tokens remain outside storage and logs. This generic structure discovery is intended to reveal the live field shape before any Flow-specific ID extraction or interpretation is designed. A missing field, omitted body, or opaque blob path remains unlinked.
 
-The diagnostic now labels the prior file check **Chrome file-exists check** and states that it reflects Chrome metadata, not decoded media. The imported row's status text uses the current diagnostic state, so completion no longer leaves a stale “Armed” message. The diagnostic remains Flow-only; Vids Downloads were not changed.
+The diagnostic now labels the prior file check **Chrome file-exists check** and states that it reflects Chrome metadata, not decoded media. The imported row's status text uses the current diagnostic state, so completion no longer leaves a stale â€œArmedâ€ message. The diagnostic remains Flow-only; Vids Downloads were not changed.
 
 ### Offline validation and remaining live check
 
@@ -825,7 +825,7 @@ The user reports that Chrome download `2795` completed and its blob URL exactly 
 
 At arm, the worker injects the production observer into the bound document and accepts the arm only when installation succeeds and the current detail menu plus enabled option are found. The successful `Armed` status therefore confirms arm-time installation/preflight. It does not prove the listener was still present at the later click.
 
-The detail path uses its own document capture listener. It re-queries the current route, `Download media` trigger, `aria-controls`, menu visibility, and option on each trusted click; it does not hold the original menu or option element. A valid replacement/reopening should continue to work if that live binding is still valid. Before this change, failed click checks silently returned. The detail path did not emit `quality_click_listener` or Gallery rejection events, although the UI displayed that Gallery-only diagnostic for detail captures. Thus run 2795's displayed “not reached” state could not establish whether the detail listener ran.
+The detail path uses its own document capture listener. It re-queries the current route, `Download media` trigger, `aria-controls`, menu visibility, and option on each trusted click; it does not hold the original menu or option element. A valid replacement/reopening should continue to work if that live binding is still valid. Before this change, failed click checks silently returned. The detail path did not emit `quality_click_listener` or Gallery rejection events, although the UI displayed that Gallery-only diagnostic for detail captures. Thus run 2795's displayed â€œnot reachedâ€ state could not establish whether the detail listener ran.
 
 The new detail diagnostics retain the arm install/replaced result, observer lifecycle changes (`replaced` or page hidden), and a bounded count plus the last scoped click observation. A candidate/menu click records only route-match, current-menu binding, bounded option/candidate counts, candidate membership/enabled state, and a fixed decision. It retains no clicked text, URLs, IDs, or body data. A worker-received `detail_clip_selection` remains separately visible as the accepted action.
 
@@ -907,10 +907,10 @@ UUID equality between an arbitrary JSON field and the UUID-looking part of an op
 
 Exact remaining live check: load build `automat-faceless-0.1.0-mw36pcjn`, arm the opt-in observer on project `000936e1-dc7a-4421-988b-d4c66a804aed`, clip `c2989a6e-7cae-4cbf-84f2-51a44ddfd1fa`, with its bound detail menu open before the user makes one 1080p Upscaled selection. After Chrome completion, read the bounded counters and sanitized request/response field roles. Check whether observed fields directly connect the clip to a job/result and whether that output has direct provenance to the selected-frame blob. Stop after readback; do not repeat if either edge remains missing or ambiguous. The supplied run 2793 cannot be retroactively explained by the new counters.
 
-No further live action is part of this change. On a future explicitly authorized one-shot capture, inspect the new stage counters first. A zero field count is meaningful as “parsed bodies had no accepted fields” only when parsed-body and zero-field counts support that interpretation; otherwise use the separate unavailable/failed/unsupported/filtered counts. Any equality with an opaque blob UUID remains insufficient to claim output-to-blob provenance. Keep Vids Downloads separate; P11.2 remains unstarted.
+No further live action is part of this change. On a future explicitly authorized one-shot capture, inspect the new stage counters first. A zero field count is meaningful as â€œparsed bodies had no accepted fieldsâ€ only when parsed-body and zero-field counts support that interpretation; otherwise use the separate unavailable/failed/unsupported/filtered counts. Any equality with an opaque blob UUID remains insufficient to claim output-to-blob provenance. Keep Vids Downloads separate; P11.2 remains unstarted.
 
 
-## P11.2 dashboard single-clip implementation — 5 November 2026
+## P11.2 dashboard single-clip implementation â€” 5 November 2026
 
 Build `automat-faceless-0.1.0-mw39351k` adds a functional Download 1080p action for imported Flow detail clips, using the directly observed active navigation-thumbnail asset identity. The worker validates the exact row/project/route/document, resolves and opens the bound native menu, stores dispatch intent and sends one quality click. It tracks one exact selected-frame page event to Chrome download ID and distinguishes browser completion from output association and file dimensions. Flow Downloads and Vids Downloads now have separate tabs.
 
@@ -972,7 +972,7 @@ The supplied source Gallery capture shows 13 card owners and sampled thumbnail p
 
 For cards without a source UUID, a distinct native-card-navigation method now clicks one exact, reacquired `flow-grid-tile-container[role="group"]` owner that contains `flow-video-tile`, while excluding nested action controls. It waits for a stable detail view and uses the existing route/detail reader for the same-project `/edit/` clip UUID and uniquely selected navigation-rail asset. The observed selected asset is retained as detail evidence only. The row records `galleryImportMethod: native_card_navigation` and `detailSelectedAssetId`; it has no `galleryAssetId` and no `detail_selected_asset_match` evidence. Thus this path proves which detail route and rail asset followed the exact native card opening, but does not claim source Gallery asset equality or any clip-to-output association.
 
-Traversal uses a transient scoped fingerprint only for same-scan card reacquisition, never as a persistent identity. It restores the gallery scroll location, revalidates the project and selected Videos gallery, reacquires owners after every navigation, deduplicates saved rows by project plus route clip UUID, and stops Incomplete if a card cannot be distinguished or reacquired. Cancellation, wrong project, ambiguous selection, missing detail identity, rerendered owners, and reimport are covered. Supplied live mappings for the two same-title “make it” clips are used as fixtures and resolve to separate route UUIDs; they are not hardcoded into production behavior.
+Traversal uses a transient scoped fingerprint only for same-scan card reacquisition, never as a persistent identity. It restores the gallery scroll location, revalidates the project and selected Videos gallery, reacquires owners after every navigation, deduplicates saved rows by project plus route clip UUID, and stops Incomplete if a card cannot be distinguished or reacquired. Cancellation, wrong project, ambiguous selection, missing detail identity, rerendered owners, and reimport are covered. Supplied live mappings for the two same-title â€œmake itâ€ clips are used as fixtures and resolve to separate route UUIDs; they are not hardcoded into production behavior.
 
 Focused validation: **3 files / 32 tests PASS**; typecheck, lint, production package build, and diff check pass. Build **`automat-faceless-0.1.0-mw3liikk`**, four JavaScript bundles. Existing connector `inlineDynamicImports` warning remains. The current browser inventory was empty; no Gallery import was run. Live verification remains **NOT_RUN**. No upscale or download occurred. Flow Downloads and Vids Downloads remain separate.
 
@@ -982,13 +982,13 @@ The confirmed failure is in the Gallery importer call sequence. Its initial pref
 
 The Gallery adapter now uses one resolver scoped to the accessible `Project navigation` region. It resolves the visible Videos label to its owning control, ignores icon-only text, deduplicates matches by owner, and supports the exact activated class plus existing ARIA selection. Focus classes remain irrelevant. The import `start` and `restore` actions click the unique native Videos button only when it is not selected, then wait for stable selected state and a gallery surface. Snapshot, scroll, and open actions re-resolve and require Videos selected. Both detail-return paths restore the project root, revalidate connection/document identity, select Videos, and only then snapshot/reacquire. `/edit/` is no longer accepted as a project gallery route.
 
-Fixtures exercise the full All media → Videos → discover → open card → read detail identity → return → restore Videos → discover next card sequence, plus already-selected state, leading icon text, nested labels, navigation rerender, ambiguity, and wrong-project rejection. The two import provenance methods, identity checks, cancellation, and download association behavior are preserved.
+Fixtures exercise the full All media â†’ Videos â†’ discover â†’ open card â†’ read detail identity â†’ return â†’ restore Videos â†’ discover next card sequence, plus already-selected state, leading icon text, nested labels, navigation rerender, ambiguity, and wrong-project rejection. The two import provenance methods, identity checks, cancellation, and download association behavior are preserved.
 
 Validation: **3 focused files / 35 tests PASS**; typecheck, lint, production/package build, and diff check pass. Build **`automat-faceless-0.1.0-mw3lzfrx`**, four bundles, with the existing connector warning. The browser was unavailable; live Gallery import is **NOT_RUN**. No upscale or download occurred. Flow Downloads and Vids Downloads remain separate.
 
 ## P11 exact Gallery owner token handoff - 5 November 2026
 
-The live `mw3liikk` report says 13 discovered, zero imported, one unresolved `make it · native card reacquire ambiguous`. In source, the manager maps any `native_traversal_ambiguous` exception to that row reason. Before this fix, both background reacquisition and page-side open filtered cards by equality with a repeatable `nativeTraversalFingerprint` and expected exactly one result; restoration used the same fingerprint again. A multi-match could be caused by identical media path/offset fingerprints, while a zero-match also took the same pre-click ambiguity path. Because the old result retained no throw-site or match-count detail, the exact live branch cannot be proven from that summary. The title does not participate in the predicate.
+The live `mw3liikk` report says 13 discovered, zero imported, one unresolved `make it Â· native card reacquire ambiguous`. In source, the manager maps any `native_traversal_ambiguous` exception to that row reason. Before this fix, both background reacquisition and page-side open filtered cards by equality with a repeatable `nativeTraversalFingerprint` and expected exactly one result; restoration used the same fingerprint again. A multi-match could be caused by identical media path/offset fingerprints, while a zero-match also took the same pre-click ambiguity path. Because the old result retained no throw-site or match-count detail, the exact live branch cannot be proven from that summary. The title does not participate in the predicate.
 
 The fix replaces that fingerprint handoff with an ephemeral random owner token bound to the exact DOM node in the isolated page world. The token is generated/reused only inside a `scanId + documentId` scope. On open, the adapter looks up the token's single element binding and revalidates that exact element is still connected, within the validated project, the current selected Videos gallery, and the observed video-card owner structure (`flow-grid-tile-container[role="group"]` with `flow-video-tile`). It clicks that element directly. There is no title/order lookup or `.first()` fallback. The background records the originating document ID with each token; document changes invalidate all old bindings.
 
@@ -1019,3 +1019,111 @@ The worker-to-page integration fixture delays route visibility across three tab 
 Focused Vitest: **3 files / 40 tests PASS**. Typecheck and ESLint: **PASS**. First production build attempt failed at Vite config resolution with Windows `spawn EPERM`; the required build passed when rerun with process permission. Production/package validation: **PASS**, build **`automat-faceless-0.1.0-mw3nmywp`**, four JavaScript bundles; existing connector `inlineDynamicImports` warning. `git diff --check`: **PASS**.
 
 Connected browser inventory returned no apps or browsers. The precise live substage for `mw3mp7wl`, current open hit target, replacement-document behavior, and a one-card live import remain **NOT_RUN**. The local one-row import test is not live verification. Do not repeat the 13-card Gallery scan yet; first obtain one live successful row with the new build. No upscale or download occurred. Flow Downloads and Vids Downloads remain separate.
+
+## P11.1 focused one-card live importer check - 5 November 2026
+
+Source inspection found no existing Gallery single-card limit. The normal Gallery start request previously accepted no parameters and always scanned the configured traversal. The added `singleCardCheck: true` option is an explicit bounded mode of the same `flow.projectVideos.import.start` operation. It is optional in the existing message schema; the normal Import project videos button still sends `{}` and retains full-scan behavior.
+
+The bounded mode passes `maxCards: 1` into the existing page adapter during both initial Gallery validation and later snapshots/open actions. The production page reader enumerates its existing video-card owners, reads only the first currently visible owner, and binds its normal scan/document-scoped exact-owner token. The worker also slices as a second bound before merging, then runs the existing candidate resolver, route wait, replacement document revalidation, detail metadata and selected rail identity checks, repository upsert, and successful Gallery restoration. Candidate rules and native/source provenance are unchanged. It ends after that one candidate; it does not scroll for another. One-card completion sets `scope: one_card_check`, `scanCompleteness: incomplete`, and `reason: one_card_check_complete`, even when Imported or Already present is 1. This prevents presenting the action as Gallery coverage. Existing terminal cleanup releases the scanning lock. No quality input or download API is reachable from this path.
+
+The Advanced details component shows **Test one Gallery clip**, its one-card-only explanation, current counts, Cancel while scanning, and the bounded unresolved/preflight stage. On completion, the imported list receives a refresh event. The displayed row can therefore be checked without using the full Gallery import action.
+
+Offline validation: **4 focused files / 78 tests PASS**, including two actual card owners with only one selected/opened/imported, one-row persistence, a second run reported as Already present, `scanCompleteness: incomplete`, terminal completion, and page-reader max-one behavior. Typecheck, ESLint, production package validation, and `git diff --check`: **PASS**. Final build: **`automat-faceless-0.1.0-mw3o1eow`**, four JavaScript bundles. Build output contains a worker chunk-size warning and the existing connector `inlineDynamicImports` warning.
+
+Live acceptance remains **NOT_RUN**. CUA returned empty app and browser inventories, so no actual Flow card could be opened or persisted in this session. Fixtures do not satisfy live acceptance. Manual steps: reload the extension, open the intended project's Videos Gallery, open **Advanced details**, click **Test one Gallery clip**, wait for a terminal result, and confirm Discovered `1`, Imported `1` or Already present `1`, Unresolved `0`, a visible imported row, and the message that Gallery coverage was not evaluated. Stop after this check; do not click **Import project videos**, **Download 1080p**, or any upscale until one actual card succeeds. Flow Downloads and Vids Downloads remain separate.
+
+## P11.1 native Gallery open result and route observation - 5 November 2026
+
+### Browser API research
+
+| Documented behavior | Primary source | Relevance to this implementation | Does the live failure prove it? |
+|---|---|---|---|
+| `scripting.executeScript` serializes `func`; bound parameters and execution context are lost. It waits for an injected Promise and returns `Promise<InjectionResult[]>`. | [Chrome scripting API](https://developer.chrome.com/docs/extensions/reference/api/scripting) | Injected functions must keep their runtime helpers inside the function body. The worker must validate the result array and its document ID. | The live message alone does not expose the exception. A local production-function serialization fixture reproduced the missing closure directly. |
+| Injection can target a specific document ID. | [Chrome scripting API](https://developer.chrome.com/docs/extensions/reference/api/scripting) | The importer continues targeting the exact verified document for the click, then revalidates the replacement document before reading detail identity. | The live message alone does not establish whether navigation replaced the document. |
+| `webNavigation.onHistoryStateUpdated` reports History API URL changes; `onCommitted` reports a committed document and document ID changes for replacement documents. The API requires the `webNavigation` permission. | [Chrome webNavigation API](https://developer.chrome.com/docs/extensions/reference/api/webNavigation) | Flow may use SPA or document navigation. We observe the same tab's committed URL with `tabs.get`, avoiding an added permission while reusing the connection system for replacement verification. | Generic documentation does not establish which transition Flow used. |
+| `tabs.get` returns the tab, and `Tab.url` is the last committed main-frame URL; it can be empty before commit. | [Chrome tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs) | Bounded polling can observe a route after either History API change or document commit. | The supplied failure does not show whether the URL changed before the result failed. |
+| Chrome scripting uses an execution world; isolated-world JavaScript variables are separate from the host page. | [Chrome content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts) | The scan/document token registry remains scoped to the same `ISOLATED` document execution context. A replacement document is reconnected and verified before detail reads. | It does not prove Flow's click behavior or its transition type. |
+| `HTMLElement.click()` fires a click event and returns `undefined`; the resulting click event is untrusted. | [MDN `HTMLElement.click()`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/click), [MDN `Event.isTrusted`](https://developer.mozilla.org/en-US/docs/Web/API/Event/isTrusted) | The page adapter calls `.click()` but returns its own `{status: "opened", ...}` object. Its click return value is not the injected result. No `isTrusted` predicate exists in this Gallery path. | The manual UI click succeeding does not prove that Flow rejects the adapter click; MDN behavior is generic, not Flow evidence. |
+
+### Confirmed implementation defect and correction
+
+`inspectFlowProjectVideosInPage` referenced the module-scope `uuidPattern` when validating a native card token. Chrome serializes the function body without its closure. Evaluating the actual serialized function in a persistent isolated-style DOM fixture reproduced `ReferenceError: uuidPattern is not defined` during the exact-owner open action. The worker's open-result catch converted that exception into `native_open_outcome_unknown` and, before this patch, exited before checking the current tab. This is a confirmed defect that matches the reported generic failure; the supplied live status does not prove that this exact exception was the runtime event in build `mw3o1eow`.
+
+The UUID validator is now declared inside the injected reader. Exact-token binding, owner checks, safe click point, and one-click behavior remain unchanged. The worker now starts bounded same-tab route polling before dispatch, verifies the tab is still on the same project Gallery root, and dispatches the page function once. A missing or malformed injection result no longer ends the attempt immediately: the worker continues observing that same tab without replay. Two stable same-project `/edit/` reads allow the existing connection replacement, verified detail reader, selected rail asset check, and persistence path to proceed. Both SPA transitions and full document replacement are covered. A route alone is not accepted as clip/output or download provenance.
+
+`webNavigation` listeners and permissions were not added. Cancellation and deadline failures remain terminal through the existing scan lock cleanup. Click-rejection errors remain bounded; the worker distinguishes a blocked click from an unknown injection result and a route not observed by deadline.
+
+### Offline validation and live gate
+
+The serialized-function fixture invokes the production reader through its serialized source in one persistent DOM realm for discovery and exact-token click, and verifies one intended owner click. Worker integration cases cover a missing result followed by delayed replacement navigation, a malformed result followed by delayed SPA navigation, one-card persistence through the existing verified detail readers, one-click/no replay, and missing or malformed result with no route. Existing tests cover stale token, cancellation, wrong-project route, and no-navigation terminal behavior.
+
+Focused validation: **2 files / 44 tests PASS**. Typecheck and ESLint **PASS**. Production/package build **PASS**, build **`automat-faceless-0.1.0-mw3orez8`**, four JavaScript bundles; existing worker chunk-size and connector `inlineDynamicImports` warnings remain. `git diff --check` **PASS**.
+
+Live acceptance remains **NOT_RUN**; connected browser inventory returned no apps or browsers. The one-card check still needs one actual card to reach its verified detail route and create/update a row. Reload the extension build, open the intended project's Videos Gallery, choose **Advanced details** â†’ **Test one Gallery clip**, and confirm Imported `1` or Already present `1`, Unresolved `0`, the visible row, and the one-card-only coverage message. Stop after this check. Do not run the full Gallery scan, upscale, or download. Flow Downloads and Vids Downloads remain separate.
+
+## P11.1 Gallery detail identity stage - 5 November 2026
+
+### Trace of the `detail identity unresolved` result
+
+There were two final fallback branches with that display reason: the source-asset candidate catch and the native-navigation candidate catch. The supplied one-card case has no usable Gallery source UUID, so it runs through the native-navigation catch. That branch mapped every error not matching a short list of known codes to `detail_identity_unresolved`. This proves the result was a catch-all; the live count/title/reason do not reveal whether the metadata reader threw, returned no result, failed schema/route validation, or whether selected rail identity was missing or malformed. No retained live body or stage receipt distinguishes these cases.
+
+The Gallery identity stage injects two functions, both with `world: "ISOLATED"`, `target: {tabId, documentIds: [current verified documentId]}`:
+
+| Function | Successful Import open clip | Gallery detail identity |
+|---|---|---|
+| `inspectCurrentFlowClipInPage()` | Injected; checked against `FlowClipPageMetadataSchema`; route and clip are compared with current tab before persistence. | Same function, args `[]`, same result schema. Gallery additionally compares project and clip to the opened route and rechecks the route after both reads. |
+| `prepareFlowClipDownloadInPage(projectId, clipId, null, false, true)` | Not used by Import open clip. | Injected only to read the selected detail asset. Its identity result is checked by `FlowClipAssetIdentitySchema`. The selector is the observed `flow-navigation-rail-thumbnail button[aria-current="true"] img`. |
+
+Neither reader referenced an unavailable module-scope helper. Both are now exercised by evaluating their production serialized source in a persistent DOM realm. The previous closure defect remains fixed in `inspectFlowProjectVideosInPage`; this patch does not change the one-click navigation observation.
+
+### Bounded detail-read behavior
+
+A stable route alone does not complete readiness. The importer now retries both existing readers until it receives valid metadata and a uniquely selected rail asset, bounded by the existing 30-second deadline and 200 polls at 150 ms. Before accepting the identity, it re-reads the current tab route and revalidates the selected target/document. A route, clip, project, or document change prevents persistence. The detail page is restored to Gallery only after identity capture succeeds.
+
+The selected-asset reader now returns fixed reason codes in identity-only mode for: selected rail missing/ambiguous; thumbnail missing/ambiguous; source URL invalid; asset UUID missing/ambiguous. The worker separately reports injection throw, reader result missing, metadata route parse failure, metadata schema invalid, route/clip mismatch, selected-asset result/schema invalid, document change, tab read failure, connection unavailable/mismatch, and identity instability. The unresolved UI no longer uses `detail_identity_unresolved`; an unexpected uncategorized error is shown as `detail_stage_unclassified`. A repository write failure is separately `row_persistence_failed`.
+
+### Offline validation and remaining live check
+
+Serialized production-reader tests cover metadata extraction, selected rail absent then rendered, successful asset extraction, and route mismatch. Worker integration tests cover stale reader document results followed by verified replacement, delayed rail readiness, thrown/missing/malformed metadata and asset results, route/project mismatch, each selected rail/thumbnail/extraction category, and one click only. Existing download tests were included to check that the non-identity-only download path still receives its original generic blocker and behavior.
+
+Focused validation: **4 files / 70 tests PASS**. Typecheck, ESLint, production/package build, and `git diff --check` **PASS**. Build **`automat-faceless-0.1.0-mw3pojsg`**, four JavaScript bundles; existing worker-size and connector `inlineDynamicImports` warnings remain.
+
+Live browser inventory was empty, so the precise substage behind `mw3orez8` remains unverified and one-card live acceptance is **NOT_RUN**. Reload the extension, open the same project's Videos Gallery, choose **Advanced details â†’ Test one Gallery clip**, then report the displayed fixed unresolved stage or confirm Imported/Already present `1`, Unresolved `0`, and the row. Do not run a full Gallery scan, upscale, or download. Flow Downloads and Vids Downloads remain separate.
+
+## P11.1 one-card Gallery restoration lifecycle - 5 November 2026
+
+### Restore path trace
+
+The recording observations show Flow's loading state, then the same project's Gallery with All media selected, and a changing connection panel. The recording does not show whether detail identity was captured before cleanup. The recording file was not present in the workspace, so no additional frame-level review was possible.
+
+The native one-card path had one root navigation call after a successful detail read: `tabs.update(selectedTabId, {url: galleryUrl})` in its `finally` block. The source-asset detail path also uses one `tabs.update` when it has opened a detail route. The importer has no `tabs.reload` call. Connection revalidation changes/validates connection state through its handshake; it does not navigate. The bug was immediately calling `verifyImportTarget(..., true)` and injecting the Gallery reader after `tabs.update`, without waiting for the root tab to finish loading. A temporary connection failure escaped the restore loop. Separately, the native resolver threw `gallery_restore_failed` before returning its already-resolved identity, so the caller skipped the row upsert and counted the candidate unresolved.
+
+### Correction and preservation
+
+A shared bounded restoration helper now checks that the selected tab stays on the same project and canonical Flow target. It issues at most one root navigation if the tab is still on a detail route; if already on the project root it skips navigation. It waits for the root tab to leave `loading`, attempts connection revalidation once and waits on the existing verified-target state, then runs the existing shared `restore` action and verifies a fresh Gallery snapshot. The existing resolver activates Videos when All media is selected and waits for Gallery readiness. Cancellation and deadline are checked during the wait; there is no reload/reconnect loop.
+
+Both candidate resolvers return `clip` identity and `restorationWarning` separately. Verified identity is persisted before the importer applies the restoration warning to terminal progress. Restore timeout keeps the row and marks scan Incomplete; a project change keeps the row but marks scan Failed; cancellation after identity capture keeps the row and marks scan Cancelled. The progress object exposes the distinct warning, and the UI says the verified identity was saved. If identity itself fails, the original stage remains the unresolved result and no row is written. Download handlers, identity/provenance rules, and Flow/Vids separation are unchanged.
+
+### Validation and live check
+
+The integration fixture exercises detail resolution -> one project-root navigation -> two loading reads -> one temporary connection failure -> replacement Gallery binding -> restore from All media -> Videos activation -> fresh snapshot -> persisted row. Additional tests cover restore timeout, cancellation after verified identity, wrong-project navigation after identity, and preservation of the original detail-read failure. Focused validation: **4 files / 75 tests PASS**. Typecheck, ESLint, production/package build, and `git diff --check`: **PASS**. Build **`automat-faceless-0.1.0-mw3qovbe`**, four JavaScript bundles; existing worker-size and connector `inlineDynamicImports` warnings remain.
+
+Live acceptance remains **NOT_RUN** because connected browser inventory returned no apps or browsers. The original run's detail identity outcome is unknown from the supplied recording/status. Reload this build, open the intended project's Videos Gallery, and use **Advanced details -> Test one Gallery clip** once. Confirm Imported or Already present `1`, Unresolved `0`, and the row; if restore fails after identity capture, confirm the separate warning and retained row. Stop after one card. Do not run a full Gallery scan, upscale, or download. Flow Downloads and Vids Downloads remain separate.
+
+## P11.1 batch traversal stale-binding correction - 6 November 2026
+
+### Confirmed stale-binding path
+
+The full Gallery scan first completed discovery and retained native DOM-owner tokens in `job.nativeCandidates`. The processing phase copied that map to an array and iterated the old entries. A successful candidate opened detail, persisted verified project/detail identity, and restored Gallery; the loop then continued with owner tokens from before that navigation. A replacement document loses the injected binding registry, and same-document Gallery recreation leaves the registry pointing at disconnected owner nodes. In both cases the page reader's stale-binding rejection is correct. The observed 12 stale results after one successful card match this path.
+
+### Correction
+
+Native queue entries are now traversal progress only and contain no DOM token. The worker selects one descriptor at a time. After restoration it freshly scans the Gallery, locating a unique current owner by a transient fingerprint of safe media paths. The fingerprint is used only to reacquire the intended card; it is never persisted or accepted as clip identity. The new owner token is immediately checked by the production page reader before the one open click. A missing or duplicated fingerprint fails closed. Scan order, title, and latest selected card are not substitutes. After each verified identity is persisted, the next descriptor goes through the same fresh discovery/bind/revalidate path. Both replacement-document and same-document recreation are covered by the production-loop integration fixture, which also reorders three same-title cards and reimports them.
+
+Discovered counts distinct run-local candidates; Processed is the sum of Imported, Already present, and Unresolved; Repeated discoveries counts later sightings/reacquisitions; Open attempts counts attempted fresh-owner opens. Removing duplicate unresolved bookkeeping keys corrects the prior counter inflation. Partial rows and cancellation behavior remain on the existing persistence/terminal path.
+
+### Validation and live check
+
+Focused integration/unit validation: **3 files / 70 tests PASS**. Typecheck: **PASS**. Full package build and diff check: pending final command output. Live multiple-card acceptance remains **NOT_RUN**. Preserve the successful one-card check, then exercise a multi-card scan on the next authorized live check. No upscale or download was triggered.
+
+Final validation update: **3 focused files / 70 tests PASS**; typecheck and ESLint PASS; production/package build PASS, build **`automat-faceless-0.1.0-mw4faxgu`** (four JavaScript bundles); `git diff --check` PASS. Existing worker chunk-size and connector `inlineDynamicImports` warnings remain. Live multiple-card acceptance is still **NOT_RUN** because no connected browser was available. No upscale or download occurred.
