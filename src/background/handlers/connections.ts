@@ -156,6 +156,7 @@ export type FoundationDependencies = {
   };
   vidsDownload?: {
     arm: () => Promise<unknown>;
+    recoverUnknownAttempt: (expectedAttemptId: string, expectedDocumentId: string) => Promise<unknown>;
     get: () => Promise<unknown>;
     reconcile: () => Promise<unknown>;
   };
@@ -540,6 +541,12 @@ async function dispatch(
     case "vids.download.arm":
       if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download handoff is unavailable.", "worker_registration");
       return dependencies.vidsDownload.arm();
+    case "vids.download.recoverUnknown":
+      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download handoff is unavailable.", "worker_registration");
+      return dependencies.vidsDownload.recoverUnknownAttempt(
+        request.payload.expectedAttemptId,
+        request.payload.expectedDocumentId,
+      );
     case "vids.download.get":
       if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download status is unavailable.", "worker_registration");
       try {

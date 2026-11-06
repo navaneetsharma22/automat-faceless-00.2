@@ -945,6 +945,10 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ expectedDocumentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/).optional() }).strict(),
   }),
   requestBase.extend({ type: z.literal("vids.download.arm"), payload: z.object({}).strict() }),
+  requestBase.extend({ type: z.literal("vids.download.recoverUnknown"), payload: z.object({
+    expectedAttemptId: z.string().min(1).max(200),
+    expectedDocumentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+  }).strict() }),
   requestBase.extend({ type: z.literal("vids.download.get"), payload: z.object({}).strict() }),
   requestBase.extend({ type: z.literal("vids.download.reconcile"), payload: z.object({}).strict() }),
   requestBase.extend({

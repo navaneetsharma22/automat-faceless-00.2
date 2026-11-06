@@ -44,9 +44,12 @@ export function VidsTimelineReady({ client }: { client: Client }) {
   const [selectionNotice, setSelectionNotice] = useState<string>();
   const [downloadError, setDownloadError] = useState<string>();
   const [downloadNotice, setDownloadNotice] = useState<string>();
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
+  const [recoveryPending, setRecoveryPending] = useState(false);
   const [statusError, setStatusError] = useState<string>();
   const [statusErrorStage, setStatusErrorStage] = useState<string>();
   const pendingGuard = useRef(createSubmissionGuard());
+  const recoveryGuard = useRef(createSubmissionGuard());
 
   useEffect(() => {
     let active = true;
@@ -184,6 +187,30 @@ export function VidsTimelineReady({ client }: { client: Client }) {
     }
   }
 
+  async function recoverUnknownAttempt() {
+    if (!downloadAttempt || !document || !isReady || !recoveryConfirmed || !canRecoverUnknown || !recoveryGuard.current.begin()) return;
+    setRecoveryPending(true);
+    setDownloadError(undefined);
+    setDownloadNotice(undefined);
+    try {
+      const result = await client.request("vids.download.recoverUnknown", {
+        expectedAttemptId: downloadAttempt.attemptId,
+        expectedDocumentId: document.documentId,
+      }) as { attempt?: VidsDownloadAttempt };
+      if (!result.attempt || result.attempt.documentId !== document.documentId || result.attempt.attemptId === downloadAttempt.attemptId) {
+        throw new Error("The recovery response did not contain a new attempt for this document.");
+      }
+      setDownloadAttempt(result.attempt);
+      setRecoveryConfirmed(false);
+      setDownloadNotice("A separate attempt is ready for this same document. The previous attempt remains recorded as unknown. Reload or reopen the existing helper, select this same document, verify its ID, then click Prepare MP4 Download once.");
+    } catch (cause) {
+      setDownloadError(cause instanceof Error ? cause.message : "A separate Vids attempt could not be created.");
+    } finally {
+      recoveryGuard.current.end();
+      setRecoveryPending(false);
+    }
+  }
+
   const isReady = Boolean(document && readinessMatchesDocument(readiness, document.documentId));
   const attemptState = downloadAttempt?.state;
   const downloadStateLabel = attemptState === "needs_review" ? "Needs review"
@@ -194,6 +221,9 @@ export function VidsTimelineReady({ client }: { client: Client }) {
             : attemptState === "prepared" ? "Prepared"
               : !document ? "Choose a document" : !isReady ? "Timeline not ready" : "Ready";
   const canArm = isReady && (!downloadAttempt || downloadAttempt.state === "chrome_complete");
+  const canRecoverUnknown = Boolean(downloadAttempt?.state === "needs_review" && !downloadAttempt.operationName &&
+    ["operation_observation_lost", "preparation_outcome_uncertain"].includes(downloadAttempt.reason ?? ""));
+  const sameAttemptDocument = Boolean(document && downloadAttempt && document.documentId === downloadAttempt.documentId && isReady);
   const statusHelp = attemptState === "needs_review" && downloadAttempt ? getVidsNeedsReviewHelp(downloadAttempt)
     : attemptState === "interrupted" ? "Chrome reports an interrupted download. It will not be restarted automatically."
       : attemptState === "dispatching" ? "Waiting for Chrome to return the exact download ID. This dispatch will not be replayed."
@@ -249,7 +279,23 @@ export function VidsTimelineReady({ client }: { client: Client }) {
           {downloadAttempt.operationName ? <div><dt>Drive operation ID</dt><dd><code>{downloadAttempt.operationName}</code></dd></div> : null}
           {downloadAttempt.state === "needs_review" && !downloadAttempt.operationName ? <div><dt>Drive operation ID</dt><dd>Not recorded</dd></div> : null}
         </dl> : <p className={styles.vidsEmptyState}>No download attempt yet.</p>}
+        {downloadAttempt?.priorAttempts?.length ? <details className={styles.vidsDisclosure}>
+          <summary>Preserved prior attempts ({downloadAttempt.priorAttempts.length})</summary>
+          <ul>{downloadAttempt.priorAttempts.map((prior) => <li key={prior.attemptId}>
+            <strong>{prior.state === "needs_review" ? "Needs review — historical outcome unknown" : prior.state}</strong>
+            <span> · Attempt <code>{prior.attemptId}</code> · Document <code>{prior.documentId}</code></span>
+            {prior.operationName ? <span> · Drive operation <code>{prior.operationName}</code></span> : <span> · Drive operation ID: Not recorded</span>}
+            {prior.downloadId !== undefined ? <span> · Chrome download <code>{prior.downloadId}</code></span> : null}
+          </li>)}</ul>
+        </details> : null}
         {canArm ? <div className={styles.vidsActionRow}><Button onClick={() => void armDownload()}>Arm MP4 download</Button></div> : null}
+        {canRecoverUnknown ? <div className={styles.vidsRecovery}>
+          <p role="note">The prior attempt has no recorded Drive operation ID. Its preparation outcome is unknown and Drive may already have accepted it. This action preserves that record and creates a separate attempt for the exact same verified document; it does not continue or replay the old attempt.</p>
+          {sameAttemptDocument ? <>
+            <label><input type="checkbox" checked={recoveryConfirmed} onChange={(event) => setRecoveryConfirmed(event.target.checked)} /> I checked the existing helper and it has no recorded operation to continue. I understand the prior outcome is unknown and may already have reached Drive. Create a separate attempt for this same document.</label>
+            <div className={styles.vidsActionRow}><Button onClick={() => void recoverUnknownAttempt()} disabled={!recoveryConfirmed || recoveryPending}>{recoveryPending ? "Creating separate attempt…" : "Preserve prior attempt and create new attempt"}</Button></div>
+          </> : <p>Reconnect and reverify the same document, then record timeline readiness for that exact document before recovery is available.</p>}
+        </div> : null}
         {downloadAttempt?.operationName && attemptState === "preparing_mp4" ? <p className={styles.vidsInlineNotice} role="status">An existing Drive operation is recorded. Continue checking that same operation in the helper; do not prepare again.</p> : null}
         {downloadAttempt?.state === "chrome_complete" ? <p className={styles.vidsCompletionNote}>Chrome completion is separate from playback and media-property verification.</p> : null}
         {downloadNotice && attemptState === "ready" ? <p className={styles.vidsInlineNotice} role="status">{downloadNotice}</p> : null}

@@ -20,3 +20,15 @@ Focused validation: **3 files / 12 tests PASS**. Typecheck and lint PASS. Produc
 The upload-ready folder is `publication/automat-faceless-picker/`; its README names the exact files and existing GitHub Pages destination and provides extension reload and one-document manual checks. It includes no API key value, token, signed URI, or extension bundle.
 
 No publish/push, Cloud setting change, authorization, MP4 preparation, or download occurred. Hosted compatibility has source and mocked-message-path coverage; the published page and live one-document download remain **NOT_RUN**.
+
+## Remote content verification — 6 November 2026
+
+Fetched each raw file from GitHub at screenshot commit `c3a8687` (resolved full commit `c3a868720f19a9f8f9a5cd51f6cc148b9d9d2bfc`) and from the live Pages root. SHA-256 was computed from response bytes in memory and compared with `publication/automat-faceless-picker/`:
+
+| File | Local SHA-256 | GitHub at `c3a8687` | Live Pages |
+| --- | --- | --- | --- |
+| `index.html` | `4B8AEFE8AE4586048EA89FB5E0811D9975761A30175A41D3CE2CE3B546869F19` | MATCH | MATCH |
+| `app.js` | `E2E4FCD8FECA1CD7955365D32EE2140B364C7E612AEE92E7E7C6E43ED3DE28FF` | MATCH | MATCH |
+| `logic.js` | `42FC42000C0536501732A2488C725042637A795C13C1915C5DF7B178AFFD75DD` | MATCH | MATCH |
+
+All six remote requests returned HTTP 200. The live Pages runtime files and selected GitHub commit match the local publication files byte-for-byte. No helper file needs uploading for these three paths. This verifies file content only; it does not establish runtime compatibility or perform any provider action. No source or publication file was changed.
