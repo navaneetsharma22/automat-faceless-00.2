@@ -1245,7 +1245,7 @@ export function FlowClipDownloads({
             ) : null}
           </div>
           <p className={styles.clipMessage}>
-            Discovered {galleryImport.discovered} · Processed {galleryImport.imported + galleryImport.alreadyPresent + galleryImport.unresolved} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Repeated discoveries {galleryImport.repeatedDiscoveries ?? 0} · Open attempts {galleryImport.openAttempts ?? 0} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
+            Discovered {galleryImport.discovered} · Processed {galleryImport.imported + galleryImport.alreadyPresent + galleryImport.unresolved} · Not processed {Math.max(0, galleryImport.discovered - galleryImport.imported - galleryImport.alreadyPresent - galleryImport.unresolved)} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Repeated discoveries {galleryImport.repeatedDiscoveries ?? 0} · Open attempts {galleryImport.openAttempts ?? 0} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
           </p>
           {galleryImport.scope === "one_card_check" ? (
             <p className={styles.disabledReason}>

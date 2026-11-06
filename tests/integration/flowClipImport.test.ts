@@ -482,6 +482,7 @@ async function makeProjectVideoImportManager(options: {
           tabUrl = `https://flow.google.com/project/${projectId}/edit/${firstClip}`;
         }
       } else {
+        if (action === "start") snapshotIndex = 0;
         if (action === "snapshot" && !videosSelected) {
           result = { status: "blocked", reason: "videos_section_not_selected", projectId, cards: [], cardsCapped: false, scroll: { containerFound: false, top: 0, max: 0, moved: false, atBottom: false, busy: false } };
           return [{ documentId: "document-test", result }];
@@ -1358,8 +1359,8 @@ describe("Flow Videos Gallery import", () => {
       status: "incomplete",
       scanCompleteness: "incomplete",
       reason: "ambiguous_identity",
-      discovered: 1,
-      unresolved: 1,
+      discovered: 2,
+      unresolved: 2,
     });
     expect(await repositories.listFlowClipImports()).toHaveLength(0);
   });
@@ -1384,7 +1385,7 @@ describe("Flow Videos Gallery import", () => {
       scanCompleteness: "incomplete",
       reason: "coverage_unproven",
       imported: 1,
-      unresolved: 1,
+      unresolved: 0,
     });
     const rows = await repositories.listFlowClipImports();
     expect(rows.map((row) => row.clipId)).toEqual([liveNativeMappings[0]!.clipId]);

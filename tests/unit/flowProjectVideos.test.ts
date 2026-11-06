@@ -1,4 +1,5 @@
 import { JSDOM } from "jsdom";
+import { webcrypto } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { inspectFlowProjectVideosInPage } from "../../src/platforms/flow/projectVideos";
 
@@ -30,7 +31,7 @@ function installGallery(
   vi.stubGlobal("Element", dom.window.Element);
   vi.stubGlobal("HTMLElement", dom.window.HTMLElement);
   vi.stubGlobal("getComputedStyle", dom.window.getComputedStyle.bind(dom.window));
-  vi.stubGlobal("crypto", globalThis.crypto);
+  vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("TextEncoder", TextEncoder);
   vi.spyOn(dom.window.HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
     { x: 0, y: 0, width: 180, height: 100, top: 0, right: 180, bottom: 100, left: 0, toJSON: () => ({}) },
@@ -254,7 +255,7 @@ describe("Flow project Videos gallery adapter", () => {
       scanId: "90000000-0000-4000-8000-000000000009",
       documentId: "flow-document-one",
       maxCards: 1,
-    }) as { status: string; cards: Array<{ title: string; nativeCardToken?: string }> };
+    }) as { status: string; cards: Array<{ title: string; nativeCardToken?: string; observationFingerprint?: string }> };
     expect(result.status).toBe("ready");
     expect(result.cards).toHaveLength(1);
     expect(result.cards[0]?.title).toBe("First clip");
@@ -263,11 +264,11 @@ describe("Flow project Videos gallery adapter", () => {
 
   it("binds same-title owners separately and clicks only the discovered token target", async () => {
     const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
-      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>
+      <flow-video-tile><video src="https://flow-content.google/media/rendered-video-a"></video></flow-video-tile>
       <button aria-label="More options">More options</button>
     </flow-grid-tile-container>
     <flow-grid-tile-container role="group" aria-label="make it">
-      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>
+      <flow-video-tile><video src="https://flow-content.google/media/rendered-video-b"></video></flow-video-tile>
       <button aria-label="More options">More options</button>
     </flow-grid-tile-container>`);
     const owners = [...dom.window.document.querySelectorAll("flow-grid-tile-container")];
@@ -296,7 +297,7 @@ describe("Flow project Videos gallery adapter", () => {
       action: "start",
       scanId,
       documentId,
-    }) as { status: string; cards: Array<{ title: string; nativeCardToken?: string }> };
+    }) as { status: string; cards: Array<{ title: string; nativeCardToken?: string; observationFingerprint?: string }> };
     const tokens = snapshot.cards.map((card) => card.nativeCardToken);
     expect(snapshot.status).toBe("ready");
     expect(snapshot.cards.map((card) => card.title)).toEqual(["make it", "make it"]);
@@ -304,15 +305,16 @@ describe("Flow project Videos gallery adapter", () => {
     expect(tokens[1]).toMatch(/^[0-9a-f-]{36}$/i);
     expect(new Set(tokens).size).toBe(2);
 
-    for (const token of tokens) {
+    for (const [index, token] of tokens.entries()) {
       const result = await inspectFlowProjectVideosInPage({
         projectId,
         action: "open",
         scanId,
         documentId,
         nativeCardToken: token,
+        expectedObservationFingerprint: snapshot.cards[index]?.observationFingerprint,
       }) as { status: string };
-      expect(result).toMatchObject({ status: "opened" });
+      expect(result, JSON.stringify(result)).toMatchObject({ status: "opened" });
     }
     expect(firstClick).toHaveBeenCalledTimes(1);
     expect(secondClick).toHaveBeenCalledTimes(1);
@@ -334,6 +336,7 @@ describe("Flow project Videos gallery adapter", () => {
       { url: `https://flow.google.com/project/${projectId}`, runScripts: "outside-only" },
     );
     const owner = dom.window.document.querySelector("flow-grid-tile-container")!;
+    Object.defineProperty(dom.window, "crypto", { configurable: true, value: webcrypto });
     vi.spyOn(dom.window.HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
       { x: 0, y: 0, width: 180, height: 100, top: 0, right: 180, bottom: 100, left: 0, toJSON: () => ({}) },
     );
@@ -344,11 +347,11 @@ describe("Flow project Videos gallery adapter", () => {
       (input: Record<string, unknown>) => Promise<unknown>;
     const scope = { projectId, scanId: "20000000-0000-4000-8000-000000000001", documentId: "gallery-doc" };
     const discovered = await serializedReader({ ...scope, action: "snapshot" }) as {
-      cards: Array<{ nativeCardToken?: string }>;
+      cards: Array<{ nativeCardToken?: string; observationFingerprint?: string }>;
     };
     const token = discovered.cards[0]?.nativeCardToken;
     expect(token).toMatch(/^[0-9a-f-]{36}$/i);
-    const opened = await serializedReader({ ...scope, action: "open", nativeCardToken: token }) as {
+    const opened = await serializedReader({ ...scope, action: "open", nativeCardToken: token, expectedObservationFingerprint: discovered.cards[0]?.observationFingerprint }) as {
       status: string;
       card?: { nativeCardToken?: string };
     };
@@ -359,10 +362,10 @@ describe("Flow project Videos gallery adapter", () => {
 
   it("rediscovering after a stale owner binding never clicks another same-title card", async () => {
     const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
-      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-a"></video></flow-video-tile>
+      <flow-video-tile><video src="https://flow-content.google/media/rendered-video-a"></video></flow-video-tile>
     </flow-grid-tile-container>
     <flow-grid-tile-container role="group" aria-label="make it">
-      <flow-video-tile><video src="https://flow.google.com/media/rendered-video-b"></video></flow-video-tile>
+      <flow-video-tile><video src="https://flow-content.google/media/rendered-video-b"></video></flow-video-tile>
     </flow-grid-tile-container>`);
     const owners = [...dom.window.document.querySelectorAll("flow-grid-tile-container")];
     const clickFirst = vi.fn();
@@ -421,6 +424,57 @@ describe("Flow project Videos gallery adapter", () => {
       nativeCardToken: snapshot.cards[0]?.nativeCardToken,
     }) as { status: string; reason?: string };
     expect(result).toMatchObject({ status: "blocked", reason: "native_binding_stale" });
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("invalidates old native tokens when Gallery restoration recreates bindings in the same document", async () => {
+    const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
+      <flow-video-tile><video src="https://flow.google.com/media/restored"></video></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const owner = dom.window.document.querySelector("flow-grid-tile-container")!;
+    const click = vi.fn();
+    owner.addEventListener("click", click);
+    const scope = { projectId, scanId: "90000000-0000-4000-8000-000000000019", documentId: "same-gallery-document" };
+    const before = await inspectFlowProjectVideosInPage({ ...scope, action: "snapshot" }) as {
+      cards: Array<{ nativeCardToken?: string; observationFingerprint?: string }>;
+    };
+    const old = before.cards[0]!;
+    await inspectFlowProjectVideosInPage({ ...scope, action: "restore", scrollTop: 0 });
+    const stale = await inspectFlowProjectVideosInPage({
+      ...scope,
+      action: "open",
+      nativeCardToken: old.nativeCardToken,
+      expectedObservationFingerprint: old.observationFingerprint,
+    }) as { status: string; reason?: string };
+    const after = await inspectFlowProjectVideosInPage({ ...scope, action: "snapshot" }) as {
+      cards: Array<{ nativeCardToken?: string }>;
+    };
+    expect(stale).toMatchObject({ status: "blocked", reason: "native_binding_stale" });
+    expect(after.cards[0]?.nativeCardToken).not.toBe(old.nativeCardToken);
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("rejects changed media on a connected owner without clicking", async () => {
+    const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
+      <flow-video-tile><video src="https://flow.google.com/media/before"></video></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const owner = dom.window.document.querySelector("flow-grid-tile-container")!;
+    const video = owner.querySelector("video")!;
+    const click = vi.fn();
+    owner.addEventListener("click", click);
+    const scope = { projectId, scanId: "90000000-0000-4000-8000-000000000020", documentId: "gallery-document" };
+    const snapshot = await inspectFlowProjectVideosInPage({ ...scope, action: "snapshot" }) as {
+      cards: Array<{ nativeCardToken?: string; observationFingerprint?: string }>;
+    };
+    video.src = "https://flow.google.com/media/after";
+    const result = await inspectFlowProjectVideosInPage({
+      ...scope,
+      action: "open",
+      nativeCardToken: snapshot.cards[0]?.nativeCardToken,
+      expectedObservationFingerprint: snapshot.cards[0]?.observationFingerprint,
+    }) as { status: string; reason?: string };
+    expect(result).toMatchObject({ status: "blocked", reason: "native_binding_stale" });
+    expect(owner.isConnected).toBe(true);
     expect(click).not.toHaveBeenCalled();
   });
 

@@ -165,6 +165,7 @@ export async function inspectFlowProjectVideosInPage(input: {
   documentId?: string;
   assetId?: string;
   nativeCardToken?: string;
+  expectedObservationFingerprint?: string;
   scrollTop?: number;
   maxCards?: number;
 }): Promise<unknown> {
@@ -349,6 +350,7 @@ export async function inspectFlowProjectVideosInPage(input: {
     scope: string;
     byOwner: WeakMap<Element, string>;
     byToken: Map<string, Element>;
+    generation: string;
   };
   const expectedBindingScope = input.scanId && input.documentId
     ? `${input.scanId}:${input.documentId}`
@@ -361,13 +363,15 @@ export async function inspectFlowProjectVideosInPage(input: {
     !expectedBindingScope ||
     !nativeBindings ||
     nativeBindings.scope !== expectedBindingScope ||
-    input.action === "start"
+    input.action === "start" ||
+    input.action === "restore"
   ) {
     nativeBindings = expectedBindingScope
       ? {
           scope: expectedBindingScope,
           byOwner: new WeakMap<Element, string>(),
           byToken: new Map<string, Element>(),
+          generation: crypto.randomUUID(),
         }
       : undefined;
     isolatedGlobal.__automatFlowNativeCardBindings = nativeBindings;
@@ -672,6 +676,12 @@ export async function inspectFlowProjectVideosInPage(input: {
     if (matches.length !== 1)
       return blocked("card_ambiguous", snapshots);
     const card = matches[0]!;
+    if (
+      nativeNavigation &&
+      (!input.expectedObservationFingerprint ||
+        card.observationFingerprint !== input.expectedObservationFingerprint)
+    )
+      return blocked("native_binding_stale", snapshots);
     if (card.routeStatus === "ambiguous")
       return blocked("route_ambiguous", snapshots);
     if (card.routeStatus === "mismatch")
@@ -706,11 +716,6 @@ export async function inspectFlowProjectVideosInPage(input: {
       ? boundOwner!
       : cards[snapshots.indexOf(card)]!;
     if (observedVideoCardOwner(cardElement)) {
-      const clickTarget = nativeNavigation
-        ? safeCardClickTarget(cardElement)
-        : cardElement as HTMLElement;
-      if (!clickTarget)
-        return blocked("native_open_control_unavailable", snapshots);
       if (
         nativeNavigation &&
         (!cardElement.isConnected ||
@@ -718,6 +723,27 @@ export async function inspectFlowProjectVideosInPage(input: {
           findCard(cardElement) !== cardElement)
       )
         return blocked("native_binding_stale", snapshots);
+      if (nativeNavigation) {
+        // Re-read media immediately before the one click. A still-connected
+        // virtual-scroll owner may have been recycled after its snapshot.
+        const current = await readCard(cardElement);
+        const currentBindings = nativeBindings;
+        if (
+          !cardElement.isConnected ||
+          !project.contains(cardElement) ||
+          findCard(cardElement) !== cardElement ||
+          current.nativeCardToken !== input.nativeCardToken ||
+          current.observationFingerprint !== input.expectedObservationFingerprint ||
+          currentBindings?.byToken.get(input.nativeCardToken!) !== cardElement ||
+          currentBindings.generation !== bindingsForOpen?.generation
+        )
+          return blocked("native_binding_stale", snapshots);
+      }
+      const clickTarget = nativeNavigation
+        ? safeCardClickTarget(cardElement)
+        : cardElement as HTMLElement;
+      if (!clickTarget)
+        return blocked("native_open_control_unavailable", snapshots);
       clickTarget.click();
       return {
         status: "opened",

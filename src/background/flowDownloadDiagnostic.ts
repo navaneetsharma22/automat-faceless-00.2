@@ -163,6 +163,7 @@ type FlowProjectVideoImportJob = {
   discoveredKeys: Set<string>;
   unresolvedObservationSequence: number;
   discoveryObservationSequence: number;
+  inventoryKeys: Set<string>;
   resolving?: boolean;
 };
 
@@ -688,8 +689,9 @@ export function createFlowDownloadDiagnosticManager(
     job: FlowProjectVideoImportJob,
     card: FlowProjectVideoCard,
     reason: string,
+    candidateKey?: string,
   ) => {
-    const key = card.assetId
+    const key = candidateKey ?? (card.assetId
       ? `asset:${card.assetId}`
       : card.routeStatus === "unique" && card.detailRoute
         ? `clip:${card.detailRoute.clipId}`
@@ -697,7 +699,7 @@ export function createFlowDownloadDiagnosticManager(
           ? `owner:${card.nativeCardToken}`
         : card.observationFingerprint
           ? `fingerprint:${card.observationFingerprint}`
-        : undefined;
+        : undefined);
     if (key && job.unresolvedKeys.has(key)) return false;
     if (key) job.unresolvedKeys.add(key);
     else job.unresolvedObservationSequence += 1;
@@ -725,7 +727,11 @@ export function createFlowDownloadDiagnosticManager(
     binding: NonNullable<Awaited<ReturnType<typeof verifySelectedFlowTarget>>["binding"]>,
     action: "start" | "snapshot" | "scroll" | "restore" | "open",
     assetId?: string,
-    options: { nativeCardToken?: string; scrollTop?: number } = {},
+    options: {
+      nativeCardToken?: string;
+      expectedObservationFingerprint?: string;
+      scrollTop?: number;
+    } = {},
   ) => {
     const injected = await dependencies.scripting.executeScript({
       target: {
@@ -780,28 +786,38 @@ export function createFlowDownloadDiagnosticManager(
   ) => {
     let traversalUnavailable = false;
     let traversalAmbiguous = false;
+    const assetCounts = new Map<string, number>();
     const nativeFingerprintCounts = new Map<string, number>();
     for (const card of job.oneCardCheck ? page.cards.slice(0, 1) : page.cards) {
+      if (card.assetId) assetCounts.set(card.assetId, (assetCounts.get(card.assetId) ?? 0) + 1);
       if (!card.assetId && card.observationFingerprint)
         nativeFingerprintCounts.set(card.observationFingerprint, (nativeFingerprintCounts.get(card.observationFingerprint) ?? 0) + 1);
     }
     const nativeFingerprintIndices = new Map<string, number>();
+    const assetIndices = new Map<string, number>();
     const byAsset = new Map<string, FlowProjectVideoCard[]>();
     const byNativeToken = new Map<string, FlowProjectVideoCard[]>();
     for (const card of job.oneCardCheck ? page.cards.slice(0, 1) : page.cards) {
       const discoveryKey = card.assetId
-        ? `asset:${card.assetId}`
+        ? (() => {
+            const index = (assetIndices.get(card.assetId!) ?? 0) + 1;
+            assetIndices.set(card.assetId!, index);
+            return (assetCounts.get(card.assetId!) ?? 0) > 1
+              ? `asset:${card.assetId}:ambiguous:${index}`
+              : `asset:${card.assetId}`;
+          })()
         : card.routeStatus === "unique" && card.detailRoute
           ? `clip:${card.detailRoute.clipId}`
           : card.observationFingerprint
             ? (() => {
                 const index = (nativeFingerprintIndices.get(card.observationFingerprint!) ?? 0) + 1;
                 nativeFingerprintIndices.set(card.observationFingerprint!, index);
-                return nativeFingerprintCounts.get(card.observationFingerprint!)! > 1 && card.nativeCardToken
-                  ? `owner:${card.nativeCardToken}`
+                return nativeFingerprintCounts.get(card.observationFingerprint!)! > 1
+                  ? `fingerprint:${card.observationFingerprint}:ambiguous:${index}`
                   : `fingerprint:${card.observationFingerprint}`;
               })()
             : `observation:${++job.discoveryObservationSequence}`;
+      job.inventoryKeys.add(discoveryKey);
       if (job.discoveredKeys.has(discoveryKey))
         job.progress = {
           ...job.progress,
@@ -809,6 +825,11 @@ export function createFlowDownloadDiagnosticManager(
         };
       else job.discoveredKeys.add(discoveryKey);
       if (!card.assetId || card.assetStatus !== "unique") {
+        if ((nativeFingerprintCounts.get(card.observationFingerprint ?? "") ?? 0) > 1) {
+          addProjectVideoUnresolved(job, card, "native_traversal_ambiguous", discoveryKey);
+          traversalAmbiguous = true;
+          continue;
+        }
         if (!card.nativeCardToken) {
           addProjectVideoUnresolved(
             job,
@@ -821,6 +842,11 @@ export function createFlowDownloadDiagnosticManager(
         const group = byNativeToken.get(card.nativeCardToken) ?? [];
         group.push(card);
         byNativeToken.set(card.nativeCardToken, group);
+        continue;
+      }
+      if ((assetCounts.get(card.assetId) ?? 0) > 1) {
+        addProjectVideoUnresolved(job, card, "asset_identity_ambiguous", discoveryKey);
+        traversalAmbiguous = true;
         continue;
       }
       const grouped = byAsset.get(card.assetId) ?? [];
@@ -890,6 +916,68 @@ export function createFlowDownloadDiagnosticManager(
     dependencies.wait
       ? dependencies.wait(milliseconds)
       : new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+  const galleryInventoryKeys = (cards: FlowProjectVideoCard[]) => {
+    const counts = new Map<string, number>();
+    for (const card of cards) {
+      const base = card.assetId
+        ? `asset:${card.assetId}`
+        : !card.observationFingerprint
+          ? undefined
+          : `fingerprint:${card.observationFingerprint}`;
+      if (base) counts.set(base, (counts.get(base) ?? 0) + 1);
+    }
+    const indices = new Map<string, number>();
+    return cards.map((card) => {
+      if (card.assetId) {
+        const base = `asset:${card.assetId}`;
+        const index = (indices.get(base) ?? 0) + 1;
+        indices.set(base, index);
+        return (counts.get(base) ?? 0) > 1 ? `${base}:ambiguous:${index}` : base;
+      }
+      if (card.routeStatus === "unique" && card.detailRoute)
+        return `clip:${card.detailRoute.clipId}`;
+      if (!card.observationFingerprint) return undefined;
+      const base = `fingerprint:${card.observationFingerprint}`;
+      const index = (indices.get(base) ?? 0) + 1;
+      indices.set(base, index);
+      return (counts.get(base) ?? 0) > 1 ? `${base}:ambiguous:${index}` : base;
+    });
+  };
+
+  const verifyFinalGalleryInventory = async (job: FlowProjectVideoImportJob) => {
+    const target = await verifyImportTarget(job);
+    const started = await importPageResult(job, target.binding, "start");
+    if (started.status !== "ready" || started.projectId !== job.progress.projectId || started.cardsCapped)
+      return false;
+    const observed = new Set<string>();
+    let page = await importPageResult(job, target.binding, "snapshot");
+    for (let step = 0; step <= FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS; step += 1) {
+      if (job.cancelRequested || page.scroll.busy || page.cardsCapped || !page.scroll.containerFound)
+        return false;
+      for (const key of galleryInventoryKeys(page.cards)) {
+        if (!key) return false;
+        if (job.inventoryKeys.has(key)) {
+          job.progress = {
+            ...job.progress,
+            repeatedDiscoveries: Math.min(100_000, (job.progress.repeatedDiscoveries ?? 0) + 1),
+          };
+        }
+        observed.add(key);
+      }
+      if (page.scroll.atBottom) {
+        const expected = job.inventoryKeys;
+        return observed.size === expected.size && [...expected].every((key) => observed.has(key));
+      }
+      if (step === FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS) return false;
+      const moved = await importPageResult(job, target.binding, "scroll");
+      if (moved.status !== "ready" || !moved.scroll.moved) return false;
+      await sleepForImport(150);
+      page = await importPageResult(job, target.binding, "snapshot");
+      if (page.status !== "ready" || page.projectId !== job.progress.projectId) return false;
+    }
+    return false;
+  };
 
   const restoreProjectVideosGallery = async (
     job: FlowProjectVideoImportJob,
@@ -1229,6 +1317,8 @@ export function createFlowDownloadDiagnosticManager(
       if (!match?.nativeCardToken)
         throw new Error("flow_project_video_import_native_binding_stale");
       token = match.nativeCardToken;
+      if (!match.observationFingerprint)
+        throw new Error("flow_project_video_import_native_traversal_unavailable");
       job.progress = {
         ...job.progress,
         repeatedDiscoveries: Math.min(100_000, (job.progress.repeatedDiscoveries ?? 0) + 1),
@@ -1331,7 +1421,7 @@ export function createFlowDownloadDiagnosticManager(
         galleryTarget.binding,
         "open",
         undefined,
-        { nativeCardToken: token },
+        { nativeCardToken: token, expectedObservationFingerprint: fingerprint },
       ).then(
         (opened) => {
           if (opened.status === "opened" && opened.card) {
@@ -1846,7 +1936,11 @@ export function createFlowDownloadDiagnosticManager(
       // The map is run progress only. Select one descriptor at a time; each
       // resolver performs a fresh Gallery discovery and produces a new owner
       // binding immediately before its click.
-      while (job.nativeCandidates.size > 0) {
+      while (
+        job.nativeCandidates.size > 0 &&
+        stopReason !== "ambiguous_identity" &&
+        stopReason !== "identity_deduplication_unavailable"
+      ) {
         const [candidateKey, candidate] = job.nativeCandidates.entries().next().value!;
         if (job.cancelRequested)
           throw new Error("flow_project_video_import_cancelled");
@@ -1869,22 +1963,16 @@ export function createFlowDownloadDiagnosticManager(
             break;
           }
           if (code.includes("native_binding_stale")) {
-            addProjectVideoUnresolved(
-              job,
-              candidate.card,
-              "native_card_binding_stale",
-            );
             terminal = "incomplete";
             scanComplete = false;
             stopReason = "coverage_unproven";
-            continue;
+            break;
           }
           if (code.includes("native_binding_document_changed")) {
-            addProjectVideoUnresolved(job, candidate.card, "native_card_binding_stale");
             terminal = "incomplete";
             scanComplete = false;
             stopReason = "coverage_unproven";
-            continue;
+            break;
           }
           addProjectVideoUnresolved(
             job,
@@ -1938,6 +2026,12 @@ export function createFlowDownloadDiagnosticManager(
           stopReason = stopReason === "one_card_check_complete"
             ? "coverage_unproven"
             : stopReason ?? "coverage_unproven";
+        }
+      } else if (scanComplete && terminal === "completed") {
+        if (!(await verifyFinalGalleryInventory(job))) {
+          terminal = "incomplete";
+          scanComplete = false;
+          stopReason = "coverage_unproven";
         }
       } else if (!scanComplete) terminal = "incomplete";
     } catch (error) {
@@ -2054,6 +2148,7 @@ export function createFlowDownloadDiagnosticManager(
         discoveredKeys: new Set(),
         unresolvedObservationSequence: 0,
         discoveryObservationSequence: 0,
+        inventoryKeys: new Set(),
       };
       projectVideoImportJob = failedJob;
       return projectVideoImportSnapshot(failedJob);
@@ -2119,6 +2214,7 @@ export function createFlowDownloadDiagnosticManager(
       discoveredKeys: new Set(),
       unresolvedObservationSequence: 0,
       discoveryObservationSequence: 0,
+      inventoryKeys: new Set(),
     };
     projectVideoImportJob = job;
     projectVideoImportStarting = false;
