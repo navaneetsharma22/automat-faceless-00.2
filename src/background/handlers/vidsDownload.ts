@@ -160,7 +160,11 @@ export function createVidsDownloadHandler(input: {
         ...attempt,
         state,
         ...(preparation.data.operationName ? { operationName: preparation.data.operationName } : {}),
-        ...(preparation.data.phase === "needs_review" ? { reason: "operation_observation_lost" as const } : { reason: undefined }),
+        ...(preparation.data.phase === "needs_review" ? {
+          reason: preparation.data.reviewReason ?? "operation_observation_lost",
+          failureStage: preparation.data.failureStage,
+          failureCode: preparation.data.failureCode,
+        } : { reason: undefined, failureStage: undefined, failureCode: undefined }),
         updatedAt: now(),
       });
       return { success: true, status: state };

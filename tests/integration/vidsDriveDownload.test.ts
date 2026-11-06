@@ -4,7 +4,7 @@ import { ChromePreferenceRepository } from "../../src/storage/repositories";
 import { createVidsDownloadManager, type ChromeDownloadItem } from "../../src/background/downloadManager";
 import { createHostedVidsDownloadListener, createVidsDownloadHandler } from "../../src/background/handlers/vidsDownload";
 import { createHostedHelperConfigListener } from "../../src/background/handlers/hostedHelper";
-import { buildHostedMp4HandoffPayload, createMp4PreparationFlow } from "../../external/vids-helper/logic.js";
+import { buildHostedMp4HandoffPayload, classifyMp4PreparationFailure, createMp4PreparationFlow } from "../../external/vids-helper/logic.js";
 
 const extensionId = "abcdefghijklmnopabcdefghijklmnop";
 const documentId = "vids-document-987";
@@ -69,6 +69,158 @@ function fixture() {
 }
 
 describe("Vids prepared MP4 download production handler", () => {
+  it("keeps the normal Prepare click's explicit Drive rejection distinct from an uncertain request and blocks replay", async () => {
+    const f = fixture();
+    await f.preferences.setVidsTimelineReadiness(f.readiness);
+    await f.handler.arm();
+    const challenge = await f.send({ type: "HOSTED_MP4_NONCE_CHALLENGE", expectedFileId: documentId }) as { requestNonce: string };
+    let statusQueue: Promise<unknown> = Promise.resolve();
+    const flow = createMp4PreparationFlow({
+      startDownload: vi.fn(async (fileId: string) => {
+        expect(fileId).toBe(documentId);
+        return { ok: false, category: "access_denied" };
+      }),
+      pollOperation: vi.fn(async () => ({ ok: false, category: "operation_failed" })),
+      onState: (state: string, category: string | undefined, stage: string | undefined) => {
+        const failure = state === "failed" || state === "timeout"
+          ? classifyMp4PreparationFailure(stage, category)
+          : undefined;
+        const phase = state === "ready" ? "prepared" : failure ? "needs_review" : "preparing";
+        statusQueue = statusQueue.then(() => f.send({
+          type: "HOSTED_MP4_PREPARATION_STATUS",
+          requestNonce: challenge.requestNonce,
+          documentId,
+          phase,
+          ...(flow.operationName ? { operationName: flow.operationName } : {}),
+          ...(failure ? { reviewReason: failure.reason, failureStage: failure.failureStage, failureCode: failure.failureCode } : {}),
+        }));
+      },
+    });
+
+    const outcome = await flow.prepare(documentId);
+    await statusQueue;
+    expect(outcome).toMatchObject({ state: "error", category: "access_denied", stage: "files_download_response" });
+    expect(await f.handler.get()).toMatchObject({
+      state: "needs_review",
+      reason: "preparation_rejected",
+      failureStage: "files_download_response",
+      failureCode: "access_denied",
+    });
+    expect(await f.handler.get()).not.toHaveProperty("operationName");
+    expect(await f.handler.get()).not.toHaveProperty("downloadId");
+    expect(await classifyMp4PreparationFailure("files_download_response", "access_denied")).toMatchObject({
+      reason: "preparation_rejected",
+      message: expect.stringContaining("Drive denied access"),
+    });
+    await expect(f.handler.arm()).rejects.toThrow("vids_previous_attempt_needs_review");
+    expect(flow.preparationStarted).toBe(true);
+    expect(f.downloads.download).not.toHaveBeenCalled();
+
+    const uncertain = classifyMp4PreparationFailure("files_download_transport", "transport_unavailable");
+    expect(uncertain).toMatchObject({ reason: "preparation_outcome_uncertain", failureStage: "files_download_transport" });
+    expect(uncertain.message).toContain("may have accepted");
+  });
+
+  it("keeps a known Drive operation ID when polling fails and reports the observation stage", async () => {
+    const f = fixture();
+    await f.preferences.setVidsTimelineReadiness(f.readiness);
+    await f.handler.arm();
+    const challenge = await f.send({ type: "HOSTED_MP4_NONCE_CHALLENGE", expectedFileId: documentId }) as { requestNonce: string };
+    let statusQueue: Promise<unknown> = Promise.resolve();
+    const flow = createMp4PreparationFlow({
+      startDownload: async () => ({ ok: true, operation: { name: "operations/preserve_me", done: false } }),
+      pollOperation: vi.fn(async (operationName: string) => {
+        expect(operationName).toBe("operations/preserve_me");
+        return { ok: false, category: "api_or_file_access_denied" };
+      }),
+      wait: async () => undefined,
+      now: () => 1000,
+      onState: (state: string, category: string | undefined, stage: string | undefined) => {
+        const failure = state === "failed" || state === "timeout"
+          ? classifyMp4PreparationFailure(stage, category)
+          : undefined;
+        const phase = state === "ready" ? "prepared" : failure ? "needs_review" : "preparing";
+        statusQueue = statusQueue.then(() => f.send({
+          type: "HOSTED_MP4_PREPARATION_STATUS",
+          requestNonce: challenge.requestNonce,
+          documentId,
+          phase,
+          ...(flow.operationName ? { operationName: flow.operationName } : {}),
+          ...(failure ? { reviewReason: failure.reason, failureStage: failure.failureStage, failureCode: failure.failureCode } : {}),
+        }));
+      },
+    });
+    const outcome = await flow.prepare(documentId);
+    await statusQueue;
+    expect(outcome).toMatchObject({ state: "error", category: "api_or_file_access_denied", stage: "operation_poll" });
+    expect(await f.handler.get()).toMatchObject({
+      state: "needs_review",
+      reason: "operation_observation_lost",
+      failureStage: "operation_poll",
+      failureCode: "api_or_file_access_denied",
+      operationName: "operations/preserve_me",
+    });
+    expect(await f.send({ type: "HOSTED_MP4_NONCE_CHALLENGE", expectedFileId: documentId })).toMatchObject({ success: false, status: "rejected" });
+    expect(f.downloads.download).not.toHaveBeenCalled();
+  });
+
+  it("continues the normal Prepare path through the same operation and hands off once with the exact Chrome ID", async () => {
+    const f = fixture();
+    await f.preferences.setVidsTimelineReadiness(f.readiness);
+    await f.handler.arm();
+    const challenge = await f.send({ type: "HOSTED_MP4_NONCE_CHALLENGE", expectedFileId: documentId }) as { requestNonce: string };
+    let statusQueue: Promise<unknown> = Promise.resolve();
+    let polls = 0;
+    const flow = createMp4PreparationFlow({
+      startDownload: vi.fn(async (fileId: string) => ({
+        ok: fileId === documentId,
+        operation: { name: "operations/normal_prepare_click", done: false },
+      })),
+      pollOperation: vi.fn(async (operationName: string) => {
+        expect(operationName).toBe("operations/normal_prepare_click");
+        polls += 1;
+        return { ok: true, operation: { done: true, response: { downloadUri: "https://www.googleapis.com/drive/v3/files/download?mock=prepared" } } };
+      }),
+      wait: async () => undefined,
+      now: () => 1000 + polls,
+      timeoutMs: 30_000,
+      onState: (state: string, category: string | undefined, stage: string | undefined) => {
+        const failure = state === "failed" || state === "timeout"
+          ? classifyMp4PreparationFailure(stage, category)
+          : undefined;
+        const phase = state === "ready" ? "prepared" : failure ? "needs_review" : "preparing";
+        statusQueue = statusQueue.then(() => f.send({
+          type: "HOSTED_MP4_PREPARATION_STATUS",
+          requestNonce: challenge.requestNonce,
+          documentId,
+          phase,
+          ...(flow.operationName ? { operationName: flow.operationName } : {}),
+          ...(failure ? { reviewReason: failure.reason, failureStage: failure.failureStage, failureCode: failure.failureCode } : {}),
+        }));
+      },
+    });
+
+    const prepared = await flow.prepare(documentId);
+    await statusQueue;
+    expect(prepared).toMatchObject({ state: "ready" });
+    expect(flow.operationName).toBe("operations/normal_prepare_click");
+    expect(await f.handler.get()).toMatchObject({ state: "prepared", operationName: "operations/normal_prepare_click" });
+    const payload = buildHostedMp4HandoffPayload({
+      requestNonce: challenge.requestNonce,
+      selectedProof: { status: "verified", mimeType: "application/vnd.google-apps.vid", canDownload: true, expectedMatch: true, fileId: documentId },
+      expectedFileId: documentId,
+      preparedUri: prepared.downloadUri.href,
+      preparedUriValidated: true,
+      resourceKeyPresent: false,
+      wholeDocumentAcknowledged: true,
+    });
+    expect(await f.send(payload)).toEqual({ success: true, status: "downloading", attemptId: "attempt_1", documentId, downloadId: 44 });
+    expect(await f.handler.get()).toMatchObject({ state: "downloading", operationName: "operations/normal_prepare_click", downloadId: 44 });
+    expect(f.downloads.download).toHaveBeenCalledTimes(1);
+    expect(await f.send(payload)).toMatchObject({ success: true, status: "downloading", downloadId: 44 });
+    expect(f.downloads.download).toHaveBeenCalledTimes(1);
+  });
+
   it("connects the helper launch, same-operation polling, whole-document payload, and prompt Chrome dispatch across a slow transfer", async () => {
     const f = fixture();
     await f.preferences.setVidsTimelineReadiness(f.readiness);

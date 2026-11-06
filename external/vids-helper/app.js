@@ -4,6 +4,7 @@ import {
   classifyDriveApiFailure,
   classifyDownloadHttpFailure,
   classifyDriveDownloadFailure,
+  classifyMp4PreparationFailure,
   canOpenPreparedDownloadInBrowser,
   createMp4PreparationFlow,
   createPickerCallbackLifecycle,
@@ -118,6 +119,9 @@ const mp4Messages = {
   transport_unavailable: 'Operation check transport failed',
   api_unavailable: 'Drive API unavailable',
   api_request_rejected: 'Drive rejected the MP4 request',
+  api_or_file_access_denied: 'Drive denied access to the existing operation',
+  google_api_unavailable: 'Google Drive returned a server error',
+  metadata_request_failed: 'The Drive operation request failed',
   selected_file_unavailable: 'Selected document unavailable',
   invalid_operation: 'Drive returned an invalid operation',
   invalid_download_uri: 'Drive returned an unusable download destination',
@@ -129,12 +133,17 @@ const mp4Messages = {
   unexpected_content_type: 'Received content was not video/mp4',
   empty_response: 'No MP4 bytes received',
   save_initiated: 'Browser save initiated; completion is not observable here',
+  api_error: 'Drive returned an unclassified MP4 error',
 };
 
-function setMp4Status(state, category) {
+function setMp4Status(state, category, stage) {
+  if ((state === 'failed' || state === 'timeout') && stage) {
+    setText('#mp4-operation-status', classifyMp4PreparationFailure(stage, category).message);
+    return;
+  }
   setText(
     '#mp4-operation-status',
-    mp4Messages[category] || mp4Messages[state] || 'MP4 proof unavailable',
+    mp4Messages[category] || mp4Messages[state] || 'MP4 task status unavailable (stage: helper_status; reason: unclassified_state). Check Dashboard status; do not retry this attempt.',
   );
 }
 
@@ -585,14 +594,12 @@ function createPreparationFlow() {
       }
       return result;
     },
-    onState: (state, category) => {
-      setMp4Status(state, category);
-      const phase = state === 'ready'
-        ? 'prepared'
-        : state === 'timeout' || state === 'failed'
-          ? 'needs_review'
-          : 'preparing';
-      void queuePreparationStatus(phase, preparationFlow?.operationName);
+    onState: (state, category, stage) => {
+      const failed = state === 'timeout' || state === 'failed';
+      const failure = failed ? classifyMp4PreparationFailure(stage, category) : undefined;
+      setMp4Status(state, category, stage);
+      const phase = state === 'ready' ? 'prepared' : failed ? 'needs_review' : 'preparing';
+      void queuePreparationStatus(phase, preparationFlow?.operationName, failure);
     },
   });
 }
@@ -614,6 +621,7 @@ async function prepareMp4() {
     });
     if (!challenge?.success || typeof challenge.requestNonce !== 'string') {
       setText('#extension-handoff-status', 'No matching timeline-ready handoff is armed; MP4 preparation did not start.');
+      setText('#mp4-operation-status', 'Preparation not started (stage: nonce_binding; reason: no_matching_armed_attempt).');
       preparationBusy = false;
       return;
     }
@@ -622,11 +630,13 @@ async function prepareMp4() {
     if (!accepted) {
       downloadHandoffNonceInMemory = undefined;
       setText('#extension-handoff-status', 'The extension did not accept the preparation binding; MP4 preparation did not start.');
+      setText('#mp4-operation-status', 'Preparation not started (stage: preparation_binding; reason: worker_rejected_binding).');
       preparationBusy = false;
       return;
     }
   } catch {
     setText('#extension-handoff-status', 'The extension could not arm this document; MP4 preparation did not start.');
+    setText('#mp4-operation-status', 'Preparation not started (stage: nonce_binding; reason: extension_message_unavailable).');
     preparationBusy = false;
     return;
   }
@@ -694,7 +704,7 @@ function handlePreparationOutcome(outcome) {
     const button = document.querySelector('#continue-operation');
     button.hidden = false;
     button.disabled = false;
-    setMp4Status('timeout');
+    setMp4Status('timeout', outcome.category, outcome.stage);
   } else if (outcome.state === 'error') {
     if (outcome.category !== 'transport_unavailable') {
       accessTokenInMemory = '';
@@ -709,9 +719,9 @@ function handlePreparationOutcome(outcome) {
       button.hidden = false;
       button.disabled = false;
     }
-    setMp4Status('failed', outcome.category);
+    setMp4Status('failed', outcome.category, outcome.stage);
   } else {
-    setMp4Status(outcome.state, outcome.category);
+    setMp4Status(outcome.state, outcome.category, outcome.stage);
   }
 }
 
@@ -1048,7 +1058,7 @@ async function sendPreparedMp4ToExtension() {
   }
 }
 
-async function reportPreparationStatus(phase, operationName) {
+async function reportPreparationStatus(phase, operationName, failure) {
   if (!downloadHandoffNonceInMemory || !selectedProof?.fileId) return false;
   try {
     const response = await sendExternalMessage({
@@ -1057,6 +1067,11 @@ async function reportPreparationStatus(phase, operationName) {
       documentId: selectedProof.fileId,
       phase,
       ...(typeof operationName === 'string' ? { operationName } : {}),
+      ...(failure ? {
+        reviewReason: failure.reason,
+        failureStage: failure.failureStage,
+        failureCode: failure.failureCode,
+      } : {}),
     });
     return response?.success === true;
   } catch {
@@ -1064,9 +1079,9 @@ async function reportPreparationStatus(phase, operationName) {
   }
 }
 
-function queuePreparationStatus(phase, operationName) {
+function queuePreparationStatus(phase, operationName, failure) {
   preparationStatusQueue = preparationStatusQueue
-    .then(() => reportPreparationStatus(phase, operationName))
+    .then(() => reportPreparationStatus(phase, operationName, failure))
     .catch(() => false);
   return preparationStatusQueue;
 }
@@ -1095,12 +1110,20 @@ function saveMp4() {
 function resetProof() {
   proofEpoch += 1;
   if ((preparationAttempted || preparationBusy) && downloadHandoffNonceInMemory && selectedProof?.fileId) {
+    const hasOperation = typeof preparationFlow?.operationName === 'string';
+    const failure = classifyMp4PreparationFailure(
+      hasOperation ? 'operation_poll' : 'files_download_transport',
+      hasOperation ? 'transport_unavailable' : 'transport_uncertain',
+    );
     void sendExternalMessage({
       type: 'HOSTED_MP4_PREPARATION_STATUS',
       requestNonce: downloadHandoffNonceInMemory,
       documentId: selectedProof.fileId,
       phase: 'needs_review',
       ...(preparationFlow?.operationName ? { operationName: preparationFlow.operationName } : {}),
+      reviewReason: failure.reason,
+      failureStage: failure.failureStage,
+      failureCode: failure.failureCode,
     }).catch(() => undefined);
   }
   preparationFlow?.cancel();

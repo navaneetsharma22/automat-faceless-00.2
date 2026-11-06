@@ -85,7 +85,15 @@ export type VidsDownloadAttempt = {
   sourcePath?: string;
   helperTabId?: number;
   helperDocumentId?: string;
-  reason?: "dispatch_uncertain" | "operation_observation_lost" | "connection_changed" | "download_interrupted";
+  reason?: "dispatch_uncertain" | "operation_observation_lost" | "connection_changed" | "download_interrupted"
+    | "preparation_rejected" | "preparation_outcome_uncertain" | "operation_timeout" | "operation_failed"
+    | "invalid_download_uri" | "invalid_operation";
+  failureStage?: "files_download_response" | "files_download_transport" | "operation_response"
+    | "operation_poll" | "operation_poll_timeout" | "operation_result";
+  failureCode?: "authorization_expired" | "access_denied" | "api_or_file_access_denied"
+    | "selected_file_unavailable" | "rate_limited" | "google_api_unavailable" | "api_request_rejected"
+    | "metadata_request_failed" | "transport_unavailable" | "transport_uncertain" | "invalid_operation"
+    | "invalid_download_uri" | "operation_failed" | "operation_timeout" | "api_error";
 };
 
 /** Null is the explicit wire representation for a successful status lookup with no attempt. */
@@ -103,7 +111,9 @@ export function parseVidsDownloadStatus(value: unknown): VidsDownloadAttempt | u
     (["requestNonce", "consumedNonceHash", "operationName", "sourcePath", "helperDocumentId"] as const)
       .some((key) => attempt[key] !== undefined && typeof attempt[key] !== "string") ||
     (attempt.helperTabId !== undefined && (!Number.isInteger(attempt.helperTabId) || attempt.helperTabId < 0)) ||
-    (attempt.reason !== undefined && !["dispatch_uncertain", "operation_observation_lost", "connection_changed", "download_interrupted"].includes(attempt.reason))) {
+    (attempt.reason !== undefined && !["dispatch_uncertain", "operation_observation_lost", "connection_changed", "download_interrupted", "preparation_rejected", "preparation_outcome_uncertain", "operation_timeout", "operation_failed", "invalid_download_uri", "invalid_operation"].includes(attempt.reason)) ||
+    (attempt.failureStage !== undefined && !["files_download_response", "files_download_transport", "operation_response", "operation_poll", "operation_poll_timeout", "operation_result"].includes(attempt.failureStage)) ||
+    (attempt.failureCode !== undefined && !["authorization_expired", "access_denied", "api_or_file_access_denied", "selected_file_unavailable", "rate_limited", "google_api_unavailable", "api_request_rejected", "metadata_request_failed", "transport_unavailable", "transport_uncertain", "invalid_operation", "invalid_download_uri", "operation_failed", "operation_timeout", "api_error"].includes(attempt.failureCode))) {
     throw new Error("vids_download_status_invalid");
   }
   return attempt as VidsDownloadAttempt;

@@ -275,6 +275,90 @@ export function evaluateDownloadOperation(operation) {
   return { state: 'invalid_operation' };
 }
 
+const PREPARATION_FAILURE_CODES = new Set([
+  'authorization_expired',
+  'access_denied',
+  'api_or_file_access_denied',
+  'selected_file_unavailable',
+  'rate_limited',
+  'google_api_unavailable',
+  'api_request_rejected',
+  'metadata_request_failed',
+  'transport_unavailable',
+  'transport_uncertain',
+  'invalid_operation',
+  'invalid_download_uri',
+  'operation_failed',
+  'operation_timeout',
+  'api_error',
+]);
+
+/** Convert helper outcomes into fixed, safe worker status fields and user copy. */
+export function classifyMp4PreparationFailure(stage, category) {
+  const validStages = new Set([
+    'files_download_response',
+    'files_download_transport',
+    'operation_response',
+    'operation_poll',
+    'operation_poll_timeout',
+    'operation_result',
+  ]);
+  const safeStage = validStages.has(stage) ? stage : 'operation_response';
+  const safeCode = PREPARATION_FAILURE_CODES.has(category) ? category : 'operation_failed';
+  let reason;
+  if (safeStage === 'files_download_response') {
+    reason = ['google_api_unavailable', 'transport_unavailable', 'transport_uncertain'].includes(safeCode)
+      ? 'preparation_outcome_uncertain'
+      : 'preparation_rejected';
+  } else if (safeStage === 'files_download_transport') {
+    reason = 'preparation_outcome_uncertain';
+  } else if (safeStage === 'operation_poll_timeout') {
+    reason = 'operation_timeout';
+  } else if (safeStage === 'operation_poll') {
+    reason = 'operation_observation_lost';
+  } else if (safeStage === 'operation_result' && safeCode === 'invalid_download_uri') {
+    reason = 'invalid_download_uri';
+  } else if (safeStage === 'operation_response' || safeCode === 'invalid_operation') {
+    reason = 'invalid_operation';
+  } else {
+    reason = 'operation_failed';
+  }
+  const codeMessages = {
+    authorization_expired: 'authorization expired',
+    access_denied: 'Drive denied access',
+    api_or_file_access_denied: 'Drive denied API or file access',
+    selected_file_unavailable: 'the selected Vids document is unavailable',
+    rate_limited: 'Drive rate limit reached',
+    google_api_unavailable: 'Google Drive returned a server error',
+    api_request_rejected: 'Drive rejected the request',
+    metadata_request_failed: 'the Drive request failed',
+    transport_unavailable: 'the response was not received',
+    transport_uncertain: 'the response was not received',
+    invalid_operation: 'Drive returned an invalid operation',
+    invalid_download_uri: 'Drive returned an invalid download destination',
+    operation_failed: 'the Drive operation failed',
+    operation_timeout: 'operation polling timed out',
+  };
+  const stageMessages = {
+    files_download_response: 'Drive responded to the preparation request',
+    files_download_transport: 'the preparation request outcome is unknown',
+    operation_response: 'the preparation operation response could not be validated',
+    operation_poll: 'the existing Drive operation could not be checked',
+    operation_poll_timeout: 'the existing Drive operation did not finish before the polling limit',
+    operation_result: 'Drive returned a terminal operation result',
+  };
+  const message = reason === 'preparation_rejected'
+    ? `${codeMessages[safeCode] || 'Drive rejected the request'}; no operation was accepted. Do not retry this attempt.`
+    : reason === 'preparation_outcome_uncertain'
+      ? 'Drive may have accepted the preparation request. Do not start another preparation; review this attempt.'
+      : reason === 'operation_observation_lost'
+        ? 'The existing operation could not be checked. Its ID is retained in Dashboard status; do not prepare again.'
+        : reason === 'operation_timeout'
+          ? 'Polling timed out. Continue checking the same operation; do not prepare again.'
+          : `${stageMessages[safeStage]} (${codeMessages[safeCode] || 'unknown failure'}). Do not start another preparation.`;
+  return { reason, failureStage: safeStage, failureCode: safeCode, message };
+}
+
 /** One POST per flow instance; polling timeout can only resume the saved operation. */
 export function createMp4PreparationFlow({
   startDownload,
@@ -289,8 +373,8 @@ export function createMp4PreparationFlow({
   let polling = false;
   let cancelled = false;
 
-  function publish(state, category) {
-    onState?.(state, category);
+  function publish(state, category, stage) {
+    onState?.(state, category, stage);
   }
 
   async function pollUntilDone() {
@@ -300,7 +384,7 @@ export function createMp4PreparationFlow({
     polling = true;
     const deadline = now() + timeoutMs;
     let delayMs = 10000;
-    publish('polling');
+    publish('polling', undefined, 'operation_poll');
     try {
       while (now() < deadline) {
         const waitMs = Math.min(delayMs, Math.max(0, deadline - now()));
@@ -312,8 +396,8 @@ export function createMp4PreparationFlow({
           result = await pollOperation(operationName);
         } catch {
           if (cancelled) return { state: 'cancelled' };
-          publish('failed', 'transport_unavailable');
-          return { state: 'error', category: 'transport_unavailable' };
+          publish('failed', 'transport_unavailable', 'operation_poll');
+          return { state: 'error', category: 'transport_unavailable', stage: 'operation_poll' };
         }
         if (cancelled) return { state: 'cancelled' };
         if (!result?.ok) {
@@ -321,8 +405,8 @@ export function createMp4PreparationFlow({
             delayMs = Math.min(delayMs * 2, 30000);
             continue;
           }
-          publish('failed', result?.category || 'api_error');
-          return { state: 'error', category: result?.category || 'api_error' };
+          publish('failed', result?.category || 'api_error', 'operation_poll');
+          return { state: 'error', category: result?.category || 'api_error', stage: 'operation_poll' };
         }
         const outcome = evaluateDownloadOperation(result.operation);
         if (outcome.state === 'pending') {
@@ -330,15 +414,15 @@ export function createMp4PreparationFlow({
           continue;
         }
         if (outcome.state === 'ready') {
-          publish('ready');
+          publish('ready', undefined, 'operation_result');
           return outcome;
         }
         const category = outcome.category || outcome.state;
-        publish('failed', category);
-        return { state: 'error', category };
+        publish('failed', category, 'operation_result');
+        return { state: 'error', category, stage: 'operation_result' };
       }
-      publish('timeout');
-      return { state: 'timeout', operationName };
+      publish('timeout', 'operation_timeout', 'operation_poll_timeout');
+      return { state: 'timeout', operationName, category: 'operation_timeout', stage: 'operation_poll_timeout' };
     } finally {
       polling = false;
     }
@@ -349,35 +433,40 @@ export function createMp4PreparationFlow({
       if (cancelled) return { state: 'cancelled' };
       if (preparationStarted) return { state: 'already_started' };
       preparationStarted = true;
-      publish('starting');
+      publish('starting', undefined, 'files_download_response');
       let result;
       try {
         result = await startDownload(fileId);
       } catch {
-        publish('failed', 'transport_uncertain');
-        return { state: 'error', category: 'transport_uncertain' };
+        publish('failed', 'transport_uncertain', 'files_download_transport');
+        return { state: 'error', category: 'transport_uncertain', stage: 'files_download_transport' };
       }
       if (cancelled) return { state: 'cancelled' };
       if (!result?.ok) {
-        publish('failed', result?.category || 'api_error');
-        return { state: 'error', category: result?.category || 'api_error' };
+        const category = result?.category || 'api_error';
+        const stage = ['transport_unavailable', 'transport_uncertain'].includes(category)
+          ? 'files_download_transport'
+          : 'files_download_response';
+        publish('failed', category, stage);
+        return { state: 'error', category, stage };
       }
       const initial = evaluateDownloadOperation(result.operation);
       if (initial.state === 'ready') {
-        publish('ready');
+        publish('ready', undefined, 'operation_result');
         return initial;
       }
       if (initial.state !== 'pending') {
         const category = initial.category || initial.state;
-        publish('failed', category);
-        return { state: 'error', category };
+        const stage = initial.state === 'invalid_operation' ? 'operation_response' : 'operation_result';
+        publish('failed', category, stage);
+        return { state: 'error', category, stage };
       }
       if (
         typeof result.operation.name !== 'string' ||
         !buildOperationGetUrl(result.operation.name)
       ) {
-        publish('failed', 'invalid_operation');
-        return { state: 'error', category: 'invalid_operation' };
+        publish('failed', 'invalid_operation', 'operation_response');
+        return { state: 'error', category: 'invalid_operation', stage: 'operation_response' };
       }
       operationName = result.operation.name;
       return await pollUntilDone();

@@ -799,6 +799,9 @@ export const HostedMp4PreparationStatusSchema = z.object({
   documentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
   phase: z.enum(["preparing", "prepared", "needs_review"]),
   operationName: z.string().regex(/^operations\/[A-Za-z0-9_-]{1,200}$/).optional(),
+  reviewReason: z.enum(["preparation_rejected", "preparation_outcome_uncertain", "operation_observation_lost", "operation_timeout", "operation_failed", "invalid_download_uri", "invalid_operation"]).optional(),
+  failureStage: z.enum(["files_download_response", "files_download_transport", "operation_response", "operation_poll", "operation_poll_timeout", "operation_result"]).optional(),
+  failureCode: z.enum(["authorization_expired", "access_denied", "api_or_file_access_denied", "selected_file_unavailable", "rate_limited", "google_api_unavailable", "api_request_rejected", "metadata_request_failed", "transport_unavailable", "transport_uncertain", "invalid_operation", "invalid_download_uri", "operation_failed", "operation_timeout", "api_error"]).optional(),
 }).strict();
 export const HostedMp4DownloadHandoffSchema = z.object({
   type: z.literal("HOSTED_MP4_DOWNLOAD"),

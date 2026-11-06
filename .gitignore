@@ -42,6 +42,7 @@ config.bat
 !docs/evidence/hosted-helper-compatibility.md
 !docs/evidence/vids-downloads-ui-polish.md
 !docs/evidence/vids-download-status-idle.md
+!docs/evidence/vids-preparation-failure-evidence.md
 !/publication/
 !/publication/automat-faceless-picker/
 !/publication/automat-faceless-picker/README.md
