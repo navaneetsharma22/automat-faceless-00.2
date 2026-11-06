@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>Automat Faceless — Hosted Picker Proof</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <main class="card">
+      <p class="eyebrow">Automat Faceless · feasibility proof</p>
+      <p id="extension-config-status" role="status">Checking extension configuration…</p>
+      <h1>Choose one Google Vids document</h1>
+      <p class="intro">
+        This standalone hosted page asks the selected Google account for
+        <code>drive.file</code>, opens Google Picker, and reads only the chosen file's ID, MIME
+        type, and download capability. A separate, explicit handoff can send one prepared
+        whole-document MP4 URI to the installed extension after its dashboard arms this exact
+        document. OAuth credentials are never sent.
+      </p>
+
+      <form id="proof-form">
+        <label for="api-key">Restricted Google Picker API key</label>
+        <input
+          id="api-key"
+          name="api-key"
+          type="password"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          required
+        />
+        <p class="hint">Entered locally for this page session; cleared when the action starts.</p>
+
+        <label for="expected-document">Optional expected Vids URL or document ID</label>
+        <input
+          id="expected-document"
+          name="expected-document"
+          type="text"
+          inputmode="url"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Paste a Vids URL or file ID"
+        />
+
+        <fieldset class="picker-mode">
+          <legend>Picker inventory</legend>
+          <label class="mode-option">
+            <input type="radio" name="picker-mode" value="vids-only" checked />
+            Vids documents only (default)
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="picker-mode" value="all-types-diagnostic" />
+            Browse all file types (diagnostic)
+          </label>
+          <p class="hint">
+            Diagnostic mode broadens only the Picker view. The selected file is still checked
+            against Google Drive metadata and must be a Vids document to pass.
+          </p>
+        </fieldset>
+
+        <button id="start-proof" type="submit" disabled>Loading Google services…</button>
+      </form>
+
+      <section class="results" aria-live="polite" aria-labelledby="results-title">
+        <h2 id="results-title">Proof results</h2>
+        <dl>
+          <div>
+            <dt>Authorization</dt>
+            <dd id="authorization-status">Not started</dd>
+          </div>
+          <div>
+            <dt>Selection and metadata</dt>
+            <dd id="selection-status">Not started</dd>
+          </div>
+          <div>
+            <dt>Selected file ID</dt>
+            <dd id="selected-file-id">—</dd>
+          </div>
+          <div>
+            <dt>MIME type</dt>
+            <dd id="mime-type">—</dd>
+          </div>
+          <div>
+            <dt>Can download</dt>
+            <dd id="can-download">—</dd>
+          </div>
+          <div>
+            <dt>Expected document match</dt>
+            <dd id="expected-match">Not supplied</dd>
+          </div>
+        </dl>
+      </section>
+
+      <details class="results" aria-labelledby="two-clip-title">
+        <summary id="two-clip-title">Legacy two-clip fixture diagnostic (City/YUGVERA)</summary>
+        <p class="boundary">This legacy fixture is retained for diagnostics only. It is not a production timeline template or an assumption about the current document.</p>
+        <p class="boundary">
+          This prepares the whole selected document as one MP4. Continue only after checking each
+          statement yourself. These are attestations; this page does not verify the timeline.
+        </p>
+        <label class="mode-option"
+          ><input id="ack-two-clip-order" type="checkbox" /> I confirm v1 visibly contains City
+          followed by YUGVERA, in that order.</label
+        >
+        <label class="mode-option"
+          ><input id="ack-two-clip-saved" type="checkbox" /> I confirm Vids shows the document as
+          saved.</label
+        >
+        <label class="mode-option"
+          ><input id="ack-two-clip-clean-boundary" type="checkbox" /> I confirm there are no
+          transitions or gaps between the clips.</label
+        >
+        <button id="prepare-two-clip-mp4" type="button" disabled>
+          Prepare Two-Clip Whole-Document MP4
+        </button>
+        <p id="two-clip-proof-status" role="status">No two-clip proof started</p>
+      </details>
+
+      <section class="results mp4-proof" aria-live="polite" aria-labelledby="mp4-title">
+        <h2 id="mp4-title">Separate whole-document MP4 proof</h2>
+        <p class="boundary">
+          Preparing an MP4 renders the entire selected Vids document. Continue only after you
+          manually prepare the intended timeline, confirm its complete scene order and saved state.
+          This is your attestation; this page does not verify scene isolation.
+        </p>
+        <label class="mode-option">
+          <input id="ack-only-intended-clip" type="checkbox" />
+          I confirm this document contains the complete intended manually prepared timeline in the order I reviewed.
+        </label>
+        <button id="prepare-mp4" type="button" disabled>Prepare MP4 Download</button>
+        <button id="prepare-linked-mp4-for-review" type="button" hidden disabled>
+          Prepare MP4 for confirmed review and send once
+        </button>
+        <p id="linked-preparation-status" role="status">No linked run continuation requested</p>
+        <button id="continue-operation" type="button" hidden disabled>
+          Continue checking operation
+        </button>
+        <button id="receive-mp4-bytes" type="button" hidden disabled>Receive MP4 bytes</button>
+        <button id="open-prepared-mp4" type="button" hidden disabled>Open Prepared MP4</button>
+        <button id="send-prepared-mp4-to-extension" type="button" hidden disabled>
+          Send Prepared MP4 to Extension
+        </button>
+        <button id="save-mp4" type="button" hidden disabled>Save MP4</button>
+        <p id="prepared-navigation-status" role="status">No prepared destination</p>
+        <p id="extension-handoff-status" role="status">No extension handoff requested</p>
+        <button id="reset-proof" type="button">Reset proof</button>
+        <dl>
+          <div>
+            <dt>Preparation</dt>
+            <dd id="mp4-operation-status">Not prepared</dd>
+          </div>
+          <div>
+            <dt>prepared_uri_present</dt>
+            <dd id="prepared-uri-present">No</dd>
+          </div>
+          <div>
+            <dt>prepared_uri_validated</dt>
+            <dd id="prepared-uri-validated">No</dd>
+          </div>
+          <div>
+            <dt>resource_key_present</dt>
+            <dd id="resource-key-present">No</dd>
+          </div>
+          <div>
+            <dt>Bytes received</dt>
+            <dd id="bytes-received-status">No</dd>
+          </div>
+          <div>
+            <dt>Browser save</dt>
+            <dd id="browser-save-status">Not initiated</dd>
+          </div>
+          <div>
+            <dt>Saved file completion</dt>
+            <dd id="saved-file-status">Not verifiable by this webpage</dd>
+          </div>
+        </dl>
+      </section>
+
+      <p class="boundary">
+        The web OAuth client and the extension's Chrome Identity client are separate. Account and
+        file-grant continuity between them is not assumed. Tokens and the API key stay in this
+        page's memory. OAuth tokens and API keys are never sent to the extension. The explicit
+        download handoff sends only the validated prepared URI and bounded document proof.
+      </p>
+    </main>
+  </body>
+</html>

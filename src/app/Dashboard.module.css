@@ -511,6 +511,167 @@
   min-width: 0;
   gap: var(--space-5);
 }
+.hostedHelperCard {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: linear-gradient(145deg, var(--color-surface), var(--color-surface-raised));
+  box-shadow: var(--shadow-card);
+}
+.hostedHelperCard > p {
+  max-width: 78ch;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+.hostedHelperStatusGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: var(--space-4);
+}
+.hostedHelperStatusGrid > div {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+}
+.hostedHelperLabel {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.hostedHelperStatusGrid strong {
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+.hostedHelperHint {
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
+}
+.hostedHelperAction {
+  justify-self: start;
+  display: inline-flex;
+  min-height: 2.65rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  text-decoration: none;
+  transition: filter var(--duration-hover) var(--ease-standard), transform var(--duration-hover) var(--ease-standard);
+}
+.hostedHelperAction:hover {
+  filter: brightness(1.08);
+}
+.hostedHelperAction:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+}
+.sceneDownloadRecord {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+.sceneDownloadRecord > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  font-size: var(--font-size-sm);
+}
+.sceneDownloadRecord dt {
+  color: var(--color-text-muted);
+  font-weight: 650;
+}
+.sceneDownloadRecord dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.sceneManifest {
+  display: grid;
+  gap: var(--space-4);
+  padding-block-start: var(--space-4);
+  border-block-start: 1px solid var(--color-border);
+}
+.sceneManifest > p,
+.sceneCompanionSteps > p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
+}
+.sceneBoundaryRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+.sceneBoundaryRow legend {
+  padding-inline: var(--space-2);
+  color: var(--color-text);
+  font-weight: 700;
+}
+.sceneBoundaryField {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+}
+.sceneBoundaryField input {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.65rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.sceneBoundaryField input:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.sceneBoundaryActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-2);
+  grid-column: 1 / -1;
+}
+.sceneManifestAttestations {
+  display: grid;
+  gap: var(--space-2);
+}
+.sceneCompanionSteps {
+  display: grid;
+  gap: var(--space-3);
+  padding-block-start: var(--space-4);
+  border-block-start: 1px solid var(--color-border);
+}
+.sceneCompanionSteps ol {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-inline-start: 1.35rem;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
 .providerPanelHeading {
   display: grid;
   gap: var(--space-2);

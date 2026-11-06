@@ -774,6 +774,47 @@ const requestBase = z
   })
   .strict();
 
+export const HostedHelperConfigPingSchema = z
+  .object({ type: z.literal("VIDS_HELPER_CONFIG_PING") })
+  .strict();
+export const HostedHelperConfigPingResponseSchema = z
+  .object({
+    success: z.boolean(),
+    status: z.enum(["configured", "rejected"]),
+  })
+  .strict();
+export type HostedHelperConfigPing = z.infer<
+  typeof HostedHelperConfigPingSchema
+>;
+export type HostedHelperConfigPingResponse = z.infer<
+  typeof HostedHelperConfigPingResponseSchema
+>;
+export const HostedMp4NonceChallengeSchema = z.object({
+  type: z.literal("HOSTED_MP4_NONCE_CHALLENGE"),
+  expectedFileId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+}).strict();
+export const HostedMp4PreparationStatusSchema = z.object({
+  type: z.literal("HOSTED_MP4_PREPARATION_STATUS"),
+  requestNonce: z.string().regex(/^[A-Za-z0-9_-]{40,100}$/),
+  documentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+  phase: z.enum(["preparing", "prepared", "needs_review"]),
+  operationName: z.string().regex(/^operations\/[A-Za-z0-9_-]{1,200}$/).optional(),
+}).strict();
+export const HostedMp4DownloadHandoffSchema = z.object({
+  type: z.literal("HOSTED_MP4_DOWNLOAD"),
+  requestNonce: z.string().regex(/^[A-Za-z0-9_-]{40,100}$/),
+  selectedFileId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+  expectedFileId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+  metadataVerified: z.literal(true),
+  mimeType: z.literal("application/vnd.google-apps.vid"),
+  canDownload: z.literal(true),
+  expectedMatch: z.literal(true),
+  preparedUriValidated: z.literal(true),
+  resourceKeyPresent: z.literal(false),
+  wholeDocumentAcknowledged: z.literal(true),
+  preparedUri: z.string().min(1).max(8192),
+}).strict();
+
 export const AppRequestSchema = z.discriminatedUnion("type", [
   requestBase.extend({
     type: z.literal("foundation.ping"),
@@ -882,6 +923,27 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
       .object({ provider: z.enum(["Flow", "Vids"]), enabled: z.boolean() })
       .strict(),
   }),
+  requestBase.extend({
+    type: z.literal("vids.timelineReady.get"),
+    payload: z.object({}).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("vids.timelineReady.declare"),
+    payload: z.object({
+      documentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+      canonicalTarget: z.string().url().max(2048),
+      tabId: z.number().int().nonnegative(),
+      sceneOrderConfirmed: z.literal(true),
+      documentSavedConfirmed: z.literal(true),
+    }).strict(),
+  }),
+  requestBase.extend({
+    type: z.literal("vids.timelineReady.invalidate"),
+    payload: z.object({ expectedDocumentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/).optional() }).strict(),
+  }),
+  requestBase.extend({ type: z.literal("vids.download.arm"), payload: z.object({}).strict() }),
+  requestBase.extend({ type: z.literal("vids.download.get"), payload: z.object({}).strict() }),
+  requestBase.extend({ type: z.literal("vids.download.reconcile"), payload: z.object({}).strict() }),
   requestBase.extend({
     type: z.literal("flow.prompt.fill"),
     payload: z

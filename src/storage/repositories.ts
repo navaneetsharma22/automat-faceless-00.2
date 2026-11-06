@@ -10,6 +10,7 @@ import {
   type FlowVideoAttachmentOperation,
 } from "./db";
 import { VidsVideoAttachmentOperationSchema, type VidsVideoAttachmentOperation } from "../domain/jobs/vidsVideoAttachment";
+import type { VidsDownloadAttempt, VidsTimelineReadiness } from "../domain/media/combinedExport";
 import { VidsVideoGenerationOperationSchema, type VidsVideoGenerationOperation } from "../domain/jobs/vidsVideoGeneration";
 import { VidsVideoQueueRecordSchema, type VidsVideoQueueRecord } from "../domain/jobs/vidsVideoQueue";
 import {
@@ -561,6 +562,41 @@ export class ChromePreferenceRepository {
 
   async setTheme(theme: Theme): Promise<void> {
     await this.area.set({ theme });
+  }
+
+  async getVidsTimelineReadiness(): Promise<VidsTimelineReadiness | undefined> {
+    const values = await this.area.get("vidsTimelineReadiness");
+    const value = values.vidsTimelineReadiness as VidsTimelineReadiness | undefined;
+    if (!value || value.status !== "user_attested" ||
+      typeof value.documentId !== "string" || typeof value.canonicalTarget !== "string" ||
+      !Number.isInteger(value.tabId) || value.sceneOrderConfirmed !== true ||
+      value.documentSavedConfirmed !== true || !Number.isFinite(value.attestedAt)) return undefined;
+    return value;
+  }
+
+  async setVidsTimelineReadiness(value: VidsTimelineReadiness): Promise<void> {
+    await this.area.set({ vidsTimelineReadiness: value });
+  }
+
+  async clearVidsTimelineReadiness(expectedDocumentId?: string): Promise<boolean> {
+    const current = await this.getVidsTimelineReadiness();
+    if (!current || (expectedDocumentId && current.documentId !== expectedDocumentId)) return false;
+    await this.area.set({ vidsTimelineReadiness: null });
+    return true;
+  }
+
+  async getVidsDownloadAttempt(): Promise<VidsDownloadAttempt | undefined> {
+    const values = await this.area.get("vidsDownloadAttempt");
+    const value = values.vidsDownloadAttempt as VidsDownloadAttempt | undefined;
+    if (!value || typeof value.attemptId !== "string" || typeof value.documentId !== "string" ||
+      typeof value.canonicalTarget !== "string" || !Number.isInteger(value.tabId) ||
+      !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt) ||
+      !["ready", "preparing_mp4", "prepared", "dispatching", "downloading", "chrome_complete", "interrupted", "needs_review"].includes(value.state)) return undefined;
+    return value;
+  }
+
+  async setVidsDownloadAttempt(value: VidsDownloadAttempt): Promise<void> {
+    await this.area.set({ vidsDownloadAttempt: value });
   }
 }
 

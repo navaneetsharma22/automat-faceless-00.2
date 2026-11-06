@@ -62,6 +62,18 @@ export type RequestPayloads = {
     provider: "Flow" | "Vids";
     enabled: boolean;
   };
+  "vids.timelineReady.get": Record<string, never>;
+  "vids.timelineReady.declare": {
+    documentId: string;
+    canonicalTarget: string;
+    tabId: number;
+    sceneOrderConfirmed: true;
+    documentSavedConfirmed: true;
+  };
+  "vids.timelineReady.invalidate": { expectedDocumentId?: string };
+  "vids.download.arm": Record<string, never>;
+  "vids.download.get": Record<string, never>;
+  "vids.download.reconcile": Record<string, never>;
   "flow.prompt.fill": { workspaceId: string; promptHash: string };
   "flow.image.generateOnce": {
     workspaceId: string;
@@ -246,6 +258,12 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "connections.getSelection": 5000,
   "connections.revalidate": 10_000,
   "connections.setReconnectIntent": 5000,
+  "vids.timelineReady.get": 3000,
+  "vids.timelineReady.declare": 15000,
+  "vids.timelineReady.invalidate": 5000,
+  "vids.download.arm": 15000,
+  "vids.download.get": 3000,
+  "vids.download.reconcile": 10000,
   "flow.prompt.fill": 20_000,
   "flow.image.generateOnce": 30_000,
   "flow.image.checkReadiness": 15_000,

@@ -45,11 +45,27 @@ import { createVidsVideoGenerateHandler } from "./handlers/vidsVideo";
 import { createVidsVideoQueueHandler } from "./handlers/vidsVideoQueue";
 import { createRetryableVidsReadiness, createVidsAlarmLifecycle, createVidsStartupRetryController } from "./vidsAlarmLifecycle";
 import { createFlowDownloadDiagnosticManager } from "./flowDownloadDiagnostic";
+import { createHostedHelperConfigListener } from "./handlers/hostedHelper";
+import { createVidsTimelineReadyHandler } from "./vidsTimelineReady";
+import { createVidsDownloadManager } from "./downloadManager";
+import { createHostedVidsDownloadListener, createVidsDownloadHandler } from "./handlers/vidsDownload";
 
 const repositories = new ExtensionRepositories();
 const preferences = new ChromePreferenceRepository({
   get: (key) => chrome.storage.local.get(key),
   set: (items) => chrome.storage.local.set(items),
+});
+const vidsDownloadManager = createVidsDownloadManager({
+  preferences,
+  downloads: {
+    download: (options) => chrome.downloads.download(options),
+    search: (query) => chrome.downloads.search(query),
+  },
+});
+const vidsTimelineReady = createVidsTimelineReadyHandler({
+  preferences,
+  repositories,
+  revalidate: () => connectionLifecycle.revalidate("Vids", false),
 });
 const flowPromptEntry = createSavedFlowPromptEntry(repositories);
 const flowPort = createChromeFlowImageGenerateOncePort(repositories);
@@ -74,6 +90,20 @@ const connectionLifecycle = createConnectionLifecycleService(
       .catch(() => undefined);
   },
 );
+const vidsDownload = createVidsDownloadHandler({
+  extensionId: chrome.runtime.id,
+  preferences,
+  repositories,
+  manager: vidsDownloadManager,
+  revalidate: () => connectionLifecycle.revalidate("Vids", false),
+});
+chrome.downloads?.onChanged?.addListener((delta) => {
+  void vidsDownloadManager.onChanged(delta);
+});
+chrome.runtime.onStartup.addListener(() => {
+  void vidsDownloadManager.reconcile();
+});
+void vidsDownloadManager.reconcile();
 const flowImageReadinessCheck = createFlowImageReadinessCheck(repositories);
 const flowImageReadiness = createReadinessAfterConnectionRevalidation(
   connectionLifecycle.revalidate,
@@ -602,6 +632,8 @@ chrome.runtime.onMessage.addListener(
       timedQueueScheduler[command](queueId, expectedRevision),
     revalidateConnection: (provider, enableReconnect) =>
       connectionLifecycle.revalidate(provider, enableReconnect),
+    vidsTimelineReady,
+    vidsDownload,
     inspectTimedQueueItemReadback: (queueId, order) =>
       inspectFlowEditorAgainstQueueItem({ repositories, queueId, order }),
     retryBlockedImageQueueItem: async (queueId, expectedRevision, order) => {
@@ -627,6 +659,12 @@ chrome.runtime.onMessage.addListener(
       });
     },
   }),
+);
+chrome.runtime.onMessageExternal.addListener(
+  createHostedHelperConfigListener(chrome.runtime.id),
+);
+chrome.runtime.onMessageExternal.addListener(
+  createHostedVidsDownloadListener(vidsDownload),
 );
 registerDashboardAction(chrome);
 

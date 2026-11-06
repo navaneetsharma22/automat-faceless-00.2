@@ -8,6 +8,8 @@ node_modules/
 !DATA_MODEL.md
 !DESIGN.md
 !PROJECT_STATUS.md
+!external/vids-helper/README.md
+!tools/local-mp4-splitter/README.md
 !TECH_STACK.md
 !/phases/
 /phases/*
@@ -34,3 +36,10 @@ config.bat
 !docs/evidence/vids-video-generation.md
 !docs/evidence/vids-video-batch.md
 !docs/evidence/flow-download-feasibility.md
+!docs/evidence/vids-timeline-readiness.md
+!docs/evidence/vids-drive-download.md
+!docs/evidence/scene-split-handoff.md
+!docs/evidence/hosted-helper-compatibility.md
+!/publication/
+!/publication/automat-faceless-picker/
+!/publication/automat-faceless-picker/README.md

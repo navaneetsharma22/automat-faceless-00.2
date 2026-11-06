@@ -148,6 +148,16 @@ export type FoundationDependencies = {
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     inspectTransition: (preparedBatchId: string, itemId: string) => Promise<unknown>;
   };
+  vidsTimelineReady?: {
+    get: () => Promise<unknown>;
+    declare: (input: Extract<AppRequest, { type: "vids.timelineReady.declare" }>["payload"]) => Promise<unknown>;
+    invalidate: (expectedDocumentId?: string) => Promise<boolean>;
+  };
+  vidsDownload?: {
+    arm: () => Promise<unknown>;
+    get: () => Promise<unknown>;
+    reconcile: () => Promise<unknown>;
+  };
   flowVideoGenerateOnce?: (preparedBatchId: string, itemId: string) => Promise<unknown>;
   flowVideoQueue?: {
     get: (preparedBatchId: string) => Promise<unknown>;
@@ -517,6 +527,24 @@ async function dispatch(
           request.payload.enabled,
         ),
       };
+    case "vids.timelineReady.get":
+      if (!dependencies.vidsTimelineReady) throw new FoundationOperationError("worker_error", "vids_timeline_ready_unavailable", "Vids timeline readiness is unavailable.");
+      return dependencies.vidsTimelineReady.get();
+    case "vids.timelineReady.declare":
+      if (!dependencies.vidsTimelineReady) throw new FoundationOperationError("worker_error", "vids_timeline_ready_unavailable", "Vids timeline readiness is unavailable.");
+      return dependencies.vidsTimelineReady.declare(request.payload);
+    case "vids.timelineReady.invalidate":
+      if (!dependencies.vidsTimelineReady) throw new FoundationOperationError("worker_error", "vids_timeline_ready_unavailable", "Vids timeline readiness is unavailable.");
+      return { invalidated: await dependencies.vidsTimelineReady.invalidate(request.payload.expectedDocumentId) };
+    case "vids.download.arm":
+      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download handoff is unavailable.");
+      return dependencies.vidsDownload.arm();
+    case "vids.download.get":
+      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download status is unavailable.");
+      return dependencies.vidsDownload.get();
+    case "vids.download.reconcile":
+      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download observation is unavailable.");
+      return dependencies.vidsDownload.reconcile();
     case "flow.prompt.fill":
       if (!dependencies.flowPromptEntry) {
         throw new FoundationOperationError(
