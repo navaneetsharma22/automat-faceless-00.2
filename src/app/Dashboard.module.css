@@ -410,6 +410,13 @@
   min-width: 0;
   gap: var(--space-6);
 }
+.providerWorkspace[data-active-provider="Vids"] {
+  gap: var(--space-4);
+}
+.providerWorkspace[data-active-provider="Vids"] .providerChoice {
+  min-height: 5.5rem;
+  padding: var(--space-3);
+}
 .providerChoiceGroup {
   display: grid;
   min-width: 0;
@@ -485,6 +492,9 @@
   letter-spacing: -0.025em;
   line-height: var(--line-height-tight);
 }
+.providerWorkspace[data-active-provider="Vids"] .providerChoiceTitle {
+  margin-block-end: var(--space-1);
+}
 .providerChoiceDescription {
   max-width: 46ch;
   color: var(--color-text-muted);
@@ -510,6 +520,9 @@
   display: grid;
   min-width: 0;
   gap: var(--space-5);
+}
+.vidsProviderPanel {
+  gap: var(--space-4);
 }
 .hostedHelperCard {
   display: grid;
@@ -575,6 +588,374 @@
 .hostedHelperAction:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 3px;
+}
+.hostedHelperAction[aria-disabled="true"] {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+.vidsConnectCard {
+  min-width: 0;
+  gap: var(--space-3);
+}
+.vidsDocumentCard,
+.vidsDownloadCard {
+  gap: var(--space-3);
+}
+.vidsSectionHeading {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.vidsSectionHeading > div {
+  display: grid;
+  gap: var(--space-1);
+}
+.vidsSectionHeading h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-lg);
+  letter-spacing: -0.02em;
+  line-height: var(--line-height-tight);
+}
+.vidsStep {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+.vidsConnectionStatuses {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.vidsStatusItem {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+.vidsStatusItem > span {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+}
+.vidsStatusItem > strong {
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+}
+.vidsStatusItem > strong[data-status="ready"] {
+  color: var(--color-success);
+}
+.vidsStatusItem > strong[data-status="pending"] {
+  color: var(--color-warning);
+}
+.vidsConnectSummary,
+.vidsCardIntro,
+.vidsDisclosure,
+.vidsCompletionNote,
+.vidsDestination,
+.vidsEmptyState,
+.vidsInlineNotice,
+.vidsInlineError {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+}
+.vidsConnectSummary,
+.vidsCardIntro,
+.vidsDisclosure,
+.vidsDestination,
+.vidsEmptyState {
+  color: var(--color-text-muted);
+}
+.vidsConnectionDetails {
+  padding-block-start: var(--space-2);
+  border-block-start: 1px solid var(--color-border);
+}
+.vidsConnectionDetails summary {
+  width: fit-content;
+  color: var(--color-accent);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+.vidsConnectionDetails summary:focus-visible,
+.vidsSplitSummary:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+  border-radius: var(--radius-control);
+}
+.vidsConnectionDetails > div {
+  display: grid;
+  gap: var(--space-2);
+  padding-block-start: var(--space-3);
+}
+.vidsConnectionDetails p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
+}
+.vidsConnectionDetails code,
+.vidsVerifiedDocument code,
+.vidsDownloadFacts code {
+  overflow-wrap: anywhere;
+}
+.vidsWorkflowGrid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1.08fr) minmax(19rem, 0.92fr);
+  align-items: start;
+  gap: var(--space-4);
+}
+.vidsDocumentCard,
+.vidsDownloadCard {
+  height: 100%;
+  align-content: start;
+}
+.vidsDocumentActions,
+.vidsActionRow {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.vidsFallback {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+.vidsFallbackRow {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.vidsDocumentInput {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+.vidsDocumentInput:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.vidsVerifiedDocument {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+.vidsVerifiedDocument > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+}
+.vidsVerifiedDocument a {
+  color: var(--color-accent);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  text-underline-offset: 0.18em;
+}
+.vidsReadiness {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
+}
+.vidsReadiness > label {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1.15rem minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+  cursor: pointer;
+}
+.vidsReadiness input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.2rem 0 0;
+  accent-color: var(--color-accent);
+}
+.vidsCardSubheading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.vidsCardSubheading h4 {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+.vidsCardSubheading > span,
+.vidsStateBadge,
+.vidsSplitStatus {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  padding: 0.22rem 0.62rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.vidsStateBadge[data-state="ready"],
+.vidsStateBadge[data-state="chrome-complete"] {
+  border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border));
+  background: var(--color-success-surface);
+  color: var(--color-success);
+}
+.vidsStateBadge[data-state="preparing-mp4"],
+.vidsStateBadge[data-state="prepared"],
+.vidsStateBadge[data-state="downloading"] {
+  border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+}
+.vidsStateBadge[data-state="interrupted"],
+.vidsStateBadge[data-state="needs-review"] {
+  border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+  background: var(--color-error-surface);
+  color: var(--color-error);
+}
+.vidsDownloadFacts {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+  margin: 0;
+}
+.vidsDownloadFacts > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(7.2rem, 0.38fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+.vidsDownloadFacts dt {
+  color: var(--color-text-muted);
+  font-weight: 650;
+}
+.vidsDownloadFacts dd {
+  min-width: 0;
+  margin: 0;
+}
+.vidsEmptyState {
+  padding: var(--space-3);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-control);
+}
+.vidsCompletionNote {
+  padding: var(--space-3);
+  border-inline-start: 3px solid var(--color-success);
+  border-radius: var(--radius-control);
+  background: var(--color-success-surface);
+  color: var(--color-success);
+}
+.vidsInlineNotice,
+.vidsInlineError {
+  padding: var(--space-3);
+  border-inline-start: 3px solid var(--color-warning);
+  border-radius: var(--radius-control);
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+}
+.vidsInlineError {
+  border-inline-start-color: var(--color-error);
+  background: var(--color-error-surface);
+  color: var(--color-error);
+}
+.vidsDestination {
+  padding-block-start: var(--space-2);
+  border-block-start: 1px solid var(--color-border);
+  font-size: var(--font-size-xs);
+}
+.vidsSplitSection {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+.vidsSplitUnavailable {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+}
+.vidsSplitSummary {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  cursor: pointer;
+  list-style-position: inside;
+}
+.vidsSplitUnavailable .vidsSplitSummary {
+  cursor: default;
+  list-style: none;
+}
+.vidsSplitSummary > span:first-child {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.vidsSplitSummary strong {
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+}
+.vidsSplitStatus {
+  color: var(--color-text-muted);
+}
+.vidsSplitContent {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-4);
+  padding: 0 var(--space-5) var(--space-5);
+}
+.vidsSplitContent .sceneManifest {
+  padding-block-start: var(--space-3);
+}
+.vidsSplitContent .sceneDownloadRecord {
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
 }
 .sceneDownloadRecord {
   display: grid;
@@ -1353,7 +1734,7 @@
   .providerChoices {
     grid-template-columns: minmax(0, 1fr);
   }
-  .providerChoice {
+  .providerWorkspace[data-active-provider="Vids"] .providerChoice {
     min-height: 0;
     padding: var(--space-3) var(--space-4);
   }
@@ -1362,6 +1743,57 @@
   }
   .clipToolbarActions {
     width: auto;
+  }
+}
+
+@media (max-width: 800px) {
+  .vidsWorkflowGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .providerWorkspace[data-active-provider="Vids"],
+  .vidsProviderPanel {
+    gap: var(--space-3);
+  }
+  .providerChoice {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: var(--space-2);
+    padding: var(--space-3);
+  }
+  .providerWorkspace[data-active-provider="Vids"] .providerChoiceDescription {
+    font-size: var(--font-size-xs);
+  }
+  .vidsProviderPanel .hostedHelperCard {
+    gap: var(--space-3);
+    padding: var(--space-4);
+  }
+  .vidsConnectionStatuses {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+  .vidsStatusItem {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+  .vidsFallbackRow,
+  .vidsVerifiedDocument {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vidsFallbackRow > button,
+  .vidsDocumentActions > button,
+  .vidsActionRow > button {
+    width: 100%;
+  }
+  .vidsSplitSummary {
+    align-items: flex-start;
+    padding: var(--space-3) var(--space-4);
+  }
+  .vidsSplitContent {
+    padding: 0 var(--space-4) var(--space-4);
   }
 }
 
@@ -1385,6 +1817,11 @@
   }
   .clipActions > * {
     flex: 1 1 auto;
+  }
+  .vidsDownloadFacts > div,
+  .sceneDownloadRecord > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
   }
 }
 

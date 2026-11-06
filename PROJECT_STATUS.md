@@ -2176,3 +2176,13 @@ Cross-part validation: **3 files / 12 tests PASS** using the current helper logi
 No push/publication, Cloud setting change, account authorization, MP4 preparation, or download was performed. Source and mocked-message compatibility are verified offline; the published helper handshake and one-document live download remain **NOT_RUN**.
 
 Current branch: **`main`**. Existing Google Cloud, OAuth client, project number, API-key runtime entry, and `drive.file` authorization flow were retained; Flow behavior was not changed.
+
+## Vids Downloads UI polish — 6 November 2026
+
+Reorganized only the existing Vids Downloads view into a short four-step workflow: connect helper, choose and verify the Vids document, declare the manually prepared timeline ready, and download the MP4. Helper compatibility and Google authorization remain separate states; the existing helper action stays visible and technical connection details are expandable. The document and download cards now form a responsive two-column workflow, with a full-width URL/ID field, exact verified document identity, visible user-attested readiness, attempt/document/Chrome download IDs, and the Chrome Downloads destination. Download-status polling errors appear directly in the download card. Splitting remains a compact secondary handoff until completion and an expandable manifest/instructions view afterward.
+
+Only Vids-scoped layout rules were added; Flow workflow and presentation remain unchanged. Helper configuration, OAuth, readiness rules, download dispatch, nonce handling, persistence, and splitter logic were preserved. No provider action was performed.
+
+Focused UI validation: **3 files / 10 tests PASS** (`providerDownloads`, `splitHandoff`, `vidsTimelineReady`). `npm run typecheck` and `npm run lint` PASS. `npm run build` PASS with build **`automat-faceless-0.1.0-mw50ktmi`** (four JavaScript bundles); existing >500 kB chunk and connector `inlineDynamicImports` warnings remain. `git diff --check` result recorded in `docs/evidence/vids-downloads-ui-polish.md`.
+
+Desktop/narrow visual verification at approximately 1440px and 390px is **NOT_RUN**. The supplied attachment contained the written design request but no screenshot files, no connected browser surface was available, and local headless browser attempts did not render usable screenshots. No screenshots are claimed as evidence. See `docs/evidence/vids-downloads-ui-polish.md` for limits and the manual acceptance check.

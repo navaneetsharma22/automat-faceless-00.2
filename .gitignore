@@ -40,6 +40,7 @@ config.bat
 !docs/evidence/vids-drive-download.md
 !docs/evidence/scene-split-handoff.md
 !docs/evidence/hosted-helper-compatibility.md
+!docs/evidence/vids-downloads-ui-polish.md
 !/publication/
 !/publication/automat-faceless-picker/
 !/publication/automat-faceless-picker/README.md

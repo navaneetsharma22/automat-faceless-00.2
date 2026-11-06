@@ -52,7 +52,7 @@ export function ProviderDownloads({
     ? createHostedPickerUrl(extensionId)
     : undefined;
   return (
-    <div className={styles.providerWorkspace}>
+    <div className={styles.providerWorkspace} data-active-provider={provider}>
       <fieldset className={styles.providerChoiceGroup}>
         <legend>Choose a download provider</legend>
         <div className={styles.providerChoices}>
@@ -83,11 +83,7 @@ export function ProviderDownloads({
                 </span>
               </span>
               <span className={styles.providerChoiceMark} aria-hidden="true">
-                {name === "Vids"
-                  ? "Available"
-                  : provider === name
-                    ? "Selected"
-                    : "Choose"}
+                {provider === name ? "Selected" : "Choose"}
               </span>
             </label>
           ))}
@@ -127,48 +123,54 @@ export function ProviderDownloads({
         id="downloads-panel-vids"
         aria-labelledby="vids-downloads-heading"
         hidden={provider !== "Vids"}
-        className={styles.providerPanel}
+        className={`${styles.providerPanel} ${styles.vidsProviderPanel}`}
       >
         <header className={styles.providerPanelHeading}>
           <p className={styles.kicker}>VIDS PROVIDER</p>
           <h2 id="vids-downloads-heading">Vids Downloads</h2>
-          <p>Configure the existing hosted helper for this extension session.</p>
+          <p>Connect the helper, choose the prepared document, then download its MP4.</p>
         </header>
-        <article className={styles.hostedHelperCard}>
-          <div className={styles.hostedHelperStatusGrid}>
+        <article className={`${styles.hostedHelperCard} ${styles.vidsConnectCard}`}>
+          <div className={styles.vidsSectionHeading}>
             <div>
-              <span className={styles.hostedHelperLabel}>Extension configuration</span>
-              <strong>{hostedHelperUrl ? "Ready for this extension session" : "Unavailable outside the extension"}</strong>
+              <span className={styles.vidsStep}>STEP 1</span>
+              <h3>Connect helper</h3>
             </div>
-            <div>
-              <span className={styles.hostedHelperLabel}>Hosted helper compatibility</span>
-              <strong>{hostedHelperUrl ? "Source binding prepared; manual hosted compatibility check pending" : "Unavailable"}</strong>
-            </div>
-            <div>
-              <span className={styles.hostedHelperLabel}>Google account authorization</span>
-              <strong>Not checked</strong>
-            </div>
-          </div>
-          <p>
-            The helper opens at {HOSTED_PICKER_ORIGIN}{HOSTED_PICKER_PATH}. This extension supplies its current runtime ID in the launch URL, and the current local helper source validates that exact launch binding. Opening this page does not authorize a Google account. Any account authorization happens separately in the hosted helper.
-          </p>
-          <p className={styles.hostedHelperHint}>
-            Enter any restricted Picker API key only on the hosted page. API keys and account tokens are not stored or sent by this extension configuration view.
-          </p>
-          {hostedHelperUrl ? (
             <a
               className={styles.hostedHelperAction}
-              href={hostedHelperUrl}
+              href={hostedHelperUrl ?? undefined}
               target="_blank"
               rel="noreferrer noopener"
+              aria-disabled={!hostedHelperUrl}
+              onClick={(event) => { if (!hostedHelperUrl) event.preventDefault(); }}
             >
               Open existing helper
             </a>
-          ) : (
-            <Button variant="secondary" disabled>
-              Open existing helper
-            </Button>
-          )}
+          </div>
+          <div className={styles.vidsConnectionStatuses} aria-label="Connection status">
+            <div className={styles.vidsStatusItem}>
+              <span>Extension</span>
+              <strong data-status={hostedHelperUrl ? "ready" : "unavailable"}>{hostedHelperUrl ? "Ready" : "Unavailable"}</strong>
+            </div>
+            <div className={styles.vidsStatusItem}>
+              <span>Helper compatibility</span>
+              <strong data-status={hostedHelperUrl ? "pending" : "unavailable"}>{hostedHelperUrl ? "Pending live check" : "Unavailable"}</strong>
+            </div>
+            <div className={styles.vidsStatusItem}>
+              <span>Google account authorization</span>
+              <strong data-status="neutral">Not checked</strong>
+            </div>
+          </div>
+          <p className={styles.vidsConnectSummary}>Google authorization happens in the helper. This dashboard only shows extension configuration readiness.</p>
+          <details className={styles.vidsConnectionDetails}>
+            <summary>Connection details</summary>
+            <div>
+              <p>Helper: <code>{HOSTED_PICKER_ORIGIN}{HOSTED_PICKER_PATH}</code></p>
+              <p>Launch extension ID: <code>{extensionId ?? "Unavailable"}</code></p>
+              <p>The current local helper reads this launch ID and validates the exact origin, path, and query. A hosted compatibility handshake has not yet been checked.</p>
+              <p>Enter any restricted Picker API key only on the hosted page. This extension view does not store or send API keys or account tokens.</p>
+            </div>
+          </details>
         </article>
         <VidsTimelineReady client={client} />
       </section>

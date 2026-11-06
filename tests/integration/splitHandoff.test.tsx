@@ -13,7 +13,7 @@ describe("Vids split-to-companion handoff", () => {
       state: "downloading", createdAt: 1, updatedAt: 2, downloadId: 23,
     }} />);
     expect(html).toContain("Split downloaded video");
-    expect(html).toContain("Available after Chrome reports the intended whole-timeline MP4 download complete");
+    expect(html).toContain("Available after Chrome completes the MP4");
     expect(html).not.toContain("Run-Local-Vids-Split.cmd");
   });
 
@@ -28,8 +28,8 @@ describe("Vids split-to-companion handoff", () => {
     expect(html).toContain("attempt-12");
     expect(html).toContain("Chrome download ID");
     expect(html).toContain("C:\\Downloads\\Vids\\vids-doc-12-attempt-12.mp4");
-    expect(html).toContain("Chrome’s configured Downloads location");
-    expect(html).toContain("choose a separate parent folder");
+    expect(html).toContain("Chrome’s Downloads location is separate");
+    expect(html).toContain("separate parent for split outputs");
     expect(html).not.toContain("FFmpeg has been started");
   });
 
