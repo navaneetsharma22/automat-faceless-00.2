@@ -162,6 +162,13 @@ describe("Vids prepared MP4 download production handler", () => {
     });
     expect(await f.send({ type: "HOSTED_MP4_NONCE_CHALLENGE", expectedFileId: documentId })).toMatchObject({ success: false, status: "rejected" });
     expect(f.downloads.download).not.toHaveBeenCalled();
+
+    const resumed = await flow.continuePolling();
+    await statusQueue;
+    expect(resumed).toMatchObject({ state: "error", stage: "operation_poll" });
+    expect(flow.operationName).toBe("operations/preserve_me");
+    expect(await f.handler.get()).toMatchObject({ operationName: "operations/preserve_me", state: "needs_review" });
+    expect(f.downloads.download).not.toHaveBeenCalled();
   });
 
   it("continues the normal Prepare path through the same operation and hands off once with the exact Chrome ID", async () => {

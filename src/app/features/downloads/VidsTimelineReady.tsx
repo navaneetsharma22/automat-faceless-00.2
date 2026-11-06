@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { createFoundationClient } from "../../../shared/messageClient";
 import { FoundationClientError } from "../../../shared/messageClient";
 import { parseExpectedDocumentId, parseVidsDownloadStatus, readinessMatchesDocument, createSubmissionGuard, type VidsDownloadAttempt, type VidsTimelineReadiness } from "../../../domain/media/combinedExport";
+import { getVidsNeedsReviewHelp } from "../../../domain/media/vidsAttemptStatus";
 import { parseProviderRoute } from "../../../platforms/shared/providerRoute";
 import { Button } from "../../components/Button";
 import styles from "../../Dashboard.module.css";
@@ -29,40 +30,6 @@ function statusFailureDetails(cause: unknown): { message: string; stage: string 
     return { stage: "download_status_parse", message: "Vids download status was invalid. Reload the extension dashboard before starting another attempt." };
   }
   return { stage: "status_consumer", message: "Vids download status is unavailable. Reconnect before starting another attempt." };
-}
-
-function needsReviewStatusHelp(attempt: VidsDownloadAttempt): string {
-  const evidence = [
-    attempt.failureStage ? `stage: ${attempt.failureStage}` : undefined,
-    attempt.failureCode ? `reason: ${attempt.failureCode}` : undefined,
-  ].filter(Boolean).join("; ");
-  const code = evidence ? ` (${evidence})` : "";
-  switch (attempt.reason) {
-    case "preparation_rejected":
-      return `Drive rejected the preparation request${code}. No operation was accepted; this attempt will not be replayed.`;
-    case "preparation_outcome_uncertain":
-      return `The preparation request may have reached Drive${code}. Do not prepare again; review this same attempt.`;
-    case "operation_observation_lost":
-      return attempt.failureCode === "transport_unavailable"
-        ? `The recorded Drive operation could not be checked${code}. Continue checking that same operation with the helper's existing continuation control; do not prepare again.`
-        : `The recorded Drive operation could not be checked${code}. Its ID is retained; do not prepare again.`;
-    case "operation_timeout":
-      return "Polling timed out. Continue checking the recorded operation in the helper; do not prepare again.";
-    case "operation_failed":
-      return `Drive reports that the existing operation failed${code}. This attempt will not be replayed.`;
-    case "invalid_download_uri":
-      return "The existing operation completed without a usable download destination. This attempt will not be replayed.";
-    case "invalid_operation":
-      return "The preparation operation response was invalid. Its result needs review; do not prepare again.";
-    case "dispatch_uncertain":
-      return "The handoff result is uncertain. Check this attempt and Chrome Downloads before taking another action; it will not be replayed.";
-    case "connection_changed":
-      return "The verified Vids document changed during preparation. This attempt will not be replayed.";
-    case "download_interrupted":
-      return "Chrome interrupted this download. Review the exact Chrome download; it will not be restarted automatically.";
-    default:
-      return "This attempt needs review and will not be replayed.";
-  }
 }
 
 export function VidsTimelineReady({ client }: { client: Client }) {
@@ -227,7 +194,7 @@ export function VidsTimelineReady({ client }: { client: Client }) {
             : attemptState === "prepared" ? "Prepared"
               : !document ? "Choose a document" : !isReady ? "Timeline not ready" : "Ready";
   const canArm = isReady && (!downloadAttempt || downloadAttempt.state === "chrome_complete");
-  const statusHelp = attemptState === "needs_review" && downloadAttempt ? needsReviewStatusHelp(downloadAttempt)
+  const statusHelp = attemptState === "needs_review" && downloadAttempt ? getVidsNeedsReviewHelp(downloadAttempt)
     : attemptState === "interrupted" ? "Chrome reports an interrupted download. It will not be restarted automatically."
       : attemptState === "dispatching" ? "Waiting for Chrome to return the exact download ID. This dispatch will not be replayed."
         : attemptState === "downloading" ? "Chrome is downloading the whole-timeline MP4."
@@ -280,6 +247,7 @@ export function VidsTimelineReady({ client }: { client: Client }) {
           <div><dt>Attempt ID</dt><dd><code>{downloadAttempt.attemptId}</code></dd></div>
           {downloadAttempt.downloadId !== undefined ? <div><dt>Chrome download ID</dt><dd><code>{downloadAttempt.downloadId}</code></dd></div> : null}
           {downloadAttempt.operationName ? <div><dt>Drive operation ID</dt><dd><code>{downloadAttempt.operationName}</code></dd></div> : null}
+          {downloadAttempt.state === "needs_review" && !downloadAttempt.operationName ? <div><dt>Drive operation ID</dt><dd>Not recorded</dd></div> : null}
         </dl> : <p className={styles.vidsEmptyState}>No download attempt yet.</p>}
         {canArm ? <div className={styles.vidsActionRow}><Button onClick={() => void armDownload()}>Arm MP4 download</Button></div> : null}
         {downloadAttempt?.operationName && attemptState === "preparing_mp4" ? <p className={styles.vidsInlineNotice} role="status">An existing Drive operation is recorded. Continue checking that same operation in the helper; do not prepare again.</p> : null}

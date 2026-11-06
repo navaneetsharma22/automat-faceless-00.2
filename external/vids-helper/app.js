@@ -714,7 +714,11 @@ function handlePreparationOutcome(outcome) {
           : 'MP4 operation ended; authorization token cleared',
       );
     }
-    if (outcome.category === 'transport_unavailable' && preparationFlow?.operationName) {
+    if (
+      preparationFlow?.operationName &&
+      outcome.stage === 'operation_poll' &&
+      ['transport_unavailable', 'transport_uncertain', 'authorization_expired', 'access_denied', 'api_or_file_access_denied'].includes(outcome.category)
+    ) {
       const button = document.querySelector('#continue-operation');
       button.hidden = false;
       button.disabled = false;

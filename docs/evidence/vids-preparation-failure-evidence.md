@@ -34,3 +34,11 @@ No credentials, tokens, signed URIs, or extension bundles are included. Publicat
 - `git diff --check`: **PASS**.
 - Deployed helper version and actual historical POST/poll boundary: **UNKNOWN / NOT_RUN**; no runtime artifact or browser was available.
 - Live authorization, preparation, download, generation, publication, and state reset: **NOT_PERFORMED**.
+
+## Attempt `003d9d7e5abd68c5445fa5b0444bc151` read-only inspection follow-up
+
+The connected runtime inventory returned no browser or app surfaces, and no extension-storage inspection tool was available. The attempt record was therefore **not read**. Its stored `operationName`, `failureStage`, and `failureCode` are **UNKNOWN**; no ID presence or historical request stage is inferred from source. No browser storage, worker state, or attempt was changed.
+
+The dashboard now renders a Drive operation ID only when that field is actually present. For a Needs review record without an ID, attempt details say **Not recorded**, and copy describes the historical preparation outcome as unknown/evidence missing. With an ID, details show that exact value and the message directs the user to the helper's existing same-operation continuation control only where the failure evidence supports it. Helper continuation remains tied to the in-memory operation and calls polling only; it cannot start a new preparation. The existing button is now available after authorization/access or transport failures during polling when a known operation is still loaded.
+
+Needs review copy distinguishes expired/denied authorization, polling transport failure, a terminal Drive operation failure, and missing historical evidence. It preserves the no-replay instruction. Focused Vitest: **3 files / 23 tests PASS**, including stored records with and without operation IDs, authorization and operation failure copy, and production continuation of the same operation with no second preparation POST or Chrome download. Typecheck, lint, build, and `git diff --check` pass. Build **`automat-faceless-0.1.0-mw53lgis`** (four JavaScript bundles). No authorization, replay, download, reset, or publication occurred.
