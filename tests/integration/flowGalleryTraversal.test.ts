@@ -27,6 +27,10 @@ function createTraversalHarness(options: {
   changeFinalInventory?: boolean;
   ambiguousOwners?: boolean;
   reorderAfterRestore?: boolean;
+  flowOrigin?: boolean;
+  missingMedia?: boolean;
+  sharedPlaceholder?: boolean;
+  queryOnlyCollision?: boolean;
 } = {}) {
   const replaceDocumentOnRestore = options.replaceDocumentOnRestore ?? true;
   let now = 100;
@@ -60,14 +64,32 @@ function createTraversalHarness(options: {
       scrollHeight: { configurable: true, value: 1400 },
     });
     const gallery = page.window.document.querySelector("flow-gallery")!;
+    let lastRenderedTop = -1;
+    let forceGalleryRerender = true;
     const renderWindow = (top: number) => {
+      if (!forceGalleryRerender && top === lastRenderedTop)
+        return [...gallery.querySelectorAll("flow-grid-tile-container")];
+      forceGalleryRerender = false;
+      lastRenderedTop = top;
       const first = top >= 750 ? 2 : top >= 375 ? 1 : 0;
       const indices = [first];
       if (first < 2) indices.push(first + 1);
       if (options.reorderAfterRestore && restoreCount > 0) indices.reverse();
-      gallery.innerHTML = indices.map((index) => `<flow-grid-tile-container role="group" aria-label="Same title" data-test-index="${index}">
-        <flow-video-tile><video src="https://flow-content.google/video/${mediaOverrides.get(index) ?? `render-${options.ambiguousOwners && index < 2 ? 0 : index}`}"></video></flow-video-tile>
-      </flow-grid-tile-container>`).join("");
+      const host = options.flowOrigin ? "flow.google.com" : "flow-content.google";
+      gallery.innerHTML = indices.map((index) => {
+        const defaultPath = options.sharedPlaceholder
+          ? "media/placeholder"
+          : options.queryOnlyCollision && index < 2
+            ? "media/shared-render"
+            : `video/render-${options.ambiguousOwners && index < 2 ? 0 : index}`;
+        const query = options.queryOnlyCollision && index < 2
+          ? `?signature=query-secret-${index}`
+          : "";
+        const media = options.missingMedia
+          ? "<flow-video-tile></flow-video-tile>"
+          : `<flow-video-tile><video src="https://${host}/${mediaOverrides.get(index) ?? defaultPath}${query}"></video></flow-video-tile>`;
+        return `<flow-grid-tile-container role="group" aria-label="Same title" data-test-index="${index}">${media}</flow-grid-tile-container>`;
+      }).join("");
       const owners = [...gallery.querySelectorAll("flow-grid-tile-container")];
       for (const owner of owners) {
         const index = Number(owner.getAttribute("data-test-index"));
@@ -81,7 +103,10 @@ function createTraversalHarness(options: {
       }
       return owners;
     };
-    Object.assign(page.window, { __renderGalleryWindow: renderWindow });
+    Object.assign(page.window, {
+      __renderGalleryWindow: renderWindow,
+      __invalidateGalleryWindow: () => { forceGalleryRerender = true; },
+    });
     renderWindow(0);
     Object.defineProperty(page.window.document, "elementFromPoint", {
       value: (x: number, y: number) => [...page.window.document.querySelectorAll("flow-grid-tile-container")].find((owner) => {
@@ -167,6 +192,9 @@ function createTraversalHarness(options: {
               if (input.action === "open") openResults.push({ input, boundDocument });
               try {
                 const result = await pageReader!(input);
+                if (input.action === "restore") {
+                  (dom.window as unknown as { __invalidateGalleryWindow: () => void }).__invalidateGalleryWindow();
+                }
                 if (input.action === "open") openResults.push(result);
                 return [{ documentId: boundDocument, result }];
               } catch (error) {
@@ -205,7 +233,7 @@ function createTraversalHarness(options: {
 
 describe("Flow Gallery traversal production integration", () => {
   it("runs serialized production page reads through three same-title cards, persists each detail identity, restores, and reimports without duplicate rows", async () => {
-    const harness = createTraversalHarness({ reorderAfterRestore: true });
+    const harness = createTraversalHarness({ reorderAfterRestore: true, flowOrigin: true });
     const { manager, repositories, pageReads, openResults, clickRoutes } = await harness.setup();
     await manager.startProjectVideoImport();
     let progress = await manager.getProjectVideoImport();
@@ -218,7 +246,9 @@ describe("Flow Gallery traversal production integration", () => {
     expect(pageReads.filter((action) => action === "open")).toHaveLength(3);
     const rows = await repositories.listFlowClipImports();
     expect(rows.map((row) => row.clipId)).toEqual(clips);
+    expect(rows.map((row) => row.detailSelectedAssetId)).toEqual(selectedAssets);
     expect(new Set(rows.map((row) => row.id)).size).toBe(3);
+    expect(rows.every((row) => row.galleryImportMethod === "native_card_navigation" && row.galleryAssetId === undefined && row.galleryIdentityEvidence === undefined)).toBe(true);
 
     await manager.startProjectVideoImport();
     progress = await manager.getProjectVideoImport();
@@ -256,7 +286,7 @@ describe("Flow Gallery traversal production integration", () => {
   });
 
   it("stops with retained partial progress when a pending card changes after restoration", async () => {
-    const harness = createTraversalHarness({ mutateAfterFirstRestore: true });
+    const harness = createTraversalHarness({ mutateAfterFirstRestore: true, flowOrigin: true });
     const { manager, repositories } = await harness.setup();
     await manager.startProjectVideoImport();
     let progress = await manager.getProjectVideoImport();
@@ -270,7 +300,7 @@ describe("Flow Gallery traversal production integration", () => {
   });
 
   it("does not claim coverage when the final Gallery has the same count but different candidate keys", async () => {
-    const harness = createTraversalHarness();
+    const harness = createTraversalHarness({ flowOrigin: true });
     const { manager, repositories, changeMedia } = await harness.setup();
     const originalUpsert = repositories.upsertFlowClipImport.bind(repositories);
     repositories.upsertFlowClipImport = async (...args) => {
@@ -291,7 +321,7 @@ describe("Flow Gallery traversal production integration", () => {
   });
 
   it("counts indistinguishable owners separately and reports ambiguity without opening either", async () => {
-    const harness = createTraversalHarness({ ambiguousOwners: true });
+    const harness = createTraversalHarness({ queryOnlyCollision: true, flowOrigin: true });
     const { manager, repositories, pageReads } = await harness.setup();
     await manager.startProjectVideoImport();
     let progress = await manager.getProjectVideoImport();
@@ -301,7 +331,54 @@ describe("Flow Gallery traversal production integration", () => {
     }
     expect(progress).toMatchObject({ status: "incomplete", discovered: 2, imported: 0, unresolved: 2, scanCompleteness: "incomplete", reason: "ambiguous_identity" });
     expect(pageReads.filter((action) => action === "open")).toHaveLength(0);
+    expect(JSON.stringify(progress)).not.toContain("query-secret");
     expect(await repositories.listFlowClipImports()).toHaveLength(0);
+    harness.dispose();
+  });
+
+  it("opens the one-card owner in its current binding without requiring cross-navigation media evidence", async () => {
+    const harness = createTraversalHarness({ replaceDocumentOnRestore: false, missingMedia: true });
+    const { manager, pageReads, repositories } = await harness.setup();
+    await manager.startProjectVideoImport({ singleCardCheck: true });
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+    const openIndex = pageReads.indexOf("open");
+    expect(progress).toMatchObject({ status: "completed", scope: "one_card_check", discovered: 1, openAttempts: 1, imported: 1, unresolved: 0, reason: "one_card_check_complete" });
+    expect(pageReads.slice(0, openIndex)).toEqual(["start", "start", "snapshot"]);
+    expect(await repositories.listFlowClipImports()).toHaveLength(1);
+    harness.dispose();
+  });
+
+  it("reports shared same-origin placeholder paths as unusable without opening owners", async () => {
+    const harness = createTraversalHarness({ flowOrigin: true, sharedPlaceholder: true });
+    const { manager, pageReads } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "incomplete", discovered: 2, unresolved: 2, reason: "identity_deduplication_unavailable" });
+    expect(progress.unresolvedCards.map((card) => card.reason)).toEqual(["native_media_path_unusable", "native_media_path_unusable"]);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(0);
+    harness.dispose();
+  });
+
+  it("reports absent media separately when native owner bindings are available", async () => {
+    const harness = createTraversalHarness({ flowOrigin: true, missingMedia: true });
+    const { manager, pageReads } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+    expect(progress).toMatchObject({ status: "incomplete", discovered: 2, unresolved: 2 });
+    expect(progress.unresolvedCards.every((card) => card.reason === "native_media_absent")).toBe(true);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(0);
     harness.dispose();
   });
 });

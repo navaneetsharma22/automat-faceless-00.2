@@ -158,7 +158,8 @@ type FlowProjectVideoImportJob = {
   candidates: Map<string, FlowProjectVideoCard>;
   // Native cards retain only a transient traversal descriptor. DOM owner tokens
   // are deliberately discarded when discovery leaves the current Gallery DOM.
-  nativeCandidates: Map<string, { card: Omit<FlowProjectVideoCard, "nativeCardToken">; scrollTop: number }>;
+  nativeCandidates: Map<string, { card: FlowProjectVideoCard; scrollTop: number }>;
+  oneCardNativeCandidate?: { card: FlowProjectVideoCard; scrollTop: number };
   unresolvedKeys: Set<string>;
   discoveredKeys: Set<string>;
   unresolvedObservationSequence: number;
@@ -784,6 +785,15 @@ export function createFlowDownloadDiagnosticManager(
     job: FlowProjectVideoImportJob,
     page: FlowProjectVideosPageResult,
   ) => {
+    const traversalEvidenceFailure = (status: FlowProjectVideoCard["traversalEvidenceStatus"]) => {
+      switch (status) {
+        case "media_absent": return "native_media_absent";
+        case "host_scheme_rejected": return "native_media_host_scheme_rejected";
+        case "path_unusable": return "native_media_path_unusable";
+        case "digest_failed": return "native_media_digest_failed";
+        default: return "native_media_evidence_unavailable";
+      }
+    };
     let traversalUnavailable = false;
     let traversalAmbiguous = false;
     const assetCounts = new Map<string, number>();
@@ -793,8 +803,8 @@ export function createFlowDownloadDiagnosticManager(
       if (!card.assetId && card.observationFingerprint)
         nativeFingerprintCounts.set(card.observationFingerprint, (nativeFingerprintCounts.get(card.observationFingerprint) ?? 0) + 1);
     }
-    const nativeFingerprintIndices = new Map<string, number>();
     const assetIndices = new Map<string, number>();
+    const nativeFingerprintIndices = new Map<string, number>();
     const byAsset = new Map<string, FlowProjectVideoCard[]>();
     const byNativeToken = new Map<string, FlowProjectVideoCard[]>();
     for (const card of job.oneCardCheck ? page.cards.slice(0, 1) : page.cards) {
@@ -808,15 +818,22 @@ export function createFlowDownloadDiagnosticManager(
           })()
         : card.routeStatus === "unique" && card.detailRoute
           ? `clip:${card.detailRoute.clipId}`
-          : card.observationFingerprint
+        : card.observationFingerprint
             ? (() => {
                 const index = (nativeFingerprintIndices.get(card.observationFingerprint!) ?? 0) + 1;
                 nativeFingerprintIndices.set(card.observationFingerprint!, index);
-                return nativeFingerprintCounts.get(card.observationFingerprint!)! > 1
+                return (nativeFingerprintCounts.get(card.observationFingerprint!) ?? 0) > 1
                   ? `fingerprint:${card.observationFingerprint}:ambiguous:${index}`
                   : `fingerprint:${card.observationFingerprint}`;
               })()
             : `observation:${++job.discoveryObservationSequence}`;
+      if (!card.assetId && card.observationFingerprint && (nativeFingerprintCounts.get(card.observationFingerprint) ?? 0) > 1) {
+        traversalAmbiguous = true;
+        job.inventoryKeys.add(discoveryKey);
+        job.discoveredKeys.add(discoveryKey);
+        addProjectVideoUnresolved(job, card, "native_traversal_ambiguous", discoveryKey);
+        continue;
+      }
       job.inventoryKeys.add(discoveryKey);
       if (job.discoveredKeys.has(discoveryKey))
         job.progress = {
@@ -825,17 +842,22 @@ export function createFlowDownloadDiagnosticManager(
         };
       else job.discoveredKeys.add(discoveryKey);
       if (!card.assetId || card.assetStatus !== "unique") {
-        if ((nativeFingerprintCounts.get(card.observationFingerprint ?? "") ?? 0) > 1) {
-          addProjectVideoUnresolved(job, card, "native_traversal_ambiguous", discoveryKey);
-          traversalAmbiguous = true;
+        if (job.oneCardCheck) {
+          if (!card.nativeCardToken) {
+            addProjectVideoUnresolved(job, card, "native_owner_token_missing", discoveryKey);
+            traversalUnavailable = true;
+            continue;
+          }
+          job.oneCardNativeCandidate = { card, scrollTop: page.scroll.top };
           continue;
         }
         if (!card.nativeCardToken) {
-          addProjectVideoUnresolved(
-            job,
-            card,
-            "native_traversal_evidence_unavailable",
-          );
+          addProjectVideoUnresolved(job, card, "native_owner_token_missing", discoveryKey);
+          traversalUnavailable = true;
+          continue;
+        }
+        if (!card.observationFingerprint) {
+          addProjectVideoUnresolved(job, card, traversalEvidenceFailure(card.traversalEvidenceStatus), discoveryKey);
           traversalUnavailable = true;
           continue;
         }
@@ -891,7 +913,7 @@ export function createFlowDownloadDiagnosticManager(
       // Without a stable observation fingerprint we cannot safely reacquire
       // this card after the detail navigation. Never fall back to title/order.
       if (!card.observationFingerprint) {
-        addProjectVideoUnresolved(job, card, "native_traversal_evidence_unavailable");
+        addProjectVideoUnresolved(job, card, traversalEvidenceFailure(card.traversalEvidenceStatus));
         traversalUnavailable = true;
         continue;
       }
@@ -933,7 +955,7 @@ export function createFlowDownloadDiagnosticManager(
         const base = `asset:${card.assetId}`;
         const index = (indices.get(base) ?? 0) + 1;
         indices.set(base, index);
-        return (counts.get(base) ?? 0) > 1 ? `${base}:ambiguous:${index}` : base;
+        return (counts.get(base) ?? 0) > 1 && index > 1 ? `${base}:ambiguous:${index}` : base;
       }
       if (card.routeStatus === "unique" && card.detailRoute)
         return `clip:${card.detailRoute.clipId}`;
@@ -941,7 +963,7 @@ export function createFlowDownloadDiagnosticManager(
       const base = `fingerprint:${card.observationFingerprint}`;
       const index = (indices.get(base) ?? 0) + 1;
       indices.set(base, index);
-      return (counts.get(base) ?? 0) > 1 ? `${base}:ambiguous:${index}` : base;
+      return (counts.get(base) ?? 0) > 1 && index > 1 ? `${base}:ambiguous:${index}` : base;
     });
   };
 
@@ -1253,11 +1275,11 @@ export function createFlowDownloadDiagnosticManager(
 
   const resolveNativeNavigationCandidate = async (
     job: FlowProjectVideoImportJob,
-    candidate: { card: Omit<FlowProjectVideoCard, "nativeCardToken">; scrollTop: number },
+    candidate: { card: FlowProjectVideoCard; scrollTop: number },
   ) => {
     const projectId = job.progress.projectId!;
     const fingerprint = candidate.card.observationFingerprint;
-    if (!fingerprint)
+    if (!job.oneCardCheck && !fingerprint)
       throw new Error("flow_project_video_import_native_traversal_unavailable");
     let token: string | undefined;
     let resolved:
@@ -1281,43 +1303,48 @@ export function createFlowDownloadDiagnosticManager(
     let detailConnectionRouteMismatch = false;
     try {
       const galleryTarget = await verifyImportTarget(job);
-      const restoredPosition = await importPageResult(
-        job,
-        galleryTarget.binding,
-        "restore",
-        undefined,
-        { scrollTop: candidate.scrollTop },
-      );
-      if (restoredPosition.status !== "ready" || restoredPosition.projectId !== projectId)
-        throw new Error("flow_project_video_import_gallery_unavailable");
-      // Restoration creates a new binding generation, even when the document
-      // ID is unchanged. Re-scan current owners and use the transient media
-      // fingerprint only as a traversal cursor; it is never persisted identity.
       let match: FlowProjectVideoCard | undefined;
-      let scan = await importPageResult(job, galleryTarget.binding, "snapshot");
-      if (scan.status !== "ready" || scan.projectId !== projectId)
-        throw new Error("flow_project_video_import_gallery_unavailable");
-      for (let step = 0; step <= FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS; step += 1) {
-        const matches = scan.cards.filter((card) => card.observationFingerprint === fingerprint);
-        if (matches.length > 1)
-          throw new Error("flow_project_video_import_native_traversal_ambiguous");
-        if (matches.length === 1) {
-          match = matches[0];
-          break;
-        }
-        if (scan.scroll.atBottom || !scan.scroll.containerFound || step === FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS)
-          break;
-        const moved = await importPageResult(job, galleryTarget.binding, "scroll");
-        if (moved.status !== "ready" || !moved.scroll.moved) break;
-        await sleepForImport(200);
-        scan = await importPageResult(job, galleryTarget.binding, "snapshot");
+      if (job.oneCardCheck) {
+        // A one-card diagnostic opens the exact owner already bound in the
+        // current Gallery document. It does not navigate away and reacquire.
+        match = candidate.card;
+      } else {
+        const restoredPosition = await importPageResult(
+          job,
+          galleryTarget.binding,
+          "restore",
+          undefined,
+          { scrollTop: candidate.scrollTop },
+        );
+        if (restoredPosition.status !== "ready" || restoredPosition.projectId !== projectId)
+          throw new Error("flow_project_video_import_gallery_unavailable");
+        // Re-scan after restoration. The transient fingerprint is only a
+        // traversal cursor, never persisted identity.
+        let scan = await importPageResult(job, galleryTarget.binding, "snapshot");
         if (scan.status !== "ready" || scan.projectId !== projectId)
           throw new Error("flow_project_video_import_gallery_unavailable");
+        for (let step = 0; step <= FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS; step += 1) {
+          const matches = scan.cards.filter((card) => card.observationFingerprint === fingerprint);
+          if (matches.length > 1)
+            throw new Error("flow_project_video_import_native_traversal_ambiguous");
+          if (matches.length === 1) {
+            match = matches[0];
+            break;
+          }
+          if (scan.scroll.atBottom || !scan.scroll.containerFound || step === FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS)
+            break;
+          const moved = await importPageResult(job, galleryTarget.binding, "scroll");
+          if (moved.status !== "ready" || !moved.scroll.moved) break;
+          await sleepForImport(200);
+          scan = await importPageResult(job, galleryTarget.binding, "snapshot");
+          if (scan.status !== "ready" || scan.projectId !== projectId)
+            throw new Error("flow_project_video_import_gallery_unavailable");
+        }
       }
       if (!match?.nativeCardToken)
         throw new Error("flow_project_video_import_native_binding_stale");
       token = match.nativeCardToken;
-      if (!match.observationFingerprint)
+      if (!job.oneCardCheck && !match.observationFingerprint)
         throw new Error("flow_project_video_import_native_traversal_unavailable");
       job.progress = {
         ...job.progress,
@@ -1421,7 +1448,14 @@ export function createFlowDownloadDiagnosticManager(
         galleryTarget.binding,
         "open",
         undefined,
-        { nativeCardToken: token, expectedObservationFingerprint: fingerprint },
+        {
+          nativeCardToken: token,
+          ...(fingerprint ? { expectedObservationFingerprint: fingerprint } : {}),
+          ...(job.oneCardCheck ? {
+            allowCurrentOwnerWithoutFingerprint: true,
+            ...(match.traversalEvidenceStatus ? { expectedTraversalEvidenceStatus: match.traversalEvidenceStatus } : {}),
+          } : {}),
+        },
       ).then(
         (opened) => {
           if (opened.status === "opened" && opened.card) {
@@ -1933,6 +1967,8 @@ export function createFlowDownloadDiagnosticManager(
         recordRestorationWarning(resolved.restorationWarning);
         if (resolved.restorationWarning) break;
       }
+      if (job.oneCardNativeCandidate)
+        job.nativeCandidates.set("one-card-current-owner", job.oneCardNativeCandidate);
       // The map is run progress only. Select one descriptor at a time; each
       // resolver performs a fresh Gallery discovery and produces a new owner
       // binding immediately before its click.

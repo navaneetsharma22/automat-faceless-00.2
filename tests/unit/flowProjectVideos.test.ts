@@ -262,6 +262,84 @@ describe("Flow project Videos gallery adapter", () => {
     expect(result.cards[0]?.nativeCardToken).toMatch(/^[0-9a-f-]{36}$/i);
   });
 
+  it("uses distinct same-origin Flow paths for traversal without promoting UUIDs to asset identity", async () => {
+    installGallery(`<flow-grid-tile-container role="group" aria-label="same">
+      <flow-video-tile><video src="https://flow.google.com/media/clip-alpha"></video></flow-video-tile>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="same">
+      <flow-video-tile><video src="https://flow.google.com/media/clip-beta"></video></flow-video-tile>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="same">
+      <flow-video-tile><img src="https://flow.google.com/image/12345678-1234-4234-8234-123456789abc"></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const result = await inspectFlowProjectVideosInPage({
+      projectId, action: "snapshot", scanId: "90000000-0000-4000-8000-000000000021", documentId: "gallery-flow-origin",
+    }) as { cards: Array<{ observationFingerprint?: string; traversalEvidenceStatus?: string; assetId?: string; assetStatus: string }> };
+    expect(result.cards.map((card) => card.traversalEvidenceStatus)).toEqual(["available", "available", "available"]);
+    expect(result.cards[0]?.observationFingerprint).not.toBe(result.cards[1]?.observationFingerprint);
+    expect(result.cards[0]?.assetId).toBeUndefined();
+    expect(result.cards[1]?.assetId).toBeUndefined();
+    expect(result.cards[2]?.assetId).toBeUndefined();
+    expect(result.cards[2]?.assetStatus).toBe("missing");
+  });
+
+  it("distinguishes a missing owner token from available media evidence", async () => {
+    installGallery(`<flow-grid-tile-container role="group" aria-label="clip">
+      <flow-video-tile><video src="https://flow.google.com/media/clip-without-binding"></video></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const result = await inspectFlowProjectVideosInPage({ projectId, action: "snapshot" }) as {
+      cards: Array<{ nativeCardToken?: string; observationFingerprint?: string; traversalEvidenceStatus?: string }>;
+    };
+    expect(result.cards[0]).toMatchObject({ traversalEvidenceStatus: "available" });
+    expect(result.cards[0]?.observationFingerprint).toBeTruthy();
+    expect(result.cards[0]?.nativeCardToken).toBeUndefined();
+  });
+
+  it("rejects shared generic paths and ignores query-only differences", async () => {
+    installGallery(`<flow-grid-tile-container role="group" aria-label="placeholder">
+      <flow-video-tile><video src="https://flow.google.com/media/placeholder"></video></flow-video-tile>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="same">
+      <flow-video-tile><video src="https://flow.google.com/media/shared-render?signature=first-secret"></video></flow-video-tile>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="same">
+      <flow-video-tile><video src="https://flow.google.com/media/shared-render?token=second-secret"></video></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const result = await inspectFlowProjectVideosInPage({ projectId, action: "snapshot", scanId: "90000000-0000-4000-8000-000000000022", documentId: "gallery-query" }) as {
+      cards: Array<{ observationFingerprint?: string; traversalEvidenceStatus?: string }>;
+    };
+    expect(result.cards[0]).toMatchObject({ traversalEvidenceStatus: "path_unusable" });
+    expect(result.cards[0]?.observationFingerprint).toBeUndefined();
+    expect(result.cards[1]?.observationFingerprint).toBe(result.cards[2]?.observationFingerprint);
+    expect(JSON.stringify(result)).not.toMatch(/first-secret|second-secret/);
+  });
+
+  it("reports absent media, rejected scheme/host, and digest failure separately", async () => {
+    installGallery(`<flow-grid-tile-container role="group" aria-label="empty">
+      <flow-video-tile></flow-video-tile>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="unsafe">
+      <flow-video-tile><video src="http://flow.google.com/media/insecure"></video></flow-video-tile>
+    </flow-grid-tile-container>
+    <flow-grid-tile-container role="group" aria-label="digest">
+      <flow-video-tile><video src="https://flow.google.com/media/digest-target"></video></flow-video-tile>
+    </flow-grid-tile-container>`);
+    const input = { projectId, action: "snapshot" as const, scanId: "90000000-0000-4000-8000-000000000023", documentId: "gallery-reasons" };
+    const beforeDigestFailure = await inspectFlowProjectVideosInPage(input) as {
+      cards: Array<{ traversalEvidenceStatus?: string }>;
+    };
+    expect(beforeDigestFailure.cards.map((card) => card.traversalEvidenceStatus)).toEqual([
+      "media_absent", "host_scheme_rejected", "available",
+    ]);
+    const originalCrypto = webcrypto;
+    vi.stubGlobal("crypto", { randomUUID: () => originalCrypto.randomUUID(), subtle: { digest: vi.fn().mockRejectedValue(new Error("digest unavailable")) } });
+    const afterDigestFailure = await inspectFlowProjectVideosInPage(input) as {
+      cards: Array<{ traversalEvidenceStatus?: string; observationFingerprint?: string }>;
+    };
+    expect(afterDigestFailure.cards[2]).toMatchObject({ traversalEvidenceStatus: "digest_failed" });
+    expect(afterDigestFailure.cards[2]?.observationFingerprint).toBeUndefined();
+  });
+
   it("binds same-title owners separately and clicks only the discovered token target", async () => {
     const dom = installGallery(`<flow-grid-tile-container role="group" aria-label="make it">
       <flow-video-tile><video src="https://flow-content.google/media/rendered-video-a"></video></flow-video-tile>

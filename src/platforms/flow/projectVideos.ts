@@ -5,6 +5,13 @@ export const FlowProjectVideoCardSchema = z
     observationFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     /** Exact DOM-owner binding for one scan/document; never persisted as clip identity. */
     nativeCardToken: z.string().uuid().optional(),
+    traversalEvidenceStatus: z.enum([
+      "available",
+      "media_absent",
+      "host_scheme_rejected",
+      "path_unusable",
+      "digest_failed",
+    ]).optional(),
     assetId: z.string().uuid().optional(),
     assetStatus: z.enum(["unique", "missing", "ambiguous"]),
     title: z.string().max(200),
@@ -166,6 +173,8 @@ export async function inspectFlowProjectVideosInPage(input: {
   assetId?: string;
   nativeCardToken?: string;
   expectedObservationFingerprint?: string;
+  expectedTraversalEvidenceStatus?: FlowProjectVideoCard["traversalEvidenceStatus"];
+  allowCurrentOwnerWithoutFingerprint?: boolean;
   scrollTop?: number;
   maxCards?: number;
 }): Promise<unknown> {
@@ -493,21 +502,43 @@ export async function inspectFlowProjectVideosInPage(input: {
           ];
     });
     const safeMediaPaths = rawMediaUrls.flatMap((rawUrl) => {
-        if (!rawUrl) return [];
-        try {
-          const url = new URL(rawUrl);
-          return url.protocol === "https:" &&
-            ["flow-content.google", "storage.googleapis.com"].includes(url.hostname) &&
-            !url.username && !url.password
-            ? [`${url.origin}${url.pathname}`]
-            : [];
-        } catch {
-          return [];
-        }
+      if (!rawUrl) return [];
+      try {
+        const url = new URL(rawUrl);
+        return url.protocol === "https:" &&
+          ["flow-content.google", "storage.googleapis.com"].includes(url.hostname) &&
+          !url.username && !url.password
+          ? [`${url.origin}${url.pathname}`]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+    const hasObservedMediaUrl = rawMediaUrls.some(Boolean);
+    const traversalMediaPaths = rawMediaUrls.flatMap((rawUrl) => {
+      if (!rawUrl) return [];
+      try {
+        const url = new URL(rawUrl);
+        if (
+          url.protocol !== "https:" ||
+          !["flow.google.com", "flow-content.google", "storage.googleapis.com"].includes(url.hostname) ||
+          url.username ||
+          url.password
+        ) return [];
+        const pathSegments = url.pathname.split("/").filter(Boolean);
+        const isGenericSegment = (segment: string) =>
+          /^(?:media|video|image|thumbnail|thumb|placeholder|preview|default|sample|asset|unknown|null|undefined|[01])(?:[-_]?\d*)?$/i.test(segment);
+        if (pathSegments.length < 2 || pathSegments.every(isGenericSegment)) return [];
+        // Query strings are intentionally excluded. They may be signed or vary
+        // per request and cannot distinguish Gallery owners.
+        return [`${url.origin}${url.pathname}`];
+      } catch {
+        return [];
+      }
     });
     // This hash is only a short-lived traversal handle. It is neither persisted
     // nor trusted as a clip or Gallery asset identity; query strings are omitted.
-    const observationSource = [...new Set(safeMediaPaths)].sort().join("\n");
+    const observationSource = [...new Set(traversalMediaPaths)].sort().join("\n");
     let thumbnailSourceKey = "";
     let width: number | undefined;
     let height: number | undefined;
@@ -564,6 +595,26 @@ export async function inspectFlowProjectVideosInPage(input: {
     const observationFingerprint = observationSource
       ? await digest(observationSource)
       : undefined;
+    const hasAllowedTraversalHost = rawMediaUrls.some((rawUrl) => {
+      if (!rawUrl) return false;
+      try {
+        const url = new URL(rawUrl);
+        return url.protocol === "https:" &&
+          ["flow.google.com", "flow-content.google", "storage.googleapis.com"].includes(url.hostname) &&
+          !url.username && !url.password;
+      } catch {
+        return false;
+      }
+    });
+    const traversalEvidenceStatus = observationFingerprint
+      ? "available" as const
+      : observationSource
+        ? "digest_failed" as const
+        : !hasObservedMediaUrl
+          ? "media_absent" as const
+          : hasAllowedTraversalHost
+            ? "path_unusable" as const
+            : "host_scheme_rejected" as const;
     const nativeCardToken = assetIds.length !== 1
       ? bindNativeOwner(card)
       : undefined;
@@ -573,6 +624,7 @@ export async function inspectFlowProjectVideosInPage(input: {
     return {
       ...(observationFingerprint ? { observationFingerprint } : {}),
       ...(nativeCardToken ? { nativeCardToken } : {}),
+      traversalEvidenceStatus,
       ...(assetIds.length === 1 ? { assetId: assetIds[0] } : {}),
       assetStatus:
         assetIds.length === 1
@@ -678,8 +730,10 @@ export async function inspectFlowProjectVideosInPage(input: {
     const card = matches[0]!;
     if (
       nativeNavigation &&
-      (!input.expectedObservationFingerprint ||
-        card.observationFingerprint !== input.expectedObservationFingerprint)
+      (input.expectedObservationFingerprint
+        ? card.observationFingerprint !== input.expectedObservationFingerprint
+        : !input.allowCurrentOwnerWithoutFingerprint ||
+          card.traversalEvidenceStatus !== input.expectedTraversalEvidenceStatus)
     )
       return blocked("native_binding_stale", snapshots);
     if (card.routeStatus === "ambiguous")
@@ -733,7 +787,10 @@ export async function inspectFlowProjectVideosInPage(input: {
           !project.contains(cardElement) ||
           findCard(cardElement) !== cardElement ||
           current.nativeCardToken !== input.nativeCardToken ||
-          current.observationFingerprint !== input.expectedObservationFingerprint ||
+          (input.expectedObservationFingerprint
+            ? current.observationFingerprint !== input.expectedObservationFingerprint
+            : !input.allowCurrentOwnerWithoutFingerprint ||
+              current.traversalEvidenceStatus !== input.expectedTraversalEvidenceStatus) ||
           currentBindings?.byToken.get(input.nativeCardToken!) !== cardElement ||
           currentBindings.generation !== bindingsForOpen?.generation
         )
