@@ -740,9 +740,13 @@
 .vidsFallbackRow {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(8.5rem, auto);
   align-items: stretch;
   gap: var(--space-2);
+}
+.vidsFallbackRow > button {
+  min-width: 0;
+  white-space: normal;
 }
 .vidsDocumentInput {
   width: 100%;
@@ -1752,7 +1756,7 @@
   }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 680px) {
   .providerWorkspace[data-active-provider="Vids"],
   .vidsProviderPanel {
     gap: var(--space-3);

@@ -76,6 +76,7 @@ export function createFoundationClient(
                     "timeout",
                     "response_timeout",
                     `The ${type} request timed out. A late response will be ignored.`,
+                    "response_wait",
                   ),
                 ),
               Math.min(30_000, Math.max(1, timeouts[type])),
@@ -88,6 +89,7 @@ export function createFoundationClient(
             "malformed_response",
             "malformed_response",
             "The extension worker returned an invalid response.",
+            "response_parsing",
           );
         }
         const response = parsed.data;
@@ -96,6 +98,7 @@ export function createFoundationClient(
             "malformed_response",
             "response_id_mismatch",
             "The extension worker response did not match this request.",
+            "response_parsing",
           );
         }
         if (response.protocolVersion !== request.protocolVersion) {
@@ -103,6 +106,7 @@ export function createFoundationClient(
             "protocol_mismatch",
             "response_protocol_mismatch",
             "The dashboard and extension worker use different message protocols.",
+            "response_parsing",
           );
         }
         if (response.buildId !== request.buildId) {
@@ -110,6 +114,7 @@ export function createFoundationClient(
             "build_mismatch",
             "response_build_mismatch",
             "The dashboard and extension worker builds do not match.",
+            "response_parsing",
           );
         }
         if (!response.ok) {
@@ -128,6 +133,7 @@ export function createFoundationClient(
             "missing_receiver",
             "worker_unavailable",
             "The extension worker is unavailable. Reopen the dashboard and retry.",
+            "worker_registration",
           );
         }
         if (isExtensionContextInvalidated(error)) {
@@ -135,12 +141,14 @@ export function createFoundationClient(
             "context_invalidated",
             "extension_context_invalidated",
             "The extension page context was invalidated. Reopen the packaged dashboard and retry.",
+            "extension_context",
           );
         }
         throw new FoundationClientError(
           "worker_error",
           "worker_request_failed",
           "The extension worker could not complete the request.",
+          "message_transport",
         );
       } finally {
         if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);

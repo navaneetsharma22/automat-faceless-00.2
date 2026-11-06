@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { createFoundationClient } from "../../../shared/messageClient";
-import { parseExpectedDocumentId, readinessMatchesDocument, createSubmissionGuard, type VidsDownloadAttempt, type VidsTimelineReadiness } from "../../../domain/media/combinedExport";
+import { FoundationClientError } from "../../../shared/messageClient";
+import { parseExpectedDocumentId, parseVidsDownloadStatus, readinessMatchesDocument, createSubmissionGuard, type VidsDownloadAttempt, type VidsTimelineReadiness } from "../../../domain/media/combinedExport";
 import { parseProviderRoute } from "../../../platforms/shared/providerRoute";
 import { Button } from "../../components/Button";
 import styles from "../../Dashboard.module.css";
@@ -8,6 +9,27 @@ import { SplitHandoff } from "./SplitHandoff";
 
 type Client = ReturnType<typeof createFoundationClient>;
 type DocumentBinding = { documentId: string; canonicalTarget: string; tabId: number };
+
+function statusFailureDetails(cause: unknown): { message: string; stage: string } {
+  if (cause instanceof FoundationClientError) {
+    const knownStages = new Set([
+      "request_validation", "worker_registration", "download_status_storage", "download_status_parse",
+      "response_parsing", "response_wait", "message_transport", "extension_context",
+    ]);
+    const stage = cause.stage && knownStages.has(cause.stage) ? cause.stage : "status_request";
+    if (stage === "download_status_storage") return { stage, message: "Vids download status could not be read. Reload the extension before starting another attempt." };
+    if (stage === "download_status_parse" || stage === "response_parsing") return { stage, message: "Vids download status was invalid. Reload the extension dashboard before starting another attempt." };
+    if (stage === "worker_registration" || stage === "message_transport") return { stage, message: "The extension worker could not provide Vids download status. Reopen the dashboard before starting another attempt." };
+    if (stage === "response_wait") return { stage, message: "Vids download status did not respond. Check the extension worker before starting another attempt." };
+    if (stage === "extension_context") return { stage, message: "The extension dashboard was reloaded. Reopen it before starting another attempt." };
+    if (stage === "request_validation") return { stage, message: "The Vids status request was rejected. Reload the extension dashboard before starting another attempt." };
+    return { stage, message: "Vids download status is unavailable. Reconnect before starting another attempt." };
+  }
+  if (cause instanceof Error && cause.message === "vids_download_status_invalid") {
+    return { stage: "download_status_parse", message: "Vids download status was invalid. Reload the extension dashboard before starting another attempt." };
+  }
+  return { stage: "status_consumer", message: "Vids download status is unavailable. Reconnect before starting another attempt." };
+}
 
 export function VidsTimelineReady({ client }: { client: Client }) {
   const [fallback, setFallback] = useState("");
@@ -22,6 +44,7 @@ export function VidsTimelineReady({ client }: { client: Client }) {
   const [downloadError, setDownloadError] = useState<string>();
   const [downloadNotice, setDownloadNotice] = useState<string>();
   const [statusError, setStatusError] = useState<string>();
+  const [statusErrorStage, setStatusErrorStage] = useState<string>();
   const pendingGuard = useRef(createSubmissionGuard());
 
   useEffect(() => {
@@ -39,13 +62,19 @@ export function VidsTimelineReady({ client }: { client: Client }) {
       if (checking) return;
       checking = true;
       try {
-        const attempt = await client.request("vids.download.get", {}) as VidsDownloadAttempt | undefined;
+        const response = await client.request("vids.download.get", {});
+        const attempt = parseVidsDownloadStatus(response);
         if (active) {
           setDownloadAttempt(attempt);
           setStatusError(undefined);
+          setStatusErrorStage(undefined);
         }
-      } catch {
-        if (active) setStatusError("Vids download status is unavailable. Reconnect before starting another attempt.");
+      } catch (cause) {
+        if (active) {
+          const details = statusFailureDetails(cause);
+          setStatusError(details.message);
+          setStatusErrorStage(details.stage);
+        }
       } finally {
         checking = false;
       }
@@ -221,7 +250,7 @@ export function VidsTimelineReady({ client }: { client: Client }) {
         {downloadAttempt?.operationName ? <p className={styles.vidsInlineNotice} role="status">An existing Drive operation is recorded. Continue polling that operation in the helper; a timeout does not start another.</p> : null}
         {downloadAttempt?.state === "chrome_complete" ? <p className={styles.vidsCompletionNote}>Chrome completion is separate from playback and media-property verification.</p> : null}
         {downloadNotice ? <p className={styles.vidsInlineNotice} role="status">{downloadNotice}</p> : null}
-        {statusError ? <p className={styles.vidsInlineError} role="alert">{statusError}</p> : null}
+        {statusError ? <p className={styles.vidsInlineError} role="alert" data-failure-stage={statusErrorStage}>{statusError}</p> : null}
         {downloadError ? <p className={styles.vidsInlineError} role="alert">{downloadError}</p> : null}
         <p className={styles.vidsDestination}>Destination: Chrome’s configured Downloads location.</p>
       </section>

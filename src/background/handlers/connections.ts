@@ -14,6 +14,7 @@ import {
   DuplicateTimedImageQueueSourceError,
   ImageQueueEligibilityError,
   PromptBatchValidationError,
+  VidsDownloadAttemptValidationError,
   VideoBatchPreparationError,
 } from "../../storage/repositories";
 import { ImageQueueInspectionError } from "../generationQueue";
@@ -537,11 +538,21 @@ async function dispatch(
       if (!dependencies.vidsTimelineReady) throw new FoundationOperationError("worker_error", "vids_timeline_ready_unavailable", "Vids timeline readiness is unavailable.");
       return { invalidated: await dependencies.vidsTimelineReady.invalidate(request.payload.expectedDocumentId) };
     case "vids.download.arm":
-      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download handoff is unavailable.");
+      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download handoff is unavailable.", "worker_registration");
       return dependencies.vidsDownload.arm();
     case "vids.download.get":
-      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download status is unavailable.");
-      return dependencies.vidsDownload.get();
+      if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download status is unavailable.", "worker_registration");
+      try {
+        return (await dependencies.vidsDownload.get()) ?? null;
+      } catch (error) {
+        const invalidRecord = error instanceof VidsDownloadAttemptValidationError;
+        throw new FoundationOperationError(
+          "storage_failure",
+          invalidRecord ? "vids_download_status_invalid" : "vids_download_status_read_failed",
+          "Vids download status could not be read. Reload the extension before starting another attempt.",
+          invalidRecord ? "download_status_parse" : "download_status_storage",
+        );
+      }
     case "vids.download.reconcile":
       if (!dependencies.vidsDownload) throw new FoundationOperationError("worker_error", "vids_download_unavailable", "Vids download observation is unavailable.");
       return dependencies.vidsDownload.reconcile();
@@ -1257,12 +1268,20 @@ export function createConnectionMessageListener(
     }
     const parsed = parseRequest(rawRequest);
     if (!parsed.ok) {
+      const statusRequest = rawRequest !== null && typeof rawRequest === "object" &&
+        "type" in rawRequest && rawRequest.type === "vids.download.get";
+      const requestId = rawRequest !== null && typeof rawRequest === "object" &&
+        "requestId" in rawRequest && typeof rawRequest.requestId === "string" &&
+        rawRequest.requestId.length > 0 && rawRequest.requestId.length <= 128
+        ? rawRequest.requestId
+        : "invalid-request";
       sendResponse(
         failure(
-          "invalid-request",
+          requestId,
           "invalid_request",
           "invalid_request",
           "The request did not match the supported message schema.",
+          statusRequest ? "request_validation" : undefined,
         ),
       );
       return true;

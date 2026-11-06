@@ -16,6 +16,7 @@ describe("Vids manual timeline readiness", () => {
     expect(parseExpectedDocumentId("  vids-doc_123  ")).toEqual({ supplied: true, valid: true, fileId: "vids-doc_123" });
     expect(parseExpectedDocumentId("https://docs.google.com/videos/u/0/d/vids-doc_123/edit?x=secret")).toEqual({ supplied: true, valid: true, fileId: "vids-doc_123" });
     expect(parseExpectedDocumentId("https://vids.google.com/video/vids-doc_123/edit")).toEqual({ supplied: true, valid: true, fileId: "vids-doc_123" });
+    expect(parseExpectedDocumentId("https://vids.google.com/video/your-document-id/edit")).toEqual({ supplied: true, valid: true, fileId: "your-document-id" });
     expect(parseExpectedDocumentId("http://docs.google.com/videos/d/doc/edit").valid).toBe(false);
     expect(parseExpectedDocumentId("https://example.com/videos/d/doc/edit").valid).toBe(false);
     expect(parseExpectedDocumentId("https://docs.google.com/document/d/doc/edit").valid).toBe(false);

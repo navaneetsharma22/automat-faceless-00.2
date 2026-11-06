@@ -88,6 +88,27 @@ export type VidsDownloadAttempt = {
   reason?: "dispatch_uncertain" | "operation_observation_lost" | "connection_changed" | "download_interrupted";
 };
 
+/** Null is the explicit wire representation for a successful status lookup with no attempt. */
+export function parseVidsDownloadStatus(value: unknown): VidsDownloadAttempt | undefined {
+  if (value === null) return undefined;
+  if (!value || typeof value !== "object") throw new Error("vids_download_status_invalid");
+  const attempt = value as Partial<VidsDownloadAttempt>;
+  if (typeof attempt.attemptId !== "string" || !attempt.attemptId ||
+    typeof attempt.documentId !== "string" || !attempt.documentId ||
+    typeof attempt.canonicalTarget !== "string" || !attempt.canonicalTarget ||
+    !Number.isInteger(attempt.tabId) || attempt.tabId! < 0 ||
+    !["ready", "preparing_mp4", "prepared", "dispatching", "downloading", "chrome_complete", "interrupted", "needs_review"].includes(attempt.state ?? "") ||
+    !Number.isFinite(attempt.createdAt) || !Number.isFinite(attempt.updatedAt) ||
+    (attempt.downloadId !== undefined && (!Number.isInteger(attempt.downloadId) || attempt.downloadId < 0)) ||
+    (["requestNonce", "consumedNonceHash", "operationName", "sourcePath", "helperDocumentId"] as const)
+      .some((key) => attempt[key] !== undefined && typeof attempt[key] !== "string") ||
+    (attempt.helperTabId !== undefined && (!Number.isInteger(attempt.helperTabId) || attempt.helperTabId < 0)) ||
+    (attempt.reason !== undefined && !["dispatch_uncertain", "operation_observation_lost", "connection_changed", "download_interrupted"].includes(attempt.reason))) {
+    throw new Error("vids_download_status_invalid");
+  }
+  return attempt as VidsDownloadAttempt;
+}
+
 /** Validate a prepared Drive URI without exposing or normalizing its query data. */
 export function isValidatedPreparedUri(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 8192) return false;

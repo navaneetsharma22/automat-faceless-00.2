@@ -10,7 +10,7 @@ import {
   type FlowVideoAttachmentOperation,
 } from "./db";
 import { VidsVideoAttachmentOperationSchema, type VidsVideoAttachmentOperation } from "../domain/jobs/vidsVideoAttachment";
-import type { VidsDownloadAttempt, VidsTimelineReadiness } from "../domain/media/combinedExport";
+import { parseVidsDownloadStatus, type VidsDownloadAttempt, type VidsTimelineReadiness } from "../domain/media/combinedExport";
 import { VidsVideoGenerationOperationSchema, type VidsVideoGenerationOperation } from "../domain/jobs/vidsVideoGeneration";
 import { VidsVideoQueueRecordSchema, type VidsVideoQueueRecord } from "../domain/jobs/vidsVideoQueue";
 import {
@@ -70,6 +70,13 @@ export class VidsVideoQueueListValidationError extends Error {
   constructor(readonly recordIndex: number, readonly recordDigest: string, readonly fieldPath: string, readonly validationRule: string) {
     super("vids_video_queue_invalid");
     this.name = "VidsVideoQueueListValidationError";
+  }
+}
+
+export class VidsDownloadAttemptValidationError extends Error {
+  constructor() {
+    super("vids_download_status_invalid");
+    this.name = "VidsDownloadAttemptValidationError";
   }
 }
 import {
@@ -587,12 +594,12 @@ export class ChromePreferenceRepository {
 
   async getVidsDownloadAttempt(): Promise<VidsDownloadAttempt | undefined> {
     const values = await this.area.get("vidsDownloadAttempt");
-    const value = values.vidsDownloadAttempt as VidsDownloadAttempt | undefined;
-    if (!value || typeof value.attemptId !== "string" || typeof value.documentId !== "string" ||
-      typeof value.canonicalTarget !== "string" || !Number.isInteger(value.tabId) ||
-      !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt) ||
-      !["ready", "preparing_mp4", "prepared", "dispatching", "downloading", "chrome_complete", "interrupted", "needs_review"].includes(value.state)) return undefined;
-    return value;
+    if (!Object.hasOwn(values, "vidsDownloadAttempt") || values.vidsDownloadAttempt === undefined) return undefined;
+    try {
+      return parseVidsDownloadStatus(values.vidsDownloadAttempt);
+    } catch {
+      throw new VidsDownloadAttemptValidationError();
+    }
   }
 
   async setVidsDownloadAttempt(value: VidsDownloadAttempt): Promise<void> {

@@ -41,6 +41,7 @@ config.bat
 !docs/evidence/scene-split-handoff.md
 !docs/evidence/hosted-helper-compatibility.md
 !docs/evidence/vids-downloads-ui-polish.md
+!docs/evidence/vids-download-status-idle.md
 !/publication/
 !/publication/automat-faceless-picker/
 !/publication/automat-faceless-picker/README.md
