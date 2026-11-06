@@ -72,6 +72,7 @@ export type RequestPayloads = {
   };
   "vids.timelineReady.invalidate": { expectedDocumentId?: string };
   "vids.download.arm": Record<string, never>;
+  "vids.download.recoverUnknown": { expectedAttemptId: string; expectedDocumentId: string };
   "vids.download.get": Record<string, never>;
   "vids.download.reconcile": Record<string, never>;
   "flow.prompt.fill": { workspaceId: string; promptHash: string };
@@ -262,6 +263,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "vids.timelineReady.declare": 15000,
   "vids.timelineReady.invalidate": 5000,
   "vids.download.arm": 15000,
+  "vids.download.recoverUnknown": 15000,
   "vids.download.get": 3000,
   "vids.download.reconcile": 10000,
   "flow.prompt.fill": 20_000,

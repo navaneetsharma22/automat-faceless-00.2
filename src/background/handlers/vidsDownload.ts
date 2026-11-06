@@ -1,6 +1,7 @@
 import {
   isValidatedPreparedUri,
   type VidsDownloadAttempt,
+  type VidsPriorAttempt,
 } from "../../domain/media/combinedExport";
 import type { ChromePreferenceRepository, ExtensionRepositories } from "../../storage/repositories";
 import { parseProviderRoute } from "../../platforms/shared/providerRoute";
@@ -42,6 +43,7 @@ export function createVidsDownloadHandler(input: {
   const makeNonce = input.makeNonce ?? (() => createSecret(32));
   const dispatching = new Set<string>();
   const bindingClaims = new Set<string>();
+  const recovering = new Set<string>();
 
   async function currentDocument(expectedId: string) {
     const readiness = await input.preferences.getVidsTimelineReadiness();
@@ -96,9 +98,64 @@ export function createVidsDownloadHandler(input: {
     const attempt: VidsDownloadAttempt = {
       attemptId: makeId(), documentId: readiness.documentId, canonicalTarget: readiness.canonicalTarget,
       tabId: readiness.tabId, state: "ready", createdAt: at, updatedAt: at, requestNonce: makeNonce(),
+      ...(previous?.priorAttempts ? { priorAttempts: previous.priorAttempts } : {}),
     };
     await input.preferences.setVidsDownloadAttempt(attempt);
     return { attempt: publicAttempt(attempt), requestNonce: attempt.requestNonce };
+  }
+
+  async function recoverUnknownAttempt(expectedAttemptId: string, expectedDocumentId: string) {
+    if (!expectedAttemptId || !expectedDocumentId || recovering.has(expectedAttemptId)) {
+      throw new Error("vids_unknown_attempt_recovery_invalid");
+    }
+    recovering.add(expectedAttemptId);
+    try {
+      const prior = await input.preferences.getVidsDownloadAttempt();
+      const isUnknown = prior?.state === "needs_review" && !prior.operationName &&
+        ["operation_observation_lost", "preparation_outcome_uncertain"].includes(prior.reason ?? "");
+      if (!prior || prior.attemptId !== expectedAttemptId || prior.documentId !== expectedDocumentId || !isUnknown) {
+        throw new Error("vids_unknown_attempt_recovery_not_allowed");
+      }
+      const verified = await currentDocument(expectedDocumentId);
+      if (!verified || verified.route.canonicalTarget !== prior.canonicalTarget || verified.tabId !== prior.tabId) {
+        throw new Error("vids_timeline_document_mismatch");
+      }
+      const latest = await input.preferences.getVidsDownloadAttempt();
+      if (!latest || latest.attemptId !== expectedAttemptId || latest.documentId !== expectedDocumentId ||
+        latest.state !== "needs_review" || latest.operationName ||
+        !["operation_observation_lost", "preparation_outcome_uncertain"].includes(latest.reason ?? "")) {
+        throw new Error("vids_unknown_attempt_recovery_not_allowed");
+      }
+      const history = latest.priorAttempts ?? [];
+      if (history.length >= 20) throw new Error("vids_attempt_history_full");
+      const archived: VidsPriorAttempt = {
+        attemptId: latest.attemptId,
+        documentId: latest.documentId,
+        canonicalTarget: latest.canonicalTarget,
+        tabId: latest.tabId,
+        state: latest.state,
+        createdAt: latest.createdAt,
+        updatedAt: latest.updatedAt,
+        ...(latest.operationName ? { operationName: latest.operationName } : {}),
+        ...(latest.downloadId !== undefined ? { downloadId: latest.downloadId } : {}),
+        ...(latest.sourcePath ? { sourcePath: latest.sourcePath } : {}),
+        ...(latest.reason ? { reason: latest.reason } : {}),
+        ...(latest.failureStage ? { failureStage: latest.failureStage } : {}),
+        ...(latest.failureCode ? { failureCode: latest.failureCode } : {}),
+        archivedAt: now(),
+        archiveReason: "new_attempt_after_unknown_outcome",
+      };
+      const at = now();
+      const attempt: VidsDownloadAttempt = {
+        attemptId: makeId(), documentId: latest.documentId, canonicalTarget: latest.canonicalTarget,
+        tabId: latest.tabId, state: "ready", createdAt: at, updatedAt: at, requestNonce: makeNonce(),
+        priorAttempts: [...history, archived],
+      };
+      await input.preferences.setVidsDownloadAttempt(attempt);
+      return { attempt: publicAttempt(attempt), requestNonce: attempt.requestNonce };
+    } finally {
+      recovering.delete(expectedAttemptId);
+    }
   }
 
   async function get() {
@@ -110,6 +167,7 @@ export function createVidsDownloadHandler(input: {
     const challenge = HostedMp4NonceChallengeSchema.safeParse(message);
     if (challenge.success) {
       const attempt = await input.preferences.getVidsDownloadAttempt();
+      if (attempt && recovering.has(attempt.attemptId)) return { success: false, status: "rejected" };
       const readiness = await input.preferences.getVidsTimelineReadiness();
       const selected = await input.repositories.getSelectedTarget("Vids");
       const binding = selected?.verificationBinding;
@@ -130,7 +188,7 @@ export function createVidsDownloadHandler(input: {
         bindingClaims.add(attempt.attemptId);
         try {
           const latest = await input.preferences.getVidsDownloadAttempt();
-          if (!latest || latest.attemptId !== attempt.attemptId || latest.state !== "ready" ||
+          if (!latest || recovering.has(latest.attemptId) || latest.attemptId !== attempt.attemptId || latest.state !== "ready" ||
             latest.requestNonce !== attempt.requestNonce ||
             (latest.helperTabId !== undefined && !isBoundHelperDocument(latest, sender))) {
             return { success: false, status: "rejected" };
@@ -150,7 +208,7 @@ export function createVidsDownloadHandler(input: {
     const preparation = HostedMp4PreparationStatusSchema.safeParse(message);
     if (preparation.success) {
       const attempt = await input.preferences.getVidsDownloadAttempt();
-      if (!attempt || !isBoundHelperDocument(attempt, sender) || attempt.requestNonce !== preparation.data.requestNonce || attempt.documentId !== preparation.data.documentId) {
+      if (!attempt || recovering.has(attempt.attemptId) || !isBoundHelperDocument(attempt, sender) || attempt.requestNonce !== preparation.data.requestNonce || attempt.documentId !== preparation.data.documentId) {
         return { success: false, status: "rejected" };
       }
       const state: VidsDownloadAttempt["state"] = preparation.data.phase === "preparing"
@@ -176,7 +234,7 @@ export function createVidsDownloadHandler(input: {
     }
     const payload = parsed.data;
     const attempt = await input.preferences.getVidsDownloadAttempt();
-    if (!attempt || !isBoundHelperDocument(attempt, sender)) return { success: false, status: "rejected" };
+    if (!attempt || recovering.has(attempt.attemptId) || !isBoundHelperDocument(attempt, sender)) return { success: false, status: "rejected" };
     const requestHash = await digest(payload.requestNonce);
     if (attempt.consumedNonceHash === requestHash) {
       if (attempt.downloadId !== undefined && ["downloading", "chrome_complete", "interrupted"].includes(attempt.state)) {
@@ -213,7 +271,7 @@ export function createVidsDownloadHandler(input: {
     }
   }
 
-  return { arm, get, reconcile: async () => publicAttempt(await input.manager.reconcile()), acceptExternalMessage };
+  return { arm, recoverUnknownAttempt, get, reconcile: async () => publicAttempt(await input.manager.reconcile()), acceptExternalMessage };
 }
 
 export function createHostedVidsDownloadListener(handler: ReturnType<typeof createVidsDownloadHandler>) {

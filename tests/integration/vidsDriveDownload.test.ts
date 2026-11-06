@@ -33,6 +33,8 @@ const handoff = (requestNonce = nonce, expectedId = documentId) => ({
 });
 
 function fixture() {
+  let attemptCount = 0;
+  let nonceCount = 0;
   const values: Record<string, unknown> = {};
   const preferences = new ChromePreferenceRepository({
     get: async (key) => ({ [key]: values[key] }),
@@ -59,7 +61,7 @@ function fixture() {
   const handler = createVidsDownloadHandler({
     extensionId, preferences, repositories: repositories as never, manager,
     revalidate: async () => ({ ok: true, state: "verified", tab: connection }),
-    now: () => 200, makeAttemptId: () => "attempt_1", makeNonce: () => nonce,
+    now: () => 200, makeAttemptId: () => `attempt_${++attemptCount}`, makeNonce: () => nonceCount++ === 0 ? nonce : "b".repeat(64),
   });
   const listener = createHostedVidsDownloadListener(handler);
   const send = (message: unknown, from = sender) => new Promise<unknown>((resolve) => {
@@ -69,6 +71,53 @@ function fixture() {
 }
 
 describe("Vids prepared MP4 download production handler", () => {
+  it("preserves an unknown attempt and creates a separate ready attempt only on explicit same-document recovery", async () => {
+    const f = fixture();
+    await f.preferences.setVidsTimelineReadiness(f.readiness);
+    const old: VidsDownloadAttempt = {
+      attemptId: "003d9d7e5abd68c5445fa5b0444bc151", documentId, canonicalTarget, tabId: 12,
+      state: "needs_review", createdAt: 110, updatedAt: 120, reason: "operation_observation_lost",
+      failureStage: "files_download_response", requestNonce: nonce, helperTabId: 81, helperDocumentId: "old-helper-document",
+    };
+    await f.preferences.setVidsDownloadAttempt(old);
+
+    const result = await f.handler.recoverUnknownAttempt(old.attemptId, documentId);
+    expect(result.attempt).toMatchObject({
+      attemptId: "attempt_1", documentId, state: "ready", priorAttempts: [{
+        attemptId: old.attemptId, documentId, state: "needs_review", reason: "operation_observation_lost",
+        failureStage: "files_download_response", createdAt: 110, updatedAt: 120,
+        archiveReason: "new_attempt_after_unknown_outcome",
+      }],
+    });
+    expect(result.attempt?.priorAttempts?.[0]).not.toHaveProperty("requestNonce");
+    expect(result.attempt?.priorAttempts?.[0]).not.toHaveProperty("helperDocumentId");
+    expect(result.attempt?.priorAttempts?.[0]).not.toHaveProperty("operationName");
+    expect(await f.handler.get()).toMatchObject({ attemptId: "attempt_1", priorAttempts: [{ attemptId: old.attemptId, state: "needs_review" }] });
+    expect(f.downloads.download).not.toHaveBeenCalled();
+    await expect(f.handler.arm()).resolves.toMatchObject({ attempt: { attemptId: "attempt_1", state: "ready" } });
+    expect(await f.handler.get()).toMatchObject({ priorAttempts: [{ attemptId: old.attemptId, state: "needs_review" }] });
+  });
+
+  it("rejects stale, mismatched, operation-bearing, and known-failure records without changing them", async () => {
+    const f = fixture();
+    await f.preferences.setVidsTimelineReadiness(f.readiness);
+    const unknown: VidsDownloadAttempt = {
+      attemptId: "old_unknown", documentId, canonicalTarget, tabId: 12, state: "needs_review",
+      createdAt: 1, updatedAt: 2, reason: "operation_observation_lost",
+    };
+    await f.preferences.setVidsDownloadAttempt(unknown);
+    await expect(f.handler.recoverUnknownAttempt("stale_attempt", documentId)).rejects.toThrow("vids_unknown_attempt_recovery_not_allowed");
+    await expect(f.handler.recoverUnknownAttempt(unknown.attemptId, "another_document")).rejects.toThrow("vids_unknown_attempt_recovery_not_allowed");
+    expect(await f.handler.get()).toMatchObject({ attemptId: unknown.attemptId, state: "needs_review" });
+    expect(await f.handler.get()).not.toHaveProperty("priorAttempts");
+
+    await f.preferences.setVidsDownloadAttempt({ ...unknown, operationName: "operations/known" });
+    await expect(f.handler.recoverUnknownAttempt(unknown.attemptId, documentId)).rejects.toThrow("vids_unknown_attempt_recovery_not_allowed");
+    await f.preferences.setVidsDownloadAttempt({ ...unknown, reason: "preparation_rejected" });
+    await expect(f.handler.recoverUnknownAttempt(unknown.attemptId, documentId)).rejects.toThrow("vids_unknown_attempt_recovery_not_allowed");
+    expect(f.downloads.download).not.toHaveBeenCalled();
+  });
+
   it("keeps the normal Prepare click's explicit Drive rejection distinct from an uncertain request and blocks replay", async () => {
     const f = fixture();
     await f.preferences.setVidsTimelineReadiness(f.readiness);

@@ -45,6 +45,7 @@ export default defineConfig({
     "imageQueueCreateTransition.spec.ts",
     "referenceCaptureStorage.spec.ts",
     "flowVideoAttachmentStorage.spec.ts",
+    "hostedMp4Preparation.spec.ts",
   ],
   reporter: "list",
   webServer: {

@@ -18,7 +18,7 @@ Existing repository: [navaneetsharma22/automat-faceless-picker](https://github.c
 
 After the helper update is manually published, open `chrome://extensions`, reload Automat Faceless from this workspace's `dist/`, then reopen the Vids Downloads panel and click **Open existing helper** so the URL carries the reloaded extension's current runtime ID. Build ID: **`automat-faceless-0.1.0-mw53lgis`** (four JavaScript bundles). Close any old helper tab before this check.
 
-For the preparation-failure reason correction, replace only `app.js` and `logic.js` in the existing helper repository; `index.html` and `styles.css` are unchanged.
+Compared with the supplied `package.zip` helper snapshot, the current local `index.html`, `app.js`, and `logic.js` differ; `styles.css` is byte-identical. If the existing Pages source still matches that snapshot, those three runtime files are the ones to replace. This comparison does not establish the current remote Pages contents; inspect the existing repository before uploading. The earlier failure-reason correction is in `app.js` and `logic.js`.
 
 ## Manual compatibility and one-document download checks
 
