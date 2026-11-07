@@ -68,6 +68,33 @@ type ChromeDownloadItem = {
   error?: string;
 };
 
+type FlowProjectVideoConnectionDiagnostic = {
+  state: string;
+  stage: string;
+  reason: string;
+};
+
+type FlowProjectVideoConnectionFailure = FlowProjectVideoConnectionDiagnostic & {
+  phase: "before_identity_read" | "after_identity_read";
+};
+
+class FlowProjectVideoConnectionError extends Error {
+  constructor(
+    readonly connectionFailure: FlowProjectVideoConnectionDiagnostic & {
+      phase?: "before_identity_read" | "after_identity_read";
+    },
+    message = "flow_project_video_import_connection_lost",
+  ) {
+    super(message);
+  }
+}
+
+function safeConnectionDiagnosticCode(value: unknown, fallback: string) {
+  return typeof value === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(value)
+    ? value
+    : fallback;
+}
+
 export type FlowDownloadDiagnosticDebuggerSource = {
   tabId?: number;
   frameId?: string;
@@ -104,7 +131,12 @@ export type FlowDownloadDiagnosticDependencies = {
     get(tabId: number): Promise<{ id?: number; title?: string; url?: string; status?: string }>;
     update?(tabId: number, properties: { url: string }): Promise<unknown>;
   };
-  revalidateFlowConnection?(): Promise<{ ok: boolean; state?: string }>;
+  revalidateFlowConnection?(): Promise<{
+    ok: boolean;
+    state?: string;
+    failureStage?: string;
+    reason?: string;
+  }>;
   wait?(milliseconds: number): Promise<void>;
   scripting: {
     executeScript(input: {
@@ -691,6 +723,7 @@ export function createFlowDownloadDiagnosticManager(
     card: FlowProjectVideoCard,
     reason: string,
     candidateKey?: string,
+    connectionFailure?: FlowProjectVideoConnectionFailure,
   ) => {
     const key = candidateKey ?? (card.assetId
       ? `asset:${card.assetId}`
@@ -717,7 +750,11 @@ export function createFlowDownloadDiagnosticManager(
       ),
       unresolvedCards: [
         ...job.progress.unresolvedCards,
-        { title: card.title.slice(0, 200), reason },
+        {
+          title: card.title.slice(0, 200),
+          reason,
+          ...(connectionFailure ? { connectionFailure } : {}),
+        },
       ].slice(0, 32),
     };
     return !key;
@@ -766,12 +803,31 @@ export function createFlowDownloadDiagnosticManager(
   ) => {
     if (revalidate) {
       if (!dependencies.revalidateFlowConnection)
-        throw new Error("flow_project_video_import_connection_lost");
+        throw new FlowProjectVideoConnectionError({
+          state: "unavailable",
+          stage: "connection_setup",
+          reason: "revalidation_unavailable",
+        });
       const connection = await dependencies.revalidateFlowConnection();
       if (!connection.ok)
-        throw new Error("flow_project_video_import_connection_lost");
+        throw new FlowProjectVideoConnectionError({
+          state: safeConnectionDiagnosticCode(connection.state, "unknown"),
+          stage: safeConnectionDiagnosticCode(connection.failureStage, "unknown"),
+          reason: safeConnectionDiagnosticCode(connection.reason, "connection_revalidation_failed"),
+        });
     }
-    const target = await verifySelectedFlowTarget();
+    let target: Awaited<ReturnType<typeof verifySelectedFlowTarget>>;
+    try {
+      target = await verifySelectedFlowTarget();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("target_not_currently_verified"))
+        throw new FlowProjectVideoConnectionError({
+          state: "unverified",
+          stage: "handshake_validation",
+          reason: "target_not_currently_verified",
+        });
+      throw error;
+    }
     if (
       target.selected.tabId !== job.selectedTabId ||
       target.binding.projectId !== job.progress.projectId ||
@@ -1296,6 +1352,7 @@ export function createFlowDownloadDiagnosticManager(
     let restorationFailure: FlowProjectVideosImportProgress["restorationWarning"];
     let detailRouteObserved = false;
     let detailConnectionReady = false;
+    let lastConnectionFailure: FlowProjectVideoConnectionFailure | undefined;
     let detailDocumentRead = false;
     let detailReadFailure = "flow_project_video_import_detail_reader_not_ready";
     let detailPageMayHaveOpened = false;
@@ -1536,6 +1593,11 @@ export function createFlowDownloadDiagnosticManager(
             code.includes("connection_lost") ||
             code.includes("target_not_currently_verified")
           ) {
+            if (error instanceof FlowProjectVideoConnectionError)
+              lastConnectionFailure = {
+                ...error.connectionFailure,
+                phase: "before_identity_read",
+              };
             await sleepForImport(150);
             continue;
           }
@@ -1696,10 +1758,15 @@ export function createFlowDownloadDiagnosticManager(
         let afterReadTarget: Awaited<ReturnType<typeof verifyImportTarget>>;
         try {
           afterReadTarget = await verifyImportTarget(job, true);
-        } catch {
+        } catch (error) {
           detailConnectionReady = false;
           detailDocumentRead = false;
           detailReadFailure = "flow_project_video_import_detail_connection_unavailable";
+          if (error instanceof FlowProjectVideoConnectionError)
+            lastConnectionFailure = {
+              ...error.connectionFailure,
+              phase: "after_identity_read",
+            };
           await sleepForImport(150);
           continue;
         }
@@ -1767,7 +1834,14 @@ export function createFlowDownloadDiagnosticManager(
       if (detailConnectionRouteMismatch)
         throw new Error("flow_project_video_import_detail_connection_route_mismatch");
       if (!detailConnectionReady)
-        throw new Error("flow_project_video_import_detail_connection_unavailable");
+        throw new FlowProjectVideoConnectionError(
+          lastConnectionFailure ?? {
+            state: "unknown",
+            stage: "handshake_validation",
+            reason: "detail_connection_not_verified",
+          },
+          "flow_project_video_import_detail_connection_unavailable",
+        );
       if (!detailDocumentRead)
         throw new Error(detailReadFailure);
       throw new Error("flow_project_video_import_detail_identity_unstable");
@@ -2014,6 +2088,13 @@ export function createFlowDownloadDiagnosticManager(
             job,
             candidate.card,
             nativeCandidateFailureReason(code),
+            undefined,
+            error instanceof FlowProjectVideoConnectionError
+              ? {
+                  ...error.connectionFailure,
+                  phase: error.connectionFailure.phase ?? "before_identity_read",
+                }
+              : undefined,
           );
           terminal = "incomplete";
           scanComplete = false;

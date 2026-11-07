@@ -146,6 +146,12 @@ export const FlowProjectVideosImportProgressSchema = z
           .object({
             title: z.string().max(200),
             reason: z.string().regex(/^[a-z0-9_]{1,64}$/),
+            connectionFailure: z.object({
+              phase: z.enum(["before_identity_read", "after_identity_read"]),
+              state: z.string().regex(/^[a-z0-9_-]{1,64}$/),
+              stage: z.string().regex(/^[a-z_]{1,64}$/),
+              reason: z.string().regex(/^[a-z_]{1,64}$/),
+            }).strict().optional(),
           })
           .strict(),
       )

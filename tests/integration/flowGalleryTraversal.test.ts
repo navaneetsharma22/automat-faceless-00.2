@@ -31,6 +31,9 @@ function createTraversalHarness(options: {
   missingMedia?: boolean;
   sharedPlaceholder?: boolean;
   queryOnlyCollision?: boolean;
+  connectionFailuresBeforeReady?: number;
+  connectionNeverReady?: boolean;
+  connectionFailsAfterIdentity?: boolean;
 } = {}) {
   const replaceDocumentOnRestore = options.replaceDocumentOnRestore ?? true;
   let now = 100;
@@ -45,6 +48,8 @@ function createTraversalHarness(options: {
   const pageReads: string[] = [];
   const openResults: unknown[] = [];
   const clickRoutes: string[] = [];
+  const detailIdentityReads: string[] = [];
+  let detailRevalidationAttempts = 0;
   let pageReader: ((input: Record<string, unknown>) => Promise<unknown>) | undefined;
 
   function makeGalleryDom() {
@@ -170,6 +175,21 @@ function createTraversalHarness(options: {
         },
         revalidateFlowConnection: async () => {
           if (/\/edit\//.test(tabUrl)) {
+            detailRevalidationAttempts += 1;
+            if (options.connectionNeverReady || detailRevalidationAttempts <= (options.connectionFailuresBeforeReady ?? 0))
+              return {
+                ok: false,
+                state: "temporarily-unreachable",
+                failureStage: "handshake",
+                reason: "connector_not_ready",
+              };
+            if (options.connectionFailsAfterIdentity && detailRevalidationAttempts % 2 === 0)
+              return {
+                ok: false,
+                state: "temporarily-unreachable",
+                failureStage: "handshake_validation",
+                reason: "connector_revalidation_lost",
+              };
             documentId = "detail-document";
             const target = await database.selectedTargets.get("Flow");
             if (target?.verificationBinding)
@@ -203,10 +223,14 @@ function createTraversalHarness(options: {
               }
             }
             const clipIndex = clips.findIndex((clip) => tabUrl.endsWith(clip));
-            if (func === inspectCurrentFlowClipInPage)
+            if (func === inspectCurrentFlowClipInPage) {
+              detailIdentityReads.push("metadata");
               return [{ documentId: boundDocument, result: { projectId, clipId: clips[clipIndex], title: "Same title", thumbnail: { available: true, width: 320, height: 180 } } }];
-            if (func === prepareFlowClipDownloadInPage)
+            }
+            if (func === prepareFlowClipDownloadInPage) {
+              detailIdentityReads.push("selected_asset");
               return [{ documentId: boundDocument, result: { status: "identity", assetId: selectedAssets[clipIndex] } }];
+            }
             return [];
           },
         },
@@ -221,7 +245,8 @@ function createTraversalHarness(options: {
         now: () => now,
       });
       return {
-        manager, repositories, pageReads, openResults, clickRoutes,
+        manager, repositories, pageReads, openResults, clickRoutes, detailIdentityReads,
+        getDetailRevalidationAttempts: () => detailRevalidationAttempts,
         changeMedia(index: number, value: string) {
           mediaOverrides.set(index, value);
         },
@@ -258,6 +283,76 @@ describe("Flow Gallery traversal production integration", () => {
     }
     expect(progress).toMatchObject({ status: "completed", discovered: 3, imported: 0, alreadyPresent: 3, unresolved: 0, scanCompleteness: "complete" });
     expect(await repositories.listFlowClipImports()).toHaveLength(3);
+    harness.dispose();
+  }, 15_000);
+
+  it("retries detail connection failures until the same-project connector becomes ready", async () => {
+    const harness = createTraversalHarness({ connectionFailuresBeforeReady: 2, flowOrigin: true });
+    const { manager, repositories, pageReads, clickRoutes, detailIdentityReads, getDetailRevalidationAttempts } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress).toMatchObject({ status: "completed", discovered: 3, openAttempts: 3, imported: 3, alreadyPresent: 0, unresolved: 0, scanCompleteness: "complete" });
+    expect(getDetailRevalidationAttempts()).toBeGreaterThan(2);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(3);
+    expect(clickRoutes).toHaveLength(3);
+    expect(detailIdentityReads).toContain("metadata");
+    const rows = await repositories.listFlowClipImports();
+    expect(rows.map((row) => row.clipId)).toEqual(clips);
+    expect(rows.map((row) => row.detailSelectedAssetId)).toEqual(selectedAssets);
+    harness.dispose();
+  }, 15_000);
+
+  it("reports the last connection failure without claiming clip identity or miscounting partial progress", async () => {
+    const harness = createTraversalHarness({ connectionNeverReady: true, flowOrigin: true });
+    const { manager, repositories, pageReads, detailIdentityReads } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress, JSON.stringify(progress)).toMatchObject({ status: "incomplete", discovered: 3, openAttempts: 1, imported: 0, alreadyPresent: 0, unresolved: 1, scanCompleteness: "incomplete" });
+    expect(progress.unresolvedCards[0]).toMatchObject({
+      reason: "detail_connection_unavailable",
+      connectionFailure: {
+        phase: "before_identity_read",
+        state: "temporarily-unreachable",
+        stage: "handshake",
+        reason: "connector_not_ready",
+      },
+    });
+    expect(progress.imported + progress.alreadyPresent + progress.unresolved).toBe(1);
+    expect(progress.discovered - progress.imported - progress.alreadyPresent - progress.unresolved).toBe(2);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(1);
+    expect(detailIdentityReads).toEqual([]);
+    expect(await repositories.listFlowClipImports()).toHaveLength(0);
+    harness.dispose();
+  }, 15_000);
+
+  it("distinguishes connection loss after the detail identity readers ran", async () => {
+    const harness = createTraversalHarness({ connectionFailsAfterIdentity: true, flowOrigin: true });
+    const { manager, detailIdentityReads } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress).toMatchObject({ status: "incomplete", openAttempts: 1, imported: 0, unresolved: 1 });
+    expect(progress.unresolvedCards[0]?.connectionFailure).toMatchObject({
+      phase: "after_identity_read",
+      state: "temporarily-unreachable",
+      stage: "handshake_validation",
+      reason: "connector_revalidation_lost",
+    });
+    expect(detailIdentityReads).toContain("metadata");
     harness.dispose();
   }, 15_000);
 

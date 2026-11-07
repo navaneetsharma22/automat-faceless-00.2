@@ -1296,6 +1296,9 @@ export function FlowClipDownloads({
               {galleryImport.unresolvedCards.map((card, index) => (
                 <li key={`${card.reason}-${index}`}>
                   {card.title || "Untitled video"} · {card.reason.replaceAll("_", " ")}
+                  {card.connectionFailure ? (
+                    <> · connection {card.connectionFailure.phase.replaceAll("_", " ")}, state {card.connectionFailure.state}, stage {card.connectionFailure.stage}, reason {card.connectionFailure.reason}</>
+                  ) : null}
                 </li>
               ))}
             </ul>

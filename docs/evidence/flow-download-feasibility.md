@@ -1157,3 +1157,17 @@ The current manifest allows external messages from the existing GitHub Pages ori
 The archive was read as reference and was not modified or published. Required helper source update: in `hosted-picker-proof/app.js`, replace the fixed `EXTENSION_ID` with a strict parse of the `extensionId` query parameter from the existing helper URL, use it for `chrome.runtime.sendMessage`, and send the strict `VIDS_HELPER_CONFIG_PING` after initialization if the helper should display that it reached this extension. Until that update is published, the archived helper still targets its previous fixed ID. No Google Cloud, OAuth, account, media, or download action was performed.
 
 Focused configuration/sender tests: **3 files / 16 tests PASS**. Typecheck, lint, production build, and `git diff --check` pass. Build **`automat-faceless-0.1.0-mw4tmufn`** (four JavaScript bundles); existing large-worker and connector `inlineDynamicImports` warnings remain. Live helper handshake and Google account authorization remain **NOT_RUN**.
+
+## P11.1 late detail connection diagnostics — 7 November 2026
+
+The successful **Import open clip** path calls `verifySelectedFlowTarget()` against the already stored verified binding, checks the current same-project detail route, then reads the metadata clip UUID and selected detail-rail asset before upserting the exact project-plus-clip record. It does not call `connectionLifecycle.revalidate`. The native Gallery batch path waits for two stable same-project detail route reads, then calls `verifyImportTarget(job, true)` to revalidate the replacement document before invoking the same identity readers. It verifies again after those reads before persisting. Transient connection failures before readers retry inside the bounded 30-second/200-poll window.
+
+Previously, both exhausted pre-reader retries and a failure of the post-reader connection check ended as `detail_connection_unavailable`. The live row therefore did not reveal whether clip identity had been read. The batch now retains the most recent lifecycle `state`, `failureStage`, and `reason`, validates them as bounded code identifiers, and associates the failure with `before_identity_read` or `after_identity_read`. The UI displays those fields next to the unresolved card.
+
+Regression coverage in `tests/integration/flowGalleryTraversal.test.ts` uses the production batch manager and serialized production Gallery readers:
+
+- After two transient handshake failures on same-project detail pages, the connector becomes ready. All three exact clip UUIDs and selected rail asset IDs persist; open attempts are 3 for 3 cards.
+- When the connector never becomes ready, the first card is opened once, no metadata/selected-asset readers run, and progress retains `discovered=3`, `unresolved=1`, `not processed=2`, with `temporarily-unreachable / handshake / connector_not_ready`.
+- When connection revalidation fails after identity readers run, the card reports `after_identity_read` and is not persisted.
+
+Focused integration suite: **11/11 PASS**. `npx tsc --noEmit` and `git diff --check` PASS. No build, live Flow action, upscale, or download was performed. The supplied live failure cannot be retrospectively assigned to before/after identity from its old summary; run the next batch only when ready to inspect the new per-card diagnostic. Live verification remains **NOT_RUN**.
