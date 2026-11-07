@@ -52,6 +52,10 @@ export const FlowProjectVideosPageResultSchema = z
         "route_ambiguous",
         "route_project_mismatch",
         "native_open_control_unavailable",
+        "native_traversal_ambiguous",
+        "native_card_outside_viewport",
+        "native_card_obscured",
+        "native_card_reacquire_missing",
         "native_binding_stale",
       ])
       .optional(),
@@ -133,6 +137,10 @@ export const FlowProjectVideosImportProgressSchema = z
         "route_ambiguous",
         "route_project_mismatch",
         "native_open_control_unavailable",
+        "native_traversal_ambiguous",
+        "native_card_outside_viewport",
+        "native_card_obscured",
+        "native_card_reacquire_missing",
         "native_binding_stale",
         "page_result_invalid",
         "page_injection_failed",
@@ -410,26 +418,30 @@ export async function inspectFlowProjectVideosInPage(input: {
     element.matches('flow-grid-tile-container[role="group"]') &&
     Boolean(element.querySelector("flow-video-tile"));
   const safeCardClickTarget = (owner: Element) => {
-    if (typeof document.elementFromPoint !== "function") return undefined;
+    if (typeof document.elementFromPoint !== "function")
+      return { reason: "unavailable" as const };
     const rect = owner.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return undefined;
+    if (rect.width <= 0 || rect.height <= 0)
+      return { reason: "unavailable" as const };
+    const viewportWidth = Math.max(window.innerWidth, document.documentElement.clientWidth);
+    const viewportHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
     const fractions = [0.5, 0.35, 0.65];
-    for (const yFraction of fractions) {
-      for (const xFraction of fractions) {
-        const hit = document.elementFromPoint(
-          rect.left + rect.width * xFraction,
-          rect.top + rect.height * yFraction,
-        );
-        if (!hit || !owner.contains(hit)) continue;
-        const nestedAction = hit.closest(
-          "button,a,[role='button'],[role='menuitem'],[data-card-action]",
-        );
-        if (nestedAction && nestedAction !== owner) continue;
-        if (excluded(hit)) continue;
-        return hit as HTMLElement;
-      }
+    const points = fractions.flatMap((yFraction) => fractions.map((xFraction) => ({
+      x: rect.left + rect.width * xFraction,
+      y: rect.top + rect.height * yFraction,
+    }))).filter((point) => point.x >= 0 && point.y >= 0 && point.x < viewportWidth && point.y < viewportHeight);
+    if (points.length === 0) return { reason: "outside_viewport" as const };
+    for (const point of points) {
+      const hit = document.elementFromPoint(point.x, point.y);
+      if (!hit || !owner.contains(hit)) continue;
+      const nestedAction = hit.closest(
+        "button,a,[role='button'],[role='menuitem'],[data-card-action]",
+      );
+      if (nestedAction && nestedAction !== owner) continue;
+      if (excluded(hit)) continue;
+      return { reason: "safe" as const, target: hit as HTMLElement };
     }
-    return undefined;
+    return { reason: "obscured" as const };
   };
   const eligible = (element: Element) => {
     if (!project.contains(element) || !element.isConnected || excluded(element))
@@ -733,7 +745,7 @@ export async function inspectFlowProjectVideosInPage(input: {
       return blocked(nativeNavigation ? "native_binding_stale" : "card_missing", snapshots);
     if (matches.length !== 1)
       return blocked("card_ambiguous", snapshots);
-    const card = matches[0]!;
+    let card = matches[0]!;
     if (
       nativeNavigation &&
       (input.expectedObservationFingerprint
@@ -772,7 +784,7 @@ export async function inspectFlowProjectVideosInPage(input: {
         findCard(boundOwner) !== boundOwner)
     )
       return blocked("native_binding_stale", snapshots);
-    const cardElement = nativeNavigation
+    let cardElement = nativeNavigation
       ? boundOwner!
       : cards[snapshots.indexOf(card)]!;
     if (observedVideoCardOwner(cardElement)) {
@@ -802,11 +814,69 @@ export async function inspectFlowProjectVideosInPage(input: {
         )
           return blocked("native_binding_stale", snapshots);
       }
-      const clickTarget = nativeNavigation
-        ? safeCardClickTarget(cardElement)
-        : cardElement as HTMLElement;
-      if (!clickTarget)
-        return blocked("native_open_control_unavailable", snapshots);
+      let clickTarget: HTMLElement;
+      if (nativeNavigation) {
+        let hitTest = safeCardClickTarget(cardElement);
+        if (hitTest.reason === "outside_viewport") {
+          if (!input.expectedObservationFingerprint ||
+            typeof (cardElement as HTMLElement).scrollIntoView !== "function")
+            return blocked("native_card_outside_viewport", snapshots);
+          try {
+            (cardElement as HTMLElement).scrollIntoView({ block: "center", inline: "nearest" });
+          } catch {
+            return blocked("native_card_outside_viewport", snapshots);
+          }
+          const selectedAfterScroll = resolveVideosNavigation();
+          if (location.href !== initialLocation || !project.isConnected ||
+            !selectedAfterScroll.root || !selectedAfterScroll.button || !selectedAfterScroll.selected)
+            return blocked("videos_section_not_selected", snapshots);
+
+          // Scrolling can recycle virtualized Gallery owners. Reacquire the
+          // exact traversal fingerprint and use its fresh token for the click.
+          const freshOwners = [
+            ...project.querySelectorAll('flow-grid-tile-container[role="group"]'),
+          ].filter(observedVideoCardOwner);
+          const freshCards = await Promise.all(freshOwners.map(readCard));
+          const freshMatches = freshCards
+            .map((freshCard, index) => ({ freshCard, owner: freshOwners[index]! }))
+            .filter(({ freshCard }) => freshCard.observationFingerprint === input.expectedObservationFingerprint);
+          if (freshMatches.length > 1)
+            return blocked("native_traversal_ambiguous", freshCards);
+          if (!freshMatches.length)
+            return blocked("native_card_reacquire_missing", freshCards);
+          card = freshMatches[0]!.freshCard;
+          cardElement = freshMatches[0]!.owner;
+          const freshToken = card.nativeCardToken;
+          const currentBindings = nativeBindings;
+          if (!freshToken || !currentBindings || !cardElement.isConnected || !project.contains(cardElement) ||
+            findCard(cardElement) !== cardElement ||
+            currentBindings.scope !== expectedBindingScope ||
+            currentBindings.byToken.get(freshToken) !== cardElement ||
+            currentBindings.generation !== bindingsForOpen?.generation)
+            return blocked("native_binding_stale", freshCards);
+
+          const immediatelyCurrent = await readCard(cardElement);
+          const immediateBindings = nativeBindings;
+          if (!cardElement.isConnected || !project.contains(cardElement) ||
+            findCard(cardElement) !== cardElement ||
+            immediatelyCurrent.nativeCardToken !== freshToken ||
+            immediatelyCurrent.observationFingerprint !== input.expectedObservationFingerprint ||
+            !immediateBindings || immediateBindings.byToken.get(freshToken) !== cardElement ||
+            immediateBindings.generation !== bindingsForOpen?.generation)
+            return blocked("native_binding_stale", freshCards);
+          card = immediatelyCurrent;
+          hitTest = safeCardClickTarget(cardElement);
+        }
+        if (hitTest.reason === "outside_viewport")
+          return blocked("native_card_outside_viewport", snapshots);
+        if (hitTest.reason === "obscured")
+          return blocked("native_card_obscured", snapshots);
+        if (hitTest.reason !== "safe" || !hitTest.target)
+          return blocked("native_open_control_unavailable", snapshots);
+        clickTarget = hitTest.target;
+      } else {
+        clickTarget = cardElement as HTMLElement;
+      }
       clickTarget.click();
       return {
         status: "opened",

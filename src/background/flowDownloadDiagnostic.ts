@@ -1523,10 +1523,18 @@ export function createFlowDownloadDiagnosticManager(
             openOutcome = "blocked";
             const code = opened.reason === "native_open_control_unavailable"
               ? "flow_project_video_import_native_open_not_attempted"
+              : opened.reason === "native_card_outside_viewport"
+                ? "flow_project_video_import_native_card_outside_viewport"
+              : opened.reason === "native_card_obscured"
+                ? "flow_project_video_import_native_card_obscured"
+              : opened.reason === "native_card_reacquire_missing"
+                ? "flow_project_video_import_native_card_reacquire_missing"
               : opened.reason === "native_binding_stale"
                 ? "flow_project_video_import_native_binding_stale"
                 : opened.reason === "card_ambiguous"
                   ? "flow_project_video_import_native_traversal_ambiguous"
+              : opened.reason === "native_traversal_ambiguous"
+                ? "flow_project_video_import_native_traversal_ambiguous"
                   : "flow_project_video_import_native_open_not_attempted";
             observerStopped = true;
             return { kind: "blocked" as const, code };
@@ -1857,6 +1865,9 @@ export function createFlowDownloadDiagnosticManager(
       ["native_open_control_unavailable", "native_open_control_unavailable"],
       ["native_open_not_attempted", "native_open_not_attempted"],
       ["native_open_outcome_unknown", "native_open_outcome_unknown"],
+      ["native_card_outside_viewport", "native_card_outside_viewport"],
+      ["native_card_obscured", "native_card_obscured"],
+      ["native_card_reacquire_missing", "native_card_reacquire_missing"],
       ["native_traversal_unavailable", "native_card_traversal_unavailable"],
       ["card_open_unavailable", "card_open_not_confirmed"],
       ["detail_route_not_observed", "detail_route_not_observed_by_deadline"],

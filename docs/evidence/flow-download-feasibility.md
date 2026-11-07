@@ -1171,3 +1171,32 @@ Regression coverage in `tests/integration/flowGalleryTraversal.test.ts` uses the
 - When connection revalidation fails after identity readers run, the card reports `after_identity_read` and is not persisted.
 
 Focused integration suite: **11/11 PASS**. `npx tsc --noEmit` and `git diff --check` PASS. No build, live Flow action, upscale, or download was performed. The supplied live failure cannot be retrospectively assigned to before/after identity from its old summary; run the next batch only when ready to inspect the new per-card diagnostic. Live verification remains **NOT_RUN**.
+
+## P11.1 Gallery diagnostics local build — 7 November 2026
+
+Built the current extension source with the direct Vite CLI and native config loader, without the package wrapper. Shared build ID: `automat-faceless-0.1.0-localp11-gallerydiag-20261107-084417`.
+
+Commands:
+
+```powershell
+$env:AUTOMAT_BUILD_ID = 'automat-faceless-0.1.0-localp11-gallerydiag-20261107-084417'
+npx vite build --configLoader native
+$env:AUTOMAT_CONNECTOR_BUILD = '1'
+npx vite build --configLoader native
+```
+
+Output folder: `C:\Users\ASUS\Desktop\automat-faceless-roadmap-2026-10-28\dist`; manifest: `dist/manifest.json`. Static validation passed: packaged manifest matches `public/manifest.json`, worker entry and dashboard assets resolve, `connection-probe.js` exists, all **4 JavaScript bundles** contain only the shared build ID, and the worker/dashboard bundles include the Phase 11.1 connection-phase diagnostics. Vite reports the existing dashboard chunk over 500 kB and the connector `inlineDynamicImports` warning. No browser load or live Flow action occurred; nothing was published.
+
+## P11.1 offscreen Gallery card recovery — 7 November 2026
+
+The user-reported `animate · native open not attempted` result was reproduced in the production page-reader/worker fixture by keeping a card discoverable in the Gallery while placing its hit-test points below the viewport. Before this correction, `safeCardClickTarget` returned no target and the worker collapsed the blocked result to `native_open_not_attempted`.
+
+For a native batch card whose current safe-point check reports it outside the viewport, the page reader now calls `scrollIntoView` on that exact owner. It then reacquires current video-card owners, requires one matching transient fingerprint, validates the fresh token and registry generation, rereads media evidence immediately before the click, and runs the safe-point plus nested-action checks again. Only the verified point receives one click. If the card remains outside or obscured, the result reports `native_card_outside_viewport` or `native_card_obscured`; if reacquisition loses or duplicates the fingerprint, it reports `native_card_reacquire_missing` or the existing ambiguity reason. One-card/no-fingerprint mode does not scroll and infer an identity.
+
+Regression coverage in `tests/integration/flowGalleryTraversal.test.ts`:
+
+- Offscreen card node replaced by scrolling: unique fingerprint reacquired, all three exact clip/selected-asset identities persisted, and exactly one open per card.
+- Card remains covered after scrolling: no click on that card; final counts are Discovered 3, Imported 2, Unresolved 1, Not processed 0.
+- Fingerprint becomes ambiguous after scrolling: neither owner is clicked; final counts remain Discovered 3, Imported 2, Unresolved 1, Not processed 0.
+
+Focused suite: **14/14 PASS**. `npx tsc --noEmit`, targeted ESLint on changed files, and `git diff --check` PASS. Direct Vite build with the native config loader PASS; build ID `automat-faceless-0.1.0-localp11-offscreen-20261107-095647`, **4 JavaScript bundles**. Manifest parity, shared ID, and new worker/dashboard diagnostic markers validated. Existing >500 kB dashboard and connector `inlineDynamicImports` warnings remain. No Chrome live run or Flow action occurred; live behavior remains **NOT_RUN**.

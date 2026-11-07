@@ -34,6 +34,9 @@ function createTraversalHarness(options: {
   connectionFailuresBeforeReady?: number;
   connectionNeverReady?: boolean;
   connectionFailsAfterIdentity?: boolean;
+  offscreenCardIndex?: number;
+  obscureAfterScroll?: boolean;
+  duplicateAfterScroll?: boolean;
 } = {}) {
   const replaceDocumentOnRestore = options.replaceDocumentOnRestore ?? true;
   let now = 100;
@@ -42,6 +45,9 @@ function createTraversalHarness(options: {
   let restoreCount = 0;
   let tabUrl = `https://flow.google.com/project/${projectId}`;
   const mediaOverrides = new Map<number, string>();
+  const scrollIntoViewIndices: number[] = [];
+  const scrolledIntoViewIndices = new Set<number>();
+  const obscuredIndices = new Set<number>();
   let dom = makeGalleryDom();
   const database = createMemoryRepositoryDatabase();
   const repositories = new ExtensionRepositories(database, () => now);
@@ -79,6 +85,9 @@ function createTraversalHarness(options: {
       const first = top >= 750 ? 2 : top >= 375 ? 1 : 0;
       const indices = [first];
       if (first < 2) indices.push(first + 1);
+      if (options.duplicateAfterScroll && options.offscreenCardIndex !== undefined &&
+        scrolledIntoViewIndices.has(options.offscreenCardIndex))
+        indices.push(options.offscreenCardIndex);
       if (options.reorderAfterRestore && restoreCount > 0) indices.reverse();
       const host = options.flowOrigin ? "flow.google.com" : "flow-content.google";
       gallery.innerHTML = indices.map((index) => {
@@ -99,7 +108,18 @@ function createTraversalHarness(options: {
       for (const owner of owners) {
         const index = Number(owner.getAttribute("data-test-index"));
         const left = index * 240;
-        Object.defineProperty(owner, "getBoundingClientRect", { value: () => ({ x: left, y: 0, width: 200, height: 120, top: 0, right: left + 200, bottom: 120, left, toJSON: () => ({}) }) });
+        Object.defineProperty(owner, "getBoundingClientRect", { value: () => {
+          const offscreen = index === options.offscreenCardIndex && !scrolledIntoViewIndices.has(index);
+          const top = offscreen ? 900 : 100;
+          return { x: left, y: top, width: 200, height: 120, top, right: left + 200, bottom: top + 120, left, toJSON: () => ({}) };
+        } });
+        Object.defineProperty(owner, "scrollIntoView", { value: () => {
+          scrollIntoViewIndices.push(index);
+          scrolledIntoViewIndices.add(index);
+          if (options.obscureAfterScroll) obscuredIndices.add(index);
+          forceGalleryRerender = true;
+          renderWindow(project.scrollTop);
+        } });
         owner.addEventListener("click", () => {
           const clipId = clips[Number(owner.getAttribute("data-test-index"))]!;
           tabUrl = `https://flow.google.com/project/${projectId}/edit/${clipId}`;
@@ -112,12 +132,20 @@ function createTraversalHarness(options: {
       __renderGalleryWindow: renderWindow,
       __invalidateGalleryWindow: () => { forceGalleryRerender = true; },
     });
+    const blocker = page.window.document.createElement("div");
+    blocker.id = "gallery-click-blocker";
+    page.window.document.body.append(blocker);
     renderWindow(0);
     Object.defineProperty(page.window.document, "elementFromPoint", {
-      value: (x: number, y: number) => [...page.window.document.querySelectorAll("flow-grid-tile-container")].find((owner) => {
-        const rect = owner.getBoundingClientRect();
-        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-      }),
+      value: (x: number, y: number) => {
+        const owner = [...page.window.document.querySelectorAll("flow-grid-tile-container")].find((candidate) => {
+          const rect = candidate.getBoundingClientRect();
+          return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+        });
+        return owner && obscuredIndices.has(Number(owner.getAttribute("data-test-index")))
+          ? blocker
+          : owner;
+      },
     });
     vi.spyOn(page.window.HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
       { x: 0, y: 0, width: 200, height: 120, top: 0, right: 200, bottom: 120, left: 0, toJSON: () => ({}) },
@@ -245,7 +273,7 @@ function createTraversalHarness(options: {
         now: () => now,
       });
       return {
-        manager, repositories, pageReads, openResults, clickRoutes, detailIdentityReads,
+        manager, repositories, pageReads, openResults, clickRoutes, detailIdentityReads, scrollIntoViewIndices,
         getDetailRevalidationAttempts: () => detailRevalidationAttempts,
         changeMedia(index: number, value: string) {
           mediaOverrides.set(index, value);
@@ -283,6 +311,66 @@ describe("Flow Gallery traversal production integration", () => {
     }
     expect(progress).toMatchObject({ status: "completed", discovered: 3, imported: 0, alreadyPresent: 3, unresolved: 0, scanCompleteness: "complete" });
     expect(await repositories.listFlowClipImports()).toHaveLength(3);
+    harness.dispose();
+  }, 15_000);
+
+  it("scrolls an offscreen exact Gallery card into view, reacquires its new owner, and opens it once", async () => {
+    const harness = createTraversalHarness({ offscreenCardIndex: 2, flowOrigin: true });
+    const { manager, repositories, pageReads, clickRoutes, scrollIntoViewIndices } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress).toMatchObject({ status: "completed", discovered: 3, openAttempts: 3, imported: 3, alreadyPresent: 0, unresolved: 0, scanCompleteness: "complete" });
+    expect(scrollIntoViewIndices).toEqual([2]);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(3);
+    expect(clickRoutes).toHaveLength(3);
+    const rows = await repositories.listFlowClipImports();
+    expect(rows.map((row) => row.clipId)).toEqual(clips);
+    expect(rows.map((row) => row.detailSelectedAssetId)).toEqual(selectedAssets);
+    harness.dispose();
+  }, 15_000);
+
+  it("reports an offscreen card that remains obscured without clicking it or losing partial counts", async () => {
+    const harness = createTraversalHarness({ offscreenCardIndex: 2, obscureAfterScroll: true, flowOrigin: true });
+    const { manager, repositories, clickRoutes, scrollIntoViewIndices } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress).toMatchObject({ status: "incomplete", discovered: 3, openAttempts: 3, imported: 2, alreadyPresent: 0, unresolved: 1, scanCompleteness: "incomplete" });
+    expect(progress.unresolvedCards.at(-1)).toMatchObject({ reason: "native_card_obscured" });
+    expect(progress.imported + progress.alreadyPresent + progress.unresolved).toBe(3);
+    expect(progress.discovered - progress.imported - progress.alreadyPresent - progress.unresolved).toBe(0);
+    expect(scrollIntoViewIndices).toEqual([2]);
+    expect(clickRoutes).toHaveLength(2);
+    expect(await repositories.listFlowClipImports()).toHaveLength(2);
+    harness.dispose();
+  }, 15_000);
+
+  it("reports an ambiguous exact-card reacquisition after scrolling without clicking either owner", async () => {
+    const harness = createTraversalHarness({ offscreenCardIndex: 2, duplicateAfterScroll: true, flowOrigin: true });
+    const { manager, repositories, clickRoutes, scrollIntoViewIndices } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress).toMatchObject({ status: "incomplete", discovered: 3, openAttempts: 3, imported: 2, unresolved: 1, scanCompleteness: "incomplete" });
+    expect(progress.unresolvedCards.at(-1)).toMatchObject({ reason: "native_card_reacquire_ambiguous" });
+    expect(progress.imported + progress.alreadyPresent + progress.unresolved).toBe(3);
+    expect(progress.discovered - progress.imported - progress.alreadyPresent - progress.unresolved).toBe(0);
+    expect(scrollIntoViewIndices).toEqual([2]);
+    expect(clickRoutes).toHaveLength(2);
+    expect(await repositories.listFlowClipImports()).toHaveLength(2);
     harness.dispose();
   }, 15_000);
 
