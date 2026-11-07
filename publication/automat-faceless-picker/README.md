@@ -4,21 +4,19 @@ This folder contains the current standalone helper page and its local runtime as
 
 ## Upload destination and files
 
-Upload these exact files from this folder, preserving names and placing `index.html` at the existing Pages source root:
+For this UI update, upload these exact files from this folder, preserving names and placing them at the existing Pages source root:
 
 - `index.html`
-- `app.js`
-- `logic.js`
 - `styles.css`
-- `README.md`
+- `ui.js`
 
 Existing repository: [navaneetsharma22/automat-faceless-picker](https://github.com/navaneetsharma22/automat-faceless-picker). Existing Pages URL: <https://navaneetsharma22.github.io/automat-faceless-picker/>. Use that repository's already configured Pages branch/source directory; do not change Pages, OAuth, or Cloud settings.
 
 ## Extension reload and launch
 
-After the helper update is manually published, open `chrome://extensions`, reload Automat Faceless from this workspace's `dist/`, then reopen the Vids Downloads panel and click **Open existing helper** so the URL carries the reloaded extension's current runtime ID. Build ID: **`automat-faceless-0.1.0-mw53lgis`** (four JavaScript bundles). Close any old helper tab before this check.
+After the helper update is manually published, open `chrome://extensions`, reload Automat Faceless from this workspace's `dist/`, then reopen the Vids Downloads panel and click **Open existing helper** so the URL carries the reloaded extension's current runtime ID. Build ID: **`automat-faceless-0.1.0-mw5u1nb5`** (four JavaScript bundles). Close any old helper tab before this check.
 
-Compared with the supplied `package.zip` helper snapshot, the current local `index.html`, `app.js`, and `logic.js` differ; `styles.css` is byte-identical. If the existing Pages source still matches that snapshot, those three runtime files are the ones to replace. This comparison does not establish the current remote Pages contents; inspect the existing repository before uploading. The earlier failure-reason correction is in `app.js` and `logic.js`.
+The authorization, Picker, preparation, and handoff logic in `app.js` and `logic.js` is unchanged. This task does not publish the files or check current remote content.
 
 ## Manual compatibility and one-document download checks
 
@@ -32,4 +30,4 @@ These are manual checks only; no account authorization, preparation, or download
 
 ## Package contents and exclusions
 
-`index.html` loads the hosted GIS and Picker scripts; `app.js` and `logic.js` run on the hosted page, and `styles.css` is its local stylesheet. The helper retains the existing OAuth client/project configuration and `drive.file` route. This package contains no API key value, access token, signed prepared URI, or extension `dist/` bundle. Enter any restricted Picker API key locally in the hosted page during an authorized manual check.
+`index.html` loads the hosted GIS and Picker scripts; `app.js` and `logic.js` run the existing authorization, Picker, preparation, and handoff behavior; `ui.js` handles local navigation and theme preference; `styles.css` contains the responsive theme styles. The helper retains the existing OAuth client/project configuration and `drive.file` route. This package contains no API key value, access token, signed prepared URI, or extension `dist/` bundle. Enter any restricted Picker API key locally in the hosted page during an authorized manual check.

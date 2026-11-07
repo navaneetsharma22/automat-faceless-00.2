@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="theme-color" content="#f7f1e8" />
+    <title>Automat Faceless — Vids MP4 helper</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./ui.js" defer></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand" aria-label="Automat Faceless">
+          <span class="brand-mark" aria-hidden="true">AF</span>
+          <span class="brand-name">Automat <strong>Faceless</strong></span>
+        </div>
+        <nav class="primary-nav" aria-label="Helper sections">
+          <button
+            class="nav-link"
+            type="button"
+            data-panel="download"
+            aria-current="page"
+          >
+            Download
+          </button>
+          <button class="nav-link" type="button" data-panel="settings">
+            Settings
+          </button>
+          <button class="nav-link" type="button" data-panel="advanced">
+            Advanced
+          </button>
+        </nav>
+      </header>
+
+      <main>
+        <section
+          class="page-panel"
+          id="panel-download"
+          data-panel-content="download"
+          aria-labelledby="page-title"
+        >
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">Google Vids · whole document</p>
+              <h1 id="page-title" tabindex="-1">Prepare your MP4</h1>
+              <p class="intro">
+                Connect your account, verify the exact Vids document, prepare
+                its MP4, then send it to the extension.
+              </p>
+            </div>
+            <span class="workflow-chip"
+              ><span class="workflow-dot" aria-hidden="true"></span> One
+              document at a time</span
+            >
+          </div>
+
+          <ol class="workflow" aria-label="Download workflow">
+            <li><span>1</span><span>Connect account</span></li>
+            <li><span>2</span><span>Select / verify document</span></li>
+            <li><span>3</span><span>Prepare MP4</span></li>
+            <li><span>4</span><span>Send to extension</span></li>
+          </ol>
+
+          <div
+            id="extension-config-status"
+            class="notice notice-neutral"
+            role="status"
+            data-state="checking"
+          >
+            Checking extension configuration…
+          </div>
+          <div
+            class="next-action"
+            id="workflow-next-action"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="next-action-label">Current status</span>
+            <span id="workflow-summary">Ready to connect your account.</span>
+          </div>
+
+          <form id="proof-form" class="card form-card">
+            <div class="step-heading">
+              <span class="step-number">1</span>
+              <div>
+                <h2>Connect and verify</h2>
+                <p>
+                  Choose the same Vids document that is marked ready in the
+                  extension.
+                </p>
+              </div>
+            </div>
+
+            <label for="api-key">Google Picker API key</label>
+            <input
+              id="api-key"
+              name="api-key"
+              type="password"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              required
+            />
+            <p class="hint">
+              Paste your restricted key for this session. It is cleared when you
+              connect and is never sent to the extension.
+            </p>
+
+            <label for="expected-document"
+              >Expected Vids URL or document ID</label
+            >
+            <input
+              id="expected-document"
+              name="expected-document"
+              type="text"
+              inputmode="url"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="Paste the URL or document ID from the extension"
+              aria-describedby="expected-document-hint"
+            />
+            <p class="hint" id="expected-document-hint">
+              The selected file must match this exact document before MP4
+              preparation is enabled.
+            </p>
+
+            <fieldset class="picker-mode">
+              <legend>Documents shown in Google Picker</legend>
+              <label class="mode-option"
+                ><input
+                  type="radio"
+                  name="picker-mode"
+                  value="vids-only"
+                  checked
+                />
+                Google Vids documents only</label
+              >
+              <label class="mode-option"
+                ><input
+                  type="radio"
+                  name="picker-mode"
+                  value="all-types-diagnostic"
+                />
+                All file types (diagnostic)</label
+              >
+              <p class="hint">
+                Even in diagnostic mode, a selected file must verify as a Google
+                Vids document.
+              </p>
+            </fieldset>
+
+            <button
+              id="start-proof"
+              class="button-primary"
+              type="submit"
+              disabled
+            >
+              Loading Google services…
+            </button>
+
+            <section
+              class="verification"
+              aria-live="polite"
+              aria-labelledby="verification-title"
+            >
+              <div class="step-heading compact-heading">
+                <span class="step-number">2</span>
+                <div>
+                  <h2 id="verification-title">Document verification</h2>
+                  <p>
+                    Preparation stays unavailable until the selected document
+                    passes each check.
+                  </p>
+                </div>
+              </div>
+              <dl class="status-list">
+                <div>
+                  <dt>Google account</dt>
+                  <dd id="authorization-status">Not started</dd>
+                </div>
+                <div>
+                  <dt>Document check</dt>
+                  <dd id="selection-status">Not started</dd>
+                </div>
+                <div>
+                  <dt>Expected document</dt>
+                  <dd id="expected-match">Not supplied</dd>
+                </div>
+                <div>
+                  <dt>Verified document ID</dt>
+                  <dd id="selected-file-id">—</dd>
+                </div>
+              </dl>
+            </section>
+          </form>
+
+          <section class="card preparation-card" aria-labelledby="mp4-title">
+            <div class="step-heading">
+              <span class="step-number">3</span>
+              <div>
+                <h2 id="mp4-title">Prepare the whole-document MP4</h2>
+                <p>
+                  Review the complete manually prepared timeline in Vids before
+                  continuing.
+                </p>
+              </div>
+            </div>
+            <div class="attestation">
+              <label class="mode-option"
+                ><input id="ack-only-intended-clip" type="checkbox" /> I confirm
+                this document contains the complete intended timeline in the
+                scene order I reviewed.</label
+              >
+              <p class="hint">
+                This is your confirmation. The helper does not inspect scene
+                order, gaps, transitions, or whether the timeline is complete.
+              </p>
+            </div>
+            <button
+              id="prepare-mp4"
+              class="button-primary"
+              type="button"
+              disabled
+            >
+              Prepare MP4
+            </button>
+            <p
+              id="mp4-operation-status"
+              class="action-status"
+              role="status"
+              aria-live="polite"
+            >
+              Not prepared
+            </p>
+            <button id="continue-operation" type="button" hidden disabled>
+              Continue checking the same operation
+            </button>
+          </section>
+
+          <section class="card handoff-card" aria-labelledby="handoff-title">
+            <div class="step-heading">
+              <span class="step-number">4</span>
+              <div>
+                <h2 id="handoff-title">Send to the extension</h2>
+                <p>
+                  Send the verified prepared MP4 once to the extension attempt
+                  bound to this document.
+                </p>
+              </div>
+            </div>
+            <p
+              id="extension-handoff-status"
+              class="action-status"
+              role="status"
+              aria-live="polite"
+            >
+              No extension handoff requested
+            </p>
+            <button
+              id="send-prepared-mp4-to-extension"
+              class="button-primary"
+              type="button"
+              hidden
+              disabled
+            >
+              Send prepared MP4 to extension
+            </button>
+          </section>
+        </section>
+
+        <section
+          class="page-panel"
+          id="panel-settings"
+          data-panel-content="settings"
+          aria-labelledby="settings-title"
+          hidden
+        >
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">Personalize this helper</p>
+              <h1 id="settings-title" tabindex="-1">Settings</h1>
+              <p class="intro">
+                Choose how this page looks. Your preference is saved in this
+                browser.
+              </p>
+            </div>
+          </div>
+          <section class="card settings-card">
+            <fieldset class="theme-choice">
+              <legend>Appearance</legend>
+              <p class="hint">
+                System follows your device appearance setting. Theme changes
+                only affect this page’s display.
+              </p>
+              <div class="theme-options">
+                <label
+                  ><input type="radio" name="theme-choice" value="light" />
+                  Light</label
+                >
+                <label
+                  ><input type="radio" name="theme-choice" value="dark" />
+                  Dark</label
+                >
+                <label
+                  ><input type="radio" name="theme-choice" value="system" />
+                  System</label
+                >
+              </div>
+            </fieldset>
+            <div class="settings-note">
+              <h2>Google access</h2>
+              <p>
+                The existing Google account consent and Picker flow remain part
+                of Download. The Picker API key is entered for the current page
+                session and is not stored as a preference.
+              </p>
+            </div>
+          </section>
+        </section>
+
+        <section
+          class="page-panel"
+          id="panel-advanced"
+          data-panel-content="advanced"
+          aria-labelledby="advanced-title"
+          hidden
+        >
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">Diagnostics and legacy material</p>
+              <h1 id="advanced-title" tabindex="-1">Advanced</h1>
+              <p class="intro">
+                Technical proof fields and the historical two-clip fixture are
+                kept here for troubleshooting.
+              </p>
+            </div>
+          </div>
+          <details class="card advanced-card" open>
+            <summary>Technical verification fields</summary>
+            <p class="hint">
+              These values describe the selected file and prepared operation.
+              They do not prove that the downloaded MP4 plays or contains
+              isolated scenes.
+            </p>
+            <dl class="status-list technical-list">
+              <div>
+                <dt>MIME type</dt>
+                <dd id="mime-type">—</dd>
+              </div>
+              <div>
+                <dt>Can download</dt>
+                <dd id="can-download">—</dd>
+              </div>
+              <div>
+                <dt>prepared_uri_present</dt>
+                <dd id="prepared-uri-present">No</dd>
+              </div>
+              <div>
+                <dt>prepared_uri_validated</dt>
+                <dd id="prepared-uri-validated">No</dd>
+              </div>
+              <div>
+                <dt>resource_key_present</dt>
+                <dd id="resource-key-present">No</dd>
+              </div>
+              <div>
+                <dt>Bytes received</dt>
+                <dd id="bytes-received-status">No</dd>
+              </div>
+              <div>
+                <dt>Browser save</dt>
+                <dd id="browser-save-status">Not initiated</dd>
+              </div>
+              <div>
+                <dt>Saved file completion</dt>
+                <dd id="saved-file-status">Not verifiable by this webpage</dd>
+              </div>
+            </dl>
+          </details>
+          <details class="card advanced-card">
+            <summary>Alternate preparation and MP4 actions</summary>
+            <p class="hint">
+              These controls support a separate confirmed-review path or browser
+              download. Use the main Download workflow for the normal extension
+              handoff.
+            </p>
+            <button
+              id="prepare-linked-mp4-for-review"
+              type="button"
+              hidden
+              disabled
+            >
+              Prepare MP4 for confirmed review and send once
+            </button>
+            <p id="linked-preparation-status" class="substatus" role="status">
+              No linked run continuation requested
+            </p>
+            <button id="receive-mp4-bytes" type="button" hidden disabled>
+              Receive MP4 bytes
+            </button>
+            <button id="open-prepared-mp4" type="button" hidden disabled>
+              Open prepared MP4
+            </button>
+            <button id="save-mp4" type="button" hidden disabled>
+              Save MP4
+            </button>
+            <p id="prepared-navigation-status" class="substatus" role="status">
+              No prepared destination
+            </p>
+          </details>
+          <details class="card advanced-card">
+            <summary>Legacy two-clip fixture diagnostic (City/YUGVERA)</summary>
+            <p class="boundary">
+              Retained for diagnostics only. It is not a production timeline
+              template or an assumption about the current document.
+            </p>
+            <p class="boundary">
+              This prepares the whole selected document as one MP4. The
+              following are user attestations; this page does not verify the
+              timeline.
+            </p>
+            <label class="mode-option"
+              ><input id="ack-two-clip-order" type="checkbox" /> I confirm v1
+              visibly contains City followed by YUGVERA, in that order.</label
+            >
+            <label class="mode-option"
+              ><input id="ack-two-clip-saved" type="checkbox" /> I confirm Vids
+              shows the document as saved.</label
+            >
+            <label class="mode-option"
+              ><input id="ack-two-clip-clean-boundary" type="checkbox" /> I
+              confirm there are no transitions or gaps between the clips.</label
+            >
+            <button id="prepare-two-clip-mp4" type="button" disabled>
+              Prepare legacy two-clip MP4
+            </button>
+            <p id="two-clip-proof-status" role="status">
+              No two-clip proof started
+            </p>
+          </details>
+          <details class="card advanced-card">
+            <summary>Reset this helper attempt</summary>
+            <p class="hint">
+              Reset clears this page’s current in-memory proof state. It does
+              not cancel a Drive operation already requested.
+            </p>
+            <button id="reset-proof" class="button-secondary" type="button">
+              Reset helper state
+            </button>
+          </details>
+          <p class="boundary">
+            The webpage cannot verify that a browser save has completed. Check
+            Chrome Downloads separately. Exact document matching and extension
+            handoff binding are still enforced by the existing helper and
+            extension checks.
+          </p>
+        </section>
+      </main>
+      <footer class="footer">
+        Automat Faceless <span aria-hidden="true">·</span> Google Vids MP4
+        helper
+      </footer>
+    </div>
+  </body>
+</html>
