@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSceneBoundaryManifest, serializeSceneBoundaryManifest, sourceFileNameFromPath } from "../../src/domain/media/sceneManifest";
+import { createFixedDurationSplitSettings, createSceneBoundaryManifest, serializeFixedDurationSplitSettings, serializeSceneBoundaryManifest, sourceFileNameFromPath } from "../../src/domain/media/sceneManifest";
 
 const source = {
   provider: "Vids" as const,
@@ -60,5 +60,25 @@ describe("explicit source-timeline scene manifest", () => {
   it("keeps only a filename from the Chrome source path", () => {
     expect(sourceFileNameFromPath(source.sourcePath)).toBe("edited-document-7-attempt-45 (1).mp4");
     expect(sourceFileNameFromPath(undefined)).toBeUndefined();
+  });
+
+  it("exports duration settings bound to the completed download without claiming measured or attested ranges", () => {
+    const settings = createFixedDurationSplitSettings(source, 7, 7);
+    expect(settings).toMatchObject({
+      version: 1,
+      mode: "fixed_duration",
+      secondsPerClip: 7,
+      expectedClipCount: 7,
+      sourceDownload: {
+        provider: "Vids", documentId: source.documentId,
+        downloadAttemptId: source.attemptId, chromeDownloadId: source.downloadId,
+        sourceFileName: "edited-document-7-attempt-45 (1).mp4",
+      },
+    });
+    expect(settings).not.toHaveProperty("clips");
+    expect(settings).not.toHaveProperty("boundaryProvenance");
+    expect(JSON.parse(serializeFixedDurationSplitSettings(settings))).toEqual(settings);
+    expect(() => createFixedDurationSplitSettings(source, 0, 7)).toThrow();
+    expect(() => createFixedDurationSplitSettings(source, 7, 1.5)).toThrow();
   });
 });

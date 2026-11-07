@@ -35,7 +35,7 @@ export function SplitHandoff({ attempt }: { attempt?: VidsDownloadAttempt }) {
       <section className={styles.sceneCompanionSteps} aria-label="Windows splitter steps">
         <h4>Run the Windows companion yourself</h4>
         <ol>
-          <li>Export the explicit boundary manifest above.</li>
+          <li>Export the split settings for duration mode or the measured boundary manifest.</li>
           <li>Launch <code>tools/local-mp4-splitter/Run-Local-Vids-Split.cmd</code> from this project folder.</li>
           <li>Select the combined MP4 for Chrome download ID <code>{attempt.downloadId}</code>, then select the manifest.</li>
           <li>Select a separate parent for split outputs. The companion creates a new folder and refuses existing output names.</li>

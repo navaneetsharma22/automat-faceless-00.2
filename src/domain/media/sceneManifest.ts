@@ -9,16 +9,30 @@ const sceneClip = z.object({
   endSeconds: z.number().finite().positive(),
 }).strict();
 
+const sourceDownload = z.object({
+  provider: z.literal("Vids"),
+  documentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
+  downloadAttemptId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  chromeDownloadId: z.number().int().nonnegative(),
+  chromeState: z.literal("complete"),
+  sourceFileName: z.string().min(1).max(255).refine((value) => !/[\\/]/.test(value), "Use a file name, not a local path.").optional(),
+}).strict();
+
+/** Settings for local companion planning; ranges are generated from the selected MP4. */
+export const FixedDurationSplitSettingsSchema = z.object({
+  version: z.literal(1),
+  mode: z.literal("fixed_duration"),
+  sourceDownload,
+  secondsPerClip: z.number().finite().positive().max(3600),
+  expectedClipCount: z.number().int().min(1).max(100),
+  assumption: z.literal("edited_timeline_uses_entered_clip_duration"),
+}).strict();
+
+export type FixedDurationSplitSettings = z.infer<typeof FixedDurationSplitSettingsSchema>;
+
 export const SceneBoundaryManifestSchema = z.object({
   version: z.literal(1),
-  sourceDownload: z.object({
-    provider: z.literal("Vids"),
-    documentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/),
-    downloadAttemptId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
-    chromeDownloadId: z.number().int().nonnegative(),
-    chromeState: z.literal("complete"),
-    sourceFileName: z.string().min(1).max(255).refine((value) => !/[\\/]/.test(value), "Use a file name, not a local path." ).optional(),
-  }).strict(),
+  sourceDownload,
   boundaryProvenance: z.object({
     assertion: z.literal("user_attested"),
     timelineOrder: z.literal("actual_edited_vids_timeline"),
@@ -102,4 +116,32 @@ export function createSceneBoundaryManifest(
 
 export function serializeSceneBoundaryManifest(manifest: SceneBoundaryManifest): string {
   return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+export function createFixedDurationSplitSettings(
+  source: SceneBoundaryDownloadRecord,
+  secondsPerClip: number,
+  expectedClipCount: number,
+): FixedDurationSplitSettings {
+  const parsed = FixedDurationSplitSettingsSchema.safeParse({
+    version: 1,
+    mode: "fixed_duration",
+    sourceDownload: {
+      provider: source.provider,
+      documentId: source.documentId,
+      downloadAttemptId: source.attemptId,
+      chromeDownloadId: source.downloadId,
+      chromeState: "complete",
+      ...(sourceFileNameFromPath(source.sourcePath) ? { sourceFileName: sourceFileNameFromPath(source.sourcePath) } : {}),
+    },
+    secondsPerClip,
+    expectedClipCount,
+    assumption: "edited_timeline_uses_entered_clip_duration",
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Fixed-duration split settings are invalid.");
+  return parsed.data;
+}
+
+export function serializeFixedDurationSplitSettings(settings: FixedDurationSplitSettings): string {
+  return `${JSON.stringify(settings, null, 2)}\n`;
 }

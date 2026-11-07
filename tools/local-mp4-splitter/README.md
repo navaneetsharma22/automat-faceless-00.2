@@ -27,12 +27,18 @@ Open a new PowerShell window after installation and verify with
 ### Windows launcher
 
 Double-click `Run-Local-Vids-Split.cmd`. The launcher asks you to choose the
-existing combined MP4, its explicit JSON boundary manifest, and a parent
-folder. It creates a new uniquely named output folder and calls the existing
-`split-combined-mp4.mjs` CLI; encoding and verification stay in that CLI. A
-console progress indicator remains visible while FFmpeg encodes and ffprobe
-checks the results. On success, the launcher shows each output path and writes
-the CLI's verification summary plus selected input paths to
+existing combined MP4, its boundary manifest or fixed-duration settings file,
+and a parent folder. For fixed-duration settings it probes the selected MP4
+locally, previews every generated frame range and the measured source duration,
+resolution, and timestamp-derived average frame rate, then waits for explicit
+confirmation before creating outputs. A short remainder, extra footage, source
+filename mismatch, or expected-count mismatch is shown; the confirmation
+includes all source frames in the actual proposal, or the user can cancel. It
+does not detect scene changes. The launcher creates a new uniquely named output
+folder and calls the existing `split-combined-mp4.mjs` CLI; encoding and
+verification stay in that CLI. A console progress indicator remains visible
+while FFmpeg encodes and ffprobe checks the results. On success, the launcher
+shows each output path and writes the CLI's verification summary plus selected input paths to
 `verification-results.json` in the output folder. On failure it displays the
 splitter's diagnostic and retains any partial output folder for inspection.
 The launcher captures stdout, stderr, and the child process's numeric exit code
@@ -58,8 +64,31 @@ download ID. Each clip carries zero-based `startFrameIndex` and
 timestamp must match the frame index in the source selected by the Windows
 companion. Clips are listed in actual edited timeline order and cannot overlap;
 gaps are allowed. Duration is always calculated as `endSeconds - startSeconds`.
-Scene count and duration are entered from the edited source; neither is
-inferred from prompts or a fixed per-scene duration.
+In measured-boundary mode, scene count and duration are entered from the edited
+source; neither is inferred from prompts or a fixed per-scene duration.
+
+### Fixed-duration settings
+
+Choose **Split by duration** in Vids Step 4 and enter seconds per clip plus the
+expected clip count. Exporting creates settings linked to the exact completed
+Vids document/download record; it contains no manually entered frame indices or
+timestamps. The Windows companion uses ffprobe's decoded frame timestamps to
+create sequential `clip_001.mp4`, `clip_002.mp4`, … ranges. It selects frame
+boundaries nearest each cumulative requested-duration target and includes any
+remaining source frames as a short final clip. The proposal records the source
+frame count, dimensions, timestamp-derived frame-rate estimate, actual range
+count, remainder, and footage beyond the expected total. A visible confirmation
+is mandatory before splitting, especially when the actual count differs from
+the entered count. The generated range record is marked as source-timestamp
+generated; it is not labeled as manually measured or user-attested.
+
+The duration is a timeline assumption only; it does not detect scene changes.
+The selected combined MP4 is probed on the Windows machine. FFmpeg re-encodes
+with explicit timestamps and passthrough frame timing, preserving source
+resolution and timestamp cadence; the splitter verifies output resolution,
+frame count, and frame cadence. It does not use keyframe-only stream copy or
+assume 24 fps. The source remains untouched and output files are never
+overwritten.
 
 ```json
 {

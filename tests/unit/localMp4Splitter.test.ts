@@ -1,10 +1,13 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { splitCombinedMp4 } from '../../tools/local-mp4-splitter/split-combined-mp4.mjs';
 
 const temporaryDirectories: string[] = [];
+const ffmpegAvailable = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0 && spawnSync('ffprobe', ['-version'], { stdio: 'ignore' }).status === 0;
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'automat-mp4-split-'));
@@ -56,6 +59,40 @@ afterEach(async () => {
 });
 
 describe('standalone local MP4 splitter', () => {
+  it.skipIf(!ffmpegAvailable)('probes, previews, and accurately splits a locally generated 30000/1001 fps MP4', async () => {
+    const files = await fixture();
+    execFileSync('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=30000/1001:d=4',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=4',
+      '-t', '4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', files.inputPath,
+    ]);
+    const originalSource = await readFile(files.inputPath);
+    const settings = {
+      version: 1, mode: 'fixed_duration',
+      sourceDownload: { provider: 'Vids', documentId: 'generated-fixture', downloadAttemptId: 'attempt-fixture', chromeDownloadId: 1, chromeState: 'complete' },
+      secondsPerClip: 1.5, expectedClipCount: 3,
+      assumption: 'edited_timeline_uses_entered_clip_duration',
+    };
+    await writeFile(files.manifestPath, JSON.stringify(settings));
+    const splitterCli = fileURLToPath(new URL('../../tools/local-mp4-splitter/split-combined-mp4.mjs', import.meta.url));
+    const plan = JSON.parse(execFileSync(process.execPath, [splitterCli, '--input', files.inputPath, '--settings', files.manifestPath, '--plan'], { encoding: 'utf8' }));
+    expect(plan.timestampDerivedAverageFrameRate).toBeCloseTo(30000 / 1001, 2);
+    expect(plan.actualClipCount).toBe(3);
+    await writeFile(files.manifestPath, JSON.stringify({
+      version: 1, mode: 'fixed_duration', sourceDownload: settings.sourceDownload,
+      secondsPerClip: settings.secondsPerClip, expectedClipCount: settings.expectedClipCount,
+      actualClipCount: plan.actualClipCount, clips: plan.clips,
+    }));
+    const report = await splitCombinedMp4({ ...files });
+    expect(report.splitMode).toBe('fixed_duration');
+    expect(report.fixedDuration).toMatchObject({ secondsPerClip: 1.5, expectedClipCount: 3, actualClipCount: 3, rangeGeneration: 'source_frame_timestamps' });
+    expect(report.outputs).toHaveLength(3);
+    expect(report.outputs.every((output) => output.audioStreamVerified)).toBe(true);
+    expect(report.outputs.every((output) => output.frameCadenceVerified)).toBe(true);
+    expect(await readFile(files.inputPath)).toEqual(originalSource);
+  }, 120_000);
+
   it('splits only explicit ordered boundaries and verifies each output separately', async () => {
     const files = await fixture();
     await writeFile(

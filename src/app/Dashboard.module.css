@@ -1009,6 +1009,40 @@
   padding-block-start: var(--space-4);
   border-block-start: 1px solid var(--color-border);
 }
+.sceneSplitMode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+.sceneSplitMode legend { padding-inline: var(--space-2); font-weight: 700; }
+.sceneSplitMode label { display: inline-flex; align-items: center; gap: var(--space-2); }
+.fixedDurationSettings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: var(--space-3);
+}
+.fixedDurationSettings label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+}
+.fixedDurationSettings input {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.65rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.fixedDurationSettings input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .sceneManifest > p,
 .sceneCompanionSteps > p {
   margin: 0;

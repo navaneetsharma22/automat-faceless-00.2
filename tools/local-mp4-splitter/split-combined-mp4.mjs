@@ -107,6 +107,97 @@ function parseProbe(stdout, label) {
   };
 }
 
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  if (sorted.length === 0) return undefined;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+export function planFixedDurationSplit(settings, probe) {
+  if (!isObject(settings) || settings.version !== 1 || settings.mode !== 'fixed_duration' ||
+    !Number.isFinite(settings.secondsPerClip) || settings.secondsPerClip <= 0 || settings.secondsPerClip > 3600 ||
+    !Number.isInteger(settings.expectedClipCount) || settings.expectedClipCount < 1 || settings.expectedClipCount > 100 ||
+    settings.assumption !== 'edited_timeline_uses_entered_clip_duration' ||
+    !isObject(settings.sourceDownload) || settings.sourceDownload.provider !== 'Vids' ||
+    typeof settings.sourceDownload.documentId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(settings.sourceDownload.documentId) ||
+    typeof settings.sourceDownload.downloadAttemptId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(settings.sourceDownload.downloadAttemptId) ||
+    !Number.isInteger(settings.sourceDownload.chromeDownloadId) || settings.sourceDownload.chromeDownloadId < 0 ||
+    settings.sourceDownload.chromeState !== 'complete') {
+    fail('Fixed-duration settings must include a positive duration and expected clip count.');
+  }
+  if (!probe || !Array.isArray(probe.frames) || probe.frames.length === 0) fail('Source media has no decoded frame timestamps.');
+  const timestamps = probe.frames.map((frame) => frame.timestamp);
+  const deltas = timestamps.slice(1).map((timestamp, index) => timestamp - timestamps[index]);
+  if (deltas.some((delta) => !Number.isFinite(delta) || delta <= 0)) fail('Decoded video frame timestamps are not strictly ordered.');
+  const typicalFrameDuration = median(deltas);
+  const finalFrameDuration = Number.isFinite(probe.frames.at(-1)?.duration) && probe.frames.at(-1).duration > 0
+    ? probe.frames.at(-1).duration
+    : typicalFrameDuration;
+  if (!Number.isFinite(finalFrameDuration) || finalFrameDuration <= 0) fail('Source frame duration could not be measured.');
+  const firstTimestamp = timestamps[0];
+  const sourceEndSeconds = timestamps.at(-1) + finalFrameDuration;
+  const sourceDurationSeconds = sourceEndSeconds - firstTimestamp;
+  const boundaries = timestamps.map((timestamp, index) => ({ timestamp, frameIndex: index }));
+  boundaries.push({ timestamp: sourceEndSeconds, frameIndex: timestamps.length });
+
+  const clips = [];
+  let startFrameIndex = 0;
+  while (startFrameIndex < timestamps.length) {
+    const startSeconds = boundaries[startFrameIndex].timestamp;
+    const targetSeconds = firstTimestamp + (clips.length + 1) * settings.secondsPerClip;
+    let endFrameIndexExclusive = timestamps.length;
+    let smallestDifference = Math.abs(sourceEndSeconds - targetSeconds);
+    for (let index = startFrameIndex + 1; index < boundaries.length - 1; index += 1) {
+      const difference = Math.abs(boundaries[index].timestamp - targetSeconds);
+      if (difference < smallestDifference) {
+        smallestDifference = difference;
+        endFrameIndexExclusive = index;
+      }
+      if (boundaries[index].timestamp >= targetSeconds && difference >= smallestDifference) break;
+    }
+    if (endFrameIndexExclusive <= startFrameIndex) fail('Duration plan could not advance to the next source frame.');
+    const endSeconds = boundaries[endFrameIndexExclusive].timestamp;
+    clips.push({
+      name: `clip_${String(clips.length + 1).padStart(3, '0')}`,
+      startFrameIndex,
+      endFrameIndexExclusive,
+      startSeconds,
+      endSeconds,
+      durationSeconds: endSeconds - startSeconds,
+      expectedFrameCount: endFrameIndexExclusive - startFrameIndex,
+    });
+    startFrameIndex = endFrameIndexExclusive;
+  }
+  const lastClip = clips.at(-1);
+  const timestampTolerance = typicalFrameDuration * 1.5;
+  const hasShortRemainder = Boolean(lastClip && lastClip.durationSeconds < settings.secondsPerClip - timestampTolerance);
+  const remainderSeconds = hasShortRemainder ? lastClip.durationSeconds : 0;
+  const timestampDerivedAverageFrameRate = timestamps.length > 1
+    ? (timestamps.length - 1) / (timestamps.at(-1) - firstTimestamp)
+    : 1 / finalFrameDuration;
+  return {
+    mode: 'fixed_duration',
+    sourceDurationSeconds,
+    sourceFrameCount: timestamps.length,
+    sourceWidth: Number(probe.video?.width) || null,
+    sourceHeight: Number(probe.video?.height) || null,
+    timestampDerivedAverageFrameRate,
+    secondsPerClip: settings.secondsPerClip,
+    expectedClipCount: settings.expectedClipCount,
+    actualClipCount: clips.length,
+    countMismatch: clips.length !== settings.expectedClipCount,
+    hasShortRemainder,
+    remainderSeconds,
+    footageBeyondExpectedSeconds: Math.max(0, sourceDurationSeconds - settings.secondsPerClip * settings.expectedClipCount),
+    documentId: settings.sourceDownload.documentId,
+    downloadAttemptId: settings.sourceDownload.downloadAttemptId,
+    chromeDownloadId: settings.sourceDownload.chromeDownloadId,
+    sourceFileName: settings.sourceDownload?.sourceFileName ?? null,
+    clips,
+  };
+}
+
 function validateAgainstMedia(clips, probe) {
   const timestamps = probe.frames.map((frame) => frame.timestamp);
   const frameDeltas = [];
@@ -340,11 +431,25 @@ export async function splitCombinedMp4({
     if (Math.abs(outputProbe.durationSeconds - expectedDuration) > durationTolerance) {
       fail(`Output ${clip.filename} duration did not verify against its manifest boundary.`);
     }
+    if (outputProbe.video.width !== sourceProbe.video.width || outputProbe.video.height !== sourceProbe.video.height) {
+      fail(`Output ${clip.filename} resolution did not match the source video.`);
+    }
     if (sourceProbe.hasAudio && !outputProbe.hasAudio) {
       fail(`Output ${clip.filename} is missing the source audio stream.`);
     }
     if (outputProbe.frames.length !== clip.expectedFrameCount) {
       fail(`Output ${clip.filename} frame count did not verify against its manifest boundaries.`);
+    }
+    let frameCadenceVerified = false;
+    if (clip.startFrameIndex !== undefined) {
+      const sourceTimestamps = sourceProbe.frames.slice(clip.startFrameIndex, clip.endFrameIndexExclusive).map((frame) => frame.timestamp);
+      const outputTimestamps = outputProbe.frames.map((frame) => frame.timestamp);
+      for (let index = 1; index < sourceTimestamps.length; index += 1) {
+        if (Math.abs((sourceTimestamps[index] - sourceTimestamps[index - 1]) - (outputTimestamps[index] - outputTimestamps[index - 1])) > 0.0001) {
+          fail(`Output ${clip.filename} frame timing did not preserve the source frame cadence.`);
+        }
+      }
+      frameCadenceVerified = true;
     }
     const outputStat = await lstat(clip.path);
     if (!outputStat.isFile() || outputStat.size === 0)
@@ -357,6 +462,7 @@ export async function splitCombinedMp4({
       expectedDurationSeconds: expectedDuration,
       verifiedDurationSeconds: outputProbe.durationSeconds,
       expectedVideoFrameCount: clip.expectedFrameCount,
+      frameCadenceVerified,
       audioStreamVerified: !sourceProbe.hasAudio || outputProbe.hasAudio,
       bytes: outputStat.size,
     });
@@ -364,6 +470,15 @@ export async function splitCombinedMp4({
   return {
     sourceRetained: true,
     source: path.basename(sourcePath),
+    splitMode: manifest.mode === 'fixed_duration' ? 'fixed_duration' : 'measured_boundaries',
+    ...(manifest.mode === 'fixed_duration' ? {
+      fixedDuration: {
+        secondsPerClip: manifest.secondsPerClip,
+        expectedClipCount: manifest.expectedClipCount,
+        actualClipCount: completed.length,
+        rangeGeneration: 'source_frame_timestamps',
+      },
+    } : {}),
     encodingPolicy:
       'H.264 libx264 CRF 18, yuv420p, AAC 192 kb/s when source audio exists; decoded and re-encoded at explicit frame timestamps.',
     outputs: completed,
@@ -371,15 +486,21 @@ export async function splitCombinedMp4({
 }
 
 function usage() {
-  return 'Usage: node tools/local-mp4-splitter/split-combined-mp4.mjs --input <combined.mp4> --manifest <boundaries.json> --output-dir <existing-directory>';
+  return 'Usage: node tools/local-mp4-splitter/split-combined-mp4.mjs --input <combined.mp4> --manifest <boundaries.json> --output-dir <existing-directory> | --input <combined.mp4> --settings <fixed-duration.json> --plan';
 }
 
 export async function main(args = process.argv.slice(2)) {
   const options = new Map();
+  let planOnly = false;
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
+    if (key === '--plan') {
+      if (planOnly) fail('Duplicate option: --plan');
+      planOnly = true;
+      continue;
+    }
     if (
-      !['--input', '--manifest', '--output-dir'].includes(key) ||
+      !['--input', '--manifest', '--output-dir', '--settings'].includes(key) ||
       !args[index + 1] ||
       args[index + 1].startsWith('--')
     ) {
@@ -388,11 +509,20 @@ export async function main(args = process.argv.slice(2)) {
     if (options.has(key)) fail(`Duplicate option: ${key}`);
     options.set(key, args[++index]);
   }
-  const report = await splitCombinedMp4({
-    inputPath: options.get('--input'),
-    manifestPath: options.get('--manifest'),
-    outputDir: options.get('--output-dir'),
-  });
+  if (planOnly) {
+    if (!options.get('--input') || !options.get('--settings') || options.has('--manifest') || options.has('--output-dir')) fail('Plan mode requires --input and --settings only.');
+    const settingsPath = await ensureRegularFile(path.resolve(options.get('--settings')), 'Settings');
+    let settings;
+    try { settings = JSON.parse(await (await import('node:fs/promises')).readFile(settingsPath, 'utf8')); }
+    catch { fail('Fixed-duration settings are not readable JSON.'); }
+    const sourcePath = await ensureRegularFile(path.resolve(options.get('--input')), 'Input media');
+    if (path.extname(sourcePath).toLowerCase() !== '.mp4') fail('Input must be an MP4 file.');
+    const probe = await probeMedia(sourcePath, 'ffprobe', runProcess);
+    process.stdout.write(`${JSON.stringify(planFixedDurationSplit(settings, probe), null, 2)}\n`);
+    return;
+  }
+  if (options.has('--settings') || !options.get('--manifest') || !options.get('--output-dir')) fail(usage());
+  const report = await splitCombinedMp4({ inputPath: options.get('--input'), manifestPath: options.get('--manifest'), outputDir: options.get('--output-dir') });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
