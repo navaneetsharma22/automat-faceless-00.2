@@ -1,4 +1,4 @@
-/* global document, localStorage, matchMedia, MutationObserver */
+/* global clearTimeout, document, Element, HTMLButtonElement, localStorage, matchMedia, MutationObserver, setTimeout */
 
 const themeKey = "automat-faceless-vids-helper-theme";
 const themeOptions = [
@@ -6,6 +6,71 @@ const themeOptions = [
 ];
 const panels = [...document.querySelectorAll("[data-panel-content]")];
 const navButtons = [...document.querySelectorAll("[data-panel]")];
+const buttonFeedbackTimers = new WeakMap();
+
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest("button");
+  if (
+    !(button instanceof HTMLButtonElement) ||
+    button.disabled ||
+    button.hidden
+  ) {
+    return;
+  }
+  clearTimeout(buttonFeedbackTimers.get(button));
+  button.classList.remove("button-click-feedback");
+  void button.offsetWidth;
+  button.classList.add("button-click-feedback");
+  buttonFeedbackTimers.set(
+    button,
+    setTimeout(() => {
+      button.classList.remove("button-click-feedback");
+      buttonFeedbackTimers.delete(button);
+    }, 190),
+  );
+});
+
+function stateForMessage(message) {
+  if (/\bnot (?:accepted|connected|verified|ready)\b/i.test(message)) {
+    return "error";
+  }
+  if (
+    /error|failed|denied|unavailable|mismatch|unresolved|uncertain|could not|rejected|expired/i.test(
+      message,
+    )
+  ) {
+    return "error";
+  }
+  if (
+    /needs review|waiting|preparing|requested once|browser save initiated|not verifiable/i.test(
+      message,
+    )
+  ) {
+    return "warning";
+  }
+  if (
+    /verified|\bmatch\b|\bready\b|\baccepted\b|connected|bytes received/i.test(
+      message,
+    )
+  ) {
+    return "success";
+  }
+  return "info";
+}
+
+function observeStatus(element) {
+  if (!element) return;
+  const update = () => {
+    element.dataset.state = stateForMessage(element.textContent?.trim() || "");
+  };
+  new MutationObserver(update).observe(element, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+  update();
+}
 
 function applyTheme(preference) {
   const resolved =
@@ -101,14 +166,7 @@ function updateWorkflowSummary() {
   const current = summary?.textContent || "";
   document
     .querySelector("#workflow-next-action")
-    ?.setAttribute(
-      "data-state",
-      /error|failed|denied|unavailable|mismatch|not authorized|unresolved|uncertain|could not|rejected|expired/i.test(
-        current,
-      )
-        ? "error"
-        : "neutral",
-    );
+    ?.setAttribute("data-state", stateForMessage(current));
 }
 
 for (const element of [
@@ -129,16 +187,22 @@ for (const element of [
 updateWorkflowSummary();
 showPanel("download");
 
+for (const selector of [
+  "#mp4-operation-status",
+  "#extension-handoff-status",
+  "#linked-preparation-status",
+  "#prepared-navigation-status",
+  "#two-clip-proof-status",
+]) {
+  observeStatus(document.querySelector(selector));
+}
+
 const extensionStatus = document.querySelector("#extension-config-status");
 if (extensionStatus) {
   const updateConnectionStyle = () => {
-    extensionStatus.dataset.state = /connected\.?$/i.test(
+    extensionStatus.dataset.state = stateForMessage(
       extensionStatus.textContent.trim(),
-    )
-      ? "connected"
-      : /checking/i.test(extensionStatus.textContent)
-        ? "checking"
-        : "error";
+    );
   };
   new MutationObserver(updateConnectionStyle).observe(extensionStatus, {
     childList: true,

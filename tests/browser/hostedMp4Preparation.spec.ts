@@ -302,9 +302,58 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
   await expect(page.locator("#extension-config-status")).toContainText(
     "configuration connected",
   );
+  await expect(page.locator("#start-proof")).toBeEnabled();
+  await expect
+    .poll(() =>
+      page
+        .locator("#start-proof")
+        .evaluate((button) => getComputedStyle(button).backgroundColor),
+    )
+    .toBe("rgb(115, 29, 62)");
   await expect(page.locator("#workflow-summary")).toContainText(
     "enter your Picker key",
   );
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  expect(
+    await page.locator(".shell").evaluate((shell) => shell.clientWidth),
+  ).toBe(Math.round((await page.evaluate(() => window.innerWidth)) * 0.9));
+  await expect(page.locator("#extension-config-status")).toHaveAttribute(
+    "data-state",
+    "success",
+  );
+  const lightStyles = await page.evaluate(() => {
+    const styleOf = (selector: string) =>
+      getComputedStyle(document.querySelector(selector)!);
+    return {
+      primaryBackground: styleOf("#start-proof").backgroundColor,
+      primaryText: styleOf("#start-proof").color,
+      connectDisabled: (
+        document.querySelector("#start-proof") as HTMLButtonElement
+      ).disabled,
+      accentToken: styleOf("html").getPropertyValue("--color-accent").trim(),
+      disabledBackground: styleOf("#prepare-mp4").backgroundColor,
+      disabledText: styleOf("#prepare-mp4").color,
+      disabledCursor: styleOf("#prepare-mp4").cursor,
+      checkboxAccent: styleOf("#ack-only-intended-clip").accentColor,
+      stepColor: styleOf(".step-number").color,
+      activeBorder: styleOf('.nav-link[aria-current="page"]').borderColor,
+      activeShadow: styleOf('.nav-link[aria-current="page"]').boxShadow,
+      focusToken: styleOf("html").getPropertyValue("--color-focus").trim(),
+    };
+  });
+  expect(lightStyles).toMatchObject({
+    primaryBackground: "rgb(115, 29, 62)",
+    primaryText: "rgb(255, 255, 255)",
+    connectDisabled: false,
+    accentToken: "#731d3e",
+    disabledBackground: "rgb(238, 232, 226)",
+    disabledText: "rgb(117, 99, 109)",
+    disabledCursor: "not-allowed",
+    checkboxAccent: "rgb(115, 29, 62)",
+    stepColor: "rgb(115, 29, 62)",
+    focusToken: "#9c315b",
+  });
+  expect(lightStyles.activeShadow).toContain("115, 29, 62");
   await page.screenshot({
     path: resolve(screenshotRoot, "initial-light-desktop.png"),
     fullPage: true,
@@ -312,6 +361,9 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
   const messagesBeforeNavigation = [...externalMessages];
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Settings" })).toHaveClass(
+    /button-click-feedback/,
+  );
   await page.getByLabel("Dark", { exact: true }).check();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   expect(
@@ -319,6 +371,54 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
       localStorage.getItem("automat-faceless-vids-helper-theme"),
     ),
   ).toBe("dark");
+  await page.getByRole("button", { name: "Download" }).click();
+  await expect
+    .poll(() =>
+      page
+        .locator("#start-proof")
+        .evaluate((button) => getComputedStyle(button).backgroundColor),
+    )
+    .toBe("rgb(155, 236, 0)");
+  const darkStyles = await page.evaluate(() => {
+    const styleOf = (selector: string) =>
+      getComputedStyle(document.querySelector(selector)!);
+    return {
+      primaryBackground: styleOf("#start-proof").backgroundColor,
+      primaryText: styleOf("#start-proof").color,
+      disabledBackground: styleOf("#prepare-mp4").backgroundColor,
+      disabledText: styleOf("#prepare-mp4").color,
+      checkboxAccent: styleOf("#ack-only-intended-clip").accentColor,
+      stepColor: styleOf(".step-number").color,
+      activeShadow: styleOf('.nav-link[aria-current="page"]').boxShadow,
+      selectedRadioAccent: styleOf('input[name="theme-choice"][value="dark"]')
+        .accentColor,
+      focusToken: styleOf("html").getPropertyValue("--color-focus").trim(),
+      successBackground: styleOf("#extension-config-status").backgroundColor,
+    };
+  });
+  expect(darkStyles).toMatchObject({
+    primaryBackground: "rgb(155, 236, 0)",
+    primaryText: "rgb(8, 33, 25)",
+    disabledBackground: "rgb(37, 42, 49)",
+    disabledText: "rgb(167, 176, 189)",
+    checkboxAccent: "rgb(155, 236, 0)",
+    stepColor: "rgb(155, 236, 0)",
+    selectedRadioAccent: "rgb(155, 236, 0)",
+    focusToken: "#9bec00",
+    successBackground: "rgb(23, 39, 31)",
+  });
+  expect(darkStyles.activeShadow).toContain("155, 236, 0");
+  await page.screenshot({
+    path: resolve(screenshotRoot, "initial-dark-desktop.png"),
+    fullPage: true,
+  });
+  await page.keyboard.press("Tab");
+  expect(
+    await page.evaluate(
+      () => getComputedStyle(document.activeElement!).outlineColor,
+    ),
+  ).toBe("rgb(155, 236, 0)");
+  await page.getByRole("button", { name: "Settings" }).click();
   await page.emulateMedia({ colorScheme: "light" });
   await page.getByLabel("System", { exact: true }).check();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
@@ -352,6 +452,9 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
       ),
     )
     .toBe(true);
+  expect(
+    await page.locator(".shell").evaluate((shell) => shell.clientWidth),
+  ).toBe(Math.round((await page.evaluate(() => window.innerWidth)) * 0.9));
   await page.screenshot({
     path: resolve(screenshotRoot, "initial-dark-narrow.png"),
     fullPage: true,
@@ -359,6 +462,18 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByLabel("Light", { exact: true }).check();
   await page.getByRole("button", { name: "Download" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
+  await page.screenshot({
+    path: resolve(screenshotRoot, "initial-light-narrow.png"),
+    fullPage: true,
+  });
   await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.locator("#api-key").fill("mock-picker-key");
@@ -385,6 +500,10 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
   await expect(page.locator("#workflow-summary")).toHaveText(
     "MP4 ready. Next: send it to the extension.",
   );
+  await expect(page.locator("#mp4-operation-status")).toHaveAttribute(
+    "data-state",
+    "success",
+  );
   await page.screenshot({
     path: resolve(screenshotRoot, "mp4-ready-light-desktop.png"),
     fullPage: true,
@@ -395,6 +514,10 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
   });
   await expect(page.locator("#workflow-summary")).toContainText(
     "Accepted · attempt fixture-attempt",
+  );
+  await expect(page.locator("#extension-handoff-status")).toHaveAttribute(
+    "data-state",
+    "success",
   );
   await page.screenshot({
     path: resolve(screenshotRoot, "handoff-fixture-light-desktop.png"),
@@ -444,8 +567,21 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
   expect(await page.locator("#mp4-operation-status").textContent()).toContain(
     "operation could not be checked",
   );
+  await expect(page.locator("#mp4-operation-status")).toHaveAttribute(
+    "data-state",
+    "error",
+  );
+  expect(
+    await page
+      .locator("#mp4-operation-status")
+      .evaluate((status) => getComputedStyle(status).backgroundColor),
+  ).toBe("rgb(255, 240, 242)");
   await expect(page.locator("#workflow-summary")).toContainText(
     "operation could not be checked",
+  );
+  await expect(page.locator("#workflow-next-action")).toHaveAttribute(
+    "data-state",
+    "error",
   );
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByLabel("Dark", { exact: true }).check();
