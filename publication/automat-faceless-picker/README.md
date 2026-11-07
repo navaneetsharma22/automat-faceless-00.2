@@ -1,33 +1,228 @@
-# Existing Vids helper publication package
+# Automat Faceless Hosted Picker Proof
 
-This folder contains the current standalone helper page and its local runtime assets. It is prepared for a manual update to the existing repository; nothing here has been published.
+This standalone static page checks whether a separately authorized web app can
+select one existing Google Vids document, read its Drive metadata, and (only
+after a second explicit acknowledged action) prepare and receive a whole-document
+MP4. An additional explicit, nonce-armed action can hand the already prepared
+URI to the installed extension for one browser-managed download. It does not
+modify a Vids document or interact with its scenes.
 
-## Upload destination and files
+## Configuration in this helper
 
-For this UI update, upload these exact files from this folder, preserving names and placing them at the existing Pages source root:
+- Hosted origin: `https://navaneetsharma22.github.io`
+- Web Application OAuth client:
+  `512586348088-scbsk1l4mfuvr524n0g88h9n1ovj6apg.apps.googleusercontent.com`
+- Picker App ID / Cloud project number: `512586348088`
+- Requested scope: `https://www.googleapis.com/auth/drive.file`
+- Google Identity Services uses the browser popup token flow with
+  `prompt: 'select_account consent'` and `include_granted_scopes: false`. No
+  redirect URI or client secret is used.
+- The configuration ping runs only from the exact hosted origin and path
+  launched with the current extension ID. When the extension has a verified
+  Vids binding, its response supplies that expected document ID; it is not
+  placed in the launch URL. A direct-open helper keeps the manual URL or ID
+  field available. The helper never trusts that field as a Picker result:
+  selection must still match the exact ID and pass Vids metadata and download
+  permission checks.
+- A valid GIS access token is reused only in the current page while its
+  returned expiry remains more than 30 seconds away. Reload clears it. The
+  **Switch Google account** action deliberately invokes the existing account
+  selection and consent flow. Tokens remain in page memory and are not sent to
+  the extension.
+- Changing the expected document clears the displayed selection and timeline
+  confirmations. If an MP4 attempt is already active, its proof, operation,
+  and prepared URI remain bound to their original document; a different ID
+  cannot start or receive that attempt.
+- The default Picker view is limited to one selectable
+  `application/vnd.google-apps.vid` file. The explicitly labeled **Browse all
+  file types (diagnostic)** option omits both Picker MIME filters to compare
+  inventory visibility. It still allows one selection and never passes unless
+  Drive metadata confirms the selected file is a Vids document.
+- Metadata request: Drive API `files.get`, requesting
+  `id,mimeType,capabilities(canDownload),resourceKey`.
+- **Prepare MP4 Download** is enabled only after verified Vids MIME metadata,
+  `canDownload=true`, a supplied matching expected ID, and explicit
+  user attestation that the whole manually prepared timeline contains the
+  intended scenes in the reviewed order and is saved. This is user attestation;
+  scene isolation is not verified by this page.
+- **Prepare Two-Clip Whole-Document MP4** is a separate proof mode requiring
+  the exact expected Vids ID, verified Vids metadata, `canDownload=true`, and
+  legacy fixture attestations that v1 visibly contains City then YUGVERA, the document
+  shows saved, and there are no transitions or gaps. These statements are not
+  machine-verified. This diagnostic is disclosed separately and is not a
+  production timeline assumption. It prepares the whole document once and uses the explicit
+  browser download control. It does not use extension handoff or read, settle,
+  clear, or adopt a pending extension run.
+- MP4 preparation uses Drive `files.download` with `mimeType=video/mp4`, then
+  polls the returned operation with `operations.get`. A timeout can continue
+  only polling that operation. The final URI is validated and fetched without
+  forwarding the bearer token. Browser CORS or transport restrictions may
+  prevent receiving bytes; the page does not bypass them.
+- Results distinguish operation ready, bytes received, browser save initiated,
+  and saved-file completion. A webpage cannot verify browser save completion.
 
-- `index.html`
-- `styles.css`
-- `ui.js`
+## Two-clip proof and local split
 
-Existing repository: [navaneetsharma22/automat-faceless-picker](https://github.com/navaneetsharma22/automat-faceless-picker). Existing Pages URL: <https://navaneetsharma22.github.io/automat-faceless-picker/>. Use that repository's already configured Pages branch/source directory; do not change Pages, OAuth, or Cloud settings.
+Select the exact v1 document and verify its ID, Vids MIME type,
+`canDownload: Yes`, and expected-ID `Match`. Check all three statements in the
+separate two-clip proof panel, prepare once, and use **Open Prepared MP4** for
+the browser-managed download. Inspect the actual MP4 in a local player and
+examine decoded frames around the visible City-to-YUGVERA change. Do not infer
+a 10-second boundary from the 20-second UI total. Record the measured boundary
+from decoded frame timestamps and use it in the splitter manifest. Stop without
+splitting if the actual file does not establish an unambiguous boundary. The
+splitter validates supplied timestamps; it does not identify clip content.
 
-## Extension reload and launch
+The API key is intentionally absent from these files. On Download, you may
+paste the restricted key for one page session, or save it from Settings under a
+PIN/passphrase. Saved records use Web Crypto PBKDF2-SHA-256 (600,000 iterations)
+and AES-GCM with a fresh 16-byte salt and 12-byte IV for each save. The PIN is
+not stored. The decrypted key exists in page memory only, and saved-key use
+still requires an explicit Connect action. A long passphrase is preferable to
+a short numeric PIN because someone with a copy of this browser profile could
+try guesses offline. Forgetting the PIN requires forgetting the encrypted
+record and setting it up again with the actual API key.
 
-After the helper update is manually published, open `chrome://extensions`, reload Automat Faceless from this workspace's `dist/`, then reopen the Vids Downloads panel and click **Open existing helper** so the URL carries the reloaded extension's current runtime ID. Build ID: **`automat-faceless-0.1.0-mw5u1nb5`** (four JavaScript bundles). Close any old helper tab before this check.
+The access token is held in page memory and sent only to Google Picker and the
+Google Drive API over HTTPS. It is retained after metadata verification only
+for explicit MP4 preparation and operation polling, then cleared on completion
+or reset. The returned URI and bytes remain in page memory; the URI is never
+displayed or logged. Drive requests use the OAuth bearer header and do not send
+the API key. Neither token nor PIN is persisted, placed in a URL, logged, or
+sent to the extension. The only extension handoff sends the validated prepared
+URI and bounded metadata/attestation fields after the dashboard explicitly
+arms the exact expected document. The API key and resource-key value are never
+sent.
 
-The authorization, Picker, preparation, and handoff logic in `app.js` and `logic.js` is unchanged. This task does not publish the files or check current remote content.
+## Explicit extension download handoff
 
-## Manual compatibility and one-document download checks
+The extension manifest allows external messaging from the hosted site's
+origin. Its worker additionally accepts only the exact helper HTTPS pathname,
+top frame, and tab that was selected when the dashboard arm was created. The
+dashboard must explicitly arm one canonical document ID; the in-memory nonce
+expires after 120 seconds and can be consumed only once. Extension restart,
+expiry, malformed input, or an uncertain send does not retry a download.
 
-1. Confirm the helper says **Extension configuration connected**. The dashboard's **Google account authorization: Not checked** remains separate from this configuration handshake.
-2. Manually authorize the intended Google account in the existing helper. Select one intended Vids document and confirm its exact document ID, Vids MIME type, `canDownload: Yes`, and expected-ID match.
-3. Confirm the extension's Timeline ready record names that same document. Arm the MP4 handoff for it, then prepare the whole document in the helper. If polling times out, use **Continue checking operation**; verify it resumes the same Drive operation.
-4. Send the prepared handoff once. Confirm the helper's accepted attempt ID, document ID, and Chrome download ID match the dashboard and Chrome Downloads. Wait for Chrome completion separately; inspect playback and media properties separately.
-5. Stop after this one-document check. Do not infer scene isolation from a whole-document download.
+The helper's **Send Prepared MP4 to Extension** button is enabled only for the
+already verified expected Vids file, `canDownload=true`, a validated prepared
+URI with no resource key, and the existing whole-document attestation. The
+worker checks the same conditions again, calls `chrome.downloads.download`
+once, uses a stable filename with collision uniquification, and reports the
+returned download's status by its exact ID. Browser completion does not verify
+resolution or clip content. One v1 handoff has user-reported live status
+`LIVE_VERIFIED`; repeatability for another document remains unverified.
+Chrome's Downloads API itself records its normal browser-managed source URL
+metadata; the extension does not separately log, display, or persist the URI.
 
-These are manual checks only; no account authorization, preparation, or download was performed while assembling this folder.
+## Confirmed pending review continuation
 
-## Package contents and exclusions
+For the explicitly supported single-scene recovery, the dashboard action is
+run-bound to an existing confirmed Vids review and asks the user to attest that
+Vids visibly shows saved. That readiness is recorded as `user_attested`, not
+machine verified. The worker rechecks the exact document, result fingerprint,
+candidate scene, sole-scene inventory, and durations before it returns a fresh
+nonce challenge. Use the helper's **Prepare MP4 for confirmed review and send
+once** button; it obtains that challenge before starting a new `files.download`
+operation, then sends the freshly prepared URI once. A URI from the earlier
+standalone preparation or a previous independent download cannot settle the
+review. If status is unresolved, do not retry. Only Chrome's exact linked
+download ID reaching `complete` records `completed_via_hosted_transport` and
+releases the active review. This does not verify resolution or media content.
+The continuation does not insert/replace/delete scenes or automate Vids File
+menus.
 
-`index.html` loads the hosted GIS and Picker scripts; `app.js` and `logic.js` run the existing authorization, Picker, preparation, and handoff behavior; `ui.js` handles local navigation and theme preference; `styles.css` contains the responsive theme styles. The helper retains the existing OAuth client/project configuration and `drive.file` route. This package contains no API key value, access token, signed prepared URI, or extension `dist/` bundle. Enter any restricted Picker API key locally in the hosted page during an authorized manual check.
+## Publish manually to the existing GitHub Pages repository
+
+The current helper files and publication checklist are staged locally under
+`publication/automat-faceless-picker/`. See that folder's `README.md` for the
+exact upload list, existing Pages destination, extension reload steps, and
+manual compatibility/download checks. Do not upload extension bundles,
+credentials, tokens, or signed download URIs. No publish or deployment has
+been performed.
+
+The configured OAuth authorized JavaScript origin is the site origin
+`https://navaneetsharma22.github.io` (no repository path). Keep the API key's
+website restrictions at `https://navaneetsharma22.github.io/*` and
+`https://docs.google.com/*` for the Picker iframe, with its API restriction set
+to Google Picker API. Do not alter the existing Chrome Extension OAuth client
+or extension CSP.
+
+## Manual proof procedure
+
+1. Open the hosted page in a normal browser tab. On Download, paste the
+   restricted Picker key for this page session or unlock a previously saved
+   key. Enter the expected Vids URL or document ID separately; saved-key setup
+   does not fill document information or start Google.
+2. Select **Browse all file types (diagnostic)** for the controlled inventory
+   comparison when needed, then click **Connect / Select Vids Document** once.
+   In Google's account chooser, select the account intended to open the
+   document; do not assume it is the account used by Chrome Identity in the
+   extension.
+3. Grant only the requested `drive.file` permission. The page verifies that GIS
+   reports this scope before opening Picker.
+4. Look for the expected Vids document. If it is present, select only that
+   document. The page calls Drive `files.get` using the same in-memory token
+   returned to this page by GIS. It reports the MIME type, `canDownload`, and
+   expected-ID agreement; a non-Vids file cannot produce a successful Vids
+   proof. The page does not list or log other files or raw Picker payloads.
+5. Record only the bounded result rows: authorization, selection/metadata
+   status, selected file ID, MIME type, `canDownload`, and expected-document
+   match. Do not copy or share the API key or token.
+6. For the separate MP4 proof, require `canDownload: Yes` and expected-document
+   `Match`. Acknowledge that the entire selected document contains only the
+   intended clip, then click **Prepare MP4 Download** once. If polling times
+   out, use **Continue checking operation**; it polls the same operation and
+   never starts a second download request. When ready, click **Receive MP4
+   bytes**. If CORS or transport blocks access, record that outcome without a
+   proxy or token forwarding. If bytes arrive, **Save MP4** initiates a browser
+   save; this page cannot verify that the saved file completed.
+7. For a second independent-file handoff, use a second dedicated Vids document
+   whose canonical ID differs from v1 and whose contents are only the second
+   intended clip. Keep exactly one hosted helper tab open. In the helper,
+   perform its normal account authorization, Vids selection, metadata check,
+   whole-document attestation, and one MP4 preparation until the page reports
+   `MP4 ready` with `resource_key_present: No`. In the dashboard enter that
+   exact second document ID and click **Arm one hosted MP4 download** once.
+   Then click **Send Prepared MP4 to Extension** once. Record the helper's
+   fixed status and Chrome's exact download item. Confirm the new item is
+   distinct and does not replace v1; if the result is `unresolved`, do not
+   retry. Inspect the second saved file separately if playback or fidelity is
+   being evaluated. This is a whole-document download only; it does not
+   insert, delete, export through Vids UI, settle old pending operations, or
+   prove scene isolation. A second dedicated document does not test automatic
+   scene replacement or consecutive exports within one document.
+
+The user has supplied live metadata evidence for v1 from diagnostic mode:
+same-token metadata reported MIME `application/vnd.google-apps.vid`,
+`canDownload: true`, and expected-ID `Match`. Vids-only mode previously showed
+no documents; the root cause is unknown. The hosted navigation download and
+one hosted-to-extension handoff for v1 are user-reported `LIVE_VERIFIED`.
+Chrome reported the extension item `Done` at 7.5 MB. Playback and properties
+have not been checked for that extension-downloaded file.
+
+Authorization, one-item selection, metadata, Drive preparation, hosted
+navigation save, and one explicit extension handoff are user-reported live
+evidence for v1. The next independent-file test requires a second dedicated
+Vids document with a different canonical ID and only the second intended clip;
+run the same one-shot hosted handoff for that exact ID and confirm Chrome
+creates a distinct item without replacing v1. This does not test automatic
+scene replacement or consecutive exports in one document. Those remain
+separate Phase 4 criteria and Vids UI export experiments are paused. The hosted
+OAuth account and prepared URI remain separate from Chrome Identity; no account
+or file-grant continuity is assumed.
+
+## Official API references
+
+- [Google Identity Services token model](https://developers.google.com/identity/oauth2/web/guides/use-token-model)
+- [GIS JavaScript API reference](https://developers.google.com/identity/oauth2/web/reference/js-reference)
+- [Google Picker web integration](https://developers.google.com/workspace/drive/picker/guides/web-picker)
+- [Picker `setMaxItems`](https://developers.google.com/workspace/drive/picker/reference/picker.pickerbuilder.setmaxitems)
+- [Picker MIME filtering](https://developers.google.com/workspace/drive/picker/reference/picker.view.setmimetypes)
+- [Drive `files.get`](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/get)
+- [Drive download and export guide](https://developers.google.com/workspace/drive/api/guides/manage-downloads)
+- [Drive long-running operations](https://developers.google.com/workspace/drive/api/guides/long-running-operations)
+- [Drive `files.download`](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/download)
+- [Google Vids MIME type](https://developers.google.com/workspace/drive/api/guides/mime-types)
+- [Using API keys in REST requests](https://docs.cloud.google.com/docs/authentication/api-keys-use)
+- [Chrome external messaging](https://developer.chrome.com/docs/extensions/develop/concepts/messaging#external)
+- [Chrome Downloads API](https://developer.chrome.com/docs/extensions/reference/api/downloads)

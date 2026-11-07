@@ -661,7 +661,15 @@ chrome.runtime.onMessage.addListener(
   }),
 );
 chrome.runtime.onMessageExternal.addListener(
-  createHostedHelperConfigListener(chrome.runtime.id),
+  createHostedHelperConfigListener(chrome.runtime.id, async () => {
+    const selected = await repositories.getSelectedTarget("Vids");
+    const binding = selected?.verificationBinding;
+    if (!selected || selected.verification !== "verified" || selected.connectionState !== "verified" ||
+      selected.reconnectEnabled === false || !binding || binding.provider !== "Vids" ||
+      binding.tabId !== selected.tabId || binding.canonicalTarget !== selected.canonicalTarget ||
+      !/^[A-Za-z0-9_-]{1,200}$/.test(binding.projectId)) return undefined;
+    return binding.projectId;
+  }),
 );
 chrome.runtime.onMessageExternal.addListener(
   createHostedVidsDownloadListener(vidsDownload),

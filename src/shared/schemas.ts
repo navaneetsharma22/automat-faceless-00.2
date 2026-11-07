@@ -781,6 +781,7 @@ export const HostedHelperConfigPingResponseSchema = z
   .object({
     success: z.boolean(),
     status: z.enum(["configured", "rejected"]),
+    expectedDocumentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/).optional(),
   })
   .strict();
 export type HostedHelperConfigPing = z.infer<

@@ -11,7 +11,10 @@ export type HostedHelperMessageSender = {
   tab?: { id?: number };
 };
 
-export function createHostedHelperConfigListener(extensionId: string) {
+export function createHostedHelperConfigListener(
+  extensionId: string,
+  getVerifiedVidsDocumentId?: () => Promise<string | undefined>,
+) {
   return (
     message: unknown,
     sender: HostedHelperMessageSender,
@@ -22,13 +25,25 @@ export function createHostedHelperConfigListener(extensionId: string) {
     if (!isConfigMessage) return false;
     const accepted = HostedHelperConfigPingSchema.safeParse(message).success &&
       isAuthorizedHostedHelperSender(sender, extensionId);
-    sendResponse(
-      HostedHelperConfigPingResponseSchema.parse(
-        accepted
-          ? { success: true, status: "configured" }
-          : { success: false, status: "rejected" },
-      ),
-    );
-    return false;
+    if (!accepted) {
+      sendResponse({ success: false, status: "rejected" });
+      return false;
+    }
+    if (!getVerifiedVidsDocumentId) {
+      sendResponse({ success: true, status: "configured" });
+      return false;
+    }
+    void getVerifiedVidsDocumentId().then((documentId) => {
+      sendResponse(HostedHelperConfigPingResponseSchema.parse({
+        success: true,
+        status: "configured",
+        ...(typeof documentId === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(documentId)
+          ? { expectedDocumentId: documentId }
+          : {}),
+      }));
+    }).catch(() => {
+      sendResponse({ success: true, status: "configured" });
+    });
+    return true;
   };
 }

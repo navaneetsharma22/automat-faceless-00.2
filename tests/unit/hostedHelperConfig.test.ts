@@ -63,4 +63,29 @@ describe("hosted Vids helper configuration binding", () => {
     listener({ type: HOSTED_HELPER_CONFIG_PING }, { ...validSender, frameId: 1 }, sendResponse);
     expect(sendResponse).toHaveBeenLastCalledWith({ success: false, status: "rejected" });
   });
+
+  it("returns a validated document binding only from the bound helper and omits unavailable documents", async () => {
+    const validSender = { url: helperUrl, origin: HOSTED_PICKER_ORIGIN, frameId: 0, tab: { id: 12 }, documentId: "helper-doc-1" };
+    const sendResponse = vi.fn();
+    const listener = createHostedHelperConfigListener(extensionId, async () => "verified-vids-document-01");
+    expect(listener({ type: HOSTED_HELPER_CONFIG_PING }, validSender, sendResponse)).toBe(true);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({
+      success: true,
+      status: "configured",
+      expectedDocumentId: "verified-vids-document-01",
+    }));
+
+    const resolveDocument = vi.fn(async () => "verified-vids-document-02");
+    const guarded = createHostedHelperConfigListener(extensionId, resolveDocument);
+    guarded({ type: HOSTED_HELPER_CONFIG_PING }, { ...validSender, frameId: 1 }, sendResponse);
+    expect(resolveDocument).not.toHaveBeenCalled();
+
+    const absent = createHostedHelperConfigListener(extensionId, async () => undefined);
+    absent({ type: HOSTED_HELPER_CONFIG_PING }, validSender, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenLastCalledWith({ success: true, status: "configured" }));
+
+    const malformed = createHostedHelperConfigListener(extensionId, async () => "https://attacker.example/id");
+    malformed({ type: HOSTED_HELPER_CONFIG_PING }, validSender, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenLastCalledWith({ success: true, status: "configured" }));
+  });
 });

@@ -227,9 +227,14 @@ test("normal Prepare button retains the POST operation ID before a mocked poll f
         ? "index.html"
         : pathname.split("/").at(-1)!;
       if (
-        !["index.html", "app.js", "logic.js", "styles.css", "ui.js"].includes(
-          filename,
-        )
+        ![
+          "index.html",
+          "app.js",
+          "logic.js",
+          "saved-key.js",
+          "styles.css",
+          "ui.js",
+        ].includes(filename)
       ) {
         await route.fulfill({ status: 404, body: "not found" });
         return;

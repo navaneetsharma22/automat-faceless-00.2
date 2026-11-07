@@ -96,20 +96,53 @@
               </div>
             </div>
 
-            <label for="api-key">Google Picker API key</label>
-            <input
-              id="api-key"
-              name="api-key"
-              type="password"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              required
-            />
-            <p class="hint">
-              Paste your restricted key for this session. It is cleared when you
-              connect and is never sent to the extension.
-            </p>
+            <section
+              id="saved-key-download"
+              class="saved-key-box"
+              aria-labelledby="saved-key-download-title"
+              hidden
+            >
+              <h3 id="saved-key-download-title">Use saved Picker key</h3>
+              <p
+                id="saved-key-download-status"
+                role="status"
+                aria-live="polite"
+              >
+                Checking this browser for a saved key…
+              </p>
+              <label id="unlock-pin-label" for="unlock-pin"
+                >PIN or passphrase</label
+              >
+              <input
+                id="unlock-pin"
+                type="password"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                aria-describedby="unlock-attempts"
+              />
+              <p id="unlock-attempts" class="hint">3 attempts remaining</p>
+              <button id="unlock-saved-key" type="button">
+                Unlock saved key
+              </button>
+            </section>
+
+            <div id="manual-key-entry">
+              <label for="api-key">Google Picker API key</label>
+              <input
+                id="api-key"
+                name="api-key"
+                type="password"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                required
+              />
+              <p class="hint">
+                Paste your restricted key for this page session. It is cleared
+                when you connect and is never sent to the extension.
+              </p>
+            </div>
 
             <label for="expected-document"
               >Expected Vids URL or document ID</label
@@ -125,6 +158,7 @@
               placeholder="Paste the URL or document ID from the extension"
               aria-describedby="expected-document-hint"
             />
+            <span id="expected-document-source" class="field-badge" hidden>Filled from extension</span>
             <p class="hint" id="expected-document-hint">
               The selected file must match this exact document before MP4
               preparation is enabled.
@@ -163,6 +197,7 @@
             >
               Loading Google services…
             </button>
+            <button id="switch-google-account" class="button-neutral" type="button">Switch Google account</button>
 
             <section
               class="verification"
@@ -313,12 +348,128 @@
                 >
               </div>
             </fieldset>
+            <section
+              class="saved-key-settings"
+              aria-labelledby="saved-key-settings-title"
+            >
+              <h2 id="saved-key-settings-title">Saved Picker key</h2>
+              <p class="hint">
+                Encrypt a restricted Google Picker API key for this browser
+                profile. The key is never sent to the extension. You will still
+                choose the Google account and Vids document manually.
+              </p>
+              <p class="hint">
+                Choose a long passphrase if possible. Someone with a copy of
+                this browser profile could try PIN guesses offline. If you
+                forget it, use Forget saved key and set up the actual API key
+                again.
+              </p>
+              <p
+                id="saved-key-settings-status"
+                role="status"
+                aria-live="polite"
+              >
+                Checking this browser for a saved key…
+              </p>
+              <form id="save-picker-key-form" class="saved-key-form" hidden>
+                <label for="save-picker-key-input">Google Picker API key</label>
+                <input
+                  id="save-picker-key-input"
+                  type="password"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  required
+                />
+                <label for="save-picker-pin">Set a PIN or passphrase</label>
+                <input
+                  id="save-picker-pin"
+                  type="password"
+                  autocomplete="off"
+                  required
+                />
+                <label for="save-picker-pin-confirm"
+                  >Confirm PIN or passphrase</label
+                >
+                <input
+                  id="save-picker-pin-confirm"
+                  type="password"
+                  autocomplete="off"
+                  required
+                />
+                <button class="button-primary" type="submit">
+                  Save encrypted key
+                </button>
+              </form>
+              <div
+                id="saved-key-existing-controls"
+                class="saved-key-actions"
+                hidden
+              >
+                <button id="lock-saved-key" type="button">Lock now</button>
+                <button id="show-replace-saved-key" type="button">
+                  Replace saved key
+                </button>
+                <button
+                  id="forget-saved-key"
+                  class="button-secondary"
+                  type="button"
+                >
+                  Forget saved key
+                </button>
+              </div>
+              <form id="replace-picker-key-form" class="saved-key-form" hidden>
+                <label for="replace-current-pin"
+                  >Current PIN or passphrase</label
+                >
+                <input
+                  id="replace-current-pin"
+                  type="password"
+                  autocomplete="off"
+                  required
+                />
+                <label for="replace-picker-key-input"
+                  >Replacement Google Picker API key</label
+                >
+                <input
+                  id="replace-picker-key-input"
+                  type="password"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  required
+                />
+                <label for="replace-picker-pin">New PIN or passphrase</label>
+                <input
+                  id="replace-picker-pin"
+                  type="password"
+                  autocomplete="off"
+                  required
+                />
+                <label for="replace-picker-pin-confirm"
+                  >Confirm new PIN or passphrase</label
+                >
+                <input
+                  id="replace-picker-pin-confirm"
+                  type="password"
+                  autocomplete="off"
+                  required
+                />
+                <button class="button-primary" type="submit">
+                  Confirm replacement
+                </button>
+                <button id="cancel-replace-saved-key" type="button">
+                  Cancel
+                </button>
+              </form>
+            </section>
             <div class="settings-note">
               <h2>Google access</h2>
               <p>
                 The existing Google account consent and Picker flow remain part
-                of Download. The Picker API key is entered for the current page
-                session and is not stored as a preference.
+                of Download. Without a saved key, paste the restricted Picker
+                key for one page session. A saved key is encrypted in this
+                browser profile and must be unlocked with its PIN before use.
               </p>
             </div>
           </section>

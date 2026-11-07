@@ -396,6 +396,22 @@ summary:focus-visible {
   font-size: 0.8rem;
   line-height: 1.5;
 }
+
+.field-badge {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 0.35rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  color: var(--color-success);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.field-badge[hidden] {
+  display: none;
+}
 .picker-mode,
 .theme-choice {
   display: grid;
@@ -490,6 +506,15 @@ button:active:not(:disabled) {
 .button-secondary {
   color: var(--color-error);
 }
+.button-neutral {
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+.button-neutral:hover:not(:disabled) {
+  border-color: var(--color-focus);
+  background: var(--color-surface);
+}
 button[hidden] {
   display: none !important;
 }
@@ -562,6 +587,53 @@ dd {
 .settings-card {
   display: grid;
   gap: 22px;
+}
+.saved-key-box,
+.saved-key-settings {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.saved-key-box {
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card-compact);
+  background: var(--color-surface-raised);
+}
+.saved-key-box h3,
+.saved-key-settings h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.saved-key-box p,
+.saved-key-settings p {
+  margin: 0;
+}
+.saved-key-form {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.saved-key-form[hidden] {
+  display: none;
+}
+.saved-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.saved-key-settings {
+  padding-top: 18px;
+  border-top: 1px solid var(--color-border);
+}
+.saved-key-settings [data-state="success"] {
+  color: var(--color-success);
+}
+.saved-key-settings [data-state="warning"] {
+  color: var(--color-warning);
+}
+.saved-key-settings [data-state="error"] {
+  color: var(--color-error);
 }
 .theme-choice {
   margin: 0;

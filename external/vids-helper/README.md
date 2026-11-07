@@ -17,6 +17,22 @@ modify a Vids document or interact with its scenes.
 - Google Identity Services uses the browser popup token flow with
   `prompt: 'select_account consent'` and `include_granted_scopes: false`. No
   redirect URI or client secret is used.
+- The configuration ping runs only from the exact hosted origin and path
+  launched with the current extension ID. When the extension has a verified
+  Vids binding, its response supplies that expected document ID; it is not
+  placed in the launch URL. A direct-open helper keeps the manual URL or ID
+  field available. The helper never trusts that field as a Picker result:
+  selection must still match the exact ID and pass Vids metadata and download
+  permission checks.
+- A valid GIS access token is reused only in the current page while its
+  returned expiry remains more than 30 seconds away. Reload clears it. The
+  **Switch Google account** action deliberately invokes the existing account
+  selection and consent flow. Tokens remain in page memory and are not sent to
+  the extension.
+- Changing the expected document clears the displayed selection and timeline
+  confirmations. If an MP4 attempt is already active, its proof, operation,
+  and prepared URI remain bound to their original document; a different ID
+  cannot start or receive that attempt.
 - The default Picker view is limited to one selectable
   `application/vnd.google-apps.vid` file. The explicitly labeled **Browse all
   file types (diagnostic)** option omits both Picker MIME filters to compare
@@ -57,18 +73,26 @@ from decoded frame timestamps and use it in the splitter manifest. Stop without
 splitting if the actual file does not establish an unambiguous boundary. The
 splitter validates supplied timestamps; it does not identify clip content.
 
-The API key is intentionally absent from these files. Enter the user's
-restricted key into the page at run time. It is used only in memory as the
-Google Picker developer key. The access token is held in page memory and sent
-only to Google Picker and the Google Drive API over HTTPS. It is retained after
-metadata verification only for explicit MP4 preparation and operation polling,
-then cleared on completion or reset. The returned URI and bytes remain in page
-memory; the URI is never displayed or logged. Drive requests use the OAuth
-bearer header and do not send the API key. The page does not persist either
-value, place the token in a URL, or log it. The only extension handoff sends
-the validated prepared URI and bounded metadata/attestation fields after the
-dashboard explicitly arms the exact expected document. The token, API key, and
-resource-key value are never sent.
+The API key is intentionally absent from these files. On Download, you may
+paste the restricted key for one page session, or save it from Settings under a
+PIN/passphrase. Saved records use Web Crypto PBKDF2-SHA-256 (600,000 iterations)
+and AES-GCM with a fresh 16-byte salt and 12-byte IV for each save. The PIN is
+not stored. The decrypted key exists in page memory only, and saved-key use
+still requires an explicit Connect action. A long passphrase is preferable to
+a short numeric PIN because someone with a copy of this browser profile could
+try guesses offline. Forgetting the PIN requires forgetting the encrypted
+record and setting it up again with the actual API key.
+
+The access token is held in page memory and sent only to Google Picker and the
+Google Drive API over HTTPS. It is retained after metadata verification only
+for explicit MP4 preparation and operation polling, then cleared on completion
+or reset. The returned URI and bytes remain in page memory; the URI is never
+displayed or logged. Drive requests use the OAuth bearer header and do not send
+the API key. Neither token nor PIN is persisted, placed in a URL, logged, or
+sent to the extension. The only extension handoff sends the validated prepared
+URI and bounded metadata/attestation fields after the dashboard explicitly
+arms the exact expected document. The API key and resource-key value are never
+sent.
 
 ## Explicit extension download handoff
 
@@ -125,12 +149,15 @@ or extension CSP.
 
 ## Manual proof procedure
 
-1. Open the hosted page in a normal browser tab. Enter the locally held API
-   key and, optionally, the expected Vids URL or document ID.
+1. Open the hosted page in a normal browser tab. On Download, paste the
+   restricted Picker key for this page session or unlock a previously saved
+   key. Enter the expected Vids URL or document ID separately; saved-key setup
+   does not fill document information or start Google.
 2. Select **Browse all file types (diagnostic)** for the controlled inventory
-   comparison, then click **Connect / Select Vids Document** once. In Google's
-   account chooser, select the account intended to open the document; do not
-   assume it is the account used by Chrome Identity in the extension.
+   comparison when needed, then click **Connect / Select Vids Document** once.
+   In Google's account chooser, select the account intended to open the
+   document; do not assume it is the account used by Chrome Identity in the
+   extension.
 3. Grant only the requested `drive.file` permission. The page verifies that GIS
    reports this scope before opening Picker.
 4. Look for the expected Vids document. If it is present, select only that
