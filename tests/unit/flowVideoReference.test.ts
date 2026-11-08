@@ -265,6 +265,40 @@ describe("production Flow video attachment picker action", () => {
     expect(events).toEqual(["picker-open", "row-click", "preview-settled", "add-click"]);
     expect(doc.querySelectorAll("flow-base-prompt-box button[aria-label='Ingredient']")).toHaveLength(1);
   });
+
+  it("reports exact-row absence separately and never activates Add", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/shot-two-gallery-representation";
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="https://flow.google.com/asb/other"></button></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+    });
+    const result = await flowVideoAttachmentActionInPage(id, galleryUrl);
+    expect(result).toEqual({ ok: false, reason: "picker_exact_row_missing" });
+    expect(doc.querySelector("button.add-to-prompt")).toBeNull();
+  });
+
+  it("distinguishes a mismatched selected preview and an Add control that is not ready", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/shot-two-gallery-representation";
+    const build = (previewUrl: string, disabled: boolean) => {
+      const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+      doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+        const section = doc.createElement("section");
+        section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${galleryUrl}"></button></div><aside><img class="detail-preview-image" alt="Preview of selected asset" src="${previewUrl}"><button class="add-to-prompt" ${disabled ? "disabled" : ""}>Add to prompt</button></aside>`;
+        doc.body.append(section);
+        sizeElements(doc);
+      });
+      return doc;
+    };
+    build("https://flow.google.com/asb/wrong", false);
+    expect(await flowVideoAttachmentActionInPage(id, galleryUrl)).toMatchObject({ ok: false, reason: "picker_selected_preview_mismatch" });
+    build(galleryUrl, true);
+    expect(await flowVideoAttachmentActionInPage(id, galleryUrl)).toMatchObject({ ok: false, reason: "picker_add_not_ready" });
+  });
 });
 
 describe("Flow pinned video reference attachment (offline fixtures)", () => {

@@ -142,6 +142,27 @@ export async function flowVideoAttachmentActionInPage(
     return { list, preview, row, action };
   };
 
+  // Flow virtualizes picker rows. Search only within the verified document's
+  // Asset list, in a bounded number of scroll positions, and match the exact
+  // URL that was already bound to the pinned media ID and verified bytes.
+  const findExactRow = async () => {
+    const first = read();
+    if (!first.list) return undefined;
+    const list = first.list;
+    const originalTop = list.scrollTop;
+    const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    const steps = Math.min(8, Math.max(1, Math.ceil(maxTop / Math.max(1, list.clientHeight * 0.75))));
+    for (let step = 0; step <= steps; step++) {
+      list.scrollTop = Math.min(maxTop, step === steps ? maxTop : step * Math.max(1, list.clientHeight * 0.75));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const row = read().row;
+      if (row) return row;
+    }
+    list.scrollTop = originalTop;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return read().row;
+  };
+
   if (roots.length !== 1) return { ok: false, reason: "composer_unavailable_after_preflight" };
   const attachmentControls = [...roots[0]!.querySelectorAll<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']")].filter(visible);
   if (attachmentControls.length !== 1 || attachmentControls[0]!.disabled || attachmentControls[0]!.getAttribute("aria-disabled") === "true")
@@ -161,17 +182,9 @@ export async function flowVideoAttachmentActionInPage(
 
   // First resolve only the exact thumbnail identity. Detail preview and Add
   // are expected to appear after selecting the row, so they are not gates here.
-  let rowSelected = false;
-  for (let i = 0; i < 40; i++) {
-    const p = read();
-    if (p.row) {
-      p.row.click();
-      rowSelected = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  if (!rowSelected) return { ok: false, reason: "candidate_missing_or_virtualized" };
+  const exactRow = await findExactRow();
+  if (!exactRow) return { ok: false, reason: "picker_exact_row_missing" };
+  exactRow.click();
 
   // Wait for the selected gallery thumbnail's detail preview and its unique
   // Add control to settle before any activation.
@@ -183,10 +196,12 @@ export async function flowVideoAttachmentActionInPage(
         selected.action.length === 1) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (!selected.row || !selected.preview ||
-      (selected.preview.currentSrc || selected.preview.src) !== expectedGalleryUrl ||
-      selected.action.length !== 1)
-    return { ok: false, reason: "candidate_missing_or_virtualized" };
+  if (!selected.preview ||
+      (selected.preview.currentSrc || selected.preview.src) !== expectedGalleryUrl)
+    return { ok: false, reason: "picker_selected_preview_mismatch" };
+  if (selected.action.length !== 1 || selected.action[0]!.disabled || selected.action[0]!.getAttribute("aria-disabled") === "true")
+    return { ok: false, reason: "picker_add_not_ready" };
+  if (!selected.row) return { ok: false, reason: "picker_exact_row_missing" };
   existing = chips();
   if (existing.length) return { ok: false, reason: "chip_conflict_before_add" };
   selected.action[0]!.click();
