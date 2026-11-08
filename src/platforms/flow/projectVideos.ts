@@ -123,6 +123,25 @@ export const FlowProjectVideosImportProgressSchema = z
     restorationWarning: z
       .enum(["gallery_restore_failed", "navigation_changed", "cancelled"])
       .optional(),
+    connectionFailure: z.object({
+      state: z.string().regex(/^[a-z0-9_-]{1,64}$/),
+      stage: z.string().regex(/^[a-z0-9_-]{1,64}$/),
+      reason: z.string().regex(/^[a-z0-9_-]{1,64}$/),
+    }).strict().optional(),
+    lastCompletedStage: z.enum([
+      "initial_inventory",
+      "gallery_restoration",
+      "next_candidate_lookup",
+      "final_coverage_validation",
+    ]).optional(),
+    stopStage: z.enum([
+      "initial_inventory",
+      "gallery_restoration",
+      "next_candidate_lookup",
+      "final_coverage_validation",
+    ]).optional(),
+    stopReason: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(),
+    pendingCandidates: z.number().int().nonnegative().max(200).optional(),
     failureReason: z
       .enum([
         "project_missing",

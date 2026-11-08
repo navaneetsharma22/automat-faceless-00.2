@@ -725,6 +725,11 @@ export function FlowGalleryDiagnostic({
                     : "Clip identity was saved; Gallery restoration was cancelled."}
               </p>
             ) : null}
+            {galleryCheck.connectionFailure ? (
+              <p className={styles.clipMessage}>
+                Gallery connection at stop: state {galleryCheck.connectionFailure.state}, stage {galleryCheck.connectionFailure.stage}, reason {galleryCheck.connectionFailure.reason}.
+              </p>
+            ) : null}
             {galleryCheck.unresolvedCards.map((card, index) => (
               <p className={styles.fieldError} key={`${card.reason}-${index}`}>
                 {card.title || "Untitled video"} · {card.reason.replaceAll("_", " ")}
@@ -1249,8 +1254,13 @@ export function FlowClipDownloads({
             ) : null}
           </div>
           <p className={styles.clipMessage}>
-            Discovered {galleryImport.discovered} · Processed {galleryImport.imported + galleryImport.alreadyPresent + galleryImport.unresolved} · Not processed {Math.max(0, galleryImport.discovered - galleryImport.imported - galleryImport.alreadyPresent - galleryImport.unresolved)} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Repeated discoveries {galleryImport.repeatedDiscoveries ?? 0} · Open attempts {galleryImport.openAttempts ?? 0} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
+            Discovered {galleryImport.discovered} · Processed {galleryImport.imported + galleryImport.alreadyPresent + galleryImport.unresolved} · Not processed {Math.max(0, galleryImport.discovered - galleryImport.imported - galleryImport.alreadyPresent - galleryImport.unresolved)} · Pending candidates {galleryImport.pendingCandidates ?? Math.max(0, galleryImport.discovered - galleryImport.imported - galleryImport.alreadyPresent - galleryImport.unresolved)} · Imported {galleryImport.imported} · Already present {galleryImport.alreadyPresent} · Unresolved {galleryImport.unresolved} · Repeated discoveries {galleryImport.repeatedDiscoveries ?? 0} · Open attempts {galleryImport.openAttempts ?? 0} · Scan {galleryImport.scanCompleteness === "pending" ? "in progress" : galleryImport.scanCompleteness}
           </p>
+          {galleryImport.stopStage ? (
+            <p className={styles.clipMessage}>
+              Stopped at {galleryImport.stopStage.replaceAll("_", " ")}: {galleryImport.stopReason ?? "stage failed"} · Last completed {galleryImport.lastCompletedStage?.replaceAll("_", " ") ?? "none"} · Pending candidates {galleryImport.pendingCandidates ?? 0}.
+            </p>
+          ) : null}
           {galleryImport.scope === "one_card_check" ? (
             <p className={styles.disabledReason}>
               {galleryImport.discovered > 0
@@ -1270,6 +1280,11 @@ export function FlowClipDownloads({
                 : galleryImport.restorationWarning === "navigation_changed"
                   ? "Verified clip identity was saved, but the selected Flow page changed during restoration."
                   : "Verified clip identity was saved; Gallery restoration was cancelled."}
+            </p>
+          ) : null}
+          {galleryImport.connectionFailure ? (
+            <p className={styles.clipMessage}>
+              Gallery connection at stop: state {galleryImport.connectionFailure.state}, stage {galleryImport.connectionFailure.stage}, reason {galleryImport.connectionFailure.reason}.
             </p>
           ) : null}
           {galleryImport.reason && !galleryImport.failureReason ? (

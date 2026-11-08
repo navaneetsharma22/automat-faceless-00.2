@@ -1023,18 +1023,22 @@ export function createFlowDownloadDiagnosticManager(
     });
   };
 
-  const verifyFinalGalleryInventory = async (job: FlowProjectVideoImportJob) => {
+  const verifyFinalGalleryInventory = async (job: FlowProjectVideoImportJob): Promise<string | undefined> => {
     const target = await verifyImportTarget(job);
     const started = await importPageResult(job, target.binding, "start");
-    if (started.status !== "ready" || started.projectId !== job.progress.projectId || started.cardsCapped)
-      return false;
+    if (started.status !== "ready") return started.reason ?? "final_gallery_start_unavailable";
+    if (started.projectId !== job.progress.projectId) return "project_mismatch";
+    if (started.cardsCapped) return "bound_reached";
     const observed = new Set<string>();
     let page = await importPageResult(job, target.binding, "snapshot");
     for (let step = 0; step <= FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS; step += 1) {
-      if (job.cancelRequested || page.scroll.busy || page.cardsCapped || !page.scroll.containerFound)
-        return false;
+      if (job.cancelRequested) return "cancelled";
+      if (page.projectId !== job.progress.projectId) return "project_mismatch";
+      if (page.scroll.busy) return "scroll_busy";
+      if (page.cardsCapped) return "bound_reached";
+      if (!page.scroll.containerFound) return "scroll_container_missing";
       for (const key of galleryInventoryKeys(page.cards)) {
-        if (!key) return false;
+        if (!key) return "inventory_key_missing";
         if (job.inventoryKeys.has(key)) {
           job.progress = {
             ...job.progress,
@@ -1045,16 +1049,21 @@ export function createFlowDownloadDiagnosticManager(
       }
       if (page.scroll.atBottom) {
         const expected = job.inventoryKeys;
-        return observed.size === expected.size && [...expected].every((key) => observed.has(key));
+        return observed.size === expected.size && [...expected].every((key) => observed.has(key))
+          ? undefined
+          : "inventory_mismatch";
       }
-      if (step === FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS) return false;
+      if (step === FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS) return "scroll_bound_reached";
       const moved = await importPageResult(job, target.binding, "scroll");
-      if (moved.status !== "ready" || !moved.scroll.moved) return false;
+      if (moved.status !== "ready") return moved.reason ?? "scroll_unavailable";
+      if (!moved.scroll.containerFound) return "scroll_container_missing";
+      if (!moved.scroll.moved) return "scroll_did_not_move";
       await sleepForImport(150);
       page = await importPageResult(job, target.binding, "snapshot");
-      if (page.status !== "ready" || page.projectId !== job.progress.projectId) return false;
+      if (page.status !== "ready") return page.reason ?? "final_gallery_snapshot_unavailable";
+      if (page.projectId !== job.progress.projectId) return "project_mismatch";
     }
-    return false;
+    return "scroll_bound_reached";
   };
 
   const restoreProjectVideosGallery = async (
@@ -1064,7 +1073,7 @@ export function createFlowDownloadDiagnosticManager(
     const projectId = job.progress.projectId!;
     const deadline = Date.now() + 30_000;
     let rootNavigationStarted = false;
-    let connectionRevalidationAttempted = false;
+    let lastConnectionFailure: FlowProjectVideoConnectionDiagnostic | undefined;
     for (let attempt = 0; attempt < 200 && Date.now() < deadline; attempt += 1) {
       if (job.cancelRequested) return "cancelled";
       const tab = await dependencies.tabs.get(job.selectedTabId).catch(() => undefined);
@@ -1075,8 +1084,20 @@ export function createFlowDownloadDiagnosticManager(
       const route = tab.url
         ? flowTabFromUrl(job.selectedTabId, tab.title ?? "", tab.url)
         : undefined;
-      if (!route || route.canonicalTarget !== job.canonicalTarget || route.projectId !== projectId)
+      if (!route || route.canonicalTarget !== job.canonicalTarget || route.projectId !== projectId) {
+        if (lastConnectionFailure)
+          job.progress = { ...job.progress, connectionFailure: lastConnectionFailure };
+        else
+          job.progress = {
+            ...job.progress,
+            connectionFailure: {
+              state: "changed",
+              stage: "target_validation",
+              reason: "different_target_or_project",
+            },
+          };
         return "navigation_changed";
+      }
       const detail = tab.url ? flowClipDetailIdentityFromUrl(tab.url) : undefined;
       if (detail) {
         if (detail.projectId !== projectId) return "navigation_changed";
@@ -1102,13 +1123,37 @@ export function createFlowDownloadDiagnosticManager(
 
       let target: Awaited<ReturnType<typeof verifyImportTarget>>;
       try {
-        const revalidate = !connectionRevalidationAttempted;
-        connectionRevalidationAttempted = true;
-        target = await verifyImportTarget(job, revalidate);
+        // Every pass checks the replacement Gallery document through the existing
+        // bounded connector lifecycle. A failed handshake must not fall through
+        // to a snapshot using the previous document binding.
+        target = await verifyImportTarget(job, true);
+        lastConnectionFailure = undefined;
+        job.progress = { ...job.progress, connectionFailure: undefined };
       } catch (error) {
         const code = error instanceof Error ? error.message : "";
-        if (code.includes("navigation_changed") || code.includes("document_changed"))
+        if (error instanceof FlowProjectVideoConnectionError) {
+          lastConnectionFailure = {
+            state: error.connectionFailure.state,
+            stage: error.connectionFailure.stage,
+            reason: error.connectionFailure.reason,
+          };
+          job.progress = { ...job.progress, connectionFailure: lastConnectionFailure };
+        } else if (code.includes("target_document_changed") || code.includes("navigation_changed") || code.includes("document_changed")) {
+          lastConnectionFailure = {
+            state: "changed",
+            stage: "target_validation",
+            reason: "different_target_or_project",
+          };
+          job.progress = { ...job.progress, connectionFailure: lastConnectionFailure };
           return "navigation_changed";
+        } else if (code.includes("target_not_currently_verified")) {
+          lastConnectionFailure = {
+            state: "unverified",
+            stage: "handshake_validation",
+            reason: "target_not_currently_verified",
+          };
+          job.progress = { ...job.progress, connectionFailure: lastConnectionFailure };
+        }
         await sleepForImport(150);
         continue;
       }
@@ -1131,8 +1176,10 @@ export function createFlowDownloadDiagnosticManager(
           continue;
         }
         const snapshot = await importPageResult(job, target.binding, "snapshot");
-        if (snapshot.status === "ready" && snapshot.projectId === projectId)
+        if (snapshot.status === "ready" && snapshot.projectId === projectId) {
+          job.progress = { ...job.progress, lastCompletedStage: "gallery_restoration" };
           return undefined;
+        }
       } catch (error) {
         const code = error instanceof Error ? error.message : "";
         if (code.includes("navigation_changed") || code.includes("document_changed"))
@@ -1141,6 +1188,8 @@ export function createFlowDownloadDiagnosticManager(
       }
       await sleepForImport(150);
     }
+    if (lastConnectionFailure)
+      job.progress = { ...job.progress, connectionFailure: lastConnectionFailure };
     return job.cancelRequested ? "cancelled" : "gallery_restore_failed";
   };
 
@@ -1905,10 +1954,31 @@ export function createFlowDownloadDiagnosticManager(
     let terminal: FlowProjectVideosImportProgress["status"] = "completed";
     let stopReason: FlowProjectVideosImportProgress["reason"];
     let scanComplete = false;
+    type RunStage = NonNullable<FlowProjectVideosImportProgress["stopStage"]>;
+    let activeStage: RunStage = "initial_inventory";
+    const pendingCandidateCount = () => Math.max(
+      0,
+      job.progress.discovered - job.progress.imported - job.progress.alreadyPresent - job.progress.unresolved,
+    );
+    const completeStage = (stage: RunStage) => {
+      job.progress = { ...job.progress, lastCompletedStage: stage };
+    };
+    const stopAtStage = (stage: RunStage, reason: string) => {
+      job.progress = {
+        ...job.progress,
+        stopStage: stage,
+        stopReason: /^[a-z0-9_]{1,64}$/.test(reason) ? reason : "stage_failed",
+        pendingCandidates: pendingCandidateCount(),
+      };
+    };
     const recordRestorationWarning = (
       warning: FlowProjectVideosImportProgress["restorationWarning"],
     ) => {
       if (!warning) return;
+      activeStage = "gallery_restoration";
+      stopAtStage("gallery_restoration", warning === "navigation_changed"
+        ? "navigation_changed"
+        : warning === "cancelled" ? "cancelled" : "gallery_restore_failed");
       job.progress = { ...job.progress, restorationWarning: warning };
       scanComplete = false;
       if (warning === "cancelled") {
@@ -1938,6 +2008,7 @@ export function createFlowDownloadDiagnosticManager(
           );
         const traversal = mergeProjectVideoSnapshot(job, page);
         if (job.oneCardCheck) {
+          completeStage("initial_inventory");
           if (traversal.traversalUnavailable)
             stopReason = "identity_deduplication_unavailable";
           else if (traversal.traversalAmbiguous)
@@ -1949,14 +2020,17 @@ export function createFlowDownloadDiagnosticManager(
           break;
         }
         if (traversal.traversalUnavailable) {
+          stopAtStage("initial_inventory", "identity_deduplication_unavailable");
           stopReason = "identity_deduplication_unavailable";
           break;
         }
         if (traversal.traversalAmbiguous) {
+          stopAtStage("initial_inventory", "ambiguous_identity");
           stopReason = "ambiguous_identity";
           break;
         }
         if (page.cardsCapped || job.progress.discovered >= FLOW_PROJECT_VIDEO_IMPORT_MAX_CARDS) {
+          stopAtStage("initial_inventory", "bound_reached");
           stopReason = "bound_reached";
           break;
         }
@@ -1966,6 +2040,7 @@ export function createFlowDownloadDiagnosticManager(
           continue;
         }
         if (!page.scroll.containerFound) {
+          stopAtStage("initial_inventory", "scroll_container_missing");
           stopReason = "coverage_unproven";
           break;
         }
@@ -1976,6 +2051,7 @@ export function createFlowDownloadDiagnosticManager(
           previousBoundary = boundary;
           if (stableBoundaryReads >= FLOW_PROJECT_VIDEO_IMPORT_BOUNDARY_READS) {
             scanComplete = true;
+            completeStage("initial_inventory");
             break;
           }
           await sleepForImport(250);
@@ -1983,11 +2059,18 @@ export function createFlowDownloadDiagnosticManager(
         }
         stableBoundaryReads = 0;
         if (step === FLOW_PROJECT_VIDEO_IMPORT_MAX_SCROLL_STEPS) {
+          stopAtStage("initial_inventory", "scroll_bound_reached");
           stopReason = "bound_reached";
           break;
         }
         const scrolled = await importPageResult(job, target.binding, "scroll");
-        if (scrolled.status !== "ready" || !scrolled.scroll.moved) {
+        if (scrolled.status !== "ready") {
+          stopAtStage("initial_inventory", "scroll_unavailable");
+          stopReason = "coverage_unproven";
+          break;
+        }
+        if (!scrolled.scroll.moved) {
+          stopAtStage("initial_inventory", "scroll_did_not_move");
           stopReason = "coverage_unproven";
           break;
         }
@@ -1995,6 +2078,7 @@ export function createFlowDownloadDiagnosticManager(
       }
 
       const candidates = [...job.candidates.values()];
+      activeStage = "next_candidate_lookup";
       for (const card of candidates) {
         if (job.cancelRequested) throw new Error("flow_project_video_import_cancelled");
         target = await verifyImportTarget(job);
@@ -2031,6 +2115,7 @@ export function createFlowDownloadDiagnosticManager(
                           ? "detail_page_not_ready"
                           : "detail_stage_unclassified";
           addProjectVideoUnresolved(job, card, reason);
+          completeStage("next_candidate_lookup");
           if (reason === "navigation_changed") throw error;
           continue;
         }
@@ -2049,6 +2134,7 @@ export function createFlowDownloadDiagnosticManager(
             job.progress.alreadyPresent + (saved.reimported ? 1 : 0),
           ),
         };
+        completeStage("next_candidate_lookup");
         recordRestorationWarning(resolved.restorationWarning);
         if (resolved.restorationWarning) break;
       }
@@ -2073,6 +2159,7 @@ export function createFlowDownloadDiagnosticManager(
           if (code.includes("cancelled") || code.includes("navigation_changed"))
             throw error;
           if (code.includes("native_traversal_ambiguous")) {
+            stopAtStage("next_candidate_lookup", "native_traversal_ambiguous");
             addProjectVideoUnresolved(
               job,
               candidate.card,
@@ -2084,12 +2171,14 @@ export function createFlowDownloadDiagnosticManager(
             break;
           }
           if (code.includes("native_binding_stale")) {
+            stopAtStage("next_candidate_lookup", "native_binding_stale");
             terminal = "incomplete";
             scanComplete = false;
             stopReason = "coverage_unproven";
             break;
           }
           if (code.includes("native_binding_document_changed")) {
+            stopAtStage("next_candidate_lookup", "native_binding_document_changed");
             terminal = "incomplete";
             scanComplete = false;
             stopReason = "coverage_unproven";
@@ -2107,6 +2196,12 @@ export function createFlowDownloadDiagnosticManager(
                 }
               : undefined,
           );
+          stopAtStage(
+            "next_candidate_lookup",
+            error instanceof FlowProjectVideoConnectionError
+              ? error.connectionFailure.reason
+              : nativeCandidateFailureReason(code),
+          );
           terminal = "incomplete";
           scanComplete = false;
           stopReason = "coverage_unproven";
@@ -2119,6 +2214,7 @@ export function createFlowDownloadDiagnosticManager(
             title: sanitizeFlowProjectVideoTitle(resolved.clip.title),
           });
         } catch {
+          stopAtStage("next_candidate_lookup", "row_persistence_failed");
           addProjectVideoUnresolved(job, candidate.card, "row_persistence_failed");
           terminal = "incomplete";
           scanComplete = false;
@@ -2137,6 +2233,7 @@ export function createFlowDownloadDiagnosticManager(
             job.progress.alreadyPresent + (saved.reimported ? 1 : 0),
           ),
         };
+        completeStage("next_candidate_lookup");
         recordRestorationWarning(resolved.restorationWarning);
         if (resolved.restorationWarning) break;
       }
@@ -2156,11 +2253,14 @@ export function createFlowDownloadDiagnosticManager(
             : stopReason ?? "coverage_unproven";
         }
       } else if (scanComplete && terminal === "completed") {
-        if (!(await verifyFinalGalleryInventory(job))) {
+        activeStage = "final_coverage_validation";
+        const finalValidationFailure = await verifyFinalGalleryInventory(job);
+        if (finalValidationFailure) {
+          stopAtStage("final_coverage_validation", finalValidationFailure);
           terminal = "incomplete";
           scanComplete = false;
           stopReason = "coverage_unproven";
-        }
+        } else completeStage("final_coverage_validation");
       } else if (!scanComplete) terminal = "incomplete";
     } catch (error) {
       const code = error instanceof Error ? error.message : "";
@@ -2183,6 +2283,8 @@ export function createFlowDownloadDiagnosticManager(
       );
       if (failureReason)
         job.progress = { ...job.progress, failureReason };
+      const stopCode = code.match(/([a-z][a-z0-9_]{0,63})$/)?.[1] ?? "stage_failed";
+      stopAtStage(activeStage, stopCode);
       if (code.includes("cancelled")) {
         terminal = "cancelled";
         stopReason = "cancelled";
@@ -2208,6 +2310,7 @@ export function createFlowDownloadDiagnosticManager(
         ...job.progress,
         status: terminal,
         scanCompleteness: scanComplete ? "complete" : "incomplete",
+        pendingCandidates: pendingCandidateCount(),
         ...(stopReason ? { reason: stopReason } : {}),
         cancelRequested: job.cancelRequested,
       });
@@ -2262,6 +2365,9 @@ export function createFlowDownloadDiagnosticManager(
           scanCompleteness: "incomplete",
           cancelRequested: false,
           reason: "gallery_unavailable",
+          stopStage: "initial_inventory",
+          stopReason: failureReason,
+          pendingCandidates: 0,
           failureReason,
           unresolvedCards: [],
         }),

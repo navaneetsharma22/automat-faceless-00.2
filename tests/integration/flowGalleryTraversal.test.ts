@@ -34,6 +34,11 @@ function createTraversalHarness(options: {
   connectionFailuresBeforeReady?: number;
   connectionNeverReady?: boolean;
   connectionFailsAfterIdentity?: boolean;
+  galleryConnectionFailuresBeforeReady?: number;
+  galleryConnectionNeverReady?: boolean;
+  galleryConnectionWrongProject?: boolean;
+  missingScrollContainer?: boolean;
+  scrollDoesNotMove?: boolean;
   offscreenCardIndex?: number;
   obscureAfterScroll?: boolean;
   duplicateAfterScroll?: boolean;
@@ -56,6 +61,7 @@ function createTraversalHarness(options: {
   const clickRoutes: string[] = [];
   const detailIdentityReads: string[] = [];
   let detailRevalidationAttempts = 0;
+  let galleryRevalidationAttempts = 0;
   let pageReader: ((input: Record<string, unknown>) => Promise<unknown>) | undefined;
 
   function makeGalleryDom() {
@@ -72,8 +78,14 @@ function createTraversalHarness(options: {
     const project = page.window.document.querySelector("flow-project-page")!;
     Object.defineProperties(project, {
       clientHeight: { configurable: true, value: 500 },
-      scrollHeight: { configurable: true, value: 1400 },
+      scrollHeight: { configurable: true, value: options.missingScrollContainer ? 500 : 1400 },
     });
+    if (options.scrollDoesNotMove)
+      Object.defineProperty(project, "scrollTop", {
+        configurable: true,
+        get: () => 0,
+        set: () => undefined,
+      });
     const gallery = page.window.document.querySelector("flow-gallery")!;
     let lastRenderedTop = -1;
     let forceGalleryRerender = true;
@@ -193,10 +205,11 @@ function createTraversalHarness(options: {
             }
             const target = await database.selectedTargets.get("Flow");
             if (target?.verificationBinding) {
-              await database.selectedTargets.put({
-                ...target,
-                verificationBinding: { ...target.verificationBinding, documentId, documentToken: "gallery-token-restored" },
-              });
+              if (!options.galleryConnectionFailuresBeforeReady && !options.galleryConnectionNeverReady)
+                await database.selectedTargets.put({
+                  ...target,
+                  verificationBinding: { ...target.verificationBinding, documentId, documentToken: "gallery-token-restored" },
+                });
             }
             return { id: 7, url: tabUrl };
           },
@@ -222,6 +235,17 @@ function createTraversalHarness(options: {
             const target = await database.selectedTargets.get("Flow");
             if (target?.verificationBinding)
               await database.selectedTargets.put({ ...target, verificationBinding: { ...target.verificationBinding, documentId, documentToken: "detail-token" } });
+          } else if (restoreCount > 0) {
+            galleryRevalidationAttempts += 1;
+            if (options.galleryConnectionWrongProject) {
+              tabUrl = "https://flow.google.com/project/wrong-project";
+              return { ok: false, state: "verified", failureStage: "target_validation", reason: "project_mismatch" };
+            }
+            if (options.galleryConnectionNeverReady || galleryRevalidationAttempts <= (options.galleryConnectionFailuresBeforeReady ?? 0))
+              return { ok: false, state: "temporarily-unreachable", failureStage: "handshake", reason: "connector_not_ready" };
+            const target = await database.selectedTargets.get("Flow");
+            if (target?.verificationBinding)
+              await database.selectedTargets.put({ ...target, verificationBinding: { ...target.verificationBinding, documentId, documentToken: "gallery-token-restored" } });
           }
           return { ok: true, state: "verified" };
         },
@@ -239,7 +263,16 @@ function createTraversalHarness(options: {
               }
               if (input.action === "open") openResults.push({ input, boundDocument });
               try {
-                const result = await pageReader!(input);
+                let result = await pageReader!(input);
+                if (result && typeof result === "object" && "scroll" in result) {
+                  const pageResult = result as { scroll: Record<string, unknown> };
+                  if (options.missingScrollContainer && input.action === "snapshot")
+                    result = { ...pageResult, cards: [], scroll: { ...pageResult.scroll, containerFound: false, atBottom: false } };
+                  else if (options.scrollDoesNotMove && input.action === "scroll")
+                    result = { ...pageResult, scroll: { ...pageResult.scroll, moved: false } };
+                  else if (options.scrollDoesNotMove && input.action === "snapshot")
+                    result = { ...pageResult, cards: [] };
+                }
                 if (input.action === "restore") {
                   (dom.window as unknown as { __invalidateGalleryWindow: () => void }).__invalidateGalleryWindow();
                 }
@@ -275,6 +308,7 @@ function createTraversalHarness(options: {
       return {
         manager, repositories, pageReads, openResults, clickRoutes, detailIdentityReads, scrollIntoViewIndices,
         getDetailRevalidationAttempts: () => detailRevalidationAttempts,
+        getGalleryRevalidationAttempts: () => galleryRevalidationAttempts,
         changeMedia(index: number, value: string) {
           mediaOverrides.set(index, value);
         },
@@ -284,7 +318,59 @@ function createTraversalHarness(options: {
   };
 }
 
+async function seedExistingFirstClip(repositories: ExtensionRepositories) {
+  await repositories.upsertFlowClipImport({
+    projectId,
+    clipId: clips[0]!,
+    detailUrl: `https://flow.google.com/project/${projectId}/edit/${clips[0]}`,
+    title: "Same title",
+    thumbnail: { available: true, width: 320, height: 180 },
+    galleryImportMethod: "native_card_navigation",
+    detailSelectedAssetId: selectedAssets[0]!,
+  });
+}
+
 describe("Flow Gallery traversal production integration", () => {
+  it("reports the initial inventory stop when the Gallery has no scroll container", async () => {
+    const harness = createTraversalHarness({ missingScrollContainer: true, flowOrigin: true });
+    const { manager, pageReads } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress, JSON.stringify({ progress, pageReads })).toMatchObject({
+      status: "incomplete", discovered: 0, reason: "coverage_unproven", unresolved: 0,
+      stopStage: "initial_inventory", stopReason: "scroll_container_missing",
+      pendingCandidates: 0,
+    });
+    expect(progress.lastCompletedStage).toBeUndefined();
+    expect(pageReads).not.toContain("open");
+    harness.dispose();
+  }, 15_000);
+
+  it("distinguishes a scroll container that did not move from a missing container", async () => {
+    const harness = createTraversalHarness({ scrollDoesNotMove: true, flowOrigin: true });
+    const { manager, pageReads } = await harness.setup();
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress, JSON.stringify({ progress, pageReads })).toMatchObject({
+      status: "incomplete", discovered: 0, reason: "coverage_unproven", unresolved: 0,
+      stopStage: "initial_inventory", stopReason: "scroll_did_not_move",
+      pendingCandidates: 0,
+    });
+    expect(pageReads).toContain("scroll");
+    expect(pageReads).not.toContain("open");
+    harness.dispose();
+  }, 15_000);
+
   it("runs serialized production page reads through three same-title cards, persists each detail identity, restores, and reimports without duplicate rows", async () => {
     const harness = createTraversalHarness({ reorderAfterRestore: true, flowOrigin: true });
     const { manager, repositories, pageReads, openResults, clickRoutes } = await harness.setup();
@@ -395,6 +481,67 @@ describe("Flow Gallery traversal production integration", () => {
     harness.dispose();
   }, 15_000);
 
+  it("waits for the replacement same-project Gallery connector before looking up the next card", async () => {
+    const harness = createTraversalHarness({ galleryConnectionFailuresBeforeReady: 2, flowOrigin: true });
+    const { manager, repositories, pageReads, clickRoutes, getGalleryRevalidationAttempts } = await harness.setup();
+    await seedExistingFirstClip(repositories);
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress, JSON.stringify(progress)).toMatchObject({ status: "completed", discovered: 3, openAttempts: 3, imported: 2, alreadyPresent: 1, unresolved: 0, scanCompleteness: "complete" });
+    expect(getGalleryRevalidationAttempts()).toBeGreaterThan(2);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(3);
+    expect(clickRoutes).toHaveLength(3);
+    expect((await repositories.listFlowClipImports()).map((row) => row.clipId)).toEqual(clips);
+    harness.dispose();
+  }, 15_000);
+
+  it("keeps later cards pending and reports the last handshake when the Gallery connector times out", async () => {
+    const harness = createTraversalHarness({ galleryConnectionNeverReady: true, flowOrigin: true });
+    const { manager, repositories, pageReads } = await harness.setup();
+    await seedExistingFirstClip(repositories);
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress).toMatchObject({
+      status: "incomplete", discovered: 3, imported: 0, alreadyPresent: 1,
+      unresolved: 0, openAttempts: 1, reason: "gallery_restore_failed",
+      connectionFailure: { state: "temporarily-unreachable", stage: "handshake", reason: "connector_not_ready" },
+    });
+    expect(progress.discovered - progress.imported - progress.alreadyPresent - progress.unresolved).toBe(2);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(1);
+    harness.dispose();
+  }, 15_000);
+
+  it("stops on a wrong-project Gallery return and reports the target validation failure", async () => {
+    const harness = createTraversalHarness({ galleryConnectionWrongProject: true, flowOrigin: true });
+    const { manager, repositories, pageReads } = await harness.setup();
+    await seedExistingFirstClip(repositories);
+    await manager.startProjectVideoImport();
+    let progress = await manager.getProjectVideoImport();
+    for (let index = 0; progress.status === "scanning" && index < 1000; index += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      progress = await manager.getProjectVideoImport();
+    }
+
+    expect(progress).toMatchObject({
+      status: "incomplete", discovered: 3, imported: 0, alreadyPresent: 1,
+      unresolved: 0, openAttempts: 1, reason: "navigation_changed",
+      connectionFailure: { state: "verified", stage: "target_validation", reason: "project_mismatch" },
+    });
+    expect(progress.discovered - progress.imported - progress.alreadyPresent - progress.unresolved).toBe(2);
+    expect(pageReads.filter((action) => action === "open")).toHaveLength(1);
+    harness.dispose();
+  }, 15_000);
+
   it("reports the last connection failure without claiming clip identity or miscounting partial progress", async () => {
     const harness = createTraversalHarness({ connectionNeverReady: true, flowOrigin: true });
     const { manager, repositories, pageReads, detailIdentityReads } = await harness.setup();
@@ -477,7 +624,11 @@ describe("Flow Gallery traversal production integration", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       progress = await manager.getProjectVideoImport();
     }
-    expect(progress).toMatchObject({ status: "incomplete", discovered: 3, openAttempts: 1, imported: 1, unresolved: 0, scanCompleteness: "incomplete" });
+    expect(progress).toMatchObject({
+      status: "incomplete", discovered: 3, openAttempts: 1, imported: 1,
+      unresolved: 0, scanCompleteness: "incomplete", stopStage: "next_candidate_lookup",
+      pendingCandidates: 2,
+    });
     expect(await repositories.listFlowClipImports()).toHaveLength(1);
     harness.dispose();
   });
@@ -498,7 +649,12 @@ describe("Flow Gallery traversal production integration", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       progress = await manager.getProjectVideoImport();
     }
-    expect(progress).toMatchObject({ status: "incomplete", discovered: 3, imported: 3, unresolved: 0, scanCompleteness: "incomplete", reason: "coverage_unproven" });
+    expect(progress).toMatchObject({
+      status: "incomplete", discovered: 3, imported: 3, unresolved: 0,
+      scanCompleteness: "incomplete", reason: "coverage_unproven",
+      stopStage: "final_coverage_validation", stopReason: "inventory_key_missing",
+      pendingCandidates: 0, lastCompletedStage: "next_candidate_lookup",
+    });
     expect(await repositories.listFlowClipImports()).toHaveLength(3);
     harness.dispose();
   });

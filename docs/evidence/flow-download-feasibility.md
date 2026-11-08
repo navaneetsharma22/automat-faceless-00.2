@@ -1200,3 +1200,25 @@ Regression coverage in `tests/integration/flowGalleryTraversal.test.ts`:
 - Fingerprint becomes ambiguous after scrolling: neither owner is clicked; final counts remain Discovered 3, Imported 2, Unresolved 1, Not processed 0.
 
 Focused suite: **14/14 PASS**. `npx tsc --noEmit`, targeted ESLint on changed files, and `git diff --check` PASS. Direct Vite build with the native config loader PASS; build ID `automat-faceless-0.1.0-localp11-offscreen-20261107-095647`, **4 JavaScript bundles**. Manifest parity, shared ID, and new worker/dashboard diagnostic markers validated. Existing >500 kB dashboard and connector `inlineDynamicImports` warnings remain. No Chrome live run or Flow action occurred; live behavior remains **NOT_RUN**.
+
+## P11.1 Gallery reconnect stability — 7 November 2026
+
+The delayed replacement-document fixture reproduced the stop after the first card: Gallery restoration made one connection revalidation attempt, received `temporarily-unreachable / handshake / connector_not_ready`, then attempted a snapshot with the previous document binding. That stale binding could not read the replacement document, so the importer returned `gallery_restore_failed` before the next candidate lookup. No next-card click occurred.
+
+Restoration now repeats the existing bounded connection revalidation while the selected tab and canonical project target remain the same. Each attempt must validate the binding and then pass both Gallery restore and a fresh Videos Gallery snapshot before returning to the candidate loop. A changed target/project stops as `navigation_changed`. A timeout stops as `gallery_restore_failed`. The import progress includes sanitized connection `state`, `stage`, and `reason`, shown by the Downloads UI. Neither stop path marks pending cards unresolved or alters their count.
+
+Production traversal integration coverage:
+
+- Two delayed handshakes followed by a ready same-project Gallery: scans three cards, retains an existing first row as Already present, imports the next two, and performs one open per card.
+- Connector timeout: one Already present card, one open, zero unresolved, two not processed, and `temporarily-unreachable / handshake / connector_not_ready` in the summary.
+- Wrong project on return: one Already present card, one open, zero unresolved, two not processed, and `verified / target_validation / project_mismatch` in the summary.
+
+Focused Gallery integration suite: **17/17 PASS**. `npx tsc --noEmit`, focused ESLint, and `git diff --check` PASS. Direct Vite source build and connector pass completed with ID `automat-faceless-0.1.0-localp11-gallery-reconnect-20261107-154446`. `dist/manifest.json` matches `public/manifest.json`; all four JavaScript bundles contain the shared ID. Existing large dashboard chunk warning remains. No Chrome load or live Flow action was performed; live acceptance is **NOT_RUN**.
+
+## P11.1 current Gallery run inspection and stop-stage diagnostics — 7 November 2026
+
+The current run could not be read through the requested `flow.projectVideos.import.get` call from this session. CUA reported no available browser/app surfaces; Windows process inspection returned access denied; Chrome debugging endpoints on localhost ports 9222–9224 were unavailable. No reload or new scan was issued. The user-reported dashboard ID matches the local `dist` bundle ID, but that verifies the local artifact only, not the responding worker. The current `get` response contract contains progress only, not a worker build ID. Therefore the raw worker status, reason, restoration warning, connection diagnostic, and recorded last stage for the live run remain **UNVERIFIED**.
+
+The dashboard’s only visible message (“Gallery coverage could not be established”) aligns with the source’s broad `coverage_unproven` reason, but does not identify which stage stopped. Added run-level `lastCompletedStage`, `stopStage`, `stopReason`, and `pendingCandidates` to the existing progress summary and display them in Downloads, including for incomplete runs with zero unresolved rows. The stage set covers initial inventory, Gallery restoration, next-candidate lookup, and final coverage validation. Inventory reasons distinguish `scroll_container_missing` from `scroll_did_not_move`. Existing scan decisions and stop behavior are unchanged.
+
+Focused Gallery integration suite: **19/19 PASS**, including missing-scroll-container, scroll-not-moving, final inventory mismatch, and incomplete zero-unresolved summaries. Typecheck, focused ESLint, and `git diff --check` PASS. No new build was made, leaving the user-reported local `dist` artifact untouched; the new diagnostics are source-only and are not present in that build. No runtime read, browser reload, scan, or live Flow action was performed.
