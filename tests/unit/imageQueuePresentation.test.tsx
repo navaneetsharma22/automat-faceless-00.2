@@ -1,4 +1,7 @@
+/** @vitest-environment jsdom */
+import { act } from "react";
 import { createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ImageSubmissionQueueRecord } from "../../src/domain/jobs/queue";
@@ -109,6 +112,7 @@ function renderRecord(record: ImageSubmissionQueueRecord) {
       busy: false,
       onStart: () => undefined,
       onCommand: () => undefined,
+      onClearBlockedQueue: async () => true,
     }),
   );
 }
@@ -125,8 +129,121 @@ describe("timed queue presentation", () => {
     expect(isQueueCreationBlocker(queue("stopped", "sending"))).toBe(true);
   });
 
+  it("lets a distinct source proceed after a stopped queue retains uncertain evidence", () => {
+    const stoppedUncertainQueue = {
+      ...queue("stopped", "blocked"),
+      items: [
+        {
+          ...queue("stopped", "blocked").items[0]!,
+          providerOutcome: "unknown" as const,
+        },
+      ],
+    };
+    expect(isQueueCreationBlocker(stoppedUncertainQueue)).toBe(false);
+  });
+
   it("allows a new distinct source after a completed queue", () => {
     expect(isQueueCreationBlocker(queue("sent", "sent"))).toBe(false);
+  });
+
+  it("offers clear only for a blocked batch and explains preserved history", () => {
+    const blocked = render("blocked", "blocked");
+    expect(blocked).toContain("Clear existing prompt");
+    expect(blocked).toContain("Clear this blocked batch?");
+    expect(blocked).toContain(
+      "This removes the blocked batch from the active queue. Shots already sent stay in history.",
+    );
+    expect(blocked).toContain(">Cancel</button>");
+
+    expect(render("waiting", "pending")).not.toContain(
+      "Clear existing prompt",
+    );
+  });
+
+  it("leaves the queue untouched on Cancel, Escape, and close; confirms once", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const blockedQueue = queue("blocked", "blocked");
+    const onClearBlockedQueue = vi.fn(async () => true);
+    const prototype = window.HTMLDialogElement.prototype;
+    const originalShowModal = prototype.showModal;
+    const originalClose = prototype.close;
+    Object.defineProperty(prototype, "showModal", {
+      configurable: true,
+      value(this: HTMLDialogElement) {
+        this.setAttribute("open", "");
+      },
+    });
+    Object.defineProperty(prototype, "close", {
+      configurable: true,
+      value(this: HTMLDialogElement) {
+        this.removeAttribute("open");
+        this.dispatchEvent(new Event("close"));
+      },
+    });
+    const getButton = (label: string, index = 0) =>
+      [...container.querySelectorAll("button")].filter(
+        (button) => button.textContent?.trim() === label,
+      )[index]!;
+    const openDialog = async () => {
+      await act(async () => getButton("Clear existing prompt").click());
+      return container.querySelector("dialog")!;
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(QueueCard, {
+            queue: blockedQueue,
+            starting: false,
+            busy: false,
+            onStart: () => undefined,
+            onCommand: () => undefined,
+            onClearBlockedQueue,
+          }),
+        );
+      });
+
+      let dialog = await openDialog();
+      await act(async () => getButton("Cancel").click());
+      expect(dialog.open).toBe(false);
+      expect(onClearBlockedQueue).not.toHaveBeenCalled();
+
+      dialog = await openDialog();
+      await act(async () => {
+        dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+      });
+      expect(dialog.open).toBe(false);
+      expect(onClearBlockedQueue).not.toHaveBeenCalled();
+
+      dialog = await openDialog();
+      await act(async () => {
+        dialog.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(dialog.open).toBe(false);
+      expect(onClearBlockedQueue).not.toHaveBeenCalled();
+
+      await openDialog();
+      await act(async () => getButton("Clear existing prompt", 1).click());
+      expect(onClearBlockedQueue).toHaveBeenCalledTimes(1);
+      expect(onClearBlockedQueue).toHaveBeenCalledWith(blockedQueue);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      if (originalShowModal)
+        Object.defineProperty(prototype, "showModal", {
+          configurable: true,
+          value: originalShowModal,
+        });
+      else delete (prototype as Partial<HTMLDialogElement>).showModal;
+      if (originalClose)
+        Object.defineProperty(prototype, "close", {
+          configurable: true,
+          value: originalClose,
+        });
+      else delete (prototype as Partial<HTMLDialogElement>).close;
+    }
   });
 
   it("highlights the failed prompt and leaves untouched later prompts pending", () => {

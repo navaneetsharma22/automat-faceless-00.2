@@ -36,6 +36,8 @@ test("real Dexie stores and reads back the exact ordered timed queue", async ({
       initialState: "ready",
       outcomeStates: ["not_started", "not_started"],
       noDeadlineBeforeDispatch: true,
+      stoppedRevisionReadAfterReopen: true,
+      stoppedQueueRejectedFromStart: true,
     });
   } finally {
     await bundle.close();

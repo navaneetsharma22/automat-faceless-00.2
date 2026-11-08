@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   FoundationClientError,
   type FoundationClient,
@@ -27,6 +33,7 @@ export function ImageQueueProgress({
   settingsConfirmationError,
   settingsConfirmationControls,
   onCurrentQueueChange,
+  onQueueCleared,
 }: {
   workspaceId: string;
   persistenceClient: FoundationClient;
@@ -40,6 +47,7 @@ export function ImageQueueProgress({
   onCurrentQueueChange?: (
     queue: ImageSubmissionQueueRecord | undefined,
   ) => void;
+  onQueueCleared?: (queue: ImageSubmissionQueueRecord) => void;
 }) {
   const [queues, setQueues] = useState<ImageSubmissionQueueRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -122,8 +130,8 @@ export function ImageQueueProgress({
   const commandQueue = async (
     queue: ImageSubmissionQueueRecord,
     command: "pause" | "resume" | "stop",
-  ) => {
-    if (commanding || startingQueueId) return;
+  ): Promise<boolean> => {
+    if (commanding || startingQueueId) return false;
     setCommanding({ queueId: queue.queueId, command });
     setError(undefined);
     try {
@@ -139,13 +147,25 @@ export function ImageQueueProgress({
           entry.queueId === queue.queueId ? parsed.data : entry,
         ),
       );
+      return true;
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : `Queue ${command} failed.`,
       );
+      return false;
     } finally {
       setCommanding(undefined);
     }
+  };
+
+  const clearBlockedQueue = async (
+    queue: ImageSubmissionQueueRecord,
+  ): Promise<boolean> => {
+    if (queue.state !== "blocked") return false;
+    const stopped = await commandQueue(queue, "stop");
+    if (!stopped) return false;
+    onQueueCleared?.(queue);
+    return true;
   };
 
   const createQueue = async () => {
@@ -358,6 +378,7 @@ export function ImageQueueProgress({
             onStart={() => void startQueue(currentQueue.queueId)}
             onCommand={(command) => void commandQueue(currentQueue, command)}
             persistenceClient={persistenceClient}
+            onClearBlockedQueue={clearBlockedQueue}
           />
         </div>
       ) : null}
@@ -376,6 +397,7 @@ export function ImageQueueProgress({
             onStart={() => void startQueue(queue.queueId)}
             onCommand={(command) => void commandQueue(queue, command)}
             persistenceClient={persistenceClient}
+            onClearBlockedQueue={clearBlockedQueue}
           />
         </div>
       ))}
@@ -597,6 +619,7 @@ export function QueueCard({
   persistenceClient,
   onInspectReadback,
   onRetryBlocked,
+  onClearBlockedQueue,
 }: {
   queue: ImageSubmissionQueueRecord;
   commanding?: { queueId: string; command: "pause" | "resume" | "stop" };
@@ -614,6 +637,7 @@ export function QueueCard({
     expectedRevision: number;
     order: number;
   }) => Promise<ImageSubmissionQueueRecord>;
+  onClearBlockedQueue?: (queue: ImageSubmissionQueueRecord) => Promise<boolean>;
 }) {
   const [inspecting, setInspecting] = useState(false);
   const [retrying, setRetrying] = useState(false);
@@ -621,6 +645,26 @@ export function QueueCard({
     useState<FlowEditorReadbackInspectionResult>();
   const [inspectionError, setInspectionError] = useState<string>();
   const [retryError, setRetryError] = useState<string>();
+  const [clearConfirmationOpen, setClearConfirmationOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const clearDialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = clearDialogRef.current;
+    if (!dialog) return;
+    if (clearConfirmationOpen && !dialog.open) dialog.showModal();
+    else if (!clearConfirmationOpen && dialog.open) dialog.close();
+  }, [clearConfirmationOpen]);
+
+  const confirmClearBlockedQueue = async () => {
+    if (clearing || !onClearBlockedQueue) return;
+    setClearing(true);
+    try {
+      if (await onClearBlockedQueue(queue)) setClearConfirmationOpen(false);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const sentCount = queue.items.filter((item) => item.dispatchReceipt).length;
   const sendingItem = queue.items.find((item) => item.itemState === "sending");
@@ -894,6 +938,16 @@ export function QueueCard({
             Inspect current editor (read-only)
           </Button>
         ) : null}
+        {queue.state === "blocked" && onClearBlockedQueue ? (
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy || inspecting || retrying || clearing}
+            onClick={() => setClearConfirmationOpen(true)}
+          >
+            Clear existing prompt
+          </Button>
+        ) : null}
         {queue.state === "blocked" && inspectionResult?.equal ? (
           <Button
             type="button"
@@ -1020,6 +1074,50 @@ export function QueueCard({
           Stopped. Remaining prompts will not be sent. An authorized activation
           may have finished; provider results are not verified.
         </p>
+      ) : null}
+      {queue.state === "blocked" && onClearBlockedQueue ? (
+        <dialog
+          ref={clearDialogRef}
+          className={styles.clearDialog}
+          aria-labelledby={`clear-queue-title-${queue.queueId}`}
+          aria-describedby={`clear-queue-message-${queue.queueId}`}
+          onCancel={(event) => {
+            event.preventDefault();
+            setClearConfirmationOpen(false);
+          }}
+          onClose={() => setClearConfirmationOpen(false)}
+          onClick={(event) => {
+            if (event.target === event.currentTarget)
+              setClearConfirmationOpen(false);
+          }}
+        >
+          <h2 id={`clear-queue-title-${queue.queueId}`}>
+            Clear this blocked batch?
+          </h2>
+          <p id={`clear-queue-message-${queue.queueId}`}>
+            This removes the blocked batch from the active queue. Shots already
+            sent stay in history.
+          </p>
+          <div className={styles.clearDialogActions}>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={clearing}
+              onClick={() => setClearConfirmationOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={clearing}
+              loading={clearing}
+              loadingLabel="Clearing…"
+              onClick={() => void confirmClearBlockedQueue()}
+            >
+              Clear existing prompt
+            </Button>
+          </div>
+        </dialog>
       ) : null}
 
       <ol className={styles.items} aria-label="Prompt queue">
@@ -1247,11 +1345,7 @@ function commandPendingText(command: "pause" | "resume" | "stop") {
 export function isQueueCreationBlocker(queue: ImageSubmissionQueueRecord) {
   return (
     ["ready", "waiting", "paused", "blocked"].includes(queue.state) ||
-    queue.items.some(
-      (item) =>
-        item.itemState === "sending" ||
-        (item.providerOutcome === "unknown" && !item.dispatchReceipt),
-    )
+    queue.items.some((item) => item.itemState === "sending")
   );
 }
 

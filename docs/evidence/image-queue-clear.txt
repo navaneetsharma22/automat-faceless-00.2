@@ -1,0 +1,23 @@
+# Image queue “Clear existing prompt” evidence — 8 November 2026
+
+## Scope
+
+Implemented the requested clear action for a blocked queue in the current Automat Faceless Image panel. The action is available only on a blocked queue card and opens a native confirmation dialog with the requested title, message, and Cancel / Clear existing prompt actions.
+
+Confirmation calls the existing `imageQueue.stop` lifecycle operation with the selected queue ID and the revision shown by that queue card. The repository transition saves and reads back the stopped revision; the scheduler's existing stop handler clears that queue's alarm. Sent receipts and item outcome evidence remain in the queue record. Stop is terminal, so the old queue cannot be started again. A stopped queue with preserved uncertain delivery evidence no longer blocks a distinct new source; exact-source duplicate locking remains in force. The editor draft is cleared only when its exact source text matches the queue that was retired.
+
+## Offline verification
+
+- Focused image queue and presentation suites: **2 test files, 32 tests PASS**.
+- Repository regression creates a blocked older queue with a sent receipt and an uncertain activation intent, stops it at the selected revision, verifies both evidence records remain in the saved stopped queue, verifies that the old queue cannot start, then saves Shots 90–91 and creates a new ready queue.
+- Presentation regression verifies that the clear control and requested confirmation copy appear for a blocked card, that the clear copy is absent from a waiting card, and that a stopped queue with preserved uncertainty no longer blocks a distinct source while active sending work remains a blocker.
+- Dialog interaction regression verifies Cancel, the native `cancel` event used by Escape, and backdrop close issue no mutation; confirmation issues one selected-queue callback.
+- Real-Dexie Chromium fixture: **1/1 PASS**. It stops a queue, closes and reopens its IndexedDB database, reads the saved stopped revision, and confirms the old queue cannot start.
+- `npm run typecheck`: PASS.
+- Focused ESLint on changed app and test files: PASS.
+- `git diff --check`: PASS.
+- `npm run build`: PASS; local package ID **`automat-faceless-0.1.0-mw7lj2v4`**. Existing large dashboard chunk and connector `inlineDynamicImports` warnings remain.
+
+## Limits
+
+Cancel, Escape, and close paths passed the jsdom component interaction regression. The IndexedDB close/reopen fixture verifies persisted stop state, but the installed extension was not reloaded. No Generate, retry, or resume action is part of the clear path. Live behavior remains **NOT_RUN**.

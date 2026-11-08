@@ -162,6 +162,13 @@ function Dashboard() {
     },
     [],
   );
+  const clearImageDraftIfItMatchesQueue = useCallback(
+    (queue: ImageSubmissionQueueRecord) => {
+      if (imageImportSession.getSnapshot().source === queue.sourceText)
+        imageImportSession.clear();
+    },
+    [imageImportSession],
+  );
 
   useEffect(
     () => () => {
@@ -267,6 +274,7 @@ function Dashboard() {
               savedShotIds={imageSavedShotIds}
               currentQueue={currentImageQueue}
               onCurrentQueueChange={updateCurrentImageQueue}
+              onQueueCleared={clearImageDraftIfItMatchesQueue}
               onSourceReadinessChange={updateImageSourceReadiness}
             />
           </div>
@@ -341,6 +349,7 @@ function ImagesView({
   savedShotIds,
   currentQueue,
   onCurrentQueueChange,
+  onQueueCleared,
   onSourceReadinessChange,
 }: {
   session: ImportPreviewSession;
@@ -359,6 +368,7 @@ function ImagesView({
   savedShotIds: string[];
   currentQueue?: ImageSubmissionQueueRecord;
   onCurrentQueueChange: (queue: ImageSubmissionQueueRecord | undefined) => void;
+  onQueueCleared: (queue: ImageSubmissionQueueRecord) => void;
   onSourceReadinessChange: (
     ready: boolean,
     savedSource?: string,
@@ -405,6 +415,7 @@ function ImagesView({
           savedSource={savedSource}
           savedShotIds={savedShotIds}
           onCurrentQueueChange={onCurrentQueueChange}
+          onQueueCleared={onQueueCleared}
           settingsConfirmation={settingsConfirmation ?? undefined}
           settingsConfirmationPending={confirmationPending}
           settingsConfirmationError={confirmationError}

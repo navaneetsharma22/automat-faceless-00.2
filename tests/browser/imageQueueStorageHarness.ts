@@ -5,7 +5,8 @@ import {
 import { AutomatDatabase } from "../../src/storage/db";
 
 export async function persistTimedQueueReadback() {
-  const database = new AutomatDatabase(`image-queue-${crypto.randomUUID()}`);
+  const databaseName = `image-queue-${crypto.randomUUID()}`;
+  let database = new AutomatDatabase(databaseName);
   await database.open();
   try {
     const repositories = new ExtensionRepositories(
@@ -39,6 +40,27 @@ export async function persistTimedQueueReadback() {
     const readback = await repositories.getTimedImageSubmissionQueue(
       record.queueId,
     );
+    const retired = await repositories.stopTimedImageQueue({
+      queueId: record.queueId,
+      expectedRevision: record.revision,
+      at: 800,
+    });
+    database.close();
+    database = new AutomatDatabase(databaseName);
+    await database.open();
+    const reopenedRepositories = new ExtensionRepositories(
+      createDexieRepositoryDatabase(database),
+      () => 900,
+    );
+    const reopened = await reopenedRepositories.getTimedImageSubmissionQueue(
+      record.queueId,
+    );
+    let stoppedQueueRejectedFromStart = false;
+    try {
+      await reopenedRepositories.validateTimedImageQueueStart(record.queueId);
+    } catch {
+      stoppedQueueRejectedFromStart = true;
+    }
     return {
       recordEqualsReadback: JSON.stringify(record) === JSON.stringify(readback),
       exactSource: readback?.sourceText === source,
@@ -49,6 +71,11 @@ export async function persistTimedQueueReadback() {
       initialState: readback?.state,
       outcomeStates: readback?.items.map((item) => item.providerOutcome),
       noDeadlineBeforeDispatch: readback?.nextEligibleDispatchAt === null,
+      stoppedRevisionReadAfterReopen:
+        reopened?.state === "stopped" &&
+        reopened.revision === retired.revision &&
+        reopened.items.every((item) => item.itemState === "stopped"),
+      stoppedQueueRejectedFromStart,
     };
   } finally {
     database.close();

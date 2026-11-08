@@ -23,6 +23,111 @@ const settingsConfirmation = {
 };
 
 describe("timed image submission queue foundation", () => {
+  it("stops only the selected blocked revision, retains receipts, and leaves a newer batch eligible", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database, () => 500);
+    const workspaceId = "image-workspace";
+    const oldSource = [88, 89]
+      .map(
+        (shotId) =>
+          `${shotId}: ${JSON.stringify({ shot_id: String(shotId), scene_title: `Old shot ${shotId}` })}`,
+      )
+      .join("\n");
+    await repositories.savePromptBatch({
+      workspaceId,
+      kind: "image",
+      sourceText: oldSource,
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: settingsConfirmation.tabId,
+      canonicalTarget: settingsConfirmation.canonicalTarget,
+    });
+    const blockedQueue = await repositories.createTimedImageSubmissionQueue({
+      workspaceId,
+      queueId: "d8494e2c-a906-4a4b-8149-8ab62adf5b5d",
+      settingsConfirmation,
+    });
+    const sentItem = {
+      ...blockedQueue.items[0]!,
+      itemState: "sent" as const,
+      providerOutcome: "unknown" as const,
+      dispatchReceipt: {
+        attemptId: "preserved-attempt",
+        storedAt: 10_000,
+        evidence: "activation_pair_sent_or_uncertain" as const,
+      },
+    };
+    const blockedItem = {
+      ...blockedQueue.items[1]!,
+      itemState: "blocked" as const,
+      providerOutcome: "unknown" as const,
+      blockReason: "editor_conflict",
+      dispatchIntent: {
+        attemptId: "uncertain-attempt",
+        recordedAt: 10_500,
+        activationStartedAt: 10_600,
+      },
+    };
+    const savedBlockedQueue = {
+      ...blockedQueue,
+      state: "blocked" as const,
+      items: [sentItem, blockedItem],
+      lastDispatchReceiptStoredAt: 10_000,
+      nextEligibleDispatchAt: 50_000,
+      updatedAt: 10_000,
+      revision: blockedQueue.revision + 1,
+    };
+    await database.imageSubmissionQueues.put(savedBlockedQueue);
+
+    const retired = await repositories.stopTimedImageQueue({
+      queueId: savedBlockedQueue.queueId,
+      expectedRevision: savedBlockedQueue.revision,
+      at: 11_000,
+    });
+    expect(retired).toMatchObject({
+      queueId: savedBlockedQueue.queueId,
+      state: "stopped",
+      revision: savedBlockedQueue.revision + 1,
+      items: [
+        { itemState: "sent", dispatchReceipt: sentItem.dispatchReceipt },
+        { itemState: "blocked", providerOutcome: "unknown" },
+      ],
+    });
+    expect(
+      await repositories.getTimedImageSubmissionQueue(savedBlockedQueue.queueId),
+    ).toEqual(retired);
+    await expect(
+      repositories.validateTimedImageQueueStart(savedBlockedQueue.queueId),
+    ).rejects.toThrow();
+
+    const newerSource = [90, 91]
+      .map(
+        (shotId) =>
+          `${shotId}: ${JSON.stringify({ shot_id: String(shotId), scene_title: `New shot ${shotId}` })}`,
+      )
+      .join("\n");
+    await repositories.savePromptBatch({
+      workspaceId,
+      kind: "image",
+      sourceText: newerSource,
+    });
+    const newerQueue = await repositories.createTimedImageSubmissionQueue({
+      workspaceId,
+      queueId: "853c958f-25e6-4472-a6e6-08cb17b6643d",
+      settingsConfirmation: {
+        ...settingsConfirmation,
+        confirmationId: "shot-90-91-confirmation",
+        confirmedAt: 12_000,
+      },
+    });
+    expect(newerQueue.items.map((item) => item.shotId)).toEqual(["90", "91"]);
+    expect(newerQueue.state).toBe("ready");
+    expect(
+      await repositories.getTimedImageSubmissionQueue(savedBlockedQueue.queueId),
+    ).toEqual(retired);
+  });
+
   it("persists exact source, ordered prompts, settings, project binding, and reads back", async () => {
     const database = createMemoryRepositoryDatabase();
     const repositories = new ExtensionRepositories(database, () => 500);
