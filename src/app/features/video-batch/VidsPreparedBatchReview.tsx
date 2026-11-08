@@ -6,6 +6,7 @@ import { FoundationClientError, type createFoundationClient } from "../../../sha
 import { Button } from "../../components/Button";
 import styles from "./VidsPreparedBatchReview.module.css";
 import { useOptionalToast } from "../../components/ToastHost";
+import { ClearQueueAction } from "./ClearQueueAction";
 
 type AttachmentSnapshot = {
   status: "not_started" | "action_intent" | "attached" | "uncertain" | "blocked" | "unavailable";
@@ -29,9 +30,10 @@ type TransitionDiagnostic = {
 };
 type TransitionInspection = { status: string; reason?: string; diagnostics?: TransitionDiagnostic };
 
-export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
+export function VidsPreparedBatchReview({ preparedBatch, persistenceClient, onQueueCleared }: {
   preparedBatch: PreparedVideoBatchRecord;
   persistenceClient: ReturnType<typeof createFoundationClient>;
+  onQueueCleared?: (batch: PreparedVideoBatchRecord) => void;
 }) {
   const [queue, setQueue] = useState<VidsQueueSnapshot | null>(null);
   const [queueReadFailed, setQueueReadFailed] = useState(false);
@@ -65,8 +67,8 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
       toast?.add({ kind: "success", message: `All ${queue.items.length} prompts sent successfully to Google Vids.` });
     priorAllSent.current = { id: queue.queueId, allSent };
   }, [allSent, queue, toast]);
-  const queueAction = async (action: "start" | "pause" | "resume" | "stop") => {
-    if (queueBusy) return;
+  const queueAction = async (action: "start" | "pause" | "resume" | "stop"): Promise<boolean> => {
+    if (queueBusy) return false;
     setQueueBusy(true);
     setQueueError(null);
     try {
@@ -74,10 +76,18 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
       const payload = action === "start" ? { preparedBatchId: preparedBatch.id } : { preparedBatchId: preparedBatch.id, expectedRevision: queue?.revision ?? 0, ...(action === "resume" && sameAccountConfirmed ? { confirmSameAccount: true } : {}) };
       const value = await persistenceClient.request(type, payload) as VidsQueueSnapshot;
       if (value) setQueue(value);
+      return Boolean(value);
     } catch (error) {
       setQueueError(error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "vids_queue_action_failed");
       setQueueErrorStage(error instanceof FoundationClientError && error.stage ? error.stage : null);
+      return false;
     } finally { setQueueBusy(false); }
+  };
+  const clearBlockedQueue = async () => {
+    if (queue?.state !== "blocked" || queueBusy) return false;
+    const stopped = await queueAction("stop");
+    if (stopped) onQueueCleared?.(preparedBatch);
+    return stopped;
   };
   const inspectTransition = async (itemId: string) => {
     if (queueBusy) return;
@@ -153,6 +163,7 @@ export function VidsPreparedBatchReview({ preparedBatch, persistenceClient }: {
           {queue && ["ready", "cooldown", "preparing", "checking_generate", "waiting_for_tab"].includes(queue.state) ? <><Button variant="secondary" disabled={queueBusy} loading={queueBusy} loadingLabel="Pausing" onClick={() => void queueAction("pause")}>Pause</Button><Button variant="quiet" disabled={queueBusy} onClick={() => void queueAction("stop")}>Stop queue</Button></> : null}
           {queue?.state === "paused" ? <><Button variant="primary" disabled={queueBusy || (queueError === "vids_same_account_confirmation_required" && !sameAccountConfirmed)} loading={queueBusy} loadingLabel="Resuming" onClick={() => void queueAction("resume")}>Resume</Button><Button variant="quiet" disabled={queueBusy} onClick={() => void queueAction("stop")}>Stop queue</Button></> : null}
           {queue?.state === "stopped" ? <span>The queue is stopped. Sent items remain protected from replay.</span> : null}
+          {queue?.state === "blocked" ? <ClearQueueAction disabled={queueBusy} onConfirm={clearBlockedQueue} /> : null}
         </div>
         {queue?.items.map((entry) => <div key={entry.itemId}>
           <p className={styles.queueItem}><strong>Shot {entry.shotId}</strong><span>{queueItemLabel(entry.state)}</span>{entry.reason ? <details><summary>Details</summary><code>{entry.reason}</code></details> : null}</p>

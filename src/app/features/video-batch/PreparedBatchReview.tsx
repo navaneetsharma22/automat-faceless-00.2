@@ -8,11 +8,12 @@ export type PreparedBatchReviewProps = {
   persistenceClient: ReturnType<typeof createFoundationClient>;
   currentVideoSourceHash?: string;
   currentImageSourceBatchId?: string;
+  onQueueCleared?: (batch: PreparedVideoBatchRecord) => void;
 };
 
 /** Routes each prepared batch to its platform-specific review and operation path. */
 export function PreparedBatchReview(props: PreparedBatchReviewProps) {
   return props.preparedBatch.destination === "Vids"
-    ? <VidsPreparedBatchReview key={props.preparedBatch.id} preparedBatch={props.preparedBatch} persistenceClient={props.persistenceClient} />
+    ? <VidsPreparedBatchReview key={props.preparedBatch.id} preparedBatch={props.preparedBatch} persistenceClient={props.persistenceClient} onQueueCleared={props.onQueueCleared} />
     : <FlowPreparedBatchReview {...props} />;
 }

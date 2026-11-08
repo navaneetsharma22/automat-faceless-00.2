@@ -431,7 +431,7 @@ export function createFlowVideoQueueHandler(input: {
 
   async function command(preparedBatchId: string, expectedRevision: number, state: "paused" | "stopped", reason: string) {
     const queue = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
-    if (!queue || queue.revision !== expectedRevision || !["ready", "waiting", "paused"].includes(queue.state)) throw new Error("flow_video_queue_command_invalid");
+    if (!queue || queue.revision !== expectedRevision || !["ready", "waiting", "paused"].includes(queue.state) && !(state === "stopped" && queue.state === "blocked")) throw new Error("flow_video_queue_command_invalid");
     const items = queue.items.map((entry) => {
       if (state === "stopped" && entry.state === "pending") return { ...entry, state: "skipped" as const };
       if (entry.state === "attaching" || entry.state === "dispatching") return { ...entry, state: "uncertain" as const, reason: entry.state === "dispatching" ? "pause_during_generation_delivery" : "pause_during_attachment_delivery" };

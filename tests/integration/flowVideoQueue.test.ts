@@ -351,6 +351,26 @@ describe("P09.3 Flow video timed submission", () => {
     expect(f.generate).toHaveBeenCalledTimes(1);
   });
 
+  it("retires a blocked Flow queue while preserving uncertain evidence and clearing its alarm", async () => {
+    const f = await setup({ generateStatus: "uncertain" });
+    let queue = await f.handler.start(batchId);
+    queue = await f.handler.resume(batchId, queue.revision);
+    expect(queue.state).toBe("blocked");
+    expect(queue.items[0]?.state).toBe("uncertain");
+
+    queue = await f.handler.stop(batchId, queue.revision);
+    expect(queue).toMatchObject({
+      state: "stopped",
+      items: [
+        { state: "uncertain", reason: "synthetic_generation_failure" },
+        { state: "skipped" },
+      ],
+    });
+    expect(f.clear).toHaveBeenCalledWith(`${FLOW_VIDEO_QUEUE_ALARM_PREFIX}${queue.queueId}`);
+    await expect(f.handler.start(batchId)).resolves.toEqual(queue);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
   it("uses a 60-second readiness timeout and 30-second submission floor", () => {
     expect(VIDEO_QUEUE_DISPATCH_GAP_MS).toBe(30_000);
     expect(VIDEO_QUEUE_READINESS_TIMEOUT_MS).toBe(60_000);

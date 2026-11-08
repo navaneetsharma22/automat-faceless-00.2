@@ -73,6 +73,98 @@ describe("P10.3 Vids queue presentation", () => {
     expect(Boolean(host.querySelector('[aria-label="50-second dispatch interval"], [aria-label="Generate readiness window"]'))).toBe(hasCountdown);
   });
 
+  it("confirms clearing only the blocked Vids queue revision", async () => {
+    let currentQueue: Record<string, unknown> = {
+      queueId: `vids-video:${batch.id}`,
+      preparedBatchId: batch.id,
+      state: "blocked",
+      items: batch.items.map((item, order) => ({
+        itemId: item.itemId,
+        order,
+        shotId: item.canonicalShotId,
+        referenceId: item.reference.referenceId,
+        referenceSha256: item.reference.sha256,
+        promptHash: item.contentHash,
+        state: order === 0 ? "sent" : "uncertain",
+        ...(order === 0
+          ? {
+              attemptId: "attempt-sent",
+              dispatchReceipt: { attemptId: "attempt-sent", storedAt: 500 },
+            }
+          : { reason: "generation_response_lost" }),
+      })),
+      revision: 12,
+      createdAt: 1,
+      updatedAt: 500,
+      lastDispatchAt: 500,
+      cooldownDeadlineAt: null,
+      readinessDeadlineAt: null,
+      readinessStartedAt: null,
+      nextActionAt: null,
+      pauseReason: "generation_response_lost",
+      runId: "run-clear",
+    };
+    const stoppedQueue = {
+      ...currentQueue,
+      state: "stopped",
+      revision: 13,
+      updatedAt: 600,
+      nextActionAt: null,
+      pauseReason: "stopped_by_user",
+    };
+    const request = vi.fn(async (type: string, payload?: unknown) => {
+      if (type === "vids.videoQueue.get") return currentQueue;
+      if (type === "vids.videoQueue.stop") {
+        expect(payload).toEqual({ preparedBatchId: batch.id, expectedRevision: 12 });
+        currentQueue = stoppedQueue;
+        return stoppedQueue;
+      }
+      if (type === "vids.video.getAttachmentStatus") return { status: "not_started" };
+      if (type === "vids.video.getGenerationStatus") return { status: "not_started" };
+      if (type === "vids.video.getReferencePreview") return null;
+      return null;
+    });
+    const prototype = window.HTMLDialogElement.prototype;
+    const originalShowModal = prototype.showModal;
+    const originalClose = prototype.close;
+    Object.defineProperty(prototype, "showModal", {
+      configurable: true,
+      value(this: HTMLDialogElement) { this.setAttribute("open", ""); },
+    });
+    Object.defineProperty(prototype, "close", {
+      configurable: true,
+      value(this: HTMLDialogElement) {
+        this.removeAttribute("open");
+        this.dispatchEvent(new Event("close"));
+      },
+    });
+    const buttons = (label: string) => [...host!.querySelectorAll("button")].filter((button) => button.textContent?.trim() === label);
+    try {
+      host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+      await act(async () => { root!.render(createElement(VidsPreparedBatchReview, { preparedBatch: batch, persistenceClient: { request } as never })); await Promise.resolve(); });
+      await act(async () => { buttons("Clear existing prompt")[0]!.click(); });
+      const dialog = host.querySelector("dialog")!;
+      expect(dialog.open).toBe(true);
+      expect(dialog.textContent).toContain("Clear this blocked batch?");
+      await act(async () => { buttons("Cancel")[0]!.click(); });
+      expect(request).not.toHaveBeenCalledWith("vids.videoQueue.stop", expect.anything());
+
+      await act(async () => { buttons("Clear existing prompt")[0]!.click(); });
+      await act(async () => { dialog.dispatchEvent(new Event("cancel", { cancelable: true })); });
+      expect(request).not.toHaveBeenCalledWith("vids.videoQueue.stop", expect.anything());
+
+      await act(async () => { buttons("Clear existing prompt")[0]!.click(); });
+      await act(async () => { buttons("Clear existing prompt")[1]!.click(); await Promise.resolve(); });
+      expect(request).toHaveBeenCalledWith("vids.videoQueue.stop", { preparedBatchId: batch.id, expectedRevision: 12 });
+      expect(host.textContent).toContain("Stopped");
+    } finally {
+      if (originalShowModal) Object.defineProperty(prototype, "showModal", { configurable: true, value: originalShowModal });
+      else delete (prototype as Partial<HTMLDialogElement>).showModal;
+      if (originalClose) Object.defineProperty(prototype, "close", { configurable: true, value: originalClose });
+      else delete (prototype as Partial<HTMLDialogElement>).close;
+    }
+  });
+
   it("renders receipt progress and deadline countdown; clock ticks issue no execution requests", async () => {
     let queue: unknown = null;
     const requests: string[] = [];

@@ -955,6 +955,10 @@ export function VideosView({
             persistenceClient={persistenceClient}
             currentVideoSourceHash={videoBatchHash}
             currentImageSourceBatchId={imageSourceBatchId}
+            onQueueCleared={(batch) => {
+              if (session.getSnapshot().source === batch.videoSourceText)
+                session.clear();
+            }}
           />
         ) : null}
       </section>

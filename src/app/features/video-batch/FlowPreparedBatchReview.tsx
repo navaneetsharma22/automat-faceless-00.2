@@ -8,12 +8,14 @@ import {
 import styles from "./PreparedBatchReview.module.css";
 import { Button } from "../../components/Button";
 import { useOptionalToast } from "../../components/ToastHost";
+import { ClearQueueAction } from "./ClearQueueAction";
 
 export type PreparedBatchReviewProps = {
   preparedBatch: PreparedVideoBatchRecord;
   persistenceClient: ReturnType<typeof createFoundationClient>;
   currentVideoSourceHash?: string;
   currentImageSourceBatchId?: string;
+  onQueueCleared?: (batch: PreparedVideoBatchRecord) => void;
 };
 
 type AttachmentOperationSnapshot = {
@@ -79,6 +81,7 @@ export function FlowPreparedBatchReview({
   persistenceClient,
   currentVideoSourceHash,
   currentImageSourceBatchId,
+  onQueueCleared,
 }: PreparedBatchReviewProps) {
   const isStaleSource =
     (currentVideoSourceHash &&
@@ -117,7 +120,7 @@ export function FlowPreparedBatchReview({
     previousAllSent.current = { queueId: videoQueue.queueId, allSent: allPromptsSent };
   }, [allPromptsSent, toast, videoQueue]);
 
-  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "reconcilePreAddFailure") {
+  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "reconcilePreAddFailure"): Promise<boolean> {
     setVideoQueueBusy(true);
     setVideoQueueAction(action);
     setVideoQueueError(null);
@@ -131,14 +134,24 @@ export function FlowPreparedBatchReview({
       if (result) {
         setVideoQueue(result as VideoQueueSnapshot);
         if (action === "reconcilePreAddFailure") setVideoQueueNotice("Shot 2's pre-Add failure was reconciled. Resume is a separate action; no attachment or Generate action was performed.");
+        return true;
       }
+      return false;
     } catch (error) {
       const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "queue_request_failed";
       setVideoQueueError(code);
+      return false;
     } finally {
       setVideoQueueBusy(false);
       setVideoQueueAction(null);
     }
+  }
+
+  async function clearBlockedVideoQueue() {
+    if (videoQueue?.state !== "blocked" || videoQueueBusy) return false;
+    const stopped = await runVideoQueue("stop");
+    if (stopped) onQueueCleared?.(preparedBatch);
+    return stopped;
   }
 
   async function inspectReferenceBytes(itemId: string) {
@@ -262,6 +275,12 @@ export function FlowPreparedBatchReview({
                   <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Resuming" onClick={() => void runVideoQueue("resume")}>Resume</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
+              ) : null}
+              {videoQueue?.state === "blocked" ? (
+                <ClearQueueAction
+                  disabled={videoQueueBusy}
+                  onConfirm={clearBlockedVideoQueue}
+                />
               ) : null}
             </div>
             {videoQueue ? (
