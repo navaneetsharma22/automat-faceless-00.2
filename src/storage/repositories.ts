@@ -73,6 +73,35 @@ export class VidsVideoQueueListValidationError extends Error {
   }
 }
 
+const FLOW_VIDEO_QUEUE_RECORD_FIELDS = new Set(["queueId", "preparedBatchId", "state", "pauseReason", "items", "lastDispatchAt", "nextActionAt", "revision", "createdAt", "updatedAt", "itemId", "order", "shotId", "referenceId", "promptHash", "attemptId", "readinessStartedAt", "readinessDeadlineAt", "dispatchReceipt", "storedAt", "resultIdentity", "nextCheckAt", "completedAt", "reason", "priorReason", "byteMismatchDiagnostic"]);
+const MAX_FLOW_VIDEO_QUEUE_STARTUP_DIAGNOSTICS = 8;
+
+export type FlowVideoQueueStartupValidation = {
+  recordIndex: number;
+  recordDigest: string;
+  fieldPath: string;
+  validationRule: string;
+};
+
+function safeFlowVideoQueueValidationDetail(path: PropertyKey[], issueCode: string, recordIndex: number, recordDigest: string): FlowVideoQueueStartupValidation {
+  const safeParts = path.map((part) => typeof part === "number" ? `[${Math.max(0, Math.min(999, part))}]` : typeof part === "string" && FLOW_VIDEO_QUEUE_RECORD_FIELDS.has(part) ? part : "unknown_field");
+  const fieldPath = safeParts.length ? safeParts.reduce((value, part, index) => `${value}${part.startsWith("[") ? part : index === 0 ? part : `.${part}`}`, "") : "unknown_fields";
+  const rawLeaf = path.at(-1);
+  const leaf = typeof rawLeaf !== "string" ? "record" : FLOW_VIDEO_QUEUE_RECORD_FIELDS.has(rawLeaf) ? rawLeaf : "unknown_field";
+  const validationRule = issueCode === "unrecognized_keys" ? "strict_record_fields_only"
+    : path[0] === "items" && leaf === "state" ? "queue_item_state_enum"
+    : leaf === "state" ? "queue_state_enum"
+    : leaf === "revision" ? "nonnegative_integer"
+    : leaf === "order" ? "order_matches_array_index"
+    : issueCode === "too_small" ? `${leaf}_minimum`
+    : issueCode === "too_big" ? `${leaf}_maximum`
+    : issueCode === "invalid_type" ? `${leaf}_type`
+    : issueCode === "invalid_value" ? `${leaf}_allowed_values`
+    : issueCode === "custom" ? "record_custom_invariant"
+    : /^[a-z0-9_]{1,32}$/.test(issueCode) ? issueCode : "unknown_validation_rule";
+  return { recordIndex: Math.min(999_999, Math.max(0, recordIndex)), recordDigest, fieldPath: fieldPath.slice(0, 128), validationRule };
+}
+
 export class VidsDownloadAttemptValidationError extends Error {
   constructor() {
     super("vids_download_status_invalid");
@@ -3438,6 +3467,35 @@ export class ExtensionRepositories {
     if (records.some((record) => !FlowVideoQueueRecordSchema.safeParse(record).success))
       throw new Error("flow_video_queue_invalid");
     return records;
+  }
+
+  /**
+   * Startup reconciliation must not let one malformed saved row hide every other
+   * Flow queue and its alarm. Invalid rows are skipped with bounded diagnostics;
+   * strict reads remain available through listFlowVideoQueues().
+   */
+  async listFlowVideoQueuesForStartup(): Promise<{
+    queues: FlowVideoQueueRecord[];
+    invalid: FlowVideoQueueStartupValidation[];
+    invalidCount: number;
+  }> {
+    const records = await this.tables.flowVideoQueues.toArray();
+    const queues: FlowVideoQueueRecord[] = [];
+    const invalid: FlowVideoQueueStartupValidation[] = [];
+    let invalidCount = 0;
+    for (const [recordIndex, record] of records.entries()) {
+      const result = FlowVideoQueueRecordSchema.safeParse(record);
+      if (result.success) {
+        queues.push(record);
+        continue;
+      }
+      invalidCount += 1;
+      if (invalid.length >= MAX_FLOW_VIDEO_QUEUE_STARTUP_DIAGNOSTICS) continue;
+      const issue = result.error.issues[0];
+      const recordDigest = (await sha256Hex(String((record as { queueId?: unknown }).queueId ?? "missing_queue_id"))).slice(0, 16);
+      invalid.push(safeFlowVideoQueueValidationDetail(issue?.path ?? [], issue?.code ?? "unknown_validation_rule", recordIndex, recordDigest));
+    }
+    return { queues, invalid, invalidCount };
   }
 
   async getFlowVideoAttachmentOperation(id: string): Promise<FlowVideoAttachmentOperation | undefined> {

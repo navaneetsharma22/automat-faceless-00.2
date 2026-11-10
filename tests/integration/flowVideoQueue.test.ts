@@ -351,6 +351,48 @@ describe("P09.3 Flow video timed submission", () => {
     expect(f.generate).toHaveBeenCalledTimes(1);
   });
 
+  it("reconciles valid Flow queues while skipping an unrelated invalid saved row", async () => {
+    const f = await setup();
+    const started = await f.handler.start(batchId);
+    expect(started).toMatchObject({ state: "waiting", items: [{ state: "sent" }, { state: "pending" }] });
+    const invalidRecord = {
+      ...started,
+      queueId: "flow-video:prepared:unknown-invalid-row",
+      preparedBatchId: "prepared:unknown-invalid-row",
+      unlistedField: true,
+    };
+    await f.db.flowVideoQueues.add(invalidRecord as unknown as FlowVideoQueueRecord);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(f.handler.reconcileStartup()).resolves.toBeUndefined();
+    expect(warning).toHaveBeenCalledWith(
+      "[flow_video_queue_startup_invalid_rows_skipped]",
+      expect.objectContaining({
+        invalidCount: 1,
+        invalid: [expect.objectContaining({ fieldPath: "unknown_fields", validationRule: "strict_record_fields_only" })],
+      }),
+    );
+    expect(f.create).toHaveBeenCalledWith(
+      `${FLOW_VIDEO_QUEUE_ALARM_PREFIX}flow-video:${batchId}`,
+      expect.objectContaining({ when: expect.any(Number) }),
+    );
+    await expect(f.getQueue()).resolves.toMatchObject({ state: "waiting", items: [{ state: "sent" }, { state: "pending" }] });
+    await expect(f.repositories.listFlowVideoQueues()).rejects.toThrow("flow_video_queue_invalid");
+    warning.mockRestore();
+  });
+
+  it("classifies a Flow startup listing failure without dispatching or attaching", async () => {
+    const f = await setup();
+    vi.spyOn(f.repositories, "listFlowVideoQueuesForStartup").mockRejectedValueOnce(new Error("storage_read_failed"));
+    await expect(f.handler.reconcileStartup()).rejects.toMatchObject({
+      name: "FlowVideoStartupReconciliationError",
+      step: "queue_list",
+      errorCode: "storage_read_failed",
+    });
+    expect(f.attach).not.toHaveBeenCalled();
+    expect(f.generate).not.toHaveBeenCalled();
+  });
+
   it("retires a blocked Flow queue while preserving uncertain evidence and clearing its alarm", async () => {
     const f = await setup({ generateStatus: "uncertain" });
     let queue = await f.handler.start(batchId);

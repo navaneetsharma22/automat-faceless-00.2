@@ -11,6 +11,7 @@ import type { PreparedVideoBatchRecord } from "../../domain/batches/types";
 import type { FlowVideoAttachmentOperation } from "../../storage/db";
 import { ReferenceAssignmentRecordSchema, sha256Bytes } from "../../domain/media/references";
 import { createQueueAlarmRuntime } from "../scheduler";
+import { FlowVideoStartupReconciliationError } from "../flowVideoAlarmLifecycle";
 
 export const FLOW_VIDEO_QUEUE_ALARM_PREFIX = "automat-flow-video-queue:";
 const HISTORIC_SHOT_ONE_BATCH = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
@@ -383,7 +384,20 @@ export function createFlowVideoQueueHandler(input: {
     },
     onAlarm: (name: string) => { const queueId = alarms.queueIdFromAlarm(name); return queueId ? run(queueId) : Promise.resolve(undefined); },
     reconcileStartup: async () => {
-      for (let queue of await input.repositories.listFlowVideoQueues()) {
+      let listing: Awaited<ReturnType<ExtensionRepositories["listFlowVideoQueuesForStartup"]>>;
+      try {
+        listing = await input.repositories.listFlowVideoQueuesForStartup();
+      } catch (error) {
+        throw new FlowVideoStartupReconciliationError("queue_list", error);
+      }
+      if (listing.invalidCount > 0) {
+        console.warn("[flow_video_queue_startup_invalid_rows_skipped]", {
+          at: now(),
+          invalidCount: listing.invalidCount,
+          invalid: listing.invalid,
+        });
+      }
+      for (let queue of listing.queues) {
         // Migrate old completion-wait records only when their durable item operation proves Generate was dispatched.
         let changed = false;
         const items = [...queue.items];

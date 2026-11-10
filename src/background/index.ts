@@ -39,10 +39,11 @@ import {
 import { flowTabFromUrl } from "../platforms/flow/connection";
 import { createFlowVideoAttachmentHandler } from "./handlers/flowVideoAttachment";
 import { createFlowVideoGenerateHandler } from "./handlers/flowVideo";
-import { createFlowVideoQueueHandler } from "./handlers/flowVideoQueue";
+import { createFlowVideoQueueHandler, FLOW_VIDEO_QUEUE_ALARM_PREFIX } from "./handlers/flowVideoQueue";
 import { createVidsVideoAttachmentHandler } from "./handlers/vidsVideoAttachment";
 import { createVidsVideoGenerateHandler } from "./handlers/vidsVideo";
 import { createVidsVideoQueueHandler } from "./handlers/vidsVideoQueue";
+import { createFlowVideoStartupRetryController, createRetryableFlowVideoReadiness, FlowVideoStartupReconciliationError } from "./flowVideoAlarmLifecycle";
 import { createRetryableVidsReadiness, createVidsAlarmLifecycle, createVidsStartupRetryController } from "./vidsAlarmLifecycle";
 import { createFlowDownloadDiagnosticManager } from "./flowDownloadDiagnostic";
 import { createHostedHelperConfigListener } from "./handlers/hostedHelper";
@@ -383,13 +384,26 @@ const workerReady = Promise.all([
   .then(() => undefined);
 // Reconciliation is intentionally limited to durable queue state and alarm
 // restoration, so queue messages can await it without waiting on dispatch.
-const nonVidsQueueReady = targetStartupReady.then(async () => {
-  await Promise.all([timedQueueScheduler.reconcileStartup(), flowVideoQueue.reconcileStartup()]);
-});
+// Image and Flow video startup are independent: a rejected Flow row must not
+// hide Image alarms, and an Image failure must not drop Flow alarms.
+const imageQueueReady = targetStartupReady.then(() => timedQueueScheduler.reconcileStartup());
+const ensureFlowVideoQueueReady = createRetryableFlowVideoReadiness(
+  targetStartupReady,
+  () => flowVideoQueue.reconcileStartup().catch((error: unknown) => {
+    throw error instanceof FlowVideoStartupReconciliationError
+      ? error
+      : new FlowVideoStartupReconciliationError("queue_reconcile", error);
+  }),
+);
+const flowVideoQueueReady = ensureFlowVideoQueueReady();
 const ensureVidsQueueReady = createRetryableVidsReadiness(targetStartupReady, () => vidsVideoQueue.reconcileStartup());
 const vidsQueueReady = ensureVidsQueueReady();
-const timedQueueReady = Promise.all([nonVidsQueueReady, vidsQueueReady]).then(() => undefined);
+// Image queue messages still wait for the legacy Vids readiness gate, but not
+// for Flow video reconciliation.
+const timedQueueReady = Promise.all([imageQueueReady, vidsQueueReady]).then(() => undefined);
+const flowVideoStartupRetry = createFlowVideoStartupRetryController({ alarms: chrome.alarms, ready: ensureFlowVideoQueueReady, minimumDelayMs: CHROME_MIN_ALARM_DELAY_MS });
 const vidsStartupRetry = createVidsStartupRetryController({ alarms: chrome.alarms, ready: ensureVidsQueueReady, minimumDelayMs: CHROME_MIN_ALARM_DELAY_MS });
+void flowVideoQueueReady.catch(flowVideoStartupRetry.scheduleForFailure);
 void vidsQueueReady.catch(vidsStartupRetry.scheduleForFailure);
 void workerReady.catch(() => undefined);
 const vidsAlarmListener = createVidsAlarmLifecycle({
@@ -404,15 +418,21 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     void flowDownloadDiagnostic.onAlarm(alarm.name);
     return;
   }
+  if (flowVideoStartupRetry.handleAlarm(alarm.name)) return;
   if (vidsStartupRetry.handleAlarm(alarm.name)) return;
   if (alarm.name.startsWith("automat-vids-video-queue:")) {
     vidsAlarmListener(alarm);
     return;
   }
-  void nonVidsQueueReady.then(() => Promise.all([
-    timedQueueScheduler.onAlarm(alarm.name),
-    flowVideoQueue.onAlarm(alarm.name),
-  ])).catch(() => undefined);
+  if (alarm.name.startsWith(FLOW_VIDEO_QUEUE_ALARM_PREFIX)) {
+    void ensureFlowVideoQueueReady()
+      .then(() => flowVideoQueue.onAlarm(alarm.name).catch(() => undefined))
+      .catch(flowVideoStartupRetry.scheduleForFailure);
+    return;
+  }
+  void imageQueueReady
+    .then(() => timedQueueScheduler.onAlarm(alarm.name))
+    .catch(() => undefined);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   void ensureVidsQueueReady().then(() => vidsVideoQueue.onTargetVisible(tabId)).catch(() => undefined);
