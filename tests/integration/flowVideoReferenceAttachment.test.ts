@@ -66,6 +66,10 @@ async function fixture(
     permissionError?: Error;
     selectedDocumentId?: string;
     selectedVerified?: boolean;
+    pinnedDocumentId?: string;
+    pinnedProjectId?: string;
+    pinnedTabId?: number;
+    pinnedCanonicalTarget?: string;
     extensionProtocolVersion?: number;
     connectorProtocolVersion?: number;
     structurePreflight?: { ok: boolean; reason?: string };
@@ -95,10 +99,10 @@ async function fixture(
     promptHash: "b".repeat(64),
     selectionVersion: "33333333-3333-4333-8333-333333333333",
     assignmentVersion: 1,
-    flowProjectId: projectId,
-    tabId,
-    canonicalTarget,
-    documentId,
+    flowProjectId: overrides.pinnedProjectId ?? projectId,
+    tabId: overrides.pinnedTabId ?? tabId,
+    canonicalTarget: overrides.pinnedCanonicalTarget ?? canonicalTarget,
+    documentId: overrides.pinnedDocumentId ?? documentId,
     providerAssetId: mediaId,
     observedSourceSha256: "c".repeat(64),
     sha256,
@@ -421,6 +425,49 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     ).toMatchObject({ status: "attached", referenceId });
   });
 
+  it("accepts a pinned reference from an older document in the same tab/project after a Flow reload", async () => {
+    const f = await fixture({ pinnedDocumentId: "flow-document-before-reload" });
+    expect(f.pin.documentId).toBe("flow-document-before-reload");
+    await expect(
+      f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toEqual({ status: "attached" });
+    expect(f.preflightOperationStates[0]).toBeUndefined();
+    expect(f.addActivation).toHaveBeenCalledTimes(1);
+    expect(
+      await f.repositories.getFlowVideoAttachmentOperation(
+        `${batchId}:${itemId}`,
+      ),
+    ).toMatchObject({ status: "attached", referenceId });
+  });
+
+  it("still rejects a pinned reference from a different tab or project", async () => {
+    for (const options of [
+      { pinnedProjectId: "other-project" },
+      { pinnedTabId: tabId + 1 },
+      { pinnedCanonicalTarget: `${canonicalTarget}/other` },
+    ]) {
+      const f = await fixture(options);
+      await expect(
+        f.client.request("flow.video.attachReference", {
+          preparedBatchId: batchId,
+          itemId,
+        }),
+      ).resolves.toMatchObject({
+        status: "blocked",
+        reason: "target_changed",
+      });
+      expect(f.addActivation).not.toHaveBeenCalled();
+      expect(
+        await f.repositories.getFlowVideoAttachmentOperation(
+          `${batchId}:${itemId}`,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
   it("rejects malformed requests in the production schema and refuses missing IDs or Vids destination before injection", async () => {
     const f = await fixture();
     expect(
@@ -604,6 +651,25 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(f.addActivation).not.toHaveBeenCalled();
     expect(f.executeScript).toHaveBeenCalledTimes(1);
     expect((await f.repositories.getFlowVideoAttachmentOperation(original.id))?.id).toBe(original.id);
+  });
+
+  it("verifies an attached chip in the current document when the pin predates a Flow reload", async () => {
+    const f = await fixture({ pinnedDocumentId: "flow-document-before-reload" });
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "attachment_unverified",
+      updatedAt: 90,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(f.client.request("flow.video.verifyAttachedReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({
+      status: "attached",
+      operation: { status: "attached", verifiedAttachment: { documentId, mediaId } },
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
   });
 
   it("rejects a verification result from a different document without changing the operation", async () => {

@@ -176,6 +176,10 @@ export function FlowPreparedBatchReview({
   const recheckableFailure = failedQueueItems.length === 1 &&
     failedQueueItems[0]?.reason === "candidate_bytes_mismatch" &&
     !videoQueue?.items.some((item) => item.state === "uncertain");
+  const recoverablePreIntentTargetChanged = videoQueue?.state === "paused" &&
+    failedQueueItems.length === 1 &&
+    failedQueueItems[0]?.reason === "target_changed" &&
+    !videoQueue.items.some((item) => item.state === "uncertain");
   const reconcilablePreAddFailure = preparedBatch.id === RECONCILABLE_PREADD_RECORD.preparedBatchId &&
     videoQueue?.preparedBatchId === RECONCILABLE_PREADD_RECORD.preparedBatchId &&
     (videoQueue.state === "paused" || videoQueue.state === "blocked") &&
@@ -270,6 +274,11 @@ export function FlowPreparedBatchReview({
                 <Button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} loading={videoQueueAction === "recheckAndResume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</Button>
               ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && reconcilablePreAddFailure ? (
                 <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "reconcilePreAddFailure"} loadingLabel="Reconciling" onClick={() => void runVideoQueue("reconcilePreAddFailure")}>Reconcile Shot 2 pre-Add failure</Button>
+              ) : recoverablePreIntentTargetChanged ? (
+                <div className={styles.videoQueueActions}>
+                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("resume")}>Resume</Button>
+                  <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
+                </div>
               ) : videoQueue.state === "paused" && !videoQueue.items.some((item) => item.state === "uncertain" || item.state === "failed") ? (
                 <div className={styles.videoQueueActions}>
                   <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Resuming" onClick={() => void runVideoQueue("resume")}>Resume</Button>

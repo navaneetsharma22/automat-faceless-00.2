@@ -121,6 +121,136 @@ export function createFlowVideoQueueHandler(input: {
     return saved;
   }
 
+  async function recoverPreIntentTargetChanged(
+    queue: FlowVideoQueueRecord,
+    expectedRevision: number,
+  ): Promise<FlowVideoQueueRecord | undefined> {
+    const unresolved = queue.items.filter(
+      (entry) => entry.state === "failed" || entry.state === "uncertain",
+    );
+    if (unresolved.length !== 1) return undefined;
+    const failed = unresolved[0]!;
+    if (failed.state !== "failed" || failed.reason !== "target_changed")
+      return undefined;
+    if (!input.revalidate) return undefined;
+
+    const batchResult = PreparedVideoBatchRecordSchema.safeParse(
+      await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId),
+    );
+    if (
+      !batchResult.success ||
+      batchResult.data.id !== queue.preparedBatchId ||
+      batchResult.data.destination !== "Flow"
+    )
+      return undefined;
+    const batch = batchResult.data;
+    const preparedItem = batch.items.find(
+      (entry) => entry.itemId === failed.itemId,
+    );
+    if (
+      !preparedItem ||
+      preparedItem.reference.referenceId !== failed.referenceId ||
+      preparedItem.contentHash !== failed.promptHash
+    )
+      return undefined;
+
+    const readOperations = async () =>
+      Promise.all(
+        queue.items.map(async (entry) => ({
+          id: `${queue.preparedBatchId}:${entry.itemId}`,
+          operation:
+            await input.repositories.getFlowVideoAttachmentOperation(
+              `${queue.preparedBatchId}:${entry.itemId}`,
+            ),
+        })),
+      );
+    const operationsBefore = await readOperations();
+    for (const { id, operation } of operationsBefore) {
+      const entry = queue.items.find(
+        (candidate) => `${queue.preparedBatchId}:${candidate.itemId}` === id,
+      )!;
+      if (entry.itemId === failed.itemId) {
+        // The failure was produced before the sole attachment action intent.
+        // Any operation or generation means replay is not authorized.
+        if (operation !== undefined) return undefined;
+        continue;
+      }
+      if (entry.state === "sent") {
+        const sentItem = batch.items.find(
+          (candidate) => candidate.itemId === entry.itemId,
+        );
+        const generation = operation?.videoGeneration;
+        if (
+          !sentItem ||
+          generation?.state !== "dispatched" ||
+          !generationMatches(batch, sentItem, generation) ||
+          entry.dispatchReceipt?.attemptId !== generation.attemptId
+        )
+          return undefined;
+        continue;
+      }
+      if (entry.state !== "pending" || operation !== undefined) return undefined;
+    }
+
+    const targetBefore = await input
+      .revalidate(queue.preparedBatchId)
+      .catch(() => "target_revalidation_failed");
+    if (targetBefore) return undefined;
+
+    const latestQueue = await input.repositories.getFlowVideoQueue(
+      queue.queueId,
+    );
+    if (
+      !latestQueue ||
+      latestQueue.revision !== expectedRevision ||
+      latestQueue.state !== queue.state
+    )
+      return undefined;
+    const latestFailed = latestQueue.items.find(
+      (entry) => entry.itemId === failed.itemId,
+    );
+    if (
+      !latestFailed ||
+      latestFailed.state !== "failed" ||
+      latestFailed.reason !== "target_changed" ||
+      latestFailed.referenceId !== failed.referenceId ||
+      latestFailed.promptHash !== failed.promptHash
+    )
+      return undefined;
+    const operationsAfter = await readOperations();
+    if (JSON.stringify(operationsBefore) !== JSON.stringify(operationsAfter))
+      return undefined;
+
+    const updatedItems = latestQueue.items.map((entry) =>
+      entry.itemId === failed.itemId
+        ? {
+            ...entry,
+            state: "pending" as const,
+            priorReason: entry.priorReason ?? entry.reason,
+            reason: undefined,
+          }
+        : entry,
+    );
+    const nextRecord: FlowVideoQueueRecord = {
+      ...latestQueue,
+      items: updatedItems,
+      state: "waiting",
+      pauseReason: undefined,
+      nextActionAt: nextVideoDispatchAt(latestQueue.lastDispatchAt, now()),
+      revision: latestQueue.revision + 1,
+      updatedAt: now(),
+    };
+    const next =
+      await input.repositories.updateFlowVideoQueueIfOperationsUnchanged({
+        expectedRevision: latestQueue.revision,
+        expectedOperations: operationsBefore,
+        next: nextRecord,
+      });
+    if (!next) throw new Error("flow_video_queue_or_operation_changed");
+    await schedule(next);
+    return next;
+  }
+
   async function process(queueId: string): Promise<FlowVideoQueueRecord> {
     let queue = await input.repositories.getFlowVideoQueue(queueId);
     if (!queue) throw new Error("flow_video_queue_not_found");
@@ -204,8 +334,13 @@ export function createFlowVideoQueueHandler(input: {
     resume: async (preparedBatchId: string, expectedRevision: number) => {
       const queue = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("flow_video_queue_resume_invalid");
-      const blocked = queue.items.find((entry) => entry.state === "uncertain" || entry.state === "failed");
-      if (blocked) { const saved = await save(queue, { state: "blocked", pauseReason: blocked.reason ?? "item_requires_review", nextActionAt: null }); await schedule(saved); return saved; }
+      const unresolved = queue.items.filter((entry) => entry.state === "uncertain" || entry.state === "failed");
+      if (unresolved.length > 0) {
+        const recovered = await recoverPreIntentTargetChanged(queue, expectedRevision);
+        if (recovered) return run(recovered.queueId);
+        const blocked = unresolved[0]!;
+        const saved = await save(queue, { state: "blocked", pauseReason: blocked.reason ?? "item_requires_review", nextActionAt: null }); await schedule(saved); return saved;
+      }
       const items = queue.items.map((entry) => entry.state === "waiting_for_generate" ? { ...entry, readinessStartedAt: now(), readinessDeadlineAt: nextVideoReadinessDeadline(now()) } : entry);
       const next = await save(queue, { state: "waiting", pauseReason: undefined, items, nextActionAt: queue.nextActionAt && queue.nextActionAt > now() ? queue.nextActionAt : now() });
       return run(next.queueId);

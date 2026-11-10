@@ -226,11 +226,14 @@ export function createFlowVideoGenerateHandler(deps: {
     )
       return undefined;
     const selected = await selectedBinding(batch);
+    // A Flow reload may change the document ID while the tab/project and
+    // pinned media identity stay the same. The exact chip media ID below
+    // remains the current-document binding check.
     if (
       !selected ||
       pinned.tabId !== selected.selected.tabId ||
       pinned.flowProjectId !== selected.binding.projectId ||
-      pinned.documentId !== selected.binding.documentId
+      pinned.canonicalTarget !== selected.selected.canonicalTarget
     )
       return undefined;
     const target = {

@@ -115,6 +115,29 @@ async function setup(options: {
   return { batch, db, repositories, handler, attach, generate, inspectReferenceBytes, revalidate, create, clear, now: () => at, advance: (ms: number) => { at += ms; }, getQueue: () => repositories.getFlowVideoQueue(`flow-video:${batchId}`) };
 }
 
+async function seedPausedTargetChangedQueue(f: Awaited<ReturnType<typeof setup>>) {
+  await f.repositories.createFlowVideoQueue({
+    queueId: `flow-video:${batchId}`,
+    preparedBatchId: batchId,
+    state: "paused",
+    pauseReason: "target_changed",
+    items: f.batch.items.map((item, order) => ({
+      itemId: item.itemId,
+      order,
+      shotId: item.canonicalShotId,
+      referenceId: item.reference.referenceId,
+      promptHash: item.contentHash,
+      state: order === 0 ? ("failed" as const) : ("pending" as const),
+      ...(order === 0 ? { reason: "target_changed" } : {}),
+    })),
+    lastDispatchAt: null,
+    nextActionAt: null,
+    revision: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+}
+
 describe("P09.3 Flow video timed submission", () => {
   it("advances after a durable receipt and the 30-second interval without completion evidence", async () => {
     const f = await setup();
@@ -333,6 +356,57 @@ describe("P09.3 Flow video timed submission", () => {
     blocked = await uncertain.handler.resume(batchId, blocked.revision);
     expect(blocked.state).toBe("blocked");
     expect(uncertain.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers one pre-intent target_changed failure on explicit Resume after revalidating the target", async () => {
+    const f = await setup();
+    await seedPausedTargetChangedQueue(f);
+    const resumed = await f.handler.resume(batchId, 0);
+    expect(resumed).toMatchObject({
+      state: "waiting",
+      items: [
+        { state: "sent", priorReason: "target_changed" },
+        { state: "pending" },
+      ],
+    });
+    expect(resumed.pauseReason).toBeUndefined();
+    expect(f.revalidate).toHaveBeenCalled();
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses target_changed recovery when attachment intent exists or target revalidation fails", async () => {
+    const existing = await setup();
+    await seedPausedTargetChangedQueue(existing);
+    await existing.repositories.putFlowVideoAttachmentOperation({
+      id: `${batchId}:item-1`,
+      preparedBatchId: batchId,
+      itemId: "item-1",
+      referenceId: ref1,
+      status: "blocked",
+      reason: "target_changed_before_action",
+      updatedAt: 1,
+    });
+    const blocked = await existing.handler.resume(batchId, 0);
+    expect(blocked).toMatchObject({
+      state: "blocked",
+      pauseReason: "target_changed",
+    });
+    expect(existing.attach).not.toHaveBeenCalled();
+    expect(existing.generate).not.toHaveBeenCalled();
+
+    const targetChanged = await setup();
+    await seedPausedTargetChangedQueue(targetChanged);
+    targetChanged.revalidate.mockResolvedValueOnce(
+      "selected_flow_target_changed",
+    );
+    const result = await targetChanged.handler.resume(batchId, 0);
+    expect(result).toMatchObject({
+      state: "blocked",
+      pauseReason: "target_changed",
+    });
+    expect(targetChanged.attach).not.toHaveBeenCalled();
+    expect(targetChanged.generate).not.toHaveBeenCalled();
   });
 
   it("Pause, Stop, Resume, and restart preserve sent receipts and do not resend sent items", async () => {

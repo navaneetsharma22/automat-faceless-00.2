@@ -32,6 +32,10 @@ async function fixture(
     verificationDocumentId?: string;
     verificationMediaId?: string;
     verificationBusy?: string | null;
+    pinnedDocumentId?: string;
+    pinnedProjectId?: string;
+    pinnedTabId?: number;
+    pinnedCanonicalTarget?: string;
     changeDocumentAfterFill?: boolean;
     changeReferenceAfterFill?: boolean;
     changePairing?: boolean;
@@ -125,10 +129,10 @@ async function fixture(
     promptHash: "e".repeat(64),
     selectionVersion: "44444444-4444-4444-8444-444444444444",
     assignmentVersion: 1,
-    flowProjectId: projectId,
-    tabId,
-    canonicalTarget,
-    documentId,
+    flowProjectId: overrides.pinnedProjectId ?? projectId,
+    tabId: overrides.pinnedTabId ?? tabId,
+    canonicalTarget: overrides.pinnedCanonicalTarget ?? canonicalTarget,
+    documentId: overrides.pinnedDocumentId ?? documentId,
     providerAssetId: mediaId,
     observedSourceSha256: "d".repeat(64),
     sha256: referenceHash,
@@ -303,6 +307,40 @@ describe("P09.2 one prepared Flow video item (offline)", () => {
       promptHash: await sha256Hex(prompt),
       referenceId,
     });
+  });
+
+  it("accepts an older pinned document in the same tab/project after a Flow reload", async () => {
+    const f = await fixture({ pinnedDocumentId: "flow-doc-before-reload" });
+    await expect(
+      f.handler.generateOnce(batchId, itemId),
+    ).resolves.toMatchObject({ status: "dispatched", activationCount: 1 });
+    expect(f.activate).toHaveBeenCalledTimes(1);
+    expect(f.getReferenceReads()).toBe(3);
+    expect(
+      (
+        await f.repositories.getFlowVideoAttachmentOperation(
+          `${batchId}:${itemId}`,
+        )
+      )?.videoGeneration,
+    ).toMatchObject({ state: "dispatched", documentId });
+  });
+
+  it("still rejects a pinned reference from a different tab or project", async () => {
+    for (const options of [
+      { pinnedProjectId: "other-project" },
+      { pinnedTabId: tabId + 1 },
+      { pinnedCanonicalTarget: `${canonicalTarget}/other` },
+    ]) {
+      const f = await fixture(options);
+      await expect(
+        f.handler.generateOnce(batchId, itemId),
+      ).resolves.toMatchObject({
+        status: "blocked",
+        reason: "matching_ready_reference_required",
+      });
+      expect(f.enterPrompt).not.toHaveBeenCalled();
+      expect(f.activate).not.toHaveBeenCalled();
+    }
   });
 
   it("rejects a source/item Shot pairing mismatch before prompt input", async () => {

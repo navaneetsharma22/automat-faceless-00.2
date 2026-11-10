@@ -369,6 +369,8 @@ export function createFlowVideoAttachmentHandler(deps: {
     )
       return { status: "blocked", reason: "manual_settings_confirmation_binding_mismatch" };
     const pinned = await deps.repositories.getReferenceById(item.reference.referenceId);
+    // The pin may predate a Flow reload. Tab, project, canonical target, and
+    // exact media identity remain bound; the current document is checked below.
     if (
       !pinned ||
       !ReferenceAssignmentRecordSchema.safeParse(pinned).success ||
@@ -381,7 +383,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       pinned.height !== item.reference.height ||
       pinned.tabId !== batch.target.tabId ||
       pinned.flowProjectId !== batch.target.projectId ||
-      pinned.documentId !== batch.target.documentId ||
+      pinned.canonicalTarget !== batch.target.canonicalTarget ||
       !pinned.providerAssetId
     )
       return { status: "blocked", reason: "pinned_reference_mismatch" };
@@ -731,6 +733,9 @@ export function createFlowVideoAttachmentHandler(deps: {
     await deps.revalidate();
     const selected = await deps.repositories.getSelectedTarget("Flow");
     const binding = selected?.verificationBinding;
+    // A Flow reload replaces documentId without changing the tab/project or
+    // the pinned media identity. The current document, asset ID, and bytes
+    // below still have to match exactly.
     if (
       !selected ||
       selected.verification !== "verified" ||
@@ -747,7 +752,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
       pinned.tabId !== selected.tabId ||
       pinned.flowProjectId !== binding.projectId ||
-      pinned.documentId !== binding.documentId
+      pinned.canonicalTarget !== selected.canonicalTarget
     )
       return { status: "blocked", reason: "target_changed" };
     const tab = await deps.getTab(selected.tabId);
