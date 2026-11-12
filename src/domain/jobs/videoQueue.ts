@@ -4,6 +4,31 @@ import { ReferenceByteComparisonDiagnosticSchema, type ReferenceByteComparisonDi
 export const VIDEO_QUEUE_DISPATCH_GAP_MS = 30_000 as const;
 export const VIDEO_QUEUE_READINESS_TIMEOUT_MS = 60_000 as const;
 
+/**
+ * Picker failures are returned by the in-page action before its sole Add
+ * activation. The set is deliberately closed: a reason outside it never
+ * authorizes retrying an attachment that may already have clicked Add.
+ */
+export const FLOW_VIDEO_PICKER_PRE_ADD_REASONS = [
+  "picker_missing",
+  "picker_not_open",
+  "picker_exact_row_missing",
+  "picker_exact_row_ambiguous",
+  "picker_selected_preview_mismatch",
+  "picker_add_not_ready",
+] as const;
+export type FlowVideoPickerPreAddReason =
+  (typeof FLOW_VIDEO_PICKER_PRE_ADD_REASONS)[number];
+
+export function isFlowVideoPickerPreAddReason(
+  reason: string | undefined,
+): reason is FlowVideoPickerPreAddReason {
+  return (
+    reason !== undefined &&
+    (FLOW_VIDEO_PICKER_PRE_ADD_REASONS as readonly string[]).includes(reason)
+  );
+}
+
 export const VIDEO_QUEUE_STATES = [
   "ready",
   "waiting",

@@ -362,6 +362,104 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     expect(request.mock.calls.some(([type]) => type === "flow.video.attachReference" || type === "flow.video.generateOnce" || type === "flow.videoQueue.start")).toBe(false);
   });
 
+  it("offers Resume for one pre-intent candidate_missing failure without attaching or generating from review", async () => {
+    const queue = {
+      queueId: "flow-video:prepared:default:req-12345", preparedBatchId: "prepared:default:req-12345", state: "paused",
+      pauseReason: "candidate_missing", nextActionAt: null, revision: 6,
+      items: [
+        { itemId: "import:default:video:item:0", order: 0, shotId: "1", referenceId: "00000000-0000-4000-8000-000000000001", promptHash: "a".repeat(64), state: "failed", reason: "candidate_missing" },
+        { itemId: "import:default:video:item:1", order: 1, shotId: "2", referenceId: "00000000-0000-4000-8000-000000000002", promptHash: "b".repeat(64), state: "pending" },
+      ],
+    };
+    const request = vi.fn(async (type: string) => type === "flow.videoQueue.get" ? queue : type === "flow.videoQueue.resume" ? queue : null);
+    const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
+    await act(async () => {
+      root?.render(createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client }));
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain("Current blocker: candidate_missing");
+    const resume = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent?.trim() === "Resume");
+    expect(resume).toBeDefined();
+    await act(async () => { resume?.click(); await Promise.resolve(); });
+    expect(request).toHaveBeenCalledWith("flow.videoQueue.resume", { preparedBatchId: "prepared:default:req-12345", expectedRevision: 6 });
+    expect(request.mock.calls.some(([type]) => type === "flow.video.attachReference" || type === "flow.video.generateOnce" || type === "flow.videoQueue.start")).toBe(false);
+  });
+
+  it("offers a guarded retry for one proven pre-Add picker failure without attaching or generating from review", async () => {
+    const queue = {
+      queueId: "flow-video:prepared:default:req-12345",
+      preparedBatchId: "prepared:default:req-12345",
+      state: "paused",
+      pauseReason: "picker_exact_row_missing",
+      nextActionAt: null,
+      revision: 7,
+      items: [
+        {
+          itemId: "import:default:video:item:0",
+          order: 0,
+          shotId: "1",
+          referenceId: "00000000-0000-4000-8000-000000000001",
+          promptHash: "a".repeat(64),
+          state: "uncertain",
+          reason: "picker_exact_row_missing",
+        },
+        {
+          itemId: "import:default:video:item:1",
+          order: 1,
+          shotId: "2",
+          referenceId: "00000000-0000-4000-8000-000000000002",
+          promptHash: "b".repeat(64),
+          state: "pending",
+        },
+      ],
+    };
+    const request = vi.fn(async (type: string) => {
+      if (type === "flow.videoQueue.get") return queue;
+      if (type === "flow.videoQueue.retryPreAddPickerFailure") return queue;
+      return null;
+    });
+    const client = { request } as unknown as ReturnType<
+      typeof createFoundationClient
+    >;
+    await act(async () => {
+      root?.render(
+        createElement(PreparedBatchReview, {
+          preparedBatch: mockPreparedBatch,
+          persistenceClient: client,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain(
+      "Current blocker: picker_exact_row_missing",
+    );
+    const retry = Array.from(
+      container?.querySelectorAll("button") ?? [],
+    ).find((button) => button.textContent?.trim() === "Retry Shot 1");
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry?.click();
+      await Promise.resolve();
+    });
+    expect(request).toHaveBeenCalledWith(
+      "flow.videoQueue.retryPreAddPickerFailure",
+      {
+        preparedBatchId: "prepared:default:req-12345",
+        expectedRevision: 7,
+      },
+    );
+    expect(container?.textContent).toContain("occurred before Add");
+    expect(
+      request.mock.calls.some(
+        ([type]) =>
+          type === "flow.video.attachReference" ||
+          type === "flow.video.generateOnce" ||
+          type === "flow.videoQueue.start" ||
+          type === "flow.videoQueue.resume",
+      ),
+    ).toBe(false);
+  });
+
   it("exposes exact Shot 2 pre-Add reconciliation and then a separate Resume action", async () => {
     const batchId = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
     const shotTwoRef = "e8c9315f-f79a-45c6-8184-4fddfce541ce";

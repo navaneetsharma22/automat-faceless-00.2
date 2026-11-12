@@ -68,11 +68,24 @@ export type FlowVideoAttachmentOperation = {
   };
   preAddReconciliationEvidence?: {
     priorStatus: "uncertain";
-    priorReason: "candidate_missing_or_virtualized";
+    priorReason: string;
     priorUpdatedAt: number;
-    producer: "historical_candidate_missing_before_add_activation";
+    producer:
+      | "historical_candidate_missing_before_add_activation"
+      | "picker_failure_before_add_activation";
     addClickAttempted: false;
     reconciledAt: number;
+  };
+  /**
+   * Recorded with a picker failure that the in-page action returns strictly
+   * before its Add click. It lets the queue distinguish a proven pre-Add
+   * blocker from a post-click attachment outcome that must never be replayed.
+   */
+  pickerPreAddEvidence?: {
+    reason: string;
+    updatedAt: number;
+    producer: "picker_failure_before_add_activation";
+    addClickAttempted: false;
   };
 };
 

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { PreparedVideoBatchRecord } from "../../../domain/batches/types";
-import { VIDEO_QUEUE_DISPATCH_GAP_MS } from "../../../domain/jobs/videoQueue";
+import {
+  VIDEO_QUEUE_DISPATCH_GAP_MS,
+  isFlowVideoPickerPreAddReason,
+} from "../../../domain/jobs/videoQueue";
 import {
   FoundationClientError,
   type createFoundationClient,
@@ -120,7 +123,7 @@ export function FlowPreparedBatchReview({
     previousAllSent.current = { queueId: videoQueue.queueId, allSent: allPromptsSent };
   }, [allPromptsSent, toast, videoQueue]);
 
-  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "reconcilePreAddFailure"): Promise<boolean> {
+  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "retryPreAddPickerFailure" | "reconcilePreAddFailure"): Promise<boolean> {
     setVideoQueueBusy(true);
     setVideoQueueAction(action);
     setVideoQueueError(null);
@@ -134,6 +137,7 @@ export function FlowPreparedBatchReview({
       if (result) {
         setVideoQueue(result as VideoQueueSnapshot);
         if (action === "reconcilePreAddFailure") setVideoQueueNotice("Shot 2's pre-Add failure was reconciled. Resume is a separate action; no attachment or Generate action was performed.");
+        if (action === "retryPreAddPickerFailure") setVideoQueueNotice("The picker failure occurred before Add. The queue reconciled it and is retrying attachment; Generate dispatches only after the reference is verified.");
         return true;
       }
       return false;
@@ -176,9 +180,9 @@ export function FlowPreparedBatchReview({
   const recheckableFailure = failedQueueItems.length === 1 &&
     failedQueueItems[0]?.reason === "candidate_bytes_mismatch" &&
     !videoQueue?.items.some((item) => item.state === "uncertain");
-  const recoverablePreIntentTargetChanged = videoQueue?.state === "paused" &&
+  const recoverablePreIntentResolutionFailure = videoQueue?.state === "paused" &&
     failedQueueItems.length === 1 &&
-    failedQueueItems[0]?.reason === "target_changed" &&
+    (failedQueueItems[0]?.reason === "target_changed" || failedQueueItems[0]?.reason === "candidate_missing") &&
     !videoQueue.items.some((item) => item.state === "uncertain");
   const reconcilablePreAddFailure = preparedBatch.id === RECONCILABLE_PREADD_RECORD.preparedBatchId &&
     videoQueue?.preparedBatchId === RECONCILABLE_PREADD_RECORD.preparedBatchId &&
@@ -186,6 +190,14 @@ export function FlowPreparedBatchReview({
     videoQueue.items.filter((item) => item.state === "uncertain" || item.state === "failed").length === 1 &&
     videoQueue.items.some((item) => item.itemId === RECONCILABLE_PREADD_RECORD.itemId && item.referenceId === RECONCILABLE_PREADD_RECORD.referenceId && item.state === "uncertain" && item.reason === RECONCILABLE_PREADD_RECORD.reason) &&
     !videoQueue.items.some((item) => item.itemId !== RECONCILABLE_PREADD_RECORD.itemId && ["uncertain", "failed", "attaching", "dispatching"].includes(item.state));
+  const pickerBlockedItem = (() => {
+    if (!videoQueue || !["paused", "blocked"].includes(videoQueue.state)) return undefined;
+    const unresolved = videoQueue.items.filter((item) =>
+      ["failed", "uncertain", "attaching", "dispatching"].includes(item.state));
+    if (unresolved.length !== 1 || unresolved[0]?.state !== "uncertain") return undefined;
+    return isFlowVideoPickerPreAddReason(unresolved[0].reason) ? unresolved[0] : undefined;
+  })();
+  const retryablePickerFailure = pickerBlockedItem !== undefined;
   const activeQueueItem = videoQueue?.items.find((item) => item.state === "attaching" || item.state === "dispatching");
   const readinessQueueItem = videoQueue?.items.find((item) => item.state === "waiting_for_generate");
   const nextQueueItem = activeQueueItem ?? readinessQueueItem ?? videoQueue?.items.find((item) => item.state === "pending");
@@ -274,7 +286,12 @@ export function FlowPreparedBatchReview({
                 <Button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} loading={videoQueueAction === "recheckAndResume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</Button>
               ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && reconcilablePreAddFailure ? (
                 <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "reconcilePreAddFailure"} loadingLabel="Reconciling" onClick={() => void runVideoQueue("reconcilePreAddFailure")}>Reconcile Shot 2 pre-Add failure</Button>
-              ) : recoverablePreIntentTargetChanged ? (
+              ) : retryablePickerFailure ? (
+                <div className={styles.videoQueueActions}>
+                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "retryPreAddPickerFailure"} loadingLabel="Retrying" onClick={() => void runVideoQueue("retryPreAddPickerFailure")}>Retry Shot {pickerBlockedItem?.shotId}</Button>
+                  <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
+                </div>
+              ) : recoverablePreIntentResolutionFailure ? (
                 <div className={styles.videoQueueActions}>
                   <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("resume")}>Resume</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>

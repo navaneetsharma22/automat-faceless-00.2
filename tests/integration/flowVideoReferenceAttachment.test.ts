@@ -9,6 +9,7 @@ import {
   createFlowVideoAttachmentHandler,
   flowVideoAttachmentActionInPage,
   flowVideoAttachmentStructurePreflightInPage,
+  flowVideoGalleryCandidateInPage,
 } from "../../src/background/handlers/flowVideoAttachment";
 import {
   flowReferenceCaptureInPage,
@@ -77,6 +78,9 @@ async function fixture(
     mismatchManualSettingsTarget?: boolean;
     verificationDocumentId?: string;
     verificationChip?: { busy: string | null; url: string };
+    galleryCandidates?: Array<{ id: string; url: string }>;
+    galleryCandidateDocumentId?: string;
+    galleryCandidateHref?: string;
     changeOperationDuringVerification?: boolean;
     injectedDocumentId?: string;
     pageResult?: { ok: boolean; already?: boolean; reason?: string };
@@ -253,6 +257,33 @@ async function fixture(
     if (injection.func === flowRestoreGalleryAfterOriginalResolutionInPage) {
       expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
       return [{ documentId: overrides.detailRestoreDocumentId ?? documentId, result: { ok: true, href: canonicalTarget } }];
+    }
+    if (injection.func === flowVideoGalleryCandidateInPage) {
+      expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
+      expect(injection.args).toEqual([mediaId]);
+      const candidates = overrides.galleryCandidates ?? [
+        { id: mediaId, url: observedCandidateUrl },
+      ];
+      return [
+        {
+          documentId:
+            overrides.galleryCandidateDocumentId ??
+            overrides.injectedDocumentId ??
+            documentId,
+          result: {
+            ok: candidates.length === 1,
+            href: overrides.galleryCandidateHref ?? canonicalTarget,
+            ...(candidates.length === 1
+              ? { candidate: candidates[0] }
+              : {
+                  reason:
+                    candidates.length > 1
+                      ? "candidate_ambiguous"
+                      : "candidate_missing",
+                }),
+          },
+        },
+      ];
     }
     if (injection.func === flowVideoAttachmentStructurePreflightInPage) {
       preflightOperationStates.push(
@@ -748,6 +779,36 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     ).toBeUndefined();
   });
 
+  it("blocks a virtualized gallery tile that is missing or ambiguous before durable intent and activation", async () => {
+    for (const options of [
+      { galleryCandidates: [], expected: "candidate_missing" },
+      {
+        galleryCandidates: [
+          { id: mediaId, url: candidateUrl },
+          { id: mediaId, url: `${candidateUrl}-duplicate` },
+        ],
+        expected: "candidate_ambiguous",
+      },
+    ]) {
+      const f = await fixture(options);
+      await expect(
+        f.client.request("flow.video.attachReference", {
+          preparedBatchId: batchId,
+          itemId,
+        }),
+      ).resolves.toMatchObject({
+        status: "blocked",
+        reason: options.expected,
+      });
+      expect(f.addActivation).not.toHaveBeenCalled();
+      expect(
+        await f.repositories.getFlowVideoAttachmentOperation(
+          `${batchId}:${itemId}`,
+        ),
+      ).toBeUndefined();
+    }
+  });
+
   it("reconciles only the inspected pre-click record atomically and preserves unrelated uncertainty without activation", async () => {
     const f = await fixture();
     const exact = {
@@ -951,7 +1012,10 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(pickerAction?.args).toEqual([mediaId, candidateUrl]);
     expect(pickerAction?.args?.[1]).not.toBe(originalUrl);
     expect(calls.indexOf(flowResolveOriginalImageUrlInPage)).toBeLessThan(calls.indexOf(flowRestoreGalleryAfterOriginalResolutionInPage));
-    expect(calls.indexOf(flowRestoreGalleryAfterOriginalResolutionInPage)).toBeLessThan(calls.findIndex((func) => func !== flowResolveOriginalImageUrlInPage && func !== flowRestoreGalleryAfterOriginalResolutionInPage && func !== flowReferenceCaptureInPage && String(func).includes("flow-base-prompt-box")));
+    const galleryChecks = calls.flatMap((func, index) => func === flowVideoGalleryCandidateInPage ? [index] : []);
+    expect(galleryChecks.length).toBeGreaterThanOrEqual(2);
+    expect(galleryChecks[0]).toBeLessThan(calls.indexOf(flowResolveOriginalImageUrlInPage));
+    expect(galleryChecks[1]).toBeGreaterThan(calls.indexOf(flowRestoreGalleryAfterOriginalResolutionInPage));
     expect(f.addActivation).toHaveBeenCalledTimes(1);
   });
 

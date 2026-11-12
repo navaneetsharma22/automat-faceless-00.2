@@ -1,6 +1,7 @@
 import type { FlowVideoQueueItem, FlowVideoQueueRecord } from "../../domain/jobs/videoQueue";
 import type { ReferenceByteComparisonDiagnostic } from "../../domain/media/references";
 import {
+  isFlowVideoPickerPreAddReason,
   nextVideoDispatchAt,
   nextVideoReadinessDeadline,
   VIDEO_QUEUE_DISPATCH_GAP_MS,
@@ -121,7 +122,7 @@ export function createFlowVideoQueueHandler(input: {
     return saved;
   }
 
-  async function recoverPreIntentTargetChanged(
+  async function recoverPreIntentResolutionFailure(
     queue: FlowVideoQueueRecord,
     expectedRevision: number,
   ): Promise<FlowVideoQueueRecord | undefined> {
@@ -130,7 +131,14 @@ export function createFlowVideoQueueHandler(input: {
     );
     if (unresolved.length !== 1) return undefined;
     const failed = unresolved[0]!;
-    if (failed.state !== "failed" || failed.reason !== "target_changed")
+    // Both failures are produced before the sole attachment action intent:
+    // target_changed fails target validation, candidate_missing fails exact
+    // provider-media-ID resolution. The operation check below still refuses
+    // recovery if any attachment/Generate intent was recorded.
+    if (
+      failed.state !== "failed" ||
+      (failed.reason !== "target_changed" && failed.reason !== "candidate_missing")
+    )
       return undefined;
     if (!input.revalidate) return undefined;
 
@@ -212,7 +220,8 @@ export function createFlowVideoQueueHandler(input: {
     if (
       !latestFailed ||
       latestFailed.state !== "failed" ||
-      latestFailed.reason !== "target_changed" ||
+      (latestFailed.reason !== "target_changed" &&
+        latestFailed.reason !== "candidate_missing") ||
       latestFailed.referenceId !== failed.referenceId ||
       latestFailed.promptHash !== failed.promptHash
     )
@@ -249,6 +258,180 @@ export function createFlowVideoQueueHandler(input: {
     if (!next) throw new Error("flow_video_queue_or_operation_changed");
     await schedule(next);
     return next;
+  }
+
+  async function recoverPreAddPickerFailure(
+    queue: FlowVideoQueueRecord,
+    expectedRevision: number,
+  ): Promise<FlowVideoQueueRecord | undefined> {
+    const unresolved = queue.items.filter(
+      (entry) => entry.state === "failed" || entry.state === "uncertain",
+    );
+    if (unresolved.length !== 1) return undefined;
+    const failed = unresolved[0]!;
+    // These reasons are emitted by the in-page action only before its Add
+    // click. The operation checks below still refuse any recorded attachment
+    // verification, Generate intent, or snapshot drift.
+    if (failed.state !== "uncertain" || !isFlowVideoPickerPreAddReason(failed.reason))
+      return undefined;
+    if (!input.revalidate) return undefined;
+
+    const batchResult = PreparedVideoBatchRecordSchema.safeParse(
+      await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId),
+    );
+    if (
+      !batchResult.success ||
+      batchResult.data.id !== queue.preparedBatchId ||
+      batchResult.data.destination !== "Flow"
+    )
+      return undefined;
+    const batch = batchResult.data;
+    const preparedItem = batch.items.find(
+      (entry) => entry.itemId === failed.itemId,
+    );
+    if (
+      !preparedItem ||
+      preparedItem.reference.referenceId !== failed.referenceId ||
+      preparedItem.contentHash !== failed.promptHash
+    )
+      return undefined;
+
+    const failedOperationId = `${queue.preparedBatchId}:${failed.itemId}`;
+    const failedOperation =
+      await input.repositories.getFlowVideoAttachmentOperation(failedOperationId);
+    if (
+      !failedOperation ||
+      failedOperation.id !== failedOperationId ||
+      failedOperation.preparedBatchId !== queue.preparedBatchId ||
+      failedOperation.itemId !== failed.itemId ||
+      failedOperation.referenceId !== failed.referenceId ||
+      failedOperation.status !== "uncertain" ||
+      failedOperation.reason !== failed.reason ||
+      failedOperation.verifiedAttachment ||
+      failedOperation.videoGeneration
+    )
+      return undefined;
+    // Newer builds record the pre-Add proof explicitly. Legacy picker
+    // operations predate the field; their reason is still proof because no
+    // post-Add branch can emit a picker reason.
+    if (
+      failedOperation.pickerPreAddEvidence &&
+      (failedOperation.pickerPreAddEvidence.addClickAttempted !== false ||
+        failedOperation.pickerPreAddEvidence.reason !== failedOperation.reason ||
+        failedOperation.pickerPreAddEvidence.updatedAt !==
+          failedOperation.updatedAt)
+    )
+      return undefined;
+
+    const readOperations = async () =>
+      Promise.all(
+        queue.items.map(async (entry) => ({
+          id: `${queue.preparedBatchId}:${entry.itemId}`,
+          operation:
+            await input.repositories.getFlowVideoAttachmentOperation(
+              `${queue.preparedBatchId}:${entry.itemId}`,
+            ),
+        })),
+      );
+    const operationsBefore = await readOperations();
+    for (const { id, operation } of operationsBefore) {
+      const entry = queue.items.find(
+        (candidate) => `${queue.preparedBatchId}:${candidate.itemId}` === id,
+      )!;
+      if (entry.itemId === failed.itemId) continue;
+      if (entry.state === "sent") {
+        const sentItem = batch.items.find(
+          (candidate) => candidate.itemId === entry.itemId,
+        );
+        const generation = operation?.videoGeneration;
+        if (
+          !sentItem ||
+          generation?.state !== "dispatched" ||
+          !generationMatches(batch, sentItem, generation) ||
+          entry.dispatchReceipt?.attemptId !== generation.attemptId
+        )
+          return undefined;
+        continue;
+      }
+      if (entry.state !== "pending" || operation !== undefined) return undefined;
+    }
+
+    const targetBefore = await input
+      .revalidate(queue.preparedBatchId)
+      .catch(() => "target_revalidation_failed");
+    if (targetBefore) return undefined;
+
+    const latestQueue = await input.repositories.getFlowVideoQueue(
+      queue.queueId,
+    );
+    if (
+      !latestQueue ||
+      latestQueue.revision !== expectedRevision ||
+      latestQueue.state !== queue.state
+    )
+      return undefined;
+    const latestFailed = latestQueue.items.find(
+      (entry) => entry.itemId === failed.itemId,
+    );
+    if (
+      !latestFailed ||
+      latestFailed.state !== "uncertain" ||
+      latestFailed.reason !== failed.reason ||
+      latestFailed.referenceId !== failed.referenceId ||
+      latestFailed.promptHash !== failed.promptHash
+    )
+      return undefined;
+    const latestOperation =
+      await input.repositories.getFlowVideoAttachmentOperation(failedOperationId);
+    if (JSON.stringify(latestOperation) !== JSON.stringify(failedOperation))
+      return undefined;
+    const operationsAfter = await readOperations();
+    if (JSON.stringify(operationsBefore) !== JSON.stringify(operationsAfter))
+      return undefined;
+
+    const reconciledAt = now();
+    const nextOperation: FlowVideoAttachmentOperation = {
+      ...failedOperation,
+      status: "blocked",
+      reason: "pre_add_failure_reconciled",
+      updatedAt: reconciledAt,
+      preAddReconciliationEvidence: {
+        priorStatus: "uncertain",
+        priorReason: failed.reason,
+        priorUpdatedAt: failedOperation.updatedAt,
+        producer: "picker_failure_before_add_activation",
+        addClickAttempted: false,
+        reconciledAt,
+      },
+    };
+    const nextQueue: FlowVideoQueueRecord = {
+      ...latestQueue,
+      items: latestQueue.items.map((entry) =>
+        entry.itemId === failed.itemId
+          ? {
+              ...entry,
+              state: "pending" as const,
+              priorReason: entry.priorReason ?? entry.reason,
+              reason: undefined,
+            }
+          : entry,
+      ),
+      state: "waiting",
+      pauseReason: undefined,
+      nextActionAt: nextVideoDispatchAt(latestQueue.lastDispatchAt, now()),
+      revision: latestQueue.revision + 1,
+      updatedAt: reconciledAt,
+    };
+    const saved = await input.repositories.reconcileFlowVideoPreAddFailure({
+      expectedRevision,
+      expectedOperations: operationsBefore,
+      expectedOperation: failedOperation,
+      nextOperation,
+      nextQueue,
+    });
+    if (!saved) throw new Error("flow_video_queue_or_operation_changed");
+    await schedule(saved);
+    return saved;
   }
 
   async function process(queueId: string): Promise<FlowVideoQueueRecord> {
@@ -336,7 +519,7 @@ export function createFlowVideoQueueHandler(input: {
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("flow_video_queue_resume_invalid");
       const unresolved = queue.items.filter((entry) => entry.state === "uncertain" || entry.state === "failed");
       if (unresolved.length > 0) {
-        const recovered = await recoverPreIntentTargetChanged(queue, expectedRevision);
+        const recovered = await recoverPreIntentResolutionFailure(queue, expectedRevision);
         if (recovered) return run(recovered.queueId);
         const blocked = unresolved[0]!;
         const saved = await save(queue, { state: "blocked", pauseReason: blocked.reason ?? "item_requires_review", nextActionAt: null }); await schedule(saved); return saved;
@@ -344,6 +527,15 @@ export function createFlowVideoQueueHandler(input: {
       const items = queue.items.map((entry) => entry.state === "waiting_for_generate" ? { ...entry, readinessStartedAt: now(), readinessDeadlineAt: nextVideoReadinessDeadline(now()) } : entry);
       const next = await save(queue, { state: "waiting", pauseReason: undefined, items, nextActionAt: queue.nextActionAt && queue.nextActionAt > now() ? queue.nextActionAt : now() });
       return run(next.queueId);
+    },
+    retryPreAddPickerFailure: async (preparedBatchId: string, expectedRevision: number) => {
+      const queueId = queueIdFor(preparedBatchId);
+      const queue = await input.repositories.getFlowVideoQueue(queueId);
+      if (!queue || queue.revision !== expectedRevision || !["paused", "blocked"].includes(queue.state))
+        throw new Error("flow_video_queue_retry_invalid");
+      const recovered = await recoverPreAddPickerFailure(queue, expectedRevision);
+      if (!recovered) throw new Error("flow_video_queue_picker_not_recoverable");
+      return run(recovered.queueId);
     },
     recheckAndResume: async (preparedBatchId: string, expectedRevision: number) => {
       const queueId = queueIdFor(preparedBatchId);

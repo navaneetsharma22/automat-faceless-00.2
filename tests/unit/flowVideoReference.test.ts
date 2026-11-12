@@ -299,6 +299,228 @@ describe("production Flow video attachment picker action", () => {
     build(galleryUrl, true);
     expect(await flowVideoAttachmentActionInPage(id, galleryUrl)).toMatchObject({ ok: false, reason: "picker_add_not_ready" });
   });
+
+  it("waits for an asynchronously mounted picker before resolving the exact row", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/async-gallery-representation";
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      setTimeout(() => {
+        const section = doc.createElement("section");
+        section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${galleryUrl}"></button></div><aside></aside>`;
+        doc.body.append(section);
+        sizeElements(doc);
+        setTimeout(() => {
+          const preview = doc.createElement("img");
+          preview.className = "detail-preview-image";
+          preview.alt = "Preview of selected asset";
+          preview.src = galleryUrl;
+          const add = doc.createElement("button");
+          add.textContent = "Add to prompt";
+          add.addEventListener("click", () => {
+            const chip = doc.createElement("button");
+            chip.setAttribute("aria-label", "Ingredient");
+            chip.setAttribute("aria-busy", "false");
+            chip.innerHTML = `<img alt="Ingredient image" src="https://flow-content.google/image/${id}?signed=async">`;
+            doc.querySelector("flow-base-prompt-box")!.append(chip);
+            sizeElements(doc);
+          });
+          section.querySelector("aside")!.append(preview, add);
+          sizeElements(doc);
+        }, 30);
+      }, 120);
+    });
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({ ok: true, already: false });
+  });
+
+  it("returns picker_not_open when only a stale hidden Asset list exists", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/stale-hidden-representation";
+    const addClick = vi.fn();
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    const stale = doc.createElement("section");
+    stale.style.display = "none";
+    stale.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${galleryUrl}"></button></div><aside><img class="detail-preview-image" alt="Preview of selected asset" src="${galleryUrl}"><button class="add-to-prompt">Add to prompt</button></aside>`;
+    stale.querySelector<HTMLElement>("[role=listbox]")!.style.display = "none";
+    stale.querySelector("button.add-to-prompt")!.addEventListener("click", addClick);
+    doc.body.append(stale);
+    sizeElements(doc);
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({
+      ok: false,
+      reason: "picker_not_open",
+    });
+    expect(addClick).not.toHaveBeenCalled();
+  });
+
+  it("scrolls the picker's virtual viewport instead of the listbox element", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/virtualized-gallery-representation";
+    let addClicks = 0;
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const viewport = doc.createElement("cdk-virtual-scroll-viewport");
+      viewport.style.overflowY = "auto";
+      Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 100 });
+      Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 400 });
+      const list = doc.createElement("div");
+      list.setAttribute("role", "listbox");
+      list.setAttribute("aria-label", "Asset list");
+      list.innerHTML = `<button role="option" class="asset-item"><img class="asset-thumbnail-image" src="https://flow.google.com/asb/other"></button>`;
+      viewport.append(list);
+      const section = doc.createElement("section");
+      section.innerHTML = `<aside></aside>`;
+      section.prepend(viewport);
+      doc.body.append(section);
+      sizeElements(doc);
+      let top = 0;
+      Object.defineProperty(viewport, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => {
+          top = value;
+          if (value <= 0 || list.querySelector("[data-pinned]")) return;
+          const row = doc.createElement("button");
+          row.setAttribute("role", "option");
+          row.className = "asset-item";
+          row.dataset.pinned = "";
+          row.innerHTML = `<img class="asset-thumbnail-image" src="${galleryUrl}">`;
+          row.addEventListener("click", () => {
+            const preview = doc.createElement("img");
+            preview.className = "detail-preview-image";
+            preview.alt = "Preview of selected asset";
+            preview.src = galleryUrl;
+            const add = doc.createElement("button");
+            add.textContent = "Add to prompt";
+            add.addEventListener("click", () => {
+              addClicks++;
+              const chip = doc.createElement("button");
+              chip.setAttribute("aria-label", "Ingredient");
+              chip.setAttribute("aria-busy", "false");
+              chip.innerHTML = `<img alt="Ingredient image" src="https://flow-content.google/image/${id}?signed=virtual">`;
+              doc.querySelector("flow-base-prompt-box")!.append(chip);
+              sizeElements(doc);
+            });
+            section.querySelector("aside")!.append(preview, add);
+            sizeElements(doc);
+          });
+          list.append(row);
+          sizeElements(doc);
+        },
+      });
+    });
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({ ok: true, already: false });
+    expect(addClicks).toBe(1);
+    expect(doc.querySelector("[data-pinned]")).not.toBeNull();
+  });
+
+  it("refuses ambiguous exact rows without activating Add", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/duplicate-gallery-representation";
+    const addClick = vi.fn();
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${galleryUrl}"></button><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${galleryUrl}"></button></div><aside><img class="detail-preview-image" alt="Preview of selected asset" src="${galleryUrl}"><button class="activation">Add to prompt</button></aside>`;
+      section.querySelector("button.activation")!.addEventListener("click", addClick);
+      doc.body.append(section);
+      sizeElements(doc);
+    });
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({
+      ok: false,
+      reason: "picker_exact_row_ambiguous",
+    });
+    expect(addClick).not.toHaveBeenCalled();
+    expect(doc.querySelector("button.add-to-prompt")).toBeNull();
+  });
+
+  it("matches the pinned media ID when the picker uses a different signed representation", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/cross-surface-representation";
+    const pickerUrl = `https://flow-content.google/image/${id}?signed=cross-surface`;
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${pickerUrl}"></button></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+      const row = section.querySelector<HTMLButtonElement>("button.asset-item")!;
+      row.addEventListener("click", () => {
+        const preview = doc.createElement("img");
+        preview.className = "detail-preview-image";
+        preview.alt = "Preview of selected asset";
+        preview.src = pickerUrl;
+        const add = doc.createElement("button");
+        add.textContent = "Add to prompt";
+        add.addEventListener("click", () => {
+          const chip = doc.createElement("button");
+          chip.setAttribute("aria-label", "Ingredient");
+          chip.setAttribute("aria-busy", "false");
+          chip.innerHTML = `<img alt="Ingredient image" src="${pickerUrl}">`;
+          doc.querySelector("flow-base-prompt-box")!.append(chip);
+          sizeElements(doc);
+        });
+        section.querySelector("aside")!.append(preview, add);
+        sizeElements(doc);
+      });
+    });
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({ ok: true, already: false });
+  });
+
+  it("finds the pinned upload after switching from All to the Uploads tab", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/uploaded-gallery-representation";
+    let addClicks = 0;
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<nav><button data-tab="all" aria-selected="true">All</button><button data-tab="images">Images</button><button data-tab="uploads">Uploads</button></nav><div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="https://flow.google.com/asb/unrelated-recent"></button></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+      const list = section.querySelector<HTMLElement>("[role=listbox]")!;
+      for (const tab of section.querySelectorAll<HTMLButtonElement>("nav button")) {
+        tab.addEventListener("click", () => {
+          for (const other of section.querySelectorAll("nav button"))
+            other.setAttribute("aria-selected", String(other === tab));
+          if (tab.dataset.tab !== "uploads") {
+            list.innerHTML = `<button role="option" class="asset-item"><img class="asset-thumbnail-image" src="https://flow.google.com/asb/unrelated-recent"></button>`;
+            sizeElements(doc);
+            return;
+          }
+          list.innerHTML = `<button role="option" class="asset-item" data-upload="pinned"><img class="asset-thumbnail-image" src="${galleryUrl}"></button>`;
+          const row = list.querySelector<HTMLButtonElement>("[data-upload=pinned]")!;
+          row.addEventListener("click", () => {
+            const preview = doc.createElement("img");
+            preview.className = "detail-preview-image";
+            preview.alt = "Preview of selected asset";
+            preview.src = galleryUrl;
+            const add = doc.createElement("button");
+            add.textContent = "Add to prompt";
+            add.addEventListener("click", () => {
+              addClicks++;
+              const chip = doc.createElement("button");
+              chip.setAttribute("aria-label", "Ingredient");
+              chip.setAttribute("aria-busy", "false");
+              chip.innerHTML = `<img alt="Ingredient image" src="https://flow-content.google/image/${id}?signed=upload">`;
+              doc.querySelector("flow-base-prompt-box")!.append(chip);
+              sizeElements(doc);
+            });
+            section.querySelector("aside")!.append(preview, add);
+            sizeElements(doc);
+          });
+          sizeElements(doc);
+        });
+      }
+    });
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({ ok: true, already: false });
+    expect(addClicks).toBe(1);
+    expect(doc.querySelector("[data-upload=pinned]")).not.toBeNull();
+  });
 });
 
 describe("Flow pinned video reference attachment (offline fixtures)", () => {

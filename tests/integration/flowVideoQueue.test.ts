@@ -115,12 +115,15 @@ async function setup(options: {
   return { batch, db, repositories, handler, attach, generate, inspectReferenceBytes, revalidate, create, clear, now: () => at, advance: (ms: number) => { at += ms; }, getQueue: () => repositories.getFlowVideoQueue(`flow-video:${batchId}`) };
 }
 
-async function seedPausedTargetChangedQueue(f: Awaited<ReturnType<typeof setup>>) {
+async function seedPausedTargetChangedQueue(
+  f: Awaited<ReturnType<typeof setup>>,
+  reason: "target_changed" | "candidate_missing" = "target_changed",
+) {
   await f.repositories.createFlowVideoQueue({
     queueId: `flow-video:${batchId}`,
     preparedBatchId: batchId,
     state: "paused",
-    pauseReason: "target_changed",
+    pauseReason: reason,
     items: f.batch.items.map((item, order) => ({
       itemId: item.itemId,
       order,
@@ -128,7 +131,53 @@ async function seedPausedTargetChangedQueue(f: Awaited<ReturnType<typeof setup>>
       referenceId: item.reference.referenceId,
       promptHash: item.contentHash,
       state: order === 0 ? ("failed" as const) : ("pending" as const),
-      ...(order === 0 ? { reason: "target_changed" } : {}),
+      ...(order === 0 ? { reason } : {}),
+    })),
+    lastDispatchAt: null,
+    nextActionAt: null,
+    revision: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+}
+
+async function seedPausedPickerQueue(
+  f: Awaited<ReturnType<typeof setup>>,
+  options: { reason?: string; verifiedAttachment?: boolean } = {},
+) {
+  const reason = options.reason ?? "picker_exact_row_missing";
+  const item = f.batch.items[0]!;
+  await f.repositories.putFlowVideoAttachmentOperation({
+    id: `${batchId}:${item.itemId}`,
+    preparedBatchId: batchId,
+    itemId: item.itemId,
+    referenceId: item.reference.referenceId,
+    status: "uncertain",
+    reason,
+    updatedAt: 1,
+    ...(options.verifiedAttachment
+      ? {
+          verifiedAttachment: {
+            documentId: "doc",
+            mediaId: "media-item-1",
+            verifiedAt: 1,
+          },
+        }
+      : {}),
+  });
+  await f.repositories.createFlowVideoQueue({
+    queueId: `flow-video:${batchId}`,
+    preparedBatchId: batchId,
+    state: "paused",
+    pauseReason: reason,
+    items: f.batch.items.map((entry, order) => ({
+      itemId: entry.itemId,
+      order,
+      shotId: entry.canonicalShotId,
+      referenceId: entry.reference.referenceId,
+      promptHash: entry.contentHash,
+      state: order === 0 ? ("uncertain" as const) : ("pending" as const),
+      ...(order === 0 ? { reason } : {}),
     })),
     lastDispatchAt: null,
     nextActionAt: null,
@@ -407,6 +456,113 @@ describe("P09.3 Flow video timed submission", () => {
     });
     expect(targetChanged.attach).not.toHaveBeenCalled();
     expect(targetChanged.generate).not.toHaveBeenCalled();
+  });
+
+  it("recovers one pre-intent candidate_missing failure on explicit Resume after revalidating the target", async () => {
+    const f = await setup();
+    await seedPausedTargetChangedQueue(f, "candidate_missing");
+    const resumed = await f.handler.resume(batchId, 0);
+    expect(resumed).toMatchObject({
+      state: "waiting",
+      items: [
+        { state: "sent", priorReason: "candidate_missing" },
+        { state: "pending" },
+      ],
+    });
+    expect(resumed.pauseReason).toBeUndefined();
+    expect(f.revalidate).toHaveBeenCalled();
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses candidate_missing recovery when attachment intent exists or target revalidation fails", async () => {
+    const existing = await setup();
+    await seedPausedTargetChangedQueue(existing, "candidate_missing");
+    await existing.repositories.putFlowVideoAttachmentOperation({
+      id: `${batchId}:item-1`,
+      preparedBatchId: batchId,
+      itemId: "item-1",
+      referenceId: ref1,
+      status: "blocked",
+      reason: "candidate_missing_before_action",
+      updatedAt: 1,
+    });
+    const blocked = await existing.handler.resume(batchId, 0);
+    expect(blocked).toMatchObject({
+      state: "blocked",
+      pauseReason: "candidate_missing",
+    });
+    expect(existing.attach).not.toHaveBeenCalled();
+    expect(existing.generate).not.toHaveBeenCalled();
+
+    const targetChanged = await setup();
+    await seedPausedTargetChangedQueue(targetChanged, "candidate_missing");
+    targetChanged.revalidate.mockResolvedValueOnce(
+      "selected_flow_target_changed",
+    );
+    const result = await targetChanged.handler.resume(batchId, 0);
+    expect(result).toMatchObject({
+      state: "blocked",
+      pauseReason: "candidate_missing",
+    });
+    expect(targetChanged.attach).not.toHaveBeenCalled();
+    expect(targetChanged.generate).not.toHaveBeenCalled();
+  });
+
+  it("retries one proven pre-Add picker failure and dispatches only after the new attachment", async () => {
+    const f = await setup();
+    await seedPausedPickerQueue(f);
+    const retried = await f.handler.retryPreAddPickerFailure(batchId, 0);
+    expect(retried).toMatchObject({
+      state: "waiting",
+      items: [
+        {
+          state: "sent",
+          priorReason: "picker_exact_row_missing",
+          attemptId: "attempt-1",
+        },
+        { state: "pending" },
+      ],
+    });
+    expect(retried.pauseReason).toBeUndefined();
+    expect(f.revalidate).toHaveBeenCalled();
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    const operation = await f.repositories.getFlowVideoAttachmentOperation(
+      `${batchId}:item-1`,
+    );
+    expect(operation?.videoGeneration?.state).toBe("dispatched");
+  });
+
+  it("refuses picker retry for a verified/post-click operation or a changed target", async () => {
+    const attached = await setup();
+    await seedPausedPickerQueue(attached, { verifiedAttachment: true });
+    await expect(
+      attached.handler.retryPreAddPickerFailure(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_picker_not_recoverable");
+    expect(attached.attach).not.toHaveBeenCalled();
+    expect(attached.generate).not.toHaveBeenCalled();
+
+    const postClick = await setup();
+    await seedPausedPickerQueue(postClick, {
+      reason: "attachment_uncertain",
+    });
+    await expect(
+      postClick.handler.retryPreAddPickerFailure(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_picker_not_recoverable");
+    expect(postClick.attach).not.toHaveBeenCalled();
+    expect(postClick.generate).not.toHaveBeenCalled();
+
+    const changedTarget = await setup();
+    await seedPausedPickerQueue(changedTarget);
+    changedTarget.revalidate.mockResolvedValueOnce(
+      "selected_flow_target_changed",
+    );
+    await expect(
+      changedTarget.handler.retryPreAddPickerFailure(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_picker_not_recoverable");
+    expect(changedTarget.attach).not.toHaveBeenCalled();
+    expect(changedTarget.generate).not.toHaveBeenCalled();
   });
 
   it("Pause, Stop, Resume, and restart preserve sent receipts and do not resend sent items", async () => {

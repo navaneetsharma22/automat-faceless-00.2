@@ -23,7 +23,10 @@ import {
   resolveFlowReferenceFetcher,
 } from "../../platforms/flow/referenceResource";
 import { flowVideoChipMediaIdFromImageUrl } from "../../platforms/flow/video";
-import { FlowVideoQueueRecordSchema } from "../../domain/jobs/videoQueue";
+import {
+  FlowVideoQueueRecordSchema,
+  isFlowVideoPickerPreAddReason,
+} from "../../domain/jobs/videoQueue";
 
 type Script = {
   executeScript: (
@@ -108,6 +111,88 @@ export function flowVideoAttachmentStructurePreflightInPage(): {
   return { ok: true, href };
 }
 
+/**
+ * Resolve exactly one visible gallery tile by the pinned provider media ID.
+ * Flow virtualizes its project gallery, so a tile can be absent from the DOM
+ * at the current scroll position. Search the already-rendered DOM first, then
+ * perform at most eight bounded scroll checks per visible project gallery
+ * viewport. The matching tile is left rendered for the follow-up detail/action
+ * steps; a failed search restores every inspected scroll position.
+ */
+export async function flowVideoGalleryCandidateInPage(
+  providerAssetId: string,
+): Promise<{
+  ok: boolean;
+  href: string;
+  candidate?: { id: string; url: string };
+  reason?: string;
+}> {
+  const visible = (element: Element) => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return (
+      element.isConnected &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden"
+    );
+  };
+  const matchingImages = () =>
+    [
+      ...document.querySelectorAll<HTMLImageElement>(
+        "flow-image-tile img[data-media-id]",
+      ),
+    ].filter(
+      (image) => image.dataset.mediaId === providerAssetId && visible(image),
+    );
+  const read = ():
+    | { candidate?: { id: string; url: string }; reason?: string } => {
+    const matches = matchingImages();
+    if (matches.length > 1) return { reason: "candidate_ambiguous" };
+    const image = matches[0];
+    if (!image) return {};
+    const url = image.currentSrc || image.src;
+    return url ? { candidate: { id: providerAssetId, url } } : {};
+  };
+  const direct = read();
+  if (direct.reason)
+    return { ok: false, href: location.href, reason: direct.reason };
+  if (direct.candidate)
+    return { ok: true, href: location.href, candidate: direct.candidate };
+
+  const scrollers = [
+    ...document.querySelectorAll<HTMLElement>(
+      "cdk-virtual-scroll-viewport",
+    ),
+  ].filter(
+    (scroller) =>
+      visible(scroller) &&
+      !scroller.closest("flow-base-prompt-box") &&
+      !scroller.closest("[role=listbox][aria-label='Asset list']"),
+  );
+  for (const scroller of scrollers) {
+    const originalTop = scroller.scrollTop;
+    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (maxTop === 0) continue;
+    const step = Math.max(1, Math.floor(scroller.clientHeight * 0.75));
+    const steps = Math.min(8, Math.max(1, Math.ceil(maxTop / step)));
+    for (let index = 0; index < steps; index++) {
+      scroller.scrollTop =
+        index === steps - 1 ? maxTop : Math.min(maxTop, index * step);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const state = read();
+      if (state.reason)
+        return { ok: false, href: location.href, reason: state.reason };
+      if (state.candidate)
+        return { ok: true, href: location.href, candidate: state.candidate };
+    }
+    scroller.scrollTop = originalTop;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return { ok: false, href: location.href, reason: "candidate_missing" };
+}
+
 /** In-page picker action. The gallery URL is identity evidence, not the acquisition URL. */
 export async function flowVideoAttachmentActionInPage(
   expectedId: string,
@@ -115,13 +200,16 @@ export async function flowVideoAttachmentActionInPage(
 ): Promise<{ ok: boolean; already?: boolean; reason?: string }> {
   const visible = (el: Element) => {
     const r = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
     return el.isConnected && r.width > 0 && r.height > 0 &&
-      getComputedStyle(el).visibility !== "hidden";
+      style.display !== "none" && style.visibility !== "hidden";
   };
   const roots = [...document.querySelectorAll("flow-base-prompt-box")].filter(visible);
   const chips = () => roots[0]
     ? [...roots[0].querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")]
     : [];
+  const wait = (ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms));
   const idFromChip = (chip: HTMLButtonElement) => {
     try {
       const u = new URL(chip.querySelector("img[alt='Ingredient image']")?.getAttribute("src") ?? "");
@@ -130,37 +218,193 @@ export async function flowVideoAttachmentActionInPage(
         : undefined;
     } catch { return undefined; }
   };
+  const expectedMediaId = expectedId.toLowerCase();
+  const mediaIdFromImageUrl = (raw: string | undefined) => {
+    if (!raw) return undefined;
+    try {
+      const u = new URL(raw, location.href);
+      if (u.protocol !== "https:" || u.hostname !== "flow-content.google" ||
+          u.port || u.username || u.password) return undefined;
+      return /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(u.pathname)?.[1]?.toLowerCase();
+    } catch { return undefined; }
+  };
+  // Flow can render the same pinned asset through different signed
+  // representations (/asb/<opaque> in the gallery, /image/<uuid> elsewhere).
+  // Accept only the pinned media ID, the exact observed URL, or the identical
+  // pathname. Everything else is still a mismatch.
+  const sameAssetUrl = (raw: string | undefined): boolean => {
+    if (!raw) return false;
+    if (raw === expectedGalleryUrl) return true;
+    if (expectedMediaId && mediaIdFromImageUrl(raw) === expectedMediaId) return true;
+    try {
+      const observed = new URL(expectedGalleryUrl);
+      const candidate = new URL(raw, location.href);
+      const identityPath = observed.pathname.split("/").filter(Boolean).length >= 2;
+      return identityPath && candidate.origin === observed.origin &&
+        candidate.pathname === observed.pathname;
+    } catch { return false; }
+  };
+  const anyListbox = () =>
+    document.querySelector<HTMLElement>("[role=listbox][aria-label='Asset list']");
+  const visibleListbox = () =>
+    [...document.querySelectorAll<HTMLElement>("[role=listbox][aria-label='Asset list']")]
+      .filter(visible)[0];
   const read = () => {
-    const list = document.querySelector("[role=listbox][aria-label='Asset list']");
+    const list = visibleListbox();
     const preview = document.querySelector<HTMLImageElement>("img.detail-preview-image[alt^='Preview of']");
     const panel = preview?.parentElement?.closest("section,[data-picker-detail-scope]") ?? preview?.parentElement?.parentElement;
-    const row = [...(list?.querySelectorAll<HTMLButtonElement>("button[role=option].asset-item") ?? [])]
-      .find((r) => [...r.querySelectorAll<HTMLImageElement>("img.asset-thumbnail-image")]
-        .some((img) => (img.currentSrc || img.src) === expectedGalleryUrl));
+    const rows = [...(list?.querySelectorAll<HTMLButtonElement>("button[role=option].asset-item") ?? [])];
+    const matches = rows.filter((row) => {
+      const images = [...row.querySelectorAll<HTMLImageElement>("img.asset-thumbnail-image")];
+      if (images.some((img) => sameAssetUrl(img.currentSrc || img.src || undefined))) return true;
+      const rowMediaId = row.getAttribute("data-media-id") ??
+        row.querySelector("[data-media-id]")?.getAttribute("data-media-id");
+      return Boolean(expectedMediaId && rowMediaId?.toLowerCase() === expectedMediaId);
+    });
     const action = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .filter((b) => b.textContent?.trim().toLowerCase() === "add to prompt" && visible(b));
-    return { list, preview, row, action };
+    return {
+      list, preview, rows, matches,
+      row: matches.length === 1 ? matches[0] : undefined,
+      ambiguous: matches.length > 1,
+      action,
+    };
+  };
+  const scrolls = (element: Element | null | undefined): boolean => {
+    if (!element || !(element instanceof HTMLElement)) return false;
+    const style = getComputedStyle(element);
+    return /(auto|scroll)/.test(style.overflowY) &&
+      element.scrollHeight > element.clientHeight + 1;
+  };
+  // The DOM element carrying role=listbox is not necessarily the element that
+  // scrolls. Flow paints the rows through a CDK virtual viewport that may be
+  // an ancestor, a descendant, or the listbox itself.
+  const findScroller = (list: HTMLElement): HTMLElement | undefined => {
+    // The CDK viewport may wrap the listbox or live inside it. Prefer either
+    // over the listbox itself, which Flow sometimes renders as a non-scrolling
+    // role container around the real virtual viewport.
+    const viewports = [
+      list.closest<HTMLElement>("cdk-virtual-scroll-viewport, .cdk-virtual-scrollable"),
+      ...list.querySelectorAll<HTMLElement>("cdk-virtual-scroll-viewport, .cdk-virtual-scrollable"),
+    ];
+    for (const viewport of viewports) {
+      if (viewport && scrolls(viewport)) return viewport;
+    }
+    if (scrolls(list)) return list;
+    const nested = [...list.querySelectorAll<HTMLElement>("*")].find((element) => scrolls(element));
+    if (nested) return nested;
+    let parent = list.parentElement;
+    for (let depth = 0; parent && depth < 4; depth++, parent = parent.parentElement) {
+      if (scrolls(parent)) return parent;
+    }
+    return undefined;
   };
 
-  // Flow virtualizes picker rows. Search only within the verified document's
-  // Asset list, in a bounded number of scroll positions, and match the exact
-  // URL that was already bound to the pinned media ID and verified bytes.
-  const findExactRow = async () => {
-    const first = read();
-    if (!first.list) return undefined;
-    const list = first.list;
-    const originalTop = list.scrollTop;
-    const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
-    const steps = Math.min(8, Math.max(1, Math.ceil(maxTop / Math.max(1, list.clientHeight * 0.75))));
-    for (let step = 0; step <= steps; step++) {
-      list.scrollTop = Math.min(maxTop, step === steps ? maxTop : step * Math.max(1, list.clientHeight * 0.75));
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      const row = read().row;
-      if (row) return row;
+  // Flow virtualizes picker rows. Wait for the overlay and its thumbnails to
+  // mount, then search only within the verified document's Asset list in a
+  // bounded number of scroll positions. Match only the exact already-verified
+  // asset identity. A missing search restores the inspected scroll position.
+  const findExactRow = async (): Promise<{ row?: HTMLButtonElement; ambiguous?: boolean }> => {
+    let state = read();
+    if (state.ambiguous) return { ambiguous: true };
+    if (state.row) return { row: state.row };
+    const list = state.list;
+    if (!list) return {};
+    // Rows and their thumbnails mount a tick after the overlay opens.
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await wait(50);
+      state = read();
+      if (state.ambiguous) return { ambiguous: true };
+      if (state.row) return { row: state.row };
     }
-    list.scrollTop = originalTop;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    return read().row;
+    const scroller = findScroller(list);
+    if (!scroller) return {};
+    const originalTop = scroller.scrollTop;
+    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const step = Math.max(1, Math.floor(scroller.clientHeight * 0.8));
+    // Probe top-to-bottom in at most twelve positions. Evenly distributing the
+    // capped positions keeps the whole virtual range covered on long lists.
+    const steps = Math.min(12, Math.max(2, Math.ceil(maxTop / step)));
+    let ambiguous = false;
+    for (let index = 0; index < steps; index++) {
+      scroller.scrollTop = Math.round((index * maxTop) / (steps - 1));
+      await wait(120);
+      state = read();
+      if (state.ambiguous) {
+        ambiguous = true;
+        break;
+      }
+      if (state.row) return { row: state.row };
+    }
+    scroller.scrollTop = originalTop;
+    await wait(80);
+    state = read();
+    return ambiguous || state.ambiguous ? { ambiguous: true } : state.row ? { row: state.row } : {};
+  };
+
+  // Flow's picker separates project assets from user uploads. The pinned
+  // reference can live under Uploads even though the project gallery shows it,
+  // so the exact identity search must cover the asset tabs. Only the tab
+  // container that owns the Asset list is used; document-level labels such as
+  // the Flow sidebar are never clicked.
+  const PICKER_ASSET_TAB_LABELS = ["All", "Images", "Uploads"] as const;
+  const normalizedLabel = (element: Element) =>
+    (element.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const pickerTabs = (): HTMLElement[] => {
+    const list = read().list;
+    if (!list) return [];
+    let scope: Element | null = list;
+    for (let depth = 0; depth < 8 && scope && scope !== document.body; depth++, scope = scope.parentElement) {
+      const clickables = [...scope.querySelectorAll<HTMLElement>("button, [role='tab'], [role='button']")]
+        .filter((element) => visible(element) &&
+          !(element as HTMLButtonElement).disabled &&
+          element.getAttribute("aria-disabled") !== "true");
+      const labels = new Set(clickables.map(normalizedLabel));
+      if (PICKER_ASSET_TAB_LABELS.filter((label) => labels.has(label.toLowerCase())).length >= 2) {
+        return clickables.filter((element) =>
+          PICKER_ASSET_TAB_LABELS.some((label) => normalizedLabel(element) === label.toLowerCase()));
+      }
+    }
+    return [];
+  };
+  const activeTabLabel = (): string | undefined => {
+    const active = pickerTabs().find((element) =>
+      element.getAttribute("aria-selected") === "true" ||
+      element.getAttribute("aria-current") === "true" ||
+      element.getAttribute("aria-pressed") === "true" ||
+      /(^|[-_ ])(active|selected)([-_ ]|$)/i.test(element.className));
+    return active ? normalizedLabel(active) : undefined;
+  };
+  const selectTab = async (label: string): Promise<boolean> => {
+    const target = pickerTabs().find((element) => normalizedLabel(element) === label.toLowerCase());
+    if (!target) return false;
+    if (activeTabLabel() === label.toLowerCase()) return true;
+    target.click();
+    // Angular re-renders the list asynchronously; empty tabs are still valid.
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await wait(50);
+      if (read().list && attempt >= 4) return true;
+    }
+    return Boolean(read().list);
+  };
+  const findExactRowAcrossTabs = async (): Promise<{ row?: HTMLButtonElement; ambiguous?: boolean }> => {
+    const first = await findExactRow();
+    if (first.row || first.ambiguous) return first;
+    const original = activeTabLabel();
+    let ambiguous = false;
+    for (const label of ["Uploads", "Images", "All"]) {
+      if (label.toLowerCase() === original) continue;
+      if (!pickerTabs().some((element) => normalizedLabel(element) === label.toLowerCase())) continue;
+      if (!(await selectTab(label))) continue;
+      const found = await findExactRow();
+      if (found.ambiguous) {
+        ambiguous = true;
+        break;
+      }
+      if (found.row) return found;
+    }
+    if (original) await selectTab(original);
+    return ambiguous ? { ambiguous: true } : {};
   };
 
   if (roots.length !== 1) return { ok: false, reason: "composer_unavailable_after_preflight" };
@@ -174,30 +418,39 @@ export async function flowVideoAttachmentActionInPage(
     return { ok: false, reason: "existing_chip_conflict" };
   if (existing.length === 1) return { ok: true, already: true };
 
-  if (!document.querySelector("[role=listbox][aria-label='Asset list']")) {
+  // A previous picker may remain in the DOM hidden. Give an animating overlay
+  // a moment to become visible before toggling the trigger again.
+  if (!read().list) {
+    for (let attempt = 0; attempt < 10 && !read().list && anyListbox(); attempt++)
+      await wait(50);
+  }
+  if (!read().list) {
     const open = roots[0]!.querySelector<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']");
     if (!open || !visible(open)) return { ok: false, reason: "picker_missing" };
     open.click();
+    for (let attempt = 0; attempt < 40 && !read().list; attempt++) await wait(50);
   }
+  if (!read().list) return { ok: false, reason: "picker_not_open" };
 
   // First resolve only the exact thumbnail identity. Detail preview and Add
   // are expected to appear after selecting the row, so they are not gates here.
-  const exactRow = await findExactRow();
-  if (!exactRow) return { ok: false, reason: "picker_exact_row_missing" };
-  exactRow.click();
+  const found = await findExactRowAcrossTabs();
+  if (found.ambiguous) return { ok: false, reason: "picker_exact_row_ambiguous" };
+  if (!found.row) return { ok: false, reason: "picker_exact_row_missing" };
+  found.row.click();
 
-  // Wait for the selected gallery thumbnail's detail preview and its unique
-  // Add control to settle before any activation.
+  // Wait for the selected asset's detail preview and its unique Add control to
+  // settle before any activation.
   let selected = read();
   for (let i = 0; i < 40; i++) {
     selected = read();
     if (selected.row && selected.preview &&
-        (selected.preview.currentSrc || selected.preview.src) === expectedGalleryUrl &&
+        sameAssetUrl(selected.preview.currentSrc || selected.preview.src || undefined) &&
         selected.action.length === 1) break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await wait(50);
   }
   if (!selected.preview ||
-      (selected.preview.currentSrc || selected.preview.src) !== expectedGalleryUrl)
+      !sameAssetUrl(selected.preview.currentSrc || selected.preview.src || undefined))
     return { ok: false, reason: "picker_selected_preview_mismatch" };
   if (selected.action.length !== 1 || selected.action[0]!.disabled || selected.action[0]!.getAttribute("aria-disabled") === "true")
     return { ok: false, reason: "picker_add_not_ready" };
@@ -313,6 +566,50 @@ export function createFlowVideoAttachmentHandler(deps: {
       };
     }
     return extensionFetch(input.galleryUrl, "scoped_extension_fetch");
+  }
+  async function resolveGalleryCandidate(input: {
+    tabId: number;
+    documentId: string;
+    projectId: string;
+    mediaId: string;
+  }) {
+    const result = await deps.scripting.executeScript({
+      target: { tabId: input.tabId, documentIds: [input.documentId] },
+      world: "ISOLATED",
+      func: flowVideoGalleryCandidateInPage,
+      args: [input.mediaId],
+    });
+    const value = result[0]?.result as
+      | {
+          ok?: boolean;
+          href?: string;
+          candidate?: { id?: string; url?: string };
+          reason?: string;
+        }
+      | undefined;
+    if (
+      result[0]?.documentId !== input.documentId ||
+      !value?.href ||
+      flowTabFromUrl(input.tabId, "Flow", value.href)?.projectId !==
+        input.projectId
+    )
+      throw new Error("target_changed");
+    if (
+      !value.ok ||
+      value.candidate?.id !== input.mediaId ||
+      !value.candidate.url
+    ) {
+      const reason = value.reason;
+      throw new Error(
+        reason && /^[a-z0-9_]{1,64}$/.test(reason)
+          ? reason
+          : "candidate_missing",
+      );
+    }
+    return {
+      candidate: { id: input.mediaId, url: value.candidate.url },
+      href: value.href,
+    };
   }
   async function status(preparedBatchId: string, itemId: string) {
     const op = await deps.repositories.getFlowVideoAttachmentOperation(
@@ -596,23 +893,13 @@ export function createFlowVideoAttachmentHandler(deps: {
     const route = flowTabFromUrl(selected.tabId, "Flow", tab.url);
     if (!route || route.projectId !== binding.projectId || route.canonicalTarget !== selected.canonicalTarget)
       return { status: "blocked", reason: "target_changed" };
-    const target = { tabId: selected.tabId, documentIds: [binding.documentId] };
-    const resolveCandidate = async () => {
-      const result = await deps.scripting.executeScript({
-        target, world: "ISOLATED",
-        func: () => ({
-          href: location.href,
-          candidates: [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
-            .map((image) => ({ id: image.dataset.mediaId, url: image.currentSrc || image.src })),
-        }),
+    const resolveCandidate = () =>
+      resolveGalleryCandidate({
+        tabId: selected.tabId,
+        documentId: binding.documentId,
+        projectId: binding.projectId,
+        mediaId: pinned.providerAssetId!,
       });
-      const value = result[0]?.result as { href?: string; candidates?: Array<{ id?: string; url?: string }> } | undefined;
-      if (result[0]?.documentId !== binding.documentId || flowTabFromUrl(selected.tabId, "Flow", value?.href)?.projectId !== binding.projectId)
-        throw new Error("target_changed");
-      const matches = (value?.candidates ?? []).filter((candidate) => candidate.id === pinned.providerAssetId && candidate.url);
-      if (matches.length !== 1) throw new Error(matches.length ? "candidate_ambiguous" : "candidate_missing");
-      return { candidate: matches[0]!, href: value!.href! };
-    };
 
     let resolved: Awaited<ReturnType<typeof resolveCandidate>>;
     try { resolved = await resolveCandidate(); }
@@ -763,46 +1050,30 @@ export function createFlowVideoAttachmentHandler(deps: {
       route.canonicalTarget !== selected.canonicalTarget
     )
       return { status: "blocked", reason: "target_changed" };
-    const target = { tabId: selected.tabId, documentIds: [binding.documentId] };
-    const inspect = await deps.scripting.executeScript({
-      target,
-      world: "ISOLATED",
-      func: () => ({
-        href: location.href,
-        candidates: [
-          ...document.querySelectorAll<HTMLImageElement>(
-            "flow-image-tile img[data-media-id]",
-          ),
-        ].map((img) => ({
-          id: img.dataset.mediaId,
-          url: img.currentSrc || img.src,
-        })),
-      }),
-    });
-    const state = inspect[0]?.result as
-      | { href?: string; candidates?: Array<{ id?: string; url?: string }> }
-      | undefined;
-    if (
-      !state ||
-      inspect[0]?.documentId !== binding.documentId ||
-      flowTabFromUrl(selected.tabId, "Flow", state.href)?.projectId !==
-        binding.projectId
-    )
-      return { status: "blocked", reason: "target_changed" };
-    const candidates = (state.candidates ?? []).filter(
-      (candidate) => candidate.id === pinned.providerAssetId && candidate.url,
-    );
-    if (candidates.length !== 1)
+    let resolved: Awaited<ReturnType<typeof resolveGalleryCandidate>>;
+    try {
+      resolved = await resolveGalleryCandidate({
+        tabId: selected.tabId,
+        documentId: binding.documentId,
+        projectId: binding.projectId,
+        mediaId: pinned.providerAssetId!,
+      });
+    } catch (error) {
       return {
         status: "blocked",
-        reason: candidates.length ? "candidate_ambiguous" : "candidate_missing",
+        reason:
+          error instanceof Error &&
+          /^[a-z0-9_]{1,64}$/.test(error.message)
+            ? error.message
+            : "candidate_resolution_failed",
       };
-    const candidate = candidates[0]!;
+    }
+    const candidate = resolved.candidate;
     let acquired: CandidateAcquisition;
     try {
       acquired = await acquireCandidateBytes({
         tabId: selected.tabId, documentId: binding.documentId, projectId: binding.projectId,
-        documentHref: state.href!, galleryUrl: candidate.url!, mediaId: pinned.providerAssetId!,
+        documentHref: resolved.href, galleryUrl: candidate.url, mediaId: pinned.providerAssetId!,
       });
     } catch (error) {
       const raw = error instanceof Error ? error.message : "reference_resource_failed";
@@ -836,37 +1107,21 @@ export function createFlowVideoAttachmentHandler(deps: {
         ...(diagnostic.success ? { diagnostic: diagnostic.data } : {}),
       };
     }
-    const reResolved = await deps.scripting.executeScript({
-      target,
-      world: "ISOLATED",
-      func: () => ({
-        href: location.href,
-        candidates: [
-          ...document.querySelectorAll<HTMLImageElement>(
-            "flow-image-tile img[data-media-id]",
-          ),
-        ].map((img) => ({
-          id: img.dataset.mediaId,
-          url: img.currentSrc || img.src,
-        })),
-      }),
-    });
-    const reResolvedState = reResolved[0]?.result as
-      | { href?: string; candidates?: Array<{ id?: string; url?: string }> }
-      | undefined;
-    const reResolvedMatches = (reResolvedState?.candidates ?? []).filter(
-      (entry) => entry.id === pinned.providerAssetId && entry.url,
-    );
-    if (
-      reResolved[0]?.documentId !== binding.documentId ||
-      !isBoundFlowProjectUrl(reResolvedState?.href, binding.projectId) ||
-      reResolvedMatches.length !== 1
-    )
+    try {
+      await resolveGalleryCandidate({
+        tabId: selected.tabId,
+        documentId: binding.documentId,
+        projectId: binding.projectId,
+        mediaId: pinned.providerAssetId!,
+      });
+    } catch {
       return {
         status: "blocked",
         stage: "candidate_revalidation",
         reason: "candidate_changed",
       };
+    }
+    const target = { tabId: selected.tabId, documentIds: [binding.documentId] };
     const composerCheck = await deps.scripting.executeScript({
       target,
       world: "ISOLATED",
@@ -973,16 +1228,28 @@ export function createFlowVideoAttachmentHandler(deps: {
       });
       return { status: outcome.already ? "already_attached" : "attached" };
     }
+    const failureReason = outcome?.reason ?? "attachment_uncertain";
+    const failedAt = Date.now();
     await deps.repositories.putFlowVideoAttachmentOperation({
       ...op,
       status: "uncertain",
-      reason: outcome?.reason ?? "attachment_uncertain",
-      updatedAt: Date.now(),
+      reason: failureReason,
+      updatedAt: failedAt,
+      // The in-page action returns these reasons only before its sole Add
+      // click. Persisting that fact lets the queue offer a guarded retry
+      // without ever treating a post-click outcome as replayable.
+      ...(isFlowVideoPickerPreAddReason(failureReason)
+        ? {
+            pickerPreAddEvidence: {
+              reason: failureReason,
+              updatedAt: failedAt,
+              producer: "picker_failure_before_add_activation" as const,
+              addClickAttempted: false as const,
+            },
+          }
+        : {}),
     });
-    return {
-      status: "uncertain",
-      reason: outcome?.reason ?? "attachment_uncertain",
-    };
+    return { status: "uncertain", reason: failureReason };
   }
   return { attach, inspectReferenceBytes, status, verifyAttachedReference, reconcilePreClickFailure };
 }
