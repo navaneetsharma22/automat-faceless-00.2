@@ -168,6 +168,7 @@ export type FoundationDependencies = {
     resume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     recheckAndResume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     retryPreAddPickerFailure: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+    verifyAttachedReferenceAndContinue: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     reconcilePreAddFailure: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
   };
@@ -919,8 +920,9 @@ async function dispatch(
     case "flow.videoQueue.stop":
     case "flow.videoQueue.recheckAndResume":
     case "flow.videoQueue.retryPreAddPickerFailure":
+    case "flow.videoQueue.verifyAttachedReferenceAndContinue":
       if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
-      return await dependencies.flowVideoQueue[request.type.slice("flow.videoQueue.".length) as "pause" | "resume" | "stop" | "recheckAndResume" | "retryPreAddPickerFailure"](request.payload.preparedBatchId, request.payload.expectedRevision);
+      return await dependencies.flowVideoQueue[request.type.slice("flow.videoQueue.".length) as "pause" | "resume" | "stop" | "recheckAndResume" | "retryPreAddPickerFailure" | "verifyAttachedReferenceAndContinue"](request.payload.preparedBatchId, request.payload.expectedRevision);
     case "flow.videoQueue.reconcilePreAddFailure":
       if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
       return await dependencies.flowVideoQueue.reconcilePreAddFailure(request.payload.preparedBatchId, request.payload.expectedRevision);

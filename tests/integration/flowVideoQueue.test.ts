@@ -187,6 +187,70 @@ async function seedPausedPickerQueue(
   });
 }
 
+async function seedPausedPostAddQueue(
+  f: Awaited<ReturnType<typeof setup>>,
+  options: {
+    reason?: string;
+    operationReason?: string;
+    verifiedAttachment?: boolean;
+    pickerPreAddEvidence?: boolean;
+    actionIntent?: boolean;
+  } = {},
+) {
+  const reason = options.reason ?? "chip_identity_unreadable_after_add";
+  const operationReason = options.operationReason ?? reason;
+  const item = f.batch.items[0]!;
+  await f.repositories.putFlowVideoAttachmentOperation({
+    id: `${batchId}:${item.itemId}`,
+    preparedBatchId: batchId,
+    itemId: item.itemId,
+    referenceId: item.reference.referenceId,
+    status: options.actionIntent ? "action_intent" : "uncertain",
+    reason: operationReason,
+    updatedAt: 1,
+    ...(options.verifiedAttachment
+      ? {
+          verifiedAttachment: {
+            documentId: "doc",
+            mediaId: "media-item-1",
+            verifiedAt: 1,
+          },
+        }
+      : {}),
+    ...(options.pickerPreAddEvidence
+      ? {
+          pickerPreAddEvidence: {
+            reason: operationReason,
+            updatedAt: 1,
+            producer: "picker_failure_before_add_activation" as const,
+            addClickAttempted: false as const,
+          },
+        }
+      : {}),
+  });
+  await f.repositories.createFlowVideoQueue({
+    queueId: `flow-video:${batchId}`,
+    preparedBatchId: batchId,
+    state: "paused",
+    pauseReason: reason,
+    items: f.batch.items.map((entry, order) => ({
+      itemId: entry.itemId,
+      order,
+      shotId: entry.canonicalShotId,
+      referenceId: entry.reference.referenceId,
+      promptHash: entry.contentHash,
+      state: order === 0 ? ("uncertain" as const) : ("pending" as const),
+      ...(order === 0 ? { reason } : {}),
+    })),
+    lastDispatchAt: null,
+    nextActionAt: null,
+    revision: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+}
+
+
 describe("P09.3 Flow video timed submission", () => {
   it("advances after a durable receipt and the 30-second interval without completion evidence", async () => {
     const f = await setup();
@@ -561,6 +625,83 @@ describe("P09.3 Flow video timed submission", () => {
     await expect(
       changedTarget.handler.retryPreAddPickerFailure(batchId, 0),
     ).rejects.toThrow("flow_video_queue_picker_not_recoverable");
+    expect(changedTarget.attach).not.toHaveBeenCalled();
+    expect(changedTarget.generate).not.toHaveBeenCalled();
+  });
+
+  it("verifies one post-Add unreadable chip without replaying Add and continues Generate", async () => {
+    const f = await setup();
+    await seedPausedPostAddQueue(f);
+    const continued = await f.handler.verifyAttachedReferenceAndContinue(
+      batchId,
+      0,
+    );
+    expect(continued).toMatchObject({
+      state: "waiting",
+      items: [
+        {
+          state: "sent",
+          priorReason: "chip_identity_unreadable_after_add",
+          attemptId: "attempt-1",
+        },
+        { state: "pending" },
+      ],
+    });
+    expect(continued.pauseReason).toBeUndefined();
+    expect(f.revalidate).toHaveBeenCalled();
+    // The queue reset reaches the read-only verification path; the attachment
+    // handler never receives an Add activation from this recovery.
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    const operation = await f.repositories.getFlowVideoAttachmentOperation(
+      `${batchId}:item-1`,
+    );
+    expect(operation?.videoGeneration?.state).toBe("dispatched");
+  });
+
+  it("recovers an action_intent operation through read-only verification only when no attachment was recorded", async () => {
+    const f = await setup();
+    await seedPausedPostAddQueue(f, {
+      reason: "attachment_uncertain",
+      actionIntent: true,
+    });
+    const continued = await f.handler.verifyAttachedReferenceAndContinue(
+      batchId,
+      0,
+    );
+    expect(continued).toMatchObject({
+      state: "waiting",
+      items: [{ state: "sent" }, { state: "pending" }],
+    });
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses post-Add verification for verified, pre-Add-evidenced, or target-changed operations", async () => {
+    const verified = await setup();
+    await seedPausedPostAddQueue(verified, { verifiedAttachment: true });
+    await expect(
+      verified.handler.verifyAttachedReferenceAndContinue(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_verification_not_recoverable");
+    expect(verified.attach).not.toHaveBeenCalled();
+    expect(verified.generate).not.toHaveBeenCalled();
+
+    const preAdd = await setup();
+    await seedPausedPostAddQueue(preAdd, { pickerPreAddEvidence: true });
+    await expect(
+      preAdd.handler.verifyAttachedReferenceAndContinue(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_verification_not_recoverable");
+    expect(preAdd.attach).not.toHaveBeenCalled();
+    expect(preAdd.generate).not.toHaveBeenCalled();
+
+    const changedTarget = await setup();
+    await seedPausedPostAddQueue(changedTarget);
+    changedTarget.revalidate.mockResolvedValueOnce(
+      "selected_flow_target_changed",
+    );
+    await expect(
+      changedTarget.handler.verifyAttachedReferenceAndContinue(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_verification_not_recoverable");
     expect(changedTarget.attach).not.toHaveBeenCalled();
     expect(changedTarget.generate).not.toHaveBeenCalled();
   });

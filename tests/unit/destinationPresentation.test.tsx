@@ -460,6 +460,82 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     ).toBe(false);
   });
 
+  it("offers a read-only verification continuation for one post-Add unreadable chip", async () => {
+    const queue = {
+      queueId: "flow-video:prepared:default:req-12345",
+      preparedBatchId: "prepared:default:req-12345",
+      state: "paused",
+      pauseReason: "chip_identity_unreadable_after_add",
+      nextActionAt: null,
+      revision: 8,
+      items: [
+        {
+          itemId: "import:default:video:item:0",
+          order: 0,
+          shotId: "1",
+          referenceId: "00000000-0000-4000-8000-000000000001",
+          promptHash: "a".repeat(64),
+          state: "uncertain",
+          reason: "chip_identity_unreadable_after_add",
+        },
+        {
+          itemId: "import:default:video:item:1",
+          order: 1,
+          shotId: "2",
+          referenceId: "00000000-0000-4000-8000-000000000002",
+          promptHash: "b".repeat(64),
+          state: "pending",
+        },
+      ],
+    };
+    const request = vi.fn(async (type: string) => {
+      if (type === "flow.videoQueue.get") return queue;
+      if (type === "flow.videoQueue.verifyAttachedReferenceAndContinue") return queue;
+      return null;
+    });
+    const client = { request } as unknown as ReturnType<
+      typeof createFoundationClient
+    >;
+    await act(async () => {
+      root?.render(
+        createElement(PreparedBatchReview, {
+          preparedBatch: mockPreparedBatch,
+          persistenceClient: client,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain(
+      "Current blocker: chip_identity_unreadable_after_add",
+    );
+    const verify = Array.from(
+      container?.querySelectorAll("button") ?? [],
+    ).find((button) => button.textContent?.trim() === "Verify Shot 1 & Continue");
+    expect(verify).toBeDefined();
+    await act(async () => {
+      verify?.click();
+      await Promise.resolve();
+    });
+    expect(request).toHaveBeenCalledWith(
+      "flow.videoQueue.verifyAttachedReferenceAndContinue",
+      {
+        preparedBatchId: "prepared:default:req-12345",
+        expectedRevision: 8,
+      },
+    );
+    expect(container?.textContent).toContain("Add was not replayed");
+    expect(
+      request.mock.calls.some(
+        ([type]) =>
+          type === "flow.video.attachReference" ||
+          type === "flow.video.generateOnce" ||
+          type === "flow.videoQueue.start" ||
+          type === "flow.videoQueue.resume",
+      ),
+    ).toBe(false);
+  });
+
+
   it("exposes exact Shot 2 pre-Add reconciliation and then a separate Resume action", async () => {
     const batchId = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
     const shotTwoRef = "e8c9315f-f79a-45c6-8184-4fddfce541ce";

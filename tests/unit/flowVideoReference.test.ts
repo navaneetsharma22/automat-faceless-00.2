@@ -521,6 +521,74 @@ describe("production Flow video attachment picker action", () => {
     expect(addClicks).toBe(1);
     expect(doc.querySelector("[data-upload=pinned]")).not.toBeNull();
   });
+  it("selects a visible non-button option row and any thumbnail image", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/div-option-representation";
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><div role="option"><img src="https://flow.google.com/asb/other"></div><div role="option" data-pinned="target"><img src="${galleryUrl}"></div></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+      const row = section.querySelector<HTMLElement>("[data-pinned=target]")!;
+      row.addEventListener("click", () => {
+        const preview = doc.createElement("img");
+        preview.className = "detail-preview-image";
+        preview.alt = "Preview of selected asset";
+        preview.src = galleryUrl;
+        const add = doc.createElement("button");
+        add.textContent = "Add to prompt";
+        add.addEventListener("click", () => {
+          const chip = doc.createElement("button");
+          chip.setAttribute("aria-label", "Ingredient");
+          chip.setAttribute("aria-busy", "false");
+          chip.innerHTML = `<img src="https://flow-content.google/image/${id}?signed=div-option">`;
+          doc.querySelector("flow-base-prompt-box")!.append(chip);
+          sizeElements(doc);
+        });
+        section.querySelector("aside")!.append(preview, add);
+        sizeElements(doc);
+      });
+    });
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({ ok: true, already: false });
+  });
+
+  it("waits for a chip thumbnail URL to settle after Add instead of failing on the first unreadable frame", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/delayed-chip-representation";
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${galleryUrl}"></button></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+      const row = section.querySelector<HTMLButtonElement>("button.asset-item")!;
+      row.addEventListener("click", () => {
+        const preview = doc.createElement("img");
+        preview.className = "detail-preview-image";
+        preview.alt = "Preview of selected asset";
+        preview.src = galleryUrl;
+        const add = doc.createElement("button");
+        add.textContent = "Add to prompt";
+        add.addEventListener("click", () => {
+          const chip = doc.createElement("button");
+          chip.setAttribute("aria-label", "Ingredient");
+          chip.setAttribute("aria-busy", "false");
+          doc.querySelector("flow-base-prompt-box")!.append(chip);
+          sizeElements(doc);
+          setTimeout(() => {
+            chip.innerHTML = `<img src="https://flow-content.google/image/${id}?signed=delayed">`;
+            sizeElements(doc);
+          }, 350);
+        });
+        section.querySelector("aside")!.append(preview, add);
+        sizeElements(doc);
+      });
+    });
+
+    await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({ ok: true, already: false });
+  });
 });
 
 describe("Flow pinned video reference attachment (offline fixtures)", () => {

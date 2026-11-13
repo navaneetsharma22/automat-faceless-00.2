@@ -210,14 +210,6 @@ export async function flowVideoAttachmentActionInPage(
     : [];
   const wait = (ms: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, ms));
-  const idFromChip = (chip: HTMLButtonElement) => {
-    try {
-      const u = new URL(chip.querySelector("img[alt='Ingredient image']")?.getAttribute("src") ?? "");
-      return u.protocol === "https:" && u.hostname === "flow-content.google"
-        ? /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(u.pathname)?.[1]?.toLowerCase()
-        : undefined;
-    } catch { return undefined; }
-  };
   const expectedMediaId = expectedId.toLowerCase();
   const mediaIdFromImageUrl = (raw: string | undefined) => {
     if (!raw) return undefined;
@@ -227,6 +219,21 @@ export async function flowVideoAttachmentActionInPage(
           u.port || u.username || u.password) return undefined;
       return /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(u.pathname)?.[1]?.toLowerCase();
     } catch { return undefined; }
+  };
+  const imageUrls = (root: Element) =>
+    [...root.querySelectorAll<HTMLImageElement>("img")]
+      .map((image) => image.currentSrc || image.src || image.getAttribute("src") || "")
+      .filter(Boolean);
+  // Flow has rendered the chip thumbnail with and without the Ingredient alt
+  // text while the signed URL settles. Read every image in the chip and accept
+  // only one unambiguous Flow media identity.
+  const idFromChip = (chip: HTMLButtonElement) => {
+    const ids = new Set(
+      imageUrls(chip)
+        .map(mediaIdFromImageUrl)
+        .filter((id): id is string => Boolean(id)),
+    );
+    return ids.size === 1 ? [...ids][0] : undefined;
   };
   // Flow can render the same pinned asset through different signed
   // representations (/asb/<opaque> in the gallery, /image/<uuid> elsewhere).
@@ -253,10 +260,9 @@ export async function flowVideoAttachmentActionInPage(
     const list = visibleListbox();
     const preview = document.querySelector<HTMLImageElement>("img.detail-preview-image[alt^='Preview of']");
     const panel = preview?.parentElement?.closest("section,[data-picker-detail-scope]") ?? preview?.parentElement?.parentElement;
-    const rows = [...(list?.querySelectorAll<HTMLButtonElement>("button[role=option].asset-item") ?? [])];
+    const rows = [...(list?.querySelectorAll<HTMLElement>("[role=option]") ?? [])];
     const matches = rows.filter((row) => {
-      const images = [...row.querySelectorAll<HTMLImageElement>("img.asset-thumbnail-image")];
-      if (images.some((img) => sameAssetUrl(img.currentSrc || img.src || undefined))) return true;
+      if (imageUrls(row).some(sameAssetUrl)) return true;
       const rowMediaId = row.getAttribute("data-media-id") ??
         row.querySelector("[data-media-id]")?.getAttribute("data-media-id");
       return Boolean(expectedMediaId && rowMediaId?.toLowerCase() === expectedMediaId);
@@ -304,7 +310,7 @@ export async function flowVideoAttachmentActionInPage(
   // mount, then search only within the verified document's Asset list in a
   // bounded number of scroll positions. Match only the exact already-verified
   // asset identity. A missing search restores the inspected scroll position.
-  const findExactRow = async (): Promise<{ row?: HTMLButtonElement; ambiguous?: boolean }> => {
+  const findExactRow = async (): Promise<{ row?: HTMLElement; ambiguous?: boolean }> => {
     let state = read();
     if (state.ambiguous) return { ambiguous: true };
     if (state.row) return { row: state.row };
@@ -387,7 +393,7 @@ export async function flowVideoAttachmentActionInPage(
     }
     return Boolean(read().list);
   };
-  const findExactRowAcrossTabs = async (): Promise<{ row?: HTMLButtonElement; ambiguous?: boolean }> => {
+  const findExactRowAcrossTabs = async (): Promise<{ row?: HTMLElement; ambiguous?: boolean }> => {
     const first = await findExactRow();
     if (first.row || first.ambiguous) return first;
     const original = activeTabLabel();
@@ -413,8 +419,8 @@ export async function flowVideoAttachmentActionInPage(
     return { ok: false, reason: "attachment_control_unavailable" };
   let existing = chips();
   if (existing.some((chip) => !idFromChip(chip))) return { ok: false, reason: "existing_chip_identity_unreadable" };
-  if (existing.filter((chip) => idFromChip(chip) === expectedId).length > 1) return { ok: false, reason: "duplicate_matching_chips" };
-  if (existing.length && !(existing.length === 1 && idFromChip(existing[0]!) === expectedId && existing[0]!.getAttribute("aria-busy") === "false"))
+  if (existing.filter((chip) => idFromChip(chip) === expectedMediaId).length > 1) return { ok: false, reason: "duplicate_matching_chips" };
+  if (existing.length && !(existing.length === 1 && idFromChip(existing[0]!) === expectedMediaId && existing[0]!.getAttribute("aria-busy") === "false"))
     return { ok: false, reason: "existing_chip_conflict" };
   if (existing.length === 1) return { ok: true, already: true };
 
@@ -458,14 +464,17 @@ export async function flowVideoAttachmentActionInPage(
   existing = chips();
   if (existing.length) return { ok: false, reason: "chip_conflict_before_add" };
   selected.action[0]!.click();
-  for (let i = 0; i < 60; i++) {
+  // The chip mounts before its signed thumbnail URL is always readable. Keep
+  // observing for a bounded settle window instead of failing on the first
+  // transient unreadable value; never activate Add a second time.
+  for (let i = 0; i < 100; i++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     existing = chips();
-    if (existing.some((chip) => !idFromChip(chip))) return { ok: false, reason: "chip_identity_unreadable_after_add" };
-    if (existing.length === 1 && idFromChip(existing[0]!) === expectedId && existing[0]!.getAttribute("aria-busy") === "false")
+    if (existing.length === 1 && idFromChip(existing[0]!) === expectedMediaId && existing[0]!.getAttribute("aria-busy") === "false")
       return { ok: true, already: false };
   }
-  return { ok: false, reason: "attachment_uncertain" };
+  existing = chips();
+  return { ok: false, reason: existing.some((chip) => !idFromChip(chip)) ? "chip_identity_unreadable_after_add" : "attachment_uncertain" };
 }
 
 /** Worker-owned attachment caller. The page DOM is accessed only through exact document-targeted script injections. */
@@ -714,37 +723,52 @@ export function createFlowVideoAttachmentHandler(deps: {
     const route = flowTabFromUrl(selected.tabId, "Flow", tab.url);
     if (!route || route.projectId !== binding.projectId || route.canonicalTarget !== selected.canonicalTarget)
       return { status: "blocked", reason: "target_changed" };
-    const check = await deps.scripting.executeScript({
-      target,
-      world: "ISOLATED",
-      func: () => {
-        const visible = (element: Element) => {
-          const rect = element.getBoundingClientRect();
-          const style = getComputedStyle(element);
-          return element.isConnected && rect.width > 0 && rect.height > 0 &&
-            style.display !== "none" && style.visibility !== "hidden";
-        };
-        const roots = [...document.querySelectorAll<HTMLElement>("flow-base-prompt-box")].filter(visible);
-        if (roots.length !== 1) return { ok: false, reason: "composer_unavailable" };
-        const chips = [...roots[0]!.querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")].filter(visible);
-        const images = chips.map((chip) => {
-          const image = chip.querySelector<HTMLImageElement>("img[alt='Ingredient image']");
-          return { busy: chip.getAttribute("aria-busy"), url: image?.currentSrc || image?.src || image?.getAttribute("src") };
-        });
-        return { ok: true, href: location.href, count: chips.length, chips: images };
-      },
-    });
-    const state = check[0]?.result as { ok?: boolean; href?: string; count?: number; chips?: Array<{ busy?: string | null; url?: string }> } | undefined;
-    if (
-      check[0]?.documentId !== binding.documentId ||
-      !state?.href ||
-      flowTabFromUrl(selected.tabId, "Flow", state.href)?.projectId !== binding.projectId
-    )
-      return { status: "uncertain", reason: "verification_document_mismatch" };
-    const chip = state.chips?.[0];
+    let state: { ok?: boolean; href?: string; count?: number; chips?: Array<{ busy?: string | null; url?: string }> } | undefined;
+    let chipSettled = false;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const check = await deps.scripting.executeScript({
+        target,
+        world: "ISOLATED",
+        func: () => {
+          const visible = (element: Element) => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return element.isConnected && rect.width > 0 && rect.height > 0 &&
+              style.display !== "none" && style.visibility !== "hidden";
+          };
+          const roots = [...document.querySelectorAll<HTMLElement>("flow-base-prompt-box")].filter(visible);
+          if (roots.length !== 1) return { ok: false, reason: "composer_unavailable" };
+          const chips = [...roots[0]!.querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")].filter(visible);
+          const images = chips.map((chip) => {
+            const image = [...chip.querySelectorAll<HTMLImageElement>("img")]
+              .find((candidate) => Boolean(candidate.currentSrc || candidate.src || candidate.getAttribute("src")));
+            return { busy: chip.getAttribute("aria-busy"), url: image?.currentSrc || image?.src || image?.getAttribute("src") };
+          });
+          return { ok: true, href: location.href, count: chips.length, chips: images };
+        },
+      });
+      state = check[0]?.result as typeof state;
+      if (
+        check[0]?.documentId !== binding.documentId ||
+        !state?.href ||
+        flowTabFromUrl(selected.tabId, "Flow", state.href)?.projectId !== binding.projectId
+      )
+        return { status: "uncertain", reason: "verification_document_mismatch" };
+      const chip = state.chips?.[0];
+      const mediaId = flowVideoChipMediaIdFromImageUrl(chip?.url ?? "");
+      if (
+        state.ok && state.count === 1 && state.chips?.length === 1 &&
+        chip?.busy === "false" && mediaId === pinned.providerAssetId
+      ) {
+        chipSettled = true;
+        break;
+      }
+      if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const chip = state?.chips?.[0];
     const mediaId = flowVideoChipMediaIdFromImageUrl(chip?.url ?? "");
     if (
-      !state.ok || state.count !== 1 || state.chips?.length !== 1 ||
+      !chipSettled || !state?.ok || state.count !== 1 || state.chips?.length !== 1 ||
       chip?.busy !== "false" || mediaId !== pinned.providerAssetId
     )
       return { status: "uncertain", reason: "verification_chip_not_exact_ready" };

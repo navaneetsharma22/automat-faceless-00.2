@@ -29,6 +29,56 @@ export function isFlowVideoPickerPreAddReason(
   );
 }
 
+/**
+ * Attachment outcomes that can only be observed after Add was activated. They
+ * never authorize replaying Add; recovery is limited to a read-only chip
+ * verification that continues Generate only when the exact pinned media ID is
+ * present and settled.
+ */
+export const FLOW_VIDEO_POST_ADD_ATTACHMENT_REASONS = [
+  "chip_identity_unreadable_after_add",
+  "attachment_uncertain",
+  "attachment_unverified",
+] as const;
+export type FlowVideoPostAddAttachmentReason =
+  (typeof FLOW_VIDEO_POST_ADD_ATTACHMENT_REASONS)[number];
+
+export function isFlowVideoPostAddAttachmentReason(
+  reason: string | undefined,
+): reason is FlowVideoPostAddAttachmentReason {
+  return (
+    reason !== undefined &&
+    (FLOW_VIDEO_POST_ADD_ATTACHMENT_REASONS as readonly string[]).includes(
+      reason,
+    )
+  );
+}
+
+/**
+ * Queue-item reasons that may follow a post-Add attachment outcome. The
+ * verification_* values are produced by the read-only verifyAttachedReference
+ * action after a failed recovery attempt; they remain recoverable because the
+ * next attempt still never clicks Add.
+ */
+export const FLOW_VIDEO_POST_ADD_RECOVERY_REASONS = [
+  ...FLOW_VIDEO_POST_ADD_ATTACHMENT_REASONS,
+  "verification_chip_not_exact_ready",
+  "verification_document_mismatch",
+  "verification_target_changed",
+  "operation_changed",
+] as const;
+export type FlowVideoPostAddRecoveryReason =
+  (typeof FLOW_VIDEO_POST_ADD_RECOVERY_REASONS)[number];
+
+export function isFlowVideoPostAddRecoveryReason(
+  reason: string | undefined,
+): reason is FlowVideoPostAddRecoveryReason {
+  return (
+    reason !== undefined &&
+    (FLOW_VIDEO_POST_ADD_RECOVERY_REASONS as readonly string[]).includes(reason)
+  );
+}
+
 export const VIDEO_QUEUE_STATES = [
   "ready",
   "waiting",

@@ -205,6 +205,7 @@ export type RequestPayloads = {
   "flow.videoQueue.resume": { preparedBatchId: string; expectedRevision: number };
   "flow.videoQueue.recheckAndResume": { preparedBatchId: string; expectedRevision: number };
   "flow.videoQueue.retryPreAddPickerFailure": { preparedBatchId: string; expectedRevision: number };
+  "flow.videoQueue.verifyAttachedReferenceAndContinue": { preparedBatchId: string; expectedRevision: number };
   "flow.videoQueue.reconcilePreAddFailure": { preparedBatchId: "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179"; expectedRevision: number };
   "flow.videoQueue.stop": { preparedBatchId: string; expectedRevision: number };
   "flow.video.reconcilePreClickFailure": {
@@ -312,6 +313,7 @@ export const DEFAULT_TIMEOUT_MS: Record<RequestTypes, number> = {
   "flow.videoQueue.resume": 45_000,
   "flow.videoQueue.recheckAndResume": 60_000,
   "flow.videoQueue.retryPreAddPickerFailure": 60_000,
+  "flow.videoQueue.verifyAttachedReferenceAndContinue": 90_000,
   "flow.videoQueue.reconcilePreAddFailure": 30_000,
   "flow.videoQueue.stop": 10_000,
   "flow.video.reconcilePreClickFailure": 5_000,

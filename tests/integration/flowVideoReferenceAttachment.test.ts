@@ -78,6 +78,7 @@ async function fixture(
     mismatchManualSettingsTarget?: boolean;
     verificationDocumentId?: string;
     verificationChip?: { busy: string | null; url: string };
+    verificationChipSequence?: Array<{ busy: string | null; url: string }>;
     galleryCandidates?: Array<{ id: string; url: string }>;
     galleryCandidateDocumentId?: string;
     galleryCandidateHref?: string;
@@ -241,6 +242,7 @@ async function fixture(
   });
   const preflightOperationStates: Array<string | undefined> = [];
   let verificationRevalidations = 0;
+  let verificationChipReads = 0;
   const executeScript = vi.fn(async (input: unknown) => {
     const injection = input as MockInjection;
     if (injection.func === flowResolveOriginalImageUrlInPage) {
@@ -325,6 +327,10 @@ async function fixture(
     }
     if (!injection.args && String(injection.func).includes("flow-base-prompt-box") && String(injection.func).includes("aria-busy")) {
       expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
+      const sequence = overrides.verificationChipSequence;
+      const sequenceChip = sequence?.[
+        Math.min(verificationChipReads++, sequence.length - 1)
+      ];
       return [
         {
           documentId: overrides.verificationDocumentId ?? documentId,
@@ -332,7 +338,7 @@ async function fixture(
             ok: true,
             href: canonicalTarget,
             count: 1,
-            chips: [overrides.verificationChip ?? {
+            chips: [sequenceChip ?? overrides.verificationChip ?? {
               busy: "false",
               url: `https://flow-content.google/image/${mediaId}?signed=readback`,
             }],
@@ -746,6 +752,40 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toEqual(original);
     expect(f.addActivation).not.toHaveBeenCalled();
   });
+
+  it("waits for a settling chip identity during read-only verification without activating Add", async () => {
+    const f = await fixture({
+      verificationChipSequence: [
+        {
+          busy: "false",
+          url: "https://flow-content.google/image/not-yet-readable",
+        },
+        {
+          busy: "false",
+          url: `https://flow-content.google/image/${mediaId}?signed=settled`,
+        },
+      ],
+    });
+    const original = {
+      id: `${batchId}:${itemId}`, preparedBatchId: batchId, itemId, referenceId,
+      status: "uncertain" as const, reason: "chip_identity_unreadable_after_add", updatedAt: 93,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(f.client.request("flow.video.verifyAttachedReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({
+      status: "attached",
+      operation: {
+        status: "attached",
+        verifiedAttachment: { documentId, mediaId },
+      },
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(
+      f.executeScript.mock.calls.filter(([call]) =>
+        String((call as MockInjection).func).includes("aria-busy"),
+      ),
+    ).toHaveLength(2);
+  });
+
 
   it("blocks a missing attachment control before durable intent and activation", async () => {
     const f = await fixture({

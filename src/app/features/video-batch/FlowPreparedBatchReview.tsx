@@ -3,6 +3,7 @@ import type { PreparedVideoBatchRecord } from "../../../domain/batches/types";
 import {
   VIDEO_QUEUE_DISPATCH_GAP_MS,
   isFlowVideoPickerPreAddReason,
+  isFlowVideoPostAddRecoveryReason,
 } from "../../../domain/jobs/videoQueue";
 import {
   FoundationClientError,
@@ -123,7 +124,7 @@ export function FlowPreparedBatchReview({
     previousAllSent.current = { queueId: videoQueue.queueId, allSent: allPromptsSent };
   }, [allPromptsSent, toast, videoQueue]);
 
-  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "retryPreAddPickerFailure" | "reconcilePreAddFailure"): Promise<boolean> {
+  async function runVideoQueue(action: "start" | "pause" | "resume" | "stop" | "recheckAndResume" | "retryPreAddPickerFailure" | "verifyAttachedReferenceAndContinue" | "reconcilePreAddFailure"): Promise<boolean> {
     setVideoQueueBusy(true);
     setVideoQueueAction(action);
     setVideoQueueError(null);
@@ -138,6 +139,7 @@ export function FlowPreparedBatchReview({
         setVideoQueue(result as VideoQueueSnapshot);
         if (action === "reconcilePreAddFailure") setVideoQueueNotice("Shot 2's pre-Add failure was reconciled. Resume is a separate action; no attachment or Generate action was performed.");
         if (action === "retryPreAddPickerFailure") setVideoQueueNotice("The picker failure occurred before Add. The queue reconciled it and is retrying attachment; Generate dispatches only after the reference is verified.");
+        if (action === "verifyAttachedReferenceAndContinue") setVideoQueueNotice("Add was not replayed. The queue is verifying the attached reference; Generate dispatches only if the exact pinned media ID is present and ready.");
         return true;
       }
       return false;
@@ -198,6 +200,14 @@ export function FlowPreparedBatchReview({
     return isFlowVideoPickerPreAddReason(unresolved[0].reason) ? unresolved[0] : undefined;
   })();
   const retryablePickerFailure = pickerBlockedItem !== undefined;
+  const verificationBlockedItem = (() => {
+    if (!videoQueue || !["paused", "blocked"].includes(videoQueue.state)) return undefined;
+    const unresolved = videoQueue.items.filter((item) =>
+      ["failed", "uncertain", "attaching", "dispatching"].includes(item.state));
+    if (unresolved.length !== 1 || unresolved[0]?.state !== "uncertain") return undefined;
+    return isFlowVideoPostAddRecoveryReason(unresolved[0].reason) ? unresolved[0] : undefined;
+  })();
+  const retryableVerificationFailure = verificationBlockedItem !== undefined;
   const activeQueueItem = videoQueue?.items.find((item) => item.state === "attaching" || item.state === "dispatching");
   const readinessQueueItem = videoQueue?.items.find((item) => item.state === "waiting_for_generate");
   const nextQueueItem = activeQueueItem ?? readinessQueueItem ?? videoQueue?.items.find((item) => item.state === "pending");
@@ -289,6 +299,11 @@ export function FlowPreparedBatchReview({
               ) : retryablePickerFailure ? (
                 <div className={styles.videoQueueActions}>
                   <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "retryPreAddPickerFailure"} loadingLabel="Retrying" onClick={() => void runVideoQueue("retryPreAddPickerFailure")}>Retry Shot {pickerBlockedItem?.shotId}</Button>
+                  <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
+                </div>
+              ) : retryableVerificationFailure ? (
+                <div className={styles.videoQueueActions}>
+                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "verifyAttachedReferenceAndContinue"} loadingLabel="Verifying" onClick={() => void runVideoQueue("verifyAttachedReferenceAndContinue")}>Verify Shot {verificationBlockedItem?.shotId} &amp; Continue</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : recoverablePreIntentResolutionFailure ? (
