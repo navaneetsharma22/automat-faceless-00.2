@@ -787,19 +787,20 @@ export function QueueCard({
       aria-label={`Timed image queue ${queue.queueId}`}
       data-state={queue.state}
     >
-      <div className={styles.queueHeader}>
-        <div>
-          <p className={styles.kicker}>{queueKicker}</p>
-          <h4>{status}</h4>
+      <div className={styles.stickyQueueHeader}>
+        <div className={styles.queueHeader}>
+          <div>
+            <p className={styles.kicker}>{queueKicker}</p>
+            <h4>{status}</h4>
+          </div>
+          <span
+            className={`${styles.stateBadge} ${badgeClass}`}
+            role="status"
+            aria-live="polite"
+          >
+            {status}
+          </span>
         </div>
-        <span
-          className={`${styles.stateBadge} ${badgeClass}`}
-          role="status"
-          aria-live="polite"
-        >
-          {status}
-        </span>
-      </div>
 
       <div className={styles.summaryGrid}>
         <div className={styles.sentSummary}>
@@ -1075,6 +1076,7 @@ export function QueueCard({
           may have finished; provider results are not verified.
         </p>
       ) : null}
+      </div>
       {queue.state === "blocked" && onClearBlockedQueue ? (
         <dialog
           ref={clearDialogRef}
@@ -1120,7 +1122,7 @@ export function QueueCard({
         </dialog>
       ) : null}
 
-      <ol className={styles.items} aria-label="Prompt queue">
+      <ol className={styles.items} aria-label="Prompt queue" tabIndex={0}>
         {queue.items.map((item) => (
           <PromptRow
             key={item.queueItemId}

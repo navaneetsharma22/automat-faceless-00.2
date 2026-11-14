@@ -18,6 +18,8 @@ export type JsonEditorProps = Omit<
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   showCharacterCount?: boolean;
+  imageLayout?: boolean;
+  toolbarHeading?: { kicker: string; title: string; id: string };
   editorRef?: React.Ref<HTMLTextAreaElement>;
 };
 
@@ -34,34 +36,44 @@ export function JsonEditor({
   expanded = false,
   onExpandedChange,
   showCharacterCount = true,
+  imageLayout = false,
+  toolbarHeading,
   ...textareaProps
 }: JsonEditorProps) {
   return (
-    <div className={styles.editorField}>
-      <div
-        className={styles.editorToolbar}
-        role="group"
-        aria-label="JSON editor display options"
-      >
-        <Button
-          size="compact"
-          variant="secondary"
-          type="button"
-          aria-pressed={wrapLines}
-          onClick={() => onWrapLinesChange?.(!wrapLines)}
+    <div className={`${styles.editorField} ${imageLayout ? styles.imageEditorField : ""}`}>
+      <div className={imageLayout ? styles.imageEditorTopRow : undefined}>
+        {toolbarHeading ? (
+          <div className={styles.imageEditorHeading}>
+            <p>{toolbarHeading.kicker}</p>
+            <h2 id={toolbarHeading.id}>{toolbarHeading.title}</h2>
+          </div>
+        ) : null}
+        <div
+          className={`${styles.editorToolbar} ${imageLayout ? styles.imageEditorToolbar : ""}`}
+          role="group"
+          aria-label="JSON editor display options"
         >
-          Wrap lines
-        </Button>
-        <Button
-          size="compact"
-          variant="secondary"
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={`${id}-expanded-dialog`}
-          onClick={() => onExpandedChange?.(!expanded)}
-        >
-          {expanded ? "Editor expanded" : "Expand editor"}
-        </Button>
+          <Button
+            size="compact"
+            variant="secondary"
+            type="button"
+            aria-pressed={wrapLines}
+            onClick={() => onWrapLinesChange?.(!wrapLines)}
+          >
+            Wrap lines
+          </Button>
+          <Button
+            size="compact"
+            variant="secondary"
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={`${id}-expanded-dialog`}
+            onClick={() => onExpandedChange?.(!expanded)}
+          >
+            {expanded ? "Editor expanded" : "Expand editor"}
+          </Button>
+        </div>
       </div>
       {!expanded ? (
         <Field id={id} label={label} hint={hint} error={error}>
@@ -69,7 +81,7 @@ export function JsonEditor({
             {...textareaProps}
             ref={editorRef}
             id={id}
-            className={`${styles.control} ${styles.editor} ${wrapLines ? styles.editorWrapped : ""}`}
+            className={`${styles.control} ${styles.editor} ${imageLayout ? styles.imageEditor : ""} ${wrapLines ? styles.editorWrapped : ""}`}
             value={value}
             onChange={(event) => onChange(event.currentTarget.value)}
             spellCheck={false}
@@ -118,7 +130,7 @@ export function JsonEditor({
             <textarea
               {...textareaProps}
               ref={editorRef}
-              className={`${styles.control} ${styles.editor} ${styles.editorExpanded} ${wrapLines ? styles.editorWrapped : ""}`}
+              className={`${styles.control} ${styles.editor} ${styles.editorExpanded} ${imageLayout ? styles.imageEditor : ""} ${wrapLines ? styles.editorWrapped : ""}`}
               value={value}
               onChange={(event) => onChange(event.currentTarget.value)}
               spellCheck={false}

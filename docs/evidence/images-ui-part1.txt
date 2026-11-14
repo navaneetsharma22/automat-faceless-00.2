@@ -1,0 +1,42 @@
+﻿# Images UI Part 1 evidence
+
+Date: 14 November 2026
+
+## Scope and control inventory
+
+Presentation-only changes to the Images workspace. Existing controls retained: Load JSON, New batch, Load saved batch, Export saved source, Wrap lines, Expand/Close editor, Validate & Preview, saved-batch replacement confirmation, Save validated batch, Start, Pause, Resume, Stop queue, blocked queue inspection, guarded retry, Clear existing prompt confirmation, shot prompt details, and technical detail disclosures. Availability remains driven by the existing handlers and queue state.
+
+States covered in the local presentation regression: empty source, validation/save controls, ready, waiting with sent count and current/next shot, paused with reason, blocked with reason and inspect/clear actions, and all sent. Editor text, selection, and scroll preservation are covered during a queue update.
+
+## Changes
+
+- Desktop Images workspace uses a 60/40 weighted grid with a width-aware queue minimum and a taller source editor.
+- Images workspace removes the independently scrolling outer queue column. The prompt list is the bounded scroll surface, leaving its status and actions visible above it. The editor retains its own scrolling for long JSON.
+- The existing compact Wrap lines / Expand editor toolbar, responsive source action toolbar, validation/save step grouping, compact prompt rows, and full-width Source summary presentation are retained.
+- Queue cards compact their status summary, countdown, action area, and shot rows while keeping prompt content, Shot IDs, statuses, dispatch receipt/raw prompt inspection, and technical details available.
+
+No queue, parser, storage, connection, dispatch, receipt, timer, retry, recovery, or confirmation handler was changed. No behavior difference identified by source review or focused local tests.
+
+## Verification
+
+- `npx vitest run tests/unit/imagesPresentation.test.tsx tests/unit/imageQueuePresentation.test.tsx`: **32/32 PASS**.
+- `npm run typecheck`: **PASS**.
+- Scoped ESLint on `src/app/App.tsx`, `src/app/features/image-batch/Progress.tsx`, and `tests/unit/imagesPresentation.test.tsx`: **PASS**.
+- `npm run build`: **PASS**, local build ID `automat-faceless-0.1.0-mwfyt4zj`. Existing dashboard chunk-size and connector `inlineDynamicImports` warnings remain.
+- Browser screenshots at 1920Ã—1080, 1366Ã—768, 768Ã—1024, and 390Ã—844 could not be captured in this environment. The Playwright fixture reached browser launch but Chromium is not installed (`chromium_headless_shell-1248` missing); computer-use inventory also showed no browser/app surfaces. No browser installation or provider access was attempted.
+- Light/dark runtime visual comparison, long-list scrolling in a rendered browser, and pixel-level overflow checks remain **NOT_RUN**. Existing queue screenshots under `artifacts/image-queue-presentation/` predate this change and are not represented as current evidence.
+
+## Build and live boundary
+
+The package build is local. No browser login, Flow/Vids action, provider mutation, download, deployment, or storage migration occurred. Live gate: **NOT_RUN**.
+
+
+## Follow-up repair — Images queue scrolling and editor reachability
+
+Date: 14 November 2026
+
+Restored the desktop right-column bounded scrollport (`min-height: 0`, `min-width: 0`, fixed available height, `overflow-y: auto`) and the setup/history column now remains reachable. The active queue status/actions stay in the compact sticky region while its 80-shot list is independently scrollable; wheel chaining is allowed from the list to the outer column. The shot list is keyboard-focusable. At widths at or below 1080px, the right column and shot list return to normal document flow. Moved the Images heading beside Wrap lines / Expand editor and reduced the desktop editor minimum so validation controls appear sooner.
+
+Fixture verification: 33/33 focused presentation tests pass, including ready, paused, blocked, all-sent, 80-shot final-item presence, active controls, and keyboard focus on the queue list. Typecheck, scoped ESLint, build, and `git diff --check` pass. Local build ID: `automat-faceless-0.1.0-mwg0231k`.
+
+Actual visual/input verification remains NOT_RUN: this environment has no browser/app surface and no installed Playwright Chromium. Therefore mouse wheel, trackpad, scrollbar dragging, light/dark screenshots at 1920×1080, 1366×768, and narrow widths, and rendered overlap/reachability cannot be claimed from this session. No provider actions were performed.

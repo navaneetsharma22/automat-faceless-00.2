@@ -1588,7 +1588,7 @@
     flex: 1 1 0;
     min-height: 0;
     min-width: 0;
-    grid-template-columns: minmax(0, 1.25fr) minmax(20rem, 0.75fr);
+    grid-template-columns: minmax(0, 1.5fr) minmax(min(18rem, 38%), 1fr);
     gap: var(--space-4);
     align-items: stretch;
     overflow: hidden;
@@ -1605,6 +1605,12 @@
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
     padding: var(--card-padding);
+    gap: var(--space-2);
+  }
+
+  .imagesWorkspaceShell .editorPanel textarea {
+    min-height: clamp(12rem, calc(100dvh - 36rem), 32rem);
+    max-height: min(48vh, 32rem);
   }
 
   .imagesWorkspaceShell .workspaceSideColumn {
@@ -1615,9 +1621,14 @@
     min-width: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    overscroll-behavior: contain;
+    overscroll-behavior-y: contain;
     scrollbar-gutter: stable;
     gap: var(--space-4);
+  }
+
+  .imagesWorkspaceShell .workspaceSideColumn > * {
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .imagesWorkspaceShell .editorPanel:focus-visible,
@@ -1649,6 +1660,11 @@
   .imagesWorkspaceShell .editorPanel:hover,
   .imagesWorkspaceShell .workspaceSideColumn:hover {
     scrollbar-color: var(--color-text-muted) transparent;
+  }
+  .imagesWorkspaceShell .editorPanel {
+    overflow: visible;
+    height: auto;
+    min-height: 0;
   }
 }
 
@@ -1718,6 +1734,14 @@
   }
   .workspaceGrid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .imagesWorkspaceShell .workspaceGrid {
+    overflow: visible;
+  }
+  .imagesWorkspaceShell .workspaceSideColumn {
+    height: auto;
+    max-height: none;
+    overflow: visible;
   }
 }
 
@@ -1886,16 +1910,23 @@
 }
 
 .sourceSummary {
+  display: grid;
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-4);
   gap: var(--space-3);
 }
 .sourceSummaryEmpty {
-  gap: var(--space-2);
+  display: grid;
+  width: 100%;
+  box-sizing: border-box;
   padding: var(--space-4);
+  gap: var(--space-2);
 }
 .sourcePromptList {
   display: grid;
-  max-height: min(58vh, 42rem);
-  overflow-y: auto;
+  width: 100%;
+  box-sizing: border-box;
   gap: var(--space-2);
   margin: 0;
   padding: 0;
@@ -1903,11 +1934,13 @@
 }
 .sourcePrompt {
   display: flex;
+  width: 100%;
+  box-sizing: border-box;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
   background: var(--color-surface);

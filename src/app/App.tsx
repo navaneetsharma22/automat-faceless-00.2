@@ -386,11 +386,6 @@ function ImagesView({
         tabIndex={0}
         aria-label="Image prompt import and editor"
       >
-        <PanelHeader
-          kicker="IMAGE IMPORT"
-          title="Image prompt import"
-          id="image-input-title"
-        />
         <ImageImportPanel
           session={session}
           workspaceId="default"

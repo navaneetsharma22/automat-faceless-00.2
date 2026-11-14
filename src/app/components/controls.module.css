@@ -135,6 +135,44 @@
   white-space: pre;
 }
 
+.imageEditorToolbar {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.imageEditorTopRow {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+
+.imageEditorHeading {
+  min-width: 0;
+}
+
+.imageEditorHeading p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 750;
+  letter-spacing: 0.12em;
+}
+
+.imageEditorHeading h2 {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-lg);
+  letter-spacing: -0.02em;
+  line-height: var(--line-height-tight);
+}
+
+.imageEditor {
+  min-height: clamp(18rem, 34vh, 30rem);
+  max-height: min(58vh, 38rem);
+}
+
 .editorWrapped {
   overflow-wrap: anywhere;
   white-space: pre-wrap;

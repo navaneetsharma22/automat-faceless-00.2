@@ -2391,3 +2391,13 @@ Focused Flow queue integration and Vids queue presentation tests: **29/29 PASS**
 ### Flow video picker virtualized-row blocker — 8 November 2026
 
 The production picker now performs bounded exact-URL lookup across the verified document's virtualized Asset list and distinguishes missing exact row, selected preview mismatch, and Add control not ready. Exact media identity, saved-byte hash verification, and shot pairing are unchanged. No position or thumbnail-similarity fallback was added. Picker unit tests **15/15 PASS**; queue and attachment integration tests **33/33 PASS**, including guarded recovery and refusal when delivery is uncertain. Typecheck and focused ESLint PASS. Repository-wide lint still reports existing errors in the ESLint config, duplicated helper files, and one unrelated test. Local build PASS; ID **`automat-faceless-0.1.0-mw7ms5qv`**. No connected browser surface was available to inspect the supplied Shot 1 operation/queue, so this exact batch was not resumed and remains ineligible for recovery absent durable no-activation evidence. Live inspection/recovery/Resume/Generate **NOT_RUN**. See `docs/evidence/flow-video-attachment.md`.
+
+
+## Images UI Part 1 — 14 November 2026
+
+Images layout and presentation updates are recorded in `docs/evidence/images-ui-part1.txt`. Existing controls and state availability were reviewed against the UI inventory; focused local presentation suites passed 32/32. `npm run typecheck`, scoped ESLint, and `npm run build` passed. Local build ID: `automat-faceless-0.1.0-mwfyt4zj`. Browser visual review at the four requested viewports remains **NOT_RUN** because Chromium is unavailable and no browser surface was present. Live/provider behavior remains outside scope and **NOT_RUN**.
+
+
+## Images Part 1 layout repair — 14 November 2026
+
+Restored the bounded desktop queue-column scrollport, compact sticky active-queue region, keyboard-focusable shot list, narrow document scrolling, and aligned the Images heading with editor controls. Focused presentation tests: 33/33 PASS, including long 80-shot ready/paused/blocked/all-sent fixtures. Typecheck, scoped ESLint, build, and `git diff --check` PASS. Local build ID: `automat-faceless-0.1.0-mwg0231k`. Browser visual and wheel/trackpad/scrollbar-drag verification remains **NOT_RUN** because no browser surface or Chromium is available; details in `docs/evidence/images-ui-part1.txt`.

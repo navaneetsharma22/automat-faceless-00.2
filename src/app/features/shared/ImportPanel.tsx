@@ -999,15 +999,78 @@ export function ImportPanel({
     setFlowReadinessExportStatus("downloaded");
   };
 
+  const validateActionRow = (
+    <div className={styles.validateRow}>
+      <Button
+        type="button"
+        loading={snapshot.status === "pending"}
+        loadingLabel="Validating…"
+        disabled={snapshot.source.length === 0 || fileLoading}
+        onClick={() => session.validate()}
+      >
+        Validate &amp; Preview
+      </Button>
+      {snapshot.status === "pending" ? (
+        <span role="status" aria-live="polite">
+          Validating the complete {kind} input…
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const saveValidatedBatchRow = (
+    <div className={styles.saveRow}>
+      <Button
+        type="button"
+        disabled={
+          !currentValidation ||
+          persistenceStatus === "saving" ||
+          persistenceStatus === "loading" ||
+          exportingSavedSource
+        }
+        loading={persistenceStatus === "saving"}
+        loadingLabel="Saving…"
+        onClick={() => void saveValidatedBatch()}
+      >
+        Save validated batch
+      </Button>
+      <p role="status" aria-live="polite">
+        {newBatchNotice
+          ? "Empty draft is not saved and cannot create or start a queue. Enter JSON and validate before saving."
+          : persistenceStatus === "saving"
+            ? "Saving validated source…"
+            : persistenceStatus === "loading"
+              ? "Reading saved source…"
+              : changedSinceSave
+                ? "Unsaved changes. The current draft differs from the saved source."
+                : changedSinceValidation
+                  ? "Unsaved changes. Validate the current draft before saving."
+                  : currentValidation && savedSource === snapshot.source
+                    ? "Saved."
+                    : currentValidation
+                      ? "Validated. Save is available for this exact revision."
+                      : persistenceStatus === "saved"
+                        ? "Saved source is unchanged."
+                        : "Not saved. Validate before saving."}
+      </p>
+    </div>
+  );
+
   return (
     <div
-      className={styles.importPanel}
+      className={`${styles.importPanel} ${kind === "image" ? styles.imageImportPanel : ""}`}
       aria-busy={snapshot.status === "pending"}
     >
       <JsonEditor
         id={`${kind}-import-source`}
         editorRef={editorRef}
         label={`${label} prompt source`}
+        imageLayout={kind === "image"}
+        toolbarHeading={kind === "image" ? {
+          kicker: "IMAGE IMPORT",
+          title: "Image prompt import",
+          id: "image-input-title",
+        } : undefined}
         hint="Paste or edit one JSON prompt, numbered complete JSON blocks, or a supported versioned envelope. The source is kept as entered."
         error={snapshot.error?.message}
         value={snapshot.source}
@@ -1173,22 +1236,14 @@ export function ImportPanel({
         </div>
       ) : null}
 
-      <div className={styles.validateRow}>
-        <Button
-          type="button"
-          loading={snapshot.status === "pending"}
-          loadingLabel="Validating…"
-          disabled={snapshot.source.length === 0 || fileLoading}
-          onClick={() => session.validate()}
-        >
-          Validate &amp; Preview
-        </Button>
-        {snapshot.status === "pending" ? (
-          <span role="status" aria-live="polite">
-            Validating the complete {kind} input…
-          </span>
-        ) : null}
-      </div>
+      {kind === "image" ? (
+        <div className={styles.imageActionFooter}>
+          {validateActionRow}
+          {saveValidatedBatchRow}
+        </div>
+      ) : (
+        validateActionRow
+      )}
 
       {snapshot.status === "error" && snapshot.error ? (
         <Notice kind="error">
@@ -1336,41 +1391,7 @@ export function ImportPanel({
           </ul>
         </details>
       </details>
-      <div className={styles.saveRow}>
-        <Button
-          type="button"
-          disabled={
-            !currentValidation ||
-            persistenceStatus === "saving" ||
-            persistenceStatus === "loading" ||
-            exportingSavedSource
-          }
-          loading={persistenceStatus === "saving"}
-          loadingLabel="Saving…"
-          onClick={() => void saveValidatedBatch()}
-        >
-          Save validated batch
-        </Button>
-        <p role="status" aria-live="polite">
-          {newBatchNotice
-            ? "Empty draft is not saved and cannot create or start a queue. Enter JSON and validate before saving."
-            : persistenceStatus === "saving"
-              ? "Saving validated source…"
-              : persistenceStatus === "loading"
-                ? "Reading saved source…"
-                : changedSinceSave
-                  ? "Unsaved changes. The current draft differs from the saved source."
-                  : changedSinceValidation
-                    ? "Unsaved changes. Validate the current draft before saving."
-                    : currentValidation && savedSource === snapshot.source
-                      ? "Saved."
-                      : currentValidation
-                        ? "Validated. Save is available for this exact revision."
-                        : persistenceStatus === "saved"
-                          ? "Saved source is unchanged."
-                          : "Not saved. Validate before saving."}
-        </p>
-      </div>
+      {kind === "video" ? saveValidatedBatchRow : null}
       {kind === "image" ? (
         <details className={styles.legacyTools}>
           <summary>
