@@ -568,6 +568,9 @@ export function CompactQueueSummary({
       <div className={styles.compactHeader}>
         <div className={styles.compactMeta}>
           <span className={`${styles.stateBadge} ${badgeClass}`} role="status">
+            <span className={styles.statusGlyph} aria-hidden="true">
+              {queueStatusGlyph(status)}
+            </span>
             {status}
           </span>
           <strong className={styles.compactSent}>
@@ -798,6 +801,9 @@ export function QueueCard({
             role="status"
             aria-live="polite"
           >
+            <span className={styles.statusGlyph} aria-hidden="true">
+              {queueStatusGlyph(status)}
+            </span>
             {status}
           </span>
         </div>
@@ -1330,6 +1336,17 @@ function getPromptTitle(item: ImageQueueItem) {
 
 function shotLabel(item: ImageQueueItem) {
   return item.shotId ? `Shot ${item.shotId}` : `Prompt ${item.order + 1}`;
+}
+
+function queueStatusGlyph(status: string) {
+  const normalized = status.toLowerCase();
+  if (normalized.includes("wait")) return "◷";
+  if (normalized.includes("send")) return "↗";
+  if (normalized.includes("finish") || normalized === "sent") return "✓";
+  if (normalized.includes("paus")) return "Ⅱ";
+  if (normalized.includes("block")) return "!";
+  if (normalized.includes("stop")) return "—";
+  return "○";
 }
 
 function titleCase(value: string) {

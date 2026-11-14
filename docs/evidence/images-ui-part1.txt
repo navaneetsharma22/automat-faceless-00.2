@@ -52,3 +52,13 @@ The Images import panel now has a separate scrolling content region and a non-ov
 Focused mock coverage: 34/34 PASS. Empty and populated queue headings retain the interval label; empty source keeps Save disabled; action buttons share the footer; long ready/paused/blocked/all-sent lists retain all 80 rows including Shot 80. Typecheck and scoped ESLint PASS. Local build PASS; ID `automat-faceless-0.1.0-mwg0np1h`. Existing large dashboard chunk and connector `inlineDynamicImports` warnings remain.
 
 Actual rendered verification at 1920×1080, 1366×768, and narrow widths remains **NOT_RUN**. CUA reported no browser/app surfaces, and Chromium is not installed. No current screenshots or mouse-wheel/trackpad/scrollbar-drag observations are claimed. Source and mock verification only; live/provider actions were not performed.
+
+## Images UI Part 2 — premium static visual design
+
+Date: 14 November 2026
+
+Added Images-scoped visual polish using the existing cream/maroon and black/lime semantic tokens: layered card/editor surfaces, restrained accent gradients, clearer helper/technical typography, refined file and JSON editor treatments, a separated import toolbar and action footer, polished queue/settings/countdown/summary cards, wider sent-count presentation, and a subtle current-shot accent. Queue status badges now pair readable labels with state glyphs; Sent, Pending, Waiting, Paused, Blocked, and Stopped retain distinct semantic colors and icons. Focus styling, disabled tokens, Part 1 scroll regions, sticky offsets, footer clearance, and feature handlers remain intact. No processing animations or toast behavior were added.
+
+Focused local tests: **43/43 PASS** across `imagesPresentation.test.tsx`, `imageQueuePresentation.test.tsx`, and shared controls. Fixtures cover empty/validated source, long JSON preservation, empty/populated queue headings, ready, waiting, paused, blocked, stopped, all-sent, and an 80-shot list through Shot 80. Typecheck and scoped TypeScript ESLint pass. Local build: `automat-faceless-0.1.0-mwg173p6`; existing dashboard chunk-size and connector `inlineDynamicImports` warnings remain. `git diff --check` pass.
+
+Rendered review of light/dark themes at 1920×1080, 1366×768, and 390×844 is **NOT_RUN**: CUA has no browser/app surfaces and Playwright Chromium is unavailable. Contrast and focus were reviewed against semantic token definitions in source; actual rendered contrast, focus rings, sticky/footer geometry, and screenshot QA remain unverified. No provider actions occurred.

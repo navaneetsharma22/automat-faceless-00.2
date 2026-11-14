@@ -171,6 +171,9 @@
 .imageEditor {
   min-height: clamp(18rem, 34vh, 30rem);
   max-height: min(58vh, 38rem);
+  border-color: color-mix(in srgb, var(--color-border-strong) 75%, var(--color-accent));
+  background: var(--color-surface-overlay);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--color-text) 5%, transparent);
 }
 
 .editorWrapped {

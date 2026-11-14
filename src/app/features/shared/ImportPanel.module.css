@@ -26,9 +26,11 @@
   justify-content: start;
   gap: var(--space-1) var(--space-2);
   padding: var(--space-2);
-  border: 1px solid var(--color-border);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
   border-radius: var(--radius-control);
-  background: var(--color-surface);
+  background:
+    radial-gradient(ellipse at top left, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent 70%),
+    var(--color-surface);
 }
 
 .imageActionFooter .saveRow {
@@ -39,6 +41,87 @@
 
 .imageActionFooter .saveRow > p {
   grid-column: 1 / -1;
+}
+
+.imageImportPanel .subtleText {
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-body);
+}
+
+.imageImportPanel .sourceHelper {
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-sm);
+}
+
+.imageImportPanel .sourceToolbar {
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, var(--color-accent));
+  border-radius: var(--radius-card-compact);
+  background: color-mix(in srgb, var(--color-surface-raised) 94%, var(--color-accent));
+}
+
+.imageImportPanel .sourceToolbarButtons > button,
+.imageImportPanel .imageActionFooter button {
+  border-radius: var(--radius-control);
+  font-weight: 700;
+}
+
+.imageImportPanel .imageEditorHeading h2 {
+  color: var(--color-text);
+}
+
+.imageImportPanel .imageEditorHeading p {
+  color: var(--color-accent);
+}
+
+.imageImportPanel .fileInput {
+  border-color: color-mix(in srgb, var(--color-border-strong) 78%, var(--color-accent));
+  background: var(--color-surface-raised);
+}
+
+.imageImportPanel .fileInput:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.imageImportPanel .importResult {
+  border-color: color-mix(in srgb, var(--color-accent) 25%, var(--color-border));
+  background:
+    radial-gradient(ellipse at top left, color-mix(in srgb, var(--color-accent) 4%, transparent), transparent 70%),
+    var(--color-surface-raised);
+}
+
+.imageImportPanel .importItem {
+  border-color: color-mix(in srgb, var(--color-border) 84%, var(--color-accent));
+  background: var(--color-surface);
+}
+
+.imageImportPanel .rawPreview {
+  border-color: color-mix(in srgb, var(--color-border-strong) 75%, var(--color-accent));
+  background: var(--color-surface-overlay);
+  line-height: var(--line-height-body);
+}
+
+.imageImportPanel .technicalDetails,
+.imageImportPanel .policyDetails {
+  border-color: color-mix(in srgb, var(--color-border) 84%, var(--color-accent));
+}
+
+.imageImportPanel .technicalDetails > dl div {
+  line-height: var(--line-height-body);
+}
+
+.imageImportPanel .imageEditor:focus-visible {
+  border-color: var(--color-focus);
+  box-shadow: var(--shadow-focus);
+}
+
+:global([data-theme="dark"]) .imageImportPanel .imageActionFooter,
+:global([data-theme="dark"]) .imageImportPanel .importResult {
+  background:
+    radial-gradient(ellipse at top right, color-mix(in srgb, var(--color-info) 4%, transparent), transparent 72%),
+    radial-gradient(ellipse at bottom left, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent 72%),
+    var(--color-surface);
 }
 
 .subtleText {
@@ -458,6 +541,11 @@
     flex: 0 0 auto;
     margin: 0;
     box-shadow: var(--shadow-card);
+  }
+
+  .imageImportPanel .fileInput {
+    min-height: 3rem;
+    padding: var(--space-2) var(--space-3);
   }
 }
 

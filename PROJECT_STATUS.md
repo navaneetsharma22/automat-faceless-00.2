@@ -2406,3 +2406,8 @@ Restored the bounded desktop queue-column scrollport, compact sticky active-queu
 ## Images Part 1 final presentation correction — 14 November 2026
 
 Added the compact opaque queue title/interval sticky header with wrapping interval text and a separately offset active queue header. Images now has a reserved bottom action footer for Validate & Preview and Save validated batch, separate from its scrolling form content; Videos action placement is preserved. Focused fixtures: 34/34 PASS; typecheck, scoped ESLint, and build PASS. Local build ID: `automat-faceless-0.1.0-mwg0np1h`. Rendered screenshot/input verification at desktop and narrow viewports remains **NOT_RUN** because no browser surface or Chromium is available; see `docs/evidence/images-ui-part1.txt`.
+
+
+## Images UI Part 2 — premium static visual design — 14 November 2026
+
+Added Images-scoped surface, accent, typography, status-icon, queue-card, editor, import, and summary styling with existing theme tokens. Feature behavior and Part 1 scrolling/footer layouts remain unchanged. Focused tests: 43/43 PASS; typecheck, scoped TypeScript ESLint, build, and `git diff --check` pass. Local build ID: `automat-faceless-0.1.0-mwg173p6`. Actual theme/viewport rendered review remains **NOT_RUN** because no browser surface or Chromium is available; see `docs/evidence/images-ui-part1.txt`.

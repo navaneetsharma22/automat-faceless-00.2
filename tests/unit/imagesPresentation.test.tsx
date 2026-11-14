@@ -223,6 +223,7 @@ describe("Images UI Part 1 presentation improvements", () => {
     expect(stickyHeader!.textContent).toContain("1 / 2");
     expect(stickyHeader!.textContent).toContain("Prompts sent");
     expect(stickyHeader!.textContent).toContain("Waiting");
+    expect(stickyHeader!.querySelector('[class*="statusGlyph"]')?.textContent).toBe("◷");
 
     // WaitingClock countdown
     const timer = stickyHeader!.querySelector('[role="timer"]');
@@ -342,6 +343,7 @@ describe("Images UI Part 1 presentation improvements", () => {
         items: longItems.map((item, index) => index === 0 ? { ...item, itemState: "blocked" as const, blockReason: "target_changed" } : item),
         nextEligibleDispatchAt: null,
       }),
+      makeQueueFixture({ state: "stopped", items: longItems, nextEligibleDispatchAt: null }),
       makeQueueFixture({
         state: "sent",
         items: longItems.map((item) => ({
@@ -370,6 +372,15 @@ describe("Images UI Part 1 presentation improvements", () => {
       const list = container!.querySelector('[aria-label="Prompt queue"]') as HTMLOListElement;
       expect(sticky).not.toBeNull();
       expect(sticky!.textContent).toContain("80");
+      const expectedGlyph: Record<ImageSubmissionQueueRecord["state"], string> = {
+        ready: "○",
+        waiting: "◷",
+        paused: "Ⅱ",
+        blocked: "!",
+        stopped: "—",
+        sent: "✓",
+      };
+      expect(sticky!.querySelector('[class*="statusGlyph"]')?.textContent).toBe(expectedGlyph[fixture.state]);
       expect(list).not.toBeNull();
       expect(list.tabIndex).toBe(0);
       expect(list.querySelectorAll("li")).toHaveLength(80);
