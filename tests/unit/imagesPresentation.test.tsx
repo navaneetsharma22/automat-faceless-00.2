@@ -173,6 +173,9 @@ describe("Images UI Part 1 presentation improvements", () => {
     expect(saveButton).toBeDefined();
     expect(saveButton?.disabled).toBe(true);
     expect(saveButton!.closest('[class*="imageActionFooter"]')).not.toBeNull();
+    const content = container!.querySelector('[class*="imageImportContent"]');
+    expect(content).not.toBeNull();
+    expect(content!.nextElementSibling).toBe(saveButton!.closest('[class*="imageActionFooter"]'));
   });
 
   it("keeps the queue title and interval label together for empty and populated queue panels", async () => {

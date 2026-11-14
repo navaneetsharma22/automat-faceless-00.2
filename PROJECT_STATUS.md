@@ -2401,3 +2401,8 @@ Images layout and presentation updates are recorded in `docs/evidence/images-ui-
 ## Images Part 1 layout repair — 14 November 2026
 
 Restored the bounded desktop queue-column scrollport, compact sticky active-queue region, keyboard-focusable shot list, narrow document scrolling, and aligned the Images heading with editor controls. Focused presentation tests: 33/33 PASS, including long 80-shot ready/paused/blocked/all-sent fixtures. Typecheck, scoped ESLint, build, and `git diff --check` PASS. Local build ID: `automat-faceless-0.1.0-mwg0231k`. Browser visual and wheel/trackpad/scrollbar-drag verification remains **NOT_RUN** because no browser surface or Chromium is available; details in `docs/evidence/images-ui-part1.txt`.
+
+
+## Images Part 1 final presentation correction — 14 November 2026
+
+Added the compact opaque queue title/interval sticky header with wrapping interval text and a separately offset active queue header. Images now has a reserved bottom action footer for Validate & Preview and Save validated batch, separate from its scrolling form content; Videos action placement is preserved. Focused fixtures: 34/34 PASS; typecheck, scoped ESLint, and build PASS. Local build ID: `automat-faceless-0.1.0-mwg0np1h`. Rendered screenshot/input verification at desktop and narrow viewports remains **NOT_RUN** because no browser surface or Chromium is available; see `docs/evidence/images-ui-part1.txt`.

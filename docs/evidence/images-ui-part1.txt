@@ -40,3 +40,15 @@ Restored the desktop right-column bounded scrollport (`min-height: 0`, `min-widt
 Fixture verification: 33/33 focused presentation tests pass, including ready, paused, blocked, all-sent, 80-shot final-item presence, active controls, and keyboard focus on the queue list. Typecheck, scoped ESLint, build, and `git diff --check` pass. Local build ID: `automat-faceless-0.1.0-mwg0231k`.
 
 Actual visual/input verification remains NOT_RUN: this environment has no browser/app surface and no installed Playwright Chromium. Therefore mouse wheel, trackpad, scrollbar dragging, light/dark screenshots at 1920×1080, 1366×768, and narrow widths, and rendered overlap/reachability cannot be claimed from this session. No provider actions were performed.
+
+## Final presentation correction — sticky queue heading and validation footer
+
+Date: 14 November 2026
+
+The right-column queue title and “40 seconds between prompts” label now share one compact header with wrapping interval text. The heading is an opaque sticky band. The active queue status/actions stick below it at a fixed offset, and the active header is contained inside its card so its negative margins cannot clip at the right-column scroll boundary.
+
+The Images import panel now has a separate scrolling content region and a non-overlapping action footer at the bottom of the desktop editor panel. Validate & Preview and Save validated batch remain together; the existing validation and save handlers, disabled conditions, and status copy are unchanged. The footer is a reserved layout row, not a floating overlay. Videos retains its previous validation/save placement.
+
+Focused mock coverage: 34/34 PASS. Empty and populated queue headings retain the interval label; empty source keeps Save disabled; action buttons share the footer; long ready/paused/blocked/all-sent lists retain all 80 rows including Shot 80. Typecheck and scoped ESLint PASS. Local build PASS; ID `automat-faceless-0.1.0-mwg0np1h`. Existing large dashboard chunk and connector `inlineDynamicImports` warnings remain.
+
+Actual rendered verification at 1920×1080, 1366×768, and narrow widths remains **NOT_RUN**. CUA reported no browser/app surfaces, and Chromium is not installed. No current screenshots or mouse-wheel/trackpad/scrollbar-drag observations are claimed. Source and mock verification only; live/provider actions were not performed.

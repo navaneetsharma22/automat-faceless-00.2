@@ -1061,6 +1061,10 @@ export function ImportPanel({
       className={`${styles.importPanel} ${kind === "image" ? styles.imageImportPanel : ""}`}
       aria-busy={snapshot.status === "pending"}
     >
+      <div
+        className={styles.imageImportContent}
+        aria-label={kind === "image" ? "Image source and preview content" : undefined}
+      >
       <JsonEditor
         id={`${kind}-import-source`}
         editorRef={editorRef}
@@ -1236,14 +1240,7 @@ export function ImportPanel({
         </div>
       ) : null}
 
-      {kind === "image" ? (
-        <div className={styles.imageActionFooter}>
-          {validateActionRow}
-          {saveValidatedBatchRow}
-        </div>
-      ) : (
-        validateActionRow
-      )}
+      {kind === "video" ? validateActionRow : null}
 
       {snapshot.status === "error" && snapshot.error ? (
         <Notice kind="error">
@@ -1827,6 +1824,13 @@ export function ImportPanel({
             ) : null}
           </div>
         </details>
+      ) : null}
+      </div>
+      {kind === "image" ? (
+        <div className={styles.imageActionFooter}>
+          {validateActionRow}
+          {saveValidatedBatchRow}
+        </div>
       ) : null}
     </div>
   );

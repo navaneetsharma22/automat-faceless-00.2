@@ -5,7 +5,18 @@
 }
 
 .imageImportPanel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow: hidden;
   min-width: 0;
+}
+
+.imageImportContent {
+  display: contents;
 }
 
 .imageActionFooter {
@@ -429,16 +440,24 @@
 }
 
 @media (min-width: 1081px) {
-  .imageActionFooter {
-    position: sticky;
-    bottom: 0;
-    z-index: 8;
-    margin-block: var(--space-1);
-    box-shadow: 0 -8px 16px color-mix(in srgb, var(--color-page) 92%, transparent);
+  .imageImportPanel > .imageImportContent {
+    display: flex;
+    min-height: 0;
+    min-width: 0;
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: var(--space-4);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    padding-block-end: var(--space-2);
   }
 
-  .imageImportPanel {
-    padding-block-end: 5rem;
+  .imageActionFooter {
+    position: static;
+    flex: 0 0 auto;
+    margin: 0;
+    box-shadow: var(--shadow-card);
   }
 }
 
