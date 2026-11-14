@@ -116,7 +116,25 @@ test("waiting queue countdown stays read-only and renders in both themes and vie
             protocolVersion: request.protocolVersion,
             buildId: request.buildId,
             requestId: request.requestId,
-            data: request.type === "imageQueue.list" ? [fixture] : null,
+            data:
+              request.type === "imageQueue.list"
+                ? [fixture]
+                : request.type === "flow.downloadDiagnostic.get"
+                  ? { status: "idle" }
+                  : request.type === "flow.projectVideos.import.get"
+                    ? {
+                        status: "idle",
+                        discovered: 0,
+                        imported: 0,
+                        alreadyPresent: 0,
+                        unresolved: 0,
+                        scanCompleteness: "pending",
+                        cancelRequested: false,
+                        unresolvedCards: [],
+                      }
+                  : request.type === "flow.clipImport.list"
+                    ? []
+                    : null,
           });
         },
       };
