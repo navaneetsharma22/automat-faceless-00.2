@@ -1,4 +1,4 @@
-﻿# Images UI Part 1 evidence
+# Images UI Part 1 evidence
 
 Date: 14 November 2026
 
@@ -62,3 +62,26 @@ Added Images-scoped visual polish using the existing cream/maroon and black/lime
 Focused local tests: **43/43 PASS** across `imagesPresentation.test.tsx`, `imageQueuePresentation.test.tsx`, and shared controls. Fixtures cover empty/validated source, long JSON preservation, empty/populated queue headings, ready, waiting, paused, blocked, stopped, all-sent, and an 80-shot list through Shot 80. Typecheck and scoped TypeScript ESLint pass. Local build: `automat-faceless-0.1.0-mwg173p6`; existing dashboard chunk-size and connector `inlineDynamicImports` warnings remain. `git diff --check` pass.
 
 Rendered review of light/dark themes at 1920×1080, 1366×768, and 390×844 is **NOT_RUN**: CUA has no browser/app surfaces and Playwright Chromium is unavailable. Contrast and focus were reviewed against semantic token definitions in source; actual rendered contrast, focus rings, sticky/footer geometry, and screenshot QA remain unverified. No provider actions occurred.
+
+## Images UI Part 3 — processing motion and toast feedback
+
+Date: 14 November 2026
+
+Added Images-only hover/press feedback, queue/import loading edge accents, a restrained waiting countdown treatment, and a current-shot pulse only while the persisted item state is `sending`. Reduced-motion rules remove movement and use a static loading gradient. Queue command buttons and the import action footer reserve stable widths while their existing loading labels are shown. Sent and batch notifications are informational status announcements; they do not claim provider completion.
+
+The existing Images control inventory was retained: JSON file load, New batch, Load saved batch and its replacement confirmation, Export saved source, Wrap lines, Expand editor, Validate & Preview, Save validated batch, preview/raw-source and technical evidence access; queue creation under existing settings confirmation; Start, Pause, Resume, Stop, blocked read-only inspection, guarded retry, clear confirmation, details expand/collapse, history expansion/pagination, and per-shot evidence. Existing ready, waiting, sending, sent, paused, blocked, stopped, uncertainty, and all-sent displays remain driven by saved state. The UI control handlers/eligibility rules and underlying import, queue, timing, receipt, recovery, and connection code were not changed.
+
+Queue notifications baseline the first valid read (including reload), then compare later queue revisions. Item notices require a new `itemState: sent` record with its persisted dispatch receipt and use the real Shot ID; batch notices require all items in that same queue to satisfy the same rule. Queue ID, queue-item ID, and attempt ID are used for per-item identity; the batch key includes queue ID and the item attempt set. The shared toast manager keeps its existing default message de-duplication behavior; an optional identity field lets identical copy from distinct attempts/batches remain distinct. The toast stack retains its existing four-item bound. Successful Image batch saving reports only after verified storage readback. Validation failures and actionable inline errors remain unchanged.
+
+Focused test suites: **37/37 PASS** (`imagesPresentation.test.tsx`, `imageQueuePresentation.test.tsx`), including first-read/reload baseline, non-sequential Shot IDs, multiple newly sent items in order, one batch notice, repeated snapshots/remount history, and blocked/uncertain no-notice behavior. Typecheck and scoped ESLint PASS. Local production build PASS: `automat-faceless-0.1.0-mwg1zh7a`. `git diff --check` PASS. Existing >500 kB dashboard chunk and connector `inlineDynamicImports` warnings remain.
+
+Rendered screenshots and live animation/reduced-motion/keyboard-audio checks are **NOT_RUN**. No browser surface is available and Playwright Chromium is not installed in this environment. Therefore light/dark screenshots, actual animation timing, toast live-region behavior in a screen reader, and responsive rendered geometry are not claimed. Source/mock checks only; no Flow/Vids provider actions were performed.
+## Images right-column order update — 14 November 2026
+
+When the exact current saved source already has a queue, the existing keyed queue card now appears immediately after the Image queue heading/interval and before the current-source/settings/create card. Its existing current-batch context label is retained inside the queue card. When there is no exact-source queue, the create/setup card remains first. Previous operational queues and terminal history remain after setup; the parent Images layout still places the validated Source summary after the queue panel.
+
+The current queue card is rendered once and keyed by queue ID. The setup card has a stable key across insertion of a loaded queue, preserving manually focused settings controls. No scrollIntoView or positional overlay was introduced. Queue state selection, actions, deadlines/countdowns, list scroll, receipt/notification logic, and sticky/list CSS are unchanged.
+
+Mock fixture review in both `data-theme="light"` and `data-theme="dark"` wrappers covers empty, ready, waiting, paused, blocked, and all-sent states. DOM checks confirm the active queue precedes setup, the empty state keeps setup first, the waiting countdown and applicable controls are within the queue card, the final shot remains rendered, and prior queue history follows setup. Polling regression confirms stable settings control, queue list node, focus, scrollTop, countdown node/timer interval count, and no duplicate toast on unchanged receipt state. Focused suites: **39/39 PASS**. Typecheck, scoped ESLint, build, and `git diff --check` PASS. Build ID: `automat-faceless-0.1.0-mwg2dl4j`. Existing dashboard chunk-size and connector `inlineDynamicImports` warnings remain.
+
+Actual browser screenshots/rendered theme review remains **NOT_RUN** because this environment has no browser/app surface and Playwright Chromium is unavailable. Theme wrappers and fixture state assertions are DOM mocks; no visual pixel review is claimed.

@@ -6,6 +6,55 @@
   padding-block: 0 var(--space-4);
 }
 
+.progress button {
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.progress button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.progress button:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.progress button[aria-busy="true"] {
+  position: relative;
+  isolation: isolate;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.progress button[aria-busy="true"]::after {
+  position: absolute;
+  z-index: -1;
+  inset: -2px;
+  border-radius: inherit;
+  background: linear-gradient(100deg, #b44168, #8050a6, #3e82b9, #b44168);
+  background-size: 220% 100%;
+  content: "";
+  animation: imageBusyEdge 2.6s linear infinite;
+}
+
+:global([data-theme="dark"]) .progress button[aria-busy="true"]::after {
+  background: linear-gradient(100deg, #b8f34a, #32d6cc, #9a70e8, #b8f34a);
+  background-size: 220% 100%;
+}
+
+.actionRow > button {
+  inline-size: 12rem;
+  max-inline-size: 100%;
+}
+
+@keyframes imageBusyEdge {
+  to {
+    background-position: 220% 0;
+  }
+}
+
 .header,
 .queueHeader,
 .actionRow {
@@ -82,10 +131,15 @@
   min-width: 0;
   gap: var(--space-3);
   padding: var(--space-4);
-  border: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-accent));
+  border: 1px solid
+    color-mix(in srgb, var(--color-border) 82%, var(--color-accent));
   border-radius: var(--radius-card);
   background:
-    radial-gradient(ellipse at top left, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent 62%),
+    radial-gradient(
+      ellipse at top left,
+      color-mix(in srgb, var(--color-accent) 5%, transparent),
+      transparent 62%
+    ),
     linear-gradient(145deg, var(--color-surface), var(--color-surface-raised));
   box-shadow: var(--shadow-card);
 }
@@ -96,7 +150,8 @@
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
   margin: calc(var(--space-4) * -1) calc(var(--space-4) * -1) var(--space-2);
-  border-block-end: 1px solid color-mix(in srgb, var(--color-border) 75%, var(--color-accent));
+  border-block-end: 1px solid
+    color-mix(in srgb, var(--color-border) 75%, var(--color-accent));
   border-top-left-radius: calc(var(--radius-card) - 1px);
   border-top-right-radius: calc(var(--radius-card) - 1px);
   background: linear-gradient(
@@ -118,16 +173,25 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-control);
     background:
-      radial-gradient(ellipse at top left, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent 75%),
+      radial-gradient(
+        ellipse at top left,
+        color-mix(in srgb, var(--color-accent) 5%, transparent),
+        transparent 75%
+      ),
       var(--color-surface);
   }
 
   .progress > .header .interval {
     max-width: 12rem;
     padding: var(--space-1) var(--space-2);
-    border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+    border: 1px solid
+      color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
     border-radius: var(--radius-control);
-    background: color-mix(in srgb, var(--color-surface-raised) 92%, var(--color-accent));
+    background: color-mix(
+      in srgb,
+      var(--color-surface-raised) 92%,
+      var(--color-accent)
+    );
     text-align: end;
   }
 
@@ -294,7 +358,8 @@
   align-content: start;
   gap: 2px;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--color-border) 78%, var(--color-accent));
+  border: 1px solid
+    color-mix(in srgb, var(--color-border) 78%, var(--color-accent));
   border-radius: var(--radius-card-compact);
   background: color-mix(in srgb, var(--color-surface) 96%, var(--color-accent));
 }
@@ -330,7 +395,8 @@
   display: grid;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--color-info) 38%, var(--color-border));
+  border: 1px solid
+    color-mix(in srgb, var(--color-info) 38%, var(--color-border));
   border-radius: var(--radius-card-compact);
   background: var(--color-surface-raised);
 }
@@ -361,6 +427,13 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
   line-height: 1.2;
+  animation: waitingCountdown 2.4s ease-in-out infinite;
+}
+
+@keyframes waitingCountdown {
+  50% {
+    opacity: 0.78;
+  }
 }
 
 .waitingTrack {
@@ -407,6 +480,13 @@
   border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 900ms linear infinite;
+}
+
+.queue[data-state="paused"] .spinner,
+.queue[data-state="blocked"] .spinner,
+.queue[data-state="stopped"] .spinner,
+.queue[data-state="sent"] .spinner {
+  animation: none;
 }
 
 .actionRow {
@@ -498,7 +578,8 @@
   display: grid;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--color-border) 78%, var(--color-info));
+  border: 1px solid
+    color-mix(in srgb, var(--color-border) 78%, var(--color-info));
   border-radius: var(--radius-control);
   background: var(--color-surface-raised);
 }
@@ -515,14 +596,26 @@
 :global([data-theme="dark"]) .createCard,
 :global([data-theme="dark"]) .queue {
   background:
-    radial-gradient(ellipse at top right, color-mix(in srgb, var(--color-info) 5%, transparent), transparent 56%),
-    radial-gradient(ellipse at bottom left, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 66%),
+    radial-gradient(
+      ellipse at top right,
+      color-mix(in srgb, var(--color-info) 5%, transparent),
+      transparent 56%
+    ),
+    radial-gradient(
+      ellipse at bottom left,
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      transparent 66%
+    ),
     linear-gradient(145deg, var(--color-surface), var(--color-surface-raised));
 }
 
 :global([data-theme="dark"]) .progress > .header {
   background:
-    radial-gradient(ellipse at top right, color-mix(in srgb, var(--color-info) 5%, transparent), transparent 72%),
+    radial-gradient(
+      ellipse at top right,
+      color-mix(in srgb, var(--color-info) 5%, transparent),
+      transparent 72%
+    ),
     var(--color-surface);
 }
 
@@ -589,7 +682,8 @@
     color-mix(in srgb, var(--color-accent) 7%, var(--color-surface)),
     var(--color-surface-raised)
   );
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 65%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--color-accent) 65%, transparent);
 }
 
 .itemIcon {
@@ -607,6 +701,17 @@
 .itemActive .itemIcon {
   background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
   color: var(--color-accent);
+}
+
+.itemProcessing {
+  animation: currentShotPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes currentShotPulse {
+  50% {
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--color-info) 35%, transparent);
+  }
 }
 
 .itemIdentity {
@@ -711,6 +816,23 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .progress button,
+  .itemProcessing,
+  .countdown {
+    animation: none;
+    transition: none;
+  }
+
+  .progress button[aria-busy="true"]::after {
+    animation: none;
+    background-position: 50% 0;
+  }
+
+  .progress button:hover:not(:disabled),
+  .progress button:active:not(:disabled) {
+    transform: none;
+  }
+
   .spinner {
     animation: none;
   }

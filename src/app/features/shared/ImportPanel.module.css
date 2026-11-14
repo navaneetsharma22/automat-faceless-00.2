@@ -15,6 +15,54 @@
   min-width: 0;
 }
 
+.imageImportPanel button {
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.imageImportPanel button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.imageImportPanel button:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.imageImportPanel button[aria-busy="true"] {
+  position: relative;
+  isolation: isolate;
+}
+
+.imageImportPanel button[aria-busy="true"]::after {
+  position: absolute;
+  z-index: -1;
+  inset: -2px;
+  border-radius: inherit;
+  background: linear-gradient(100deg, #b44168, #8050a6, #3e82b9, #b44168);
+  background-size: 220% 100%;
+  content: "";
+  animation: imageBusyEdge 2.6s linear infinite;
+}
+
+:global([data-theme="dark"]) .imageImportPanel button[aria-busy="true"]::after {
+  background: linear-gradient(100deg, #b8f34a, #32d6cc, #9a70e8, #b8f34a);
+  background-size: 220% 100%;
+}
+
+.imageActionFooter button {
+  inline-size: 13rem;
+  max-inline-size: 100%;
+}
+
+@keyframes imageBusyEdge {
+  to {
+    background-position: 220% 0;
+  }
+}
+
 .imageImportContent {
   display: contents;
 }
@@ -26,10 +74,15 @@
   justify-content: start;
   gap: var(--space-1) var(--space-2);
   padding: var(--space-2);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
   border-radius: var(--radius-control);
   background:
-    radial-gradient(ellipse at top left, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent 70%),
+    radial-gradient(
+      ellipse at top left,
+      color-mix(in srgb, var(--color-accent) 5%, transparent),
+      transparent 70%
+    ),
     var(--color-surface);
 }
 
@@ -56,9 +109,14 @@
 
 .imageImportPanel .sourceToolbar {
   padding: var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--color-border) 86%, var(--color-accent));
+  border: 1px solid
+    color-mix(in srgb, var(--color-border) 86%, var(--color-accent));
   border-radius: var(--radius-card-compact);
-  background: color-mix(in srgb, var(--color-surface-raised) 94%, var(--color-accent));
+  background: color-mix(
+    in srgb,
+    var(--color-surface-raised) 94%,
+    var(--color-accent)
+  );
 }
 
 .imageImportPanel .sourceToolbarButtons > button,
@@ -76,7 +134,11 @@
 }
 
 .imageImportPanel .fileInput {
-  border-color: color-mix(in srgb, var(--color-border-strong) 78%, var(--color-accent));
+  border-color: color-mix(
+    in srgb,
+    var(--color-border-strong) 78%,
+    var(--color-accent)
+  );
   background: var(--color-surface-raised);
 }
 
@@ -85,26 +147,46 @@
 }
 
 .imageImportPanel .importResult {
-  border-color: color-mix(in srgb, var(--color-accent) 25%, var(--color-border));
+  border-color: color-mix(
+    in srgb,
+    var(--color-accent) 25%,
+    var(--color-border)
+  );
   background:
-    radial-gradient(ellipse at top left, color-mix(in srgb, var(--color-accent) 4%, transparent), transparent 70%),
+    radial-gradient(
+      ellipse at top left,
+      color-mix(in srgb, var(--color-accent) 4%, transparent),
+      transparent 70%
+    ),
     var(--color-surface-raised);
 }
 
 .imageImportPanel .importItem {
-  border-color: color-mix(in srgb, var(--color-border) 84%, var(--color-accent));
+  border-color: color-mix(
+    in srgb,
+    var(--color-border) 84%,
+    var(--color-accent)
+  );
   background: var(--color-surface);
 }
 
 .imageImportPanel .rawPreview {
-  border-color: color-mix(in srgb, var(--color-border-strong) 75%, var(--color-accent));
+  border-color: color-mix(
+    in srgb,
+    var(--color-border-strong) 75%,
+    var(--color-accent)
+  );
   background: var(--color-surface-overlay);
   line-height: var(--line-height-body);
 }
 
 .imageImportPanel .technicalDetails,
 .imageImportPanel .policyDetails {
-  border-color: color-mix(in srgb, var(--color-border) 84%, var(--color-accent));
+  border-color: color-mix(
+    in srgb,
+    var(--color-border) 84%,
+    var(--color-accent)
+  );
 }
 
 .imageImportPanel .technicalDetails > dl div {
@@ -119,8 +201,16 @@
 :global([data-theme="dark"]) .imageImportPanel .imageActionFooter,
 :global([data-theme="dark"]) .imageImportPanel .importResult {
   background:
-    radial-gradient(ellipse at top right, color-mix(in srgb, var(--color-info) 4%, transparent), transparent 72%),
-    radial-gradient(ellipse at bottom left, color-mix(in srgb, var(--color-accent) 5%, transparent), transparent 72%),
+    radial-gradient(
+      ellipse at top right,
+      color-mix(in srgb, var(--color-info) 4%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse at bottom left,
+      color-mix(in srgb, var(--color-accent) 5%, transparent),
+      transparent 72%
+    ),
     var(--color-surface);
 }
 
@@ -519,6 +609,23 @@
 
   .importResult {
     padding: var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .imageImportPanel button,
+  .imageImportPanel button[aria-busy="true"]::after {
+    animation: none;
+    transition: none;
+  }
+
+  .imageImportPanel button[aria-busy="true"]::after {
+    background-position: 50% 0;
+  }
+
+  .imageImportPanel button:hover:not(:disabled),
+  .imageImportPanel button:active:not(:disabled) {
+    transform: none;
   }
 }
 

@@ -1,7 +1,7 @@
 import type { ToastRequest } from "../../components/toastManager";
 import type { ImageSubmissionQueueRecord } from "../../../domain/jobs/queue";
 
-type ItemSnapshot = { sent: boolean; attemptId?: string };
+type ItemSnapshot = { sent: boolean };
 type QueueSnapshot = {
   revision: number;
   items: Map<string, ItemSnapshot>;
@@ -25,21 +25,26 @@ export class ImageQueueNotificationTracker {
       if (queue.revision <= previous.revision) continue;
 
       for (const item of queue.items) {
-        if (!isSent(item)) continue;
+        const receipt = item.dispatchReceipt;
+        if (item.itemState !== "sent" || !receipt) continue;
         const prior = previous.items.get(item.queueItemId);
-        const attemptId = item.dispatchReceipt.attemptId;
+        const attemptId = receipt.attemptId;
         const key = `${queue.queueId}\u0000${item.queueItemId}\u0000${attemptId}`;
         if (prior?.sent || this.notifiedItems.has(key)) continue;
         this.notifiedItems.add(key);
         notices.push({
           kind: "info",
           message: `Image prompt ${item.shotId ?? `Prompt ${item.order + 1}`} sent`,
+          dedupeKey: `image-sent:${key}`,
         });
       }
 
       const current = snapshot(queue);
       const batchAttemptKey = queue.items
-        .map((item) => `${item.queueItemId}:${item.dispatchReceipt?.attemptId ?? "pending"}`)
+        .map(
+          (item) =>
+            `${item.queueItemId}:${item.dispatchReceipt?.attemptId ?? "pending"}`,
+        )
         .join(",");
       const batchKey = `${queue.queueId}\u0000${batchAttemptKey}`;
       if (
@@ -51,6 +56,7 @@ export class ImageQueueNotificationTracker {
         notices.push({
           kind: "info",
           message: `All ${queue.items.length} image prompts sent`,
+          dedupeKey: `image-batch-sent:${batchKey}`,
         });
       }
       this.snapshots.set(queue.queueId, current);
@@ -68,7 +74,6 @@ function snapshot(queue: ImageSubmissionQueueRecord): QueueSnapshot {
   for (const item of queue.items) {
     items.set(item.queueItemId, {
       sent: isSent(item),
-      attemptId: item.dispatchReceipt?.attemptId,
     });
   }
   return {
@@ -78,4 +83,5 @@ function snapshot(queue: ImageSubmissionQueueRecord): QueueSnapshot {
   };
 }
 
-export const imageQueueNotificationTracker = new ImageQueueNotificationTracker();
+export const imageQueueNotificationTracker =
+  new ImageQueueNotificationTracker();

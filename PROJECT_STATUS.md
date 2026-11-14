@@ -1,4 +1,4 @@
-﻿# Project Status ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Fresh Build
+# Project Status ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Fresh Build
 
 Baseline: 28 October 2026.
 
@@ -2411,3 +2411,18 @@ Added the compact opaque queue title/interval sticky header with wrapping interv
 ## Images UI Part 2 — premium static visual design — 14 November 2026
 
 Added Images-scoped surface, accent, typography, status-icon, queue-card, editor, import, and summary styling with existing theme tokens. Feature behavior and Part 1 scrolling/footer layouts remain unchanged. Focused tests: 43/43 PASS; typecheck, scoped TypeScript ESLint, build, and `git diff --check` pass. Local build ID: `automat-faceless-0.1.0-mwg173p6`. Actual theme/viewport rendered review remains **NOT_RUN** because no browser surface or Chromium is available; see `docs/evidence/images-ui-part1.txt`.
+
+## Images UI Part 3 — processing motion and toast feedback — 14 November 2026
+
+Added scoped Images button hover/press feedback, multicolor loading edges with stable action widths, waiting countdown and active `sending` shot treatments, and reduced-motion fallbacks. Queue polling now compares persisted queue revisions against a page-lifetime baseline and emits informational per-shot notices only for new Sent records with durable dispatch receipts, followed by one all-sent notice per queue/attempt set. Initial reads/reloads establish a silent baseline. Saved Image batch success feedback follows exact readback verification. Toasts keep prompt/credential/URL content out of their copy and use queue/attempt-specific identities without changing the shared manager's default behavior. Existing Image controls, handlers, availability rules, prompt/saved data, queue workflow, receipts, recovery, provider bindings, and other workspace styling remain intact.
+
+Existing Images controls/states were rechecked against `docs/evidence/images-ui-part1.txt` and the focused local fixtures: import/editor and save actions; queue create/start/pause/resume/stop; blocked inspect/retry/clear; details and history expansion; per-shot evidence; ready/waiting/sending/sent/paused/blocked/stopped/all-sent states. Focused tests **37/37 PASS**, typecheck PASS, scoped TypeScript ESLint PASS, local build PASS (`automat-faceless-0.1.0-mwg1zh7a`), and `git diff --check` PASS. Existing dashboard chunk-size and connector `inlineDynamicImports` warnings remain.
+
+Actual light/dark rendered screenshots and browser keyboard/reduced-motion/live-region interaction checks are **NOT_RUN** because this environment has no browser/app surface and Playwright Chromium is unavailable. Mock/source verification only. No live provider action occurred.
+## Images right-column queue-first ordering — 14 November 2026
+
+Reordered the Images right column so an existing exact-current-source queue card follows the Image queue heading/interval and precedes the saved-source/manual-settings/create card. The current-batch context copy now sits within that queue card. With no current queue, setup remains first. Previous queue summaries/history and the parent Source summary remain after setup. Queue and setup wrappers are keyed so ordinary polling retains component identity, settings-control focus, queue-list focus/scroll, countdown state, and toast history. No handlers, eligibility, queue data, deadlines, polling, or notification rules changed.
+
+Mock fixtures in light/dark theme wrappers cover empty, ready, waiting, paused, blocked, and all-sent states. The waiting countdown and state-appropriate actions remain in the queue card; long-list tests retain Shot 80. Polling regression checks focus, scroll, timer identity/count, and no duplicate notification. Focused tests **39/39 PASS**; typecheck, scoped ESLint, build, and `git diff --check` PASS. Local build: `automat-faceless-0.1.0-mwg2dl4j`; existing chunk-size and connector build warnings remain.
+
+Actual rendered browser verification and screenshots are **NOT_RUN** because no browser surface or Playwright Chromium is available. Theme checks used local DOM fixtures only.

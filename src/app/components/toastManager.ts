@@ -9,6 +9,8 @@ export type ToastRequest = {
   urgent?: boolean;
   actionable?: boolean;
   durationMs?: number;
+  /** Optional identity for repeated content-free events with identical copy. */
+  dedupeKey?: string;
 };
 
 export type ToastNotification = {
@@ -18,6 +20,7 @@ export type ToastNotification = {
   urgent: boolean;
   actionable: boolean;
   exiting: boolean;
+  dedupeKey?: string;
 };
 
 type AutoTimer = {
@@ -61,12 +64,13 @@ export class ToastManager {
 
     const urgent = request.kind === "error" && request.urgent === true;
     const actionable = request.actionable === true;
-    const existing = this.notifications.find(
-      (notification) =>
-        notification.kind === request.kind &&
-        notification.message === message &&
-        notification.urgent === urgent &&
-        notification.actionable === actionable,
+    const existing = this.notifications.find((notification) =>
+      request.dedupeKey
+        ? notification.dedupeKey === request.dedupeKey
+        : notification.kind === request.kind &&
+          notification.message === message &&
+          notification.urgent === urgent &&
+          notification.actionable === actionable,
     );
     if (existing) return existing.id;
 
@@ -77,6 +81,7 @@ export class ToastManager {
       urgent,
       actionable,
       exiting: false,
+      ...(request.dedupeKey ? { dedupeKey: request.dedupeKey } : {}),
     };
     const limit = Math.max(1, Math.floor(this.maxVisible));
     const overflow = this.notifications.slice(limit - 1);
