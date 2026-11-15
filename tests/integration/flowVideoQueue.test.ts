@@ -252,16 +252,46 @@ async function seedPausedPostAddQueue(
 
 
 describe("P09.3 Flow video timed submission", () => {
-  it("advances after a durable receipt and the 30-second interval without completion evidence", async () => {
+  it("waits 15 seconds after a durable receipt before advancing without completion evidence", async () => {
     const f = await setup();
     let queue = await f.handler.start(batchId);
     expect(queue.items[0]).toMatchObject({ state: "sent", attemptId: "attempt-1", dispatchReceipt: { attemptId: "attempt-1", storedAt: f.now() } });
     expect(queue.items[1]?.state).toBe("pending");
     expect(queue.nextActionAt).toBe(f.now() + VIDEO_QUEUE_DISPATCH_GAP_MS);
-    f.advance(VIDEO_QUEUE_DISPATCH_GAP_MS);
-    queue = await f.handler.onAlarm(`${FLOW_VIDEO_QUEUE_ALARM_PREFIX}${queue.queueId}`) as FlowVideoQueueRecord;
+    const alarm = `${FLOW_VIDEO_QUEUE_ALARM_PREFIX}${queue.queueId}`;
+    f.advance(VIDEO_QUEUE_DISPATCH_GAP_MS - 1);
+    queue = await f.handler.onAlarm(alarm) as FlowVideoQueueRecord;
+    expect(queue.items[1]?.state).toBe("pending");
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    f.advance(1);
+    await Promise.all([f.handler.onAlarm(alarm), f.handler.onAlarm(alarm)]);
+    queue = (await f.getQueue()) as FlowVideoQueueRecord;
     expect(queue.items[1]).toMatchObject({ state: "sent", attemptId: "attempt-2" });
     expect(queue.state).toBe("sent");
+    expect(f.generate).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors an already-persisted next-action deadline beyond the new 15-second gap", async () => {
+    const f = await setup();
+    let queue = await f.handler.start(batchId);
+    const recordedDeadline = f.now() + 40_000;
+    const persisted = await f.repositories.updateFlowVideoQueue({ expectedRevision: queue.revision, next: {
+      ...queue,
+      nextActionAt: recordedDeadline,
+      revision: queue.revision + 1,
+      updatedAt: f.now(),
+    } });
+    expect(persisted?.nextActionAt).toBe(recordedDeadline);
+    queue = persisted!;
+    const alarm = `${FLOW_VIDEO_QUEUE_ALARM_PREFIX}${queue.queueId}`;
+    f.advance(VIDEO_QUEUE_DISPATCH_GAP_MS);
+    queue = await f.handler.onAlarm(alarm) as FlowVideoQueueRecord;
+    expect(queue.items[1]?.state).toBe("pending");
+    expect(queue.nextActionAt).toBe(recordedDeadline);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    f.advance(recordedDeadline - f.now());
+    await f.handler.onAlarm(alarm);
+    expect((await f.getQueue())?.items[1]?.state).toBe("sent");
     expect(f.generate).toHaveBeenCalledTimes(2);
   });
 
@@ -784,8 +814,8 @@ describe("P09.3 Flow video timed submission", () => {
     expect(f.generate).toHaveBeenCalledTimes(1);
   });
 
-  it("uses a 60-second readiness timeout and 30-second submission floor", () => {
-    expect(VIDEO_QUEUE_DISPATCH_GAP_MS).toBe(30_000);
+  it("uses a 60-second readiness timeout and 15-second submission floor", () => {
+    expect(VIDEO_QUEUE_DISPATCH_GAP_MS).toBe(15_000);
     expect(VIDEO_QUEUE_READINESS_TIMEOUT_MS).toBe(60_000);
   });
 

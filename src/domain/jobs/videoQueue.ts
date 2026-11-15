@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ReferenceByteComparisonDiagnosticSchema, type ReferenceByteComparisonDiagnostic } from "../media/references";
 
-export const VIDEO_QUEUE_DISPATCH_GAP_MS = 30_000 as const;
+export const VIDEO_QUEUE_DISPATCH_GAP_MS = 15_000 as const;
 export const VIDEO_QUEUE_READINESS_TIMEOUT_MS = 60_000 as const;
 
 /**

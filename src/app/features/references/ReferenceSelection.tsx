@@ -117,6 +117,11 @@ export function ReferenceSelection({
   const [duplicateShotIds, setDuplicateShotIds] = useState<string[]>([]);
   const [activeSession, setActiveSession] =
     useState<ActiveReferenceSelectionSession | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerDialogRef = useRef<HTMLDialogElement>(null);
+  const pickerOpenerRef = useRef<HTMLElement | null>(null);
+  const pickerScrollYRef = useRef<number | null>(null);
+  const selectionGeneration = useRef(0);
   const [candidates, setCandidates] = useState<
     Record<string, ReferenceCandidate>
   >({});
@@ -170,6 +175,51 @@ export function ReferenceSelection({
   );
   const previewObjectUrls = useRef(new Map<string, string>());
   const previewConcurrency = useRef(new Set<string>());
+
+  const restorePickerFocus = () => {
+    const opener = pickerOpenerRef.current;
+    pickerOpenerRef.current = null;
+    if (opener) queueMicrotask(() => opener.focus({ preventScroll: true }));
+  };
+
+  useEffect(() => {
+    const dialog = pickerDialogRef.current;
+    if (!dialog) return;
+    if (
+      pickerOpen &&
+      activeSession &&
+      pickerSessionId === activeSession.sessionId
+    ) {
+      const previousScrollY = pickerScrollYRef.current ?? window.scrollY;
+      pickerScrollYRef.current = null;
+      if (!dialog.open) dialog.showModal();
+      const root = document.documentElement;
+      const previousRootOverflow = root.style.overflow;
+      const previousRootPadding = root.style.paddingInlineEnd;
+      const scrollbarWidth = Math.max(0, window.innerWidth - root.clientWidth);
+      root.style.overflow = "hidden";
+      if (scrollbarWidth > 0) {
+        const existingPadding = Number.parseFloat(
+          getComputedStyle(root).paddingInlineEnd,
+        ) || 0;
+        root.style.paddingInlineEnd = `${existingPadding + scrollbarWidth}px`;
+      }
+      if (window.scrollY !== previousScrollY)
+        window.scrollTo(0, previousScrollY);
+      return () => {
+        root.style.overflow = previousRootOverflow;
+        root.style.paddingInlineEnd = previousRootPadding;
+        if (window.scrollY !== previousScrollY)
+          window.scrollTo(0, previousScrollY);
+      };
+    }
+    if (dialog.open) dialog.close();
+    if (!pickerOpen) {
+      const opener = pickerOpenerRef.current;
+      pickerOpenerRef.current = null;
+      opener?.focus({ preventScroll: true });
+    }
+  }, [pickerOpen, activeSession?.sessionId, pickerSessionId]);
 
   const clearPreviews = useCallback(() => {
     for (const [candidateId, request] of previewRequests.current) {
@@ -443,6 +493,15 @@ export function ReferenceSelection({
         )) return;
 
         if (eventMsg.event === "candidate_selected") {
+          if (
+            !activeSession ||
+            eventMsg.sessionId !== activeSession.sessionId ||
+            eventMsg.shotId !== activeSession.shotId ||
+            eventMsg.candidate.shotId !== activeSession.shotId ||
+            eventMsg.candidate.workspaceId !== workspaceId ||
+            eventMsg.candidate.batchId !== batch?.batch.id ||
+            eventMsg.candidate.batchSourceHash !== batchSourceHash
+          ) return;
           pickerReadGeneration.current += 1;
           clearPreviews();
           setPickerCandidates([]);
@@ -451,6 +510,8 @@ export function ReferenceSelection({
           );
           setActionPending(false);
           setActiveSession(null);
+          setPickerOpen(false);
+          restorePickerFocus();
           setCandidates((prev) => ({
             ...prev,
             [eventMsg.shotId]: eventMsg.candidate,
@@ -553,6 +614,7 @@ export function ReferenceSelection({
     setThumbnailFailures({});
     setThumbnailDiagnostics({});
     setPickerSessionId(sessionId);
+    setPickerOpen(true);
     try {
       const result = (await persistenceClient.request(
         "flow.reference.listCandidates",
@@ -744,8 +806,17 @@ export function ReferenceSelection({
     }
   };
 
-  const handleStartSelection = async (shotId: string, browse = false) => {
+  const handleStartSelection = async (
+    shotId: string,
+    browse = false,
+    opener?: HTMLElement,
+  ) => {
     if (!batch) return;
+    if (browse && opener) {
+      pickerOpenerRef.current = opener;
+      pickerScrollYRef.current = window.scrollY;
+    }
+    const currentGeneration = ++selectionGeneration.current;
     clearPreviews();
     pickerReadGeneration.current += 1;
     setSelectionNotice(null);
@@ -767,6 +838,8 @@ export function ReferenceSelection({
         shotId: string;
         status: string;
       };
+
+      if (currentGeneration !== selectionGeneration.current) return;
 
       setActiveSession({
         sessionId: res.sessionId,
@@ -799,6 +872,7 @@ export function ReferenceSelection({
 
   const handleChooseFlowCandidate = async (candidateId: string) => {
     if (!activeSession || pickerSessionId !== activeSession.sessionId) return;
+    const session = activeSession;
     const generation = ++pickerReadGeneration.current;
     setActionPending(true);
     setPickerStatus("Rechecking this image in the verified Flow document…");
@@ -809,16 +883,29 @@ export function ReferenceSelection({
           sessionId: activeSession.sessionId,
           candidateId,
         },
-      )) as { accepted?: boolean };
-      if (generation !== pickerReadGeneration.current) return;
-      if (response.accepted !== true)
+      )) as { accepted?: boolean; candidate?: ReferenceCandidate };
+      if (
+        generation !== pickerReadGeneration.current ||
+        activeSession?.sessionId !== session.sessionId
+      ) return;
+      if (
+        response.accepted !== true ||
+        !response.candidate ||
+        (response.candidate.shotId !== undefined &&
+          response.candidate.shotId !== session.shotId) ||
+        (response.candidate.selectionSessionId !== undefined &&
+          response.candidate.selectionSessionId !== session.sessionId)
+      )
         throw new Error(
-          "The candidate was not accepted. Refresh images and retry.",
+          "The candidate was not accepted for this Shot. Refresh images and retry.",
         );
       setSelectionNotice(
-        `Candidate selected for Shot ${activeSession.shotId}. Save reference to capture and keep image bytes.`,
+        `Candidate selected for Shot ${session.shotId}. Save reference to capture and keep image bytes.`,
       );
       setPickerCandidates([]);
+      setPickerOpen(false);
+      setActiveSession(null);
+      restorePickerFocus();
       await loadBatchAndState();
     } catch (err) {
       if (generation !== pickerReadGeneration.current) return;
@@ -994,7 +1081,9 @@ export function ReferenceSelection({
       await persistenceClient.request("flow.reference.cancelSelection", {
         sessionId: activeSession.sessionId,
       });
+      setPickerOpen(false);
       setActiveSession(null);
+      restorePickerFocus();
     } catch (err) {
       setActionError(
         err instanceof Error ? err.message : "Failed to cancel selection.",
@@ -1103,18 +1192,14 @@ export function ReferenceSelection({
                   </strong>
                   <div className={refStyles.cardActions}>
                     <Button
-                      onClick={() =>
-                        void loadFlowImageCandidates(activeSession.sessionId)
-                      }
+                      onClick={(event) => {
+                        pickerOpenerRef.current = event.currentTarget;
+                        pickerScrollYRef.current = window.scrollY;
+                        void loadFlowImageCandidates(activeSession.sessionId);
+                      }}
                       disabled={!flowVerified || actionPending}
                     >
                       Browse Flow images
-                    </Button>
-                    <Button
-                      onClick={handleCancelSelection}
-                      disabled={actionPending}
-                    >
-                      Cancel selection
                     </Button>
                   </div>
                 </div>
@@ -1128,17 +1213,61 @@ export function ReferenceSelection({
             ) : null}
 
             {activeSession && pickerSessionId === activeSession.sessionId ? (
+              <dialog
+                ref={pickerDialogRef}
+                className={refStyles.pickerDialog}
+                aria-labelledby="flow-image-picker-title"
+                aria-describedby="flow-image-picker-description"
+                onCancel={(event) => {
+                  event.preventDefault();
+                  if (!actionPending) setPickerOpen(false);
+                }}
+                onClose={() => {
+                  setPickerOpen(false);
+                  restorePickerFocus();
+                }}
+                onClick={(event) => {
+                  if (
+                    event.target === event.currentTarget &&
+                    !actionPending
+                  ) setPickerOpen(false);
+                }}
+              >
+                <div className={refStyles.pickerDialogHeader}>
+                  <h2 id="flow-image-picker-title">
+                    Flow images for Shot {activeSession.shotId}
+                  </h2>
+                  <div className={refStyles.pickerDialogActions}>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={actionPending}
+                      onClick={() => void handleCancelSelection()}
+                    >
+                      Cancel selection
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="quiet"
+                      aria-label="Close Flow image picker"
+                      disabled={actionPending}
+                      onClick={() => setPickerOpen(false)}
+                    >
+                      Close
+                    </Button>
+                  </div>
+                </div>
+                <div className={refStyles.pickerDialogScroll}>
               <section
                 className={refStyles.pickerPanel}
-                aria-labelledby="flow-image-picker-title"
                 aria-live="polite"
               >
                 <div className={refStyles.pickerHeader}>
                   <div>
-                    <strong id="flow-image-picker-title">
-                      Flow images for Shot {activeSession.shotId}
-                    </strong>
-                    <p className={refStyles.candidateMeta}>
+                    <p
+                      id="flow-image-picker-description"
+                      className={refStyles.candidateMeta}
+                    >
                       Candidates come from this verified Flow document. Their
                       prompt origin is unknown. Only images currently available
                       in the Flow document can be listed. Scroll Flow manually
@@ -1290,6 +1419,8 @@ export function ReferenceSelection({
                   </div>
                 ) : null}
               </section>
+                </div>
+              </dialog>
             ) : null}
 
             {selectionNotice ? (
@@ -1417,16 +1548,24 @@ export function ReferenceSelection({
                               </Button>
                             ) : null}
                             <Button
-                              onClick={() =>
-                                void handleStartSelection(shotId, true)
+                              onClick={(event) =>
+                                void handleStartSelection(
+                                  shotId,
+                                  true,
+                                  event.currentTarget,
+                                )
                               }
                               disabled={!flowVerified || actionPending}
                             >
                               Re-select candidate
                             </Button>
                             <Button
-                              onClick={() =>
-                                void handleStartSelection(shotId, true)
+                              onClick={(event) =>
+                                void handleStartSelection(
+                                  shotId,
+                                  true,
+                                  event.currentTarget,
+                                )
                               }
                               disabled={!flowVerified || actionPending}
                             >
@@ -1459,27 +1598,39 @@ export function ReferenceSelection({
                       <div className={refStyles.cardActions}>
                         <span className={refStyles.candidateMeta}>
                           {isTargetOfActiveSession
-                            ? "Selection is active. Choose an image from the picker above."
+                            ? "Selection is active. Choose an image from Flow or browse the verified images here."
                             : "No reference candidate selected."}
                         </span>
-                        {!isTargetOfActiveSession ? (
-                          <>
-                            <Button
-                              onClick={() => handleStartSelection(shotId)}
-                              disabled={!flowVerified || actionPending}
-                            >
-                              Start selection
-                            </Button>
-                            <Button
-                              onClick={() =>
-                                void handleStartSelection(shotId, true)
-                              }
-                              disabled={!flowVerified || actionPending}
-                            >
-                              Browse Flow images
-                            </Button>
-                          </>
-                        ) : null}
+                        <Button
+                          onClick={() => void handleStartSelection(shotId)}
+                          disabled={
+                            !flowVerified ||
+                            actionPending ||
+                            isTargetOfActiveSession
+                          }
+                        >
+                          Start selection
+                        </Button>
+                        <Button
+                          onClick={(event) => {
+                            if (isTargetOfActiveSession && activeSession) {
+                              pickerOpenerRef.current = event.currentTarget;
+                              pickerScrollYRef.current = window.scrollY;
+                              void loadFlowImageCandidates(
+                                activeSession.sessionId,
+                              );
+                            } else {
+                              void handleStartSelection(
+                                shotId,
+                                true,
+                                event.currentTarget,
+                              );
+                            }
+                          }}
+                          disabled={!flowVerified || actionPending}
+                        >
+                          Browse Flow images
+                        </Button>
                       </div>
                     )}
                   </article>

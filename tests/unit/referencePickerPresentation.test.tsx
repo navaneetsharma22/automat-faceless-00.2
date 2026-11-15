@@ -7,13 +7,34 @@ import {
   summarizePickerThumbnailFailure,
 } from "../../src/app/features/references/ReferenceSelection";
 import type { FoundationClient } from "../../src/shared/messageClient";
+import { sha256Hex } from "../../src/domain/batches/hashPrompt";
+import { FLOW_REFERENCE_EVENT_MESSAGE } from "../../src/shared/schemas";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+Object.defineProperties(HTMLDialogElement.prototype, {
+  showModal: {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    },
+  },
+  close: {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.removeAttribute("open");
+      this.dispatchEvent(new Event("close"));
+    },
+  },
+});
 let root: Root;
 let container: HTMLDivElement;
 afterEach(async () => {
   if (root) await act(async () => root.unmount());
   container?.remove();
+  Object.defineProperty(globalThis, "chrome", {
+    configurable: true,
+    value: undefined,
+  });
 });
 
 function savedReference(
@@ -56,9 +77,12 @@ async function setup(
     shotIds?: string[];
     savedShotIds?: string[];
     failCapture?: boolean;
+    failChoose?: boolean;
+    deferChoose?: boolean;
     distinctSavedReferences?: boolean;
   } = {},
 ) {
+  const batchSourceHash = await sha256Hex("fixture source");
   const candidate = {
     candidateId: "00000000-0000-4000-8000-000000000001",
     sourceUrl: "https://example.test/chosen-image.png",
@@ -73,7 +97,10 @@ async function setup(
   const savedRecords = new Map(
     (options.savedShotIds ?? []).map((shotId) => [
       shotId,
-      savedReference(shotId, 1, options.distinctSavedReferences),
+      {
+        ...savedReference(shotId, 1, options.distinctSavedReferences),
+        batchSourceHash,
+      },
     ]),
   );
   const chosenCandidates: Record<
@@ -87,11 +114,16 @@ async function setup(
         selectionVersion: record.selectionVersion,
         workspaceId: "default",
         batchId: "batch-1",
+        batchSourceHash,
         shotId,
       },
     ]),
   );
   let activeShotId: string | null = null;
+  let releaseChoose!: () => void;
+  const chooseGate = new Promise<void>((resolve) => {
+    releaseChoose = resolve;
+  });
   let listResponse = async () => ({
     sessionId: "session-1",
     candidates: [candidate],
@@ -102,7 +134,7 @@ async function setup(
     async (type: string, payload?: Record<string, unknown>) => {
       if (type === "promptBatch.get")
         return {
-          batch: { id: "batch-1" },
+          batch: { id: "batch-1", sourceText: "fixture source" },
           items: shotIds.map((shotId, index) => ({
             id: `item-${shotId}`,
             shotId,
@@ -123,6 +155,8 @@ async function setup(
               }
             : null,
           candidates: chosenCandidates,
+          batchId: "batch-1",
+          batchSourceHash,
           savedReferences: [...savedRecords.values()],
         };
       if (type === "flow.reference.startSelection") {
@@ -148,12 +182,15 @@ async function setup(
           data: "AQID",
         };
       if (type === "flow.reference.chooseCandidate") {
+        if (options.failChoose) throw new Error("fixture_candidate_rejected");
         const shotId = activeShotId!;
+        if (options.deferChoose) await chooseGate;
         const acceptedCandidate = {
           ...candidate,
           selectionVersion: `30000000-0000-4000-8000-${shotId.padStart(12, "0")}`,
           workspaceId: "default",
           batchId: "batch-1",
+          batchSourceHash,
           shotId,
         };
         chosenCandidates[shotId] = acceptedCandidate;
@@ -205,6 +242,20 @@ async function setup(
       throw new Error(`Unexpected request: ${type}`);
     },
   );
+  const messageListeners = new Set<(message: unknown) => void>();
+  Object.defineProperty(globalThis, "chrome", {
+    configurable: true,
+    value: {
+      runtime: {
+        onMessage: {
+          addListener: (listener: (message: unknown) => void) =>
+            messageListeners.add(listener),
+          removeListener: (listener: (message: unknown) => void) =>
+            messageListeners.delete(listener),
+        },
+      },
+    },
+  });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -220,16 +271,25 @@ async function setup(
       (b) => b.textContent?.trim() === label,
     );
     expect(button, label).toBeDefined();
+    button!.focus();
     await act(async () => button!.click());
   };
-  const clickInShot = async (shotId: string, label: string) => {
-    const card = [...container.querySelectorAll("article")].find((article) =>
-      article.textContent?.includes(`Shot ${shotId}`),
+  const clickInShot = async (
+    shotId: string,
+    label: string,
+    allowDisabled = false,
+  ) => {
+    const card = [...container.querySelectorAll("article")].find(
+      (article) =>
+        article.className.includes("shotCard") &&
+        article.textContent?.includes(`Shot ${shotId}`),
     );
     const button = [...(card?.querySelectorAll("button") ?? [])].find(
       (item) => item.textContent?.trim() === label,
     );
     expect(button, `${label} in Shot ${shotId}`).toBeDefined();
+    if (allowDisabled) button!.disabled = false;
+    button!.focus();
     await act(async () => button!.click());
   };
   return {
@@ -237,6 +297,23 @@ async function setup(
     click,
     clickInShot,
     chosenCandidates,
+    releaseChoose: () => releaseChoose(),
+    emitSessionStarted: async (shotId: string) => {
+      activeShotId = shotId;
+      await act(async () => {
+        for (const listener of messageListeners)
+          listener({
+            type: FLOW_REFERENCE_EVENT_MESSAGE,
+            event: "session_started",
+            sessionId: `session-${shotId}`,
+            workspaceId: "default",
+            batchId: "batch-1",
+            batchSourceHash,
+            shotId,
+          });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    },
     setList: (fn: typeof listResponse) => {
       listResponse = fn;
     },
@@ -321,7 +398,9 @@ describe("References-owned Flow image picker", () => {
     expect(request).toHaveBeenCalledWith("flow.reference.listCandidates", {
       sessionId: "session-1",
     });
-    expect(container.textContent).toContain("Flow images for Shot 35");
+    expect(container.querySelector("dialog[open]")?.textContent).toContain(
+      "Flow images for Shot 35",
+    );
     expect(container.textContent).toContain("Browse Flow images");
     expect(container.textContent).toContain("Refresh images");
     expect(container.textContent).toContain("Cancel selection");
@@ -351,6 +430,111 @@ describe("References-owned Flow image picker", () => {
       container.querySelector('img[alt="Saved reference for Shot 36"]'),
     ).toBeTruthy();
     expect(container.textContent).toContain("SHA-256 " + "d".repeat(64));
+  });
+
+  it("opens from a bottom shot without remounting the list and restores focus on Escape", async () => {
+    const shotIds = Array.from({ length: 40 }, (_, index) => String(index + 1));
+    const { clickInShot, request } = await setup({ shotIds });
+    const shotList = container.querySelector(".shotList");
+    const opener = [...container.querySelectorAll("article")]
+      .find((article) => article.textContent?.includes("Shot 40"))
+      ?.querySelectorAll("button")[1];
+    expect(opener).toBeTruthy();
+    await clickInShot("40", "Browse Flow images");
+
+    const dialog = container.querySelector("dialog[open]");
+    expect(dialog?.textContent).toContain("Flow images for Shot 40");
+    expect(dialog?.getAttribute("aria-labelledby")).toBe(
+      "flow-image-picker-title",
+    );
+    expect(
+      [...(dialog?.querySelectorAll("section") ?? [])].filter((section) =>
+        section.className.includes("pickerPanel"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      [...(dialog?.querySelectorAll("div") ?? [])].some((node) =>
+        node.className.includes("pickerDialogScroll"),
+      ),
+    ).toBe(true);
+    expect(container.querySelector(".shotList")).toBe(shotList);
+
+    await act(async () => {
+      dialog!.dispatchEvent(
+        new Event("cancel", { bubbles: true, cancelable: true }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector("dialog[open]")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(request).not.toHaveBeenCalledWith(
+      "flow.reference.cancelSelection",
+      expect.anything(),
+    );
+    expect(request).not.toHaveBeenCalledWith(
+      "flow.reference.capture",
+      expect.anything(),
+    );
+  });
+
+  it("keeps chooser errors in the modal and can reopen the same Shot", async () => {
+    const { click, request } = await setup({ failChoose: true });
+    await click("Browse Flow images");
+    await click("Load preview");
+    await act(async () =>
+      container
+        .querySelector('img[alt^="Flow image candidate preview"]')!
+        .dispatchEvent(new Event("load")),
+    );
+    const chooseButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Choose for Shot 34",
+    )!;
+    await act(async () => chooseButton.click());
+
+    expect(container.querySelector("dialog[open]")?.textContent).toContain(
+      "fixture_candidate_rejected",
+    );
+    await click("Close");
+    expect(request).not.toHaveBeenCalledWith(
+      "flow.reference.cancelSelection",
+      expect.anything(),
+    );
+    await click("Browse Flow images");
+    expect(container.querySelector("dialog[open]")?.textContent).toContain(
+      "Flow images for Shot 34",
+    );
+  });
+
+  it("ignores a chooser response after a different Shot becomes the active session", async () => {
+    const { click, clickInShot, releaseChoose, emitSessionStarted } = await setup({
+      shotIds: ["34", "35"],
+      deferChoose: true,
+    });
+    await clickInShot("34", "Browse Flow images");
+    await click("Load preview");
+    await act(async () =>
+      container
+        .querySelector('img[alt^="Flow image candidate preview"]')!
+        .dispatchEvent(new Event("load")),
+    );
+    const choose = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Choose for Shot 34",
+    )!;
+    await act(async () => choose.click());
+
+    await emitSessionStarted("35");
+    await click("Browse Flow images");
+    expect(container.querySelector("dialog[open]")?.textContent).toContain(
+      "Flow images for Shot 35",
+    );
+    await act(async () => {
+      releaseChoose();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector("dialog[open]")?.textContent).toContain(
+      "Flow images for Shot 35",
+    );
+    expect(container.textContent).not.toContain("Candidate selected for Shot 34");
   });
 
   it("clearing the transient candidate preserves the saved image", async () => {
