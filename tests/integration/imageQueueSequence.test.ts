@@ -61,7 +61,7 @@ async function fixture() {
 }
 
 describe("production timed queue scheduler boundary", () => {
-  it("dispatches ordered exact sources once, only after the durable 40,000ms deadline", async () => {
+  it("dispatches ordered exact sources once, only after the durable 20,000ms deadline", async () => {
     const { repositories, queue } = await fixture();
     let clock = 1_000;
     const alarms = new Map<string, number>();
@@ -94,12 +94,12 @@ describe("production timed queue scheduler boundary", () => {
     await scheduler.start(queue.queueId);
     expect(dispatches).toEqual(['{"shot_id":"01","text":"exact first  "}']);
     expect(alarms.get(`${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`)).toBe(
-      41_000,
+      21_000,
     );
-    clock = 40_999;
+    clock = 20_999;
     await scheduler.onAlarm(`${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`);
     expect(dispatches).toHaveLength(1);
-    clock = 41_000;
+    clock = 21_000;
     await Promise.all([
       scheduler.onAlarm(`${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`),
       scheduler.onAlarm(`${IMAGE_QUEUE_ALARM_PREFIX}${queue.queueId}`),
@@ -123,7 +123,7 @@ describe("production timed queue scheduler boundary", () => {
       "unknown",
     ]);
     expect(final?.items.map((item) => item.dispatchReceipt?.storedAt)).toEqual([
-      1_000, 41_000,
+      1_000, 21_000,
     ]);
     expect(dispatches).toHaveLength(2);
   });

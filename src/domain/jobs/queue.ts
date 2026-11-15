@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { sha256Hex } from "../batches/hashPrompt";
 
-export const TIMED_IMAGE_SUBMISSION_INTERVAL_MS = 40_000 as const;
+export const TIMED_IMAGE_SUBMISSION_INTERVAL_MS = 20_000 as const;
+export const LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS = 40_000 as const;
 export const FLOW_READINESS_WAIT_TIMEOUT_MS = 60_000 as const;
 export const FLOW_READINESS_RECHECK_INITIAL_MS = 500 as const;
 export const FLOW_READINESS_RECHECK_MAX_MS = 2_000 as const;
@@ -113,7 +114,9 @@ export type ImageSubmissionQueueRecord = {
   readonly workspaceId: string;
   readonly kind: "image";
   readonly mode: "timed_submission";
-  readonly intervalMs: typeof TIMED_IMAGE_SUBMISSION_INTERVAL_MS;
+  readonly intervalMs:
+    | typeof TIMED_IMAGE_SUBMISSION_INTERVAL_MS
+    | typeof LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS;
   state: ImageQueueState;
   pauseReason?: string;
   readonly sourceText: string;
@@ -230,7 +233,10 @@ export const ImageSubmissionQueueRecordSchema = z
     workspaceId: z.string().min(1).max(128),
     kind: z.literal("image"),
     mode: z.literal("timed_submission"),
-    intervalMs: z.literal(TIMED_IMAGE_SUBMISSION_INTERVAL_MS),
+    intervalMs: z.union([
+      z.literal(TIMED_IMAGE_SUBMISSION_INTERVAL_MS),
+      z.literal(LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS),
+    ]),
     state: z.enum(IMAGE_QUEUE_STATES),
     pauseReason: z.string().min(1).max(64).optional(),
     sourceText: z.string().min(1),
@@ -289,8 +295,7 @@ export const ImageSubmissionQueueRecordSchema = z
           (record.nextEligibleDispatchAt === null
             ? record.items.every((item) => item.itemState === "sent")
             : record.nextEligibleDispatchAt >=
-              record.lastDispatchReceiptStoredAt +
-                TIMED_IMAGE_SUBMISSION_INTERVAL_MS);
+              record.lastDispatchReceiptStoredAt + record.intervalMs);
   });
 
 export function canTransitionImageQueue(
@@ -325,11 +330,13 @@ export function canTransitionImageQueueItem(
 /** P06.2 must call this only after the preceding dispatch receipt is durable. */
 export function nextTimedDispatchDeadline(
   receiptDurablyStoredAt: number,
+  intervalMs: ImageSubmissionQueueRecord["intervalMs"] =
+    TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
 ): number {
   if (!Number.isFinite(receiptDurablyStoredAt) || receiptDurablyStoredAt < 0) {
     throw new RangeError("Dispatch deadline inputs must be finite timestamps.");
   }
-  return receiptDurablyStoredAt + TIMED_IMAGE_SUBMISSION_INTERVAL_MS;
+  return receiptDurablyStoredAt + intervalMs;
 }
 
 export type FlowPromptReadbackComparison = {

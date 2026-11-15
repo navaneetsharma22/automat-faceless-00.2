@@ -308,7 +308,10 @@ export function ImageQueueProgress({
           <p className={styles.kicker}>TIMED SUBMISSION MODE</p>
           <h3 id="image-queue-title">Image queue</h3>
         </div>
-        <span className={styles.interval}>40 seconds between prompts</span>
+        <span className={styles.interval}>
+          {(currentQueue?.intervalMs ?? TIMED_IMAGE_SUBMISSION_INTERVAL_MS) /
+            1_000} seconds between prompts
+        </span>
       </div>
       {currentQueue ? (
         <div
@@ -1086,7 +1089,7 @@ export function QueueCard({
         {queue.state === "paused" ? (
           <p className={styles.inactiveNotice} role="status">
             {queue.pauseReason === "guarded_retry_ready"
-              ? "Paused — guarded retry ready. The 40-second interval from previous dispatch receipt is preserved."
+              ? `Paused — guarded retry ready. The ${queue.intervalMs / 1_000}-second interval from previous dispatch receipt is preserved.`
               : "Paused. No future prompt will be dispatched until the saved target and settings binding are revalidated."}
           </p>
         ) : null}

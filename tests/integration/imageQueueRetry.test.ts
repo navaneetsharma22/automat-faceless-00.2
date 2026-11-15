@@ -12,7 +12,7 @@
  * - Refuses incompatible states (receipt exists, activation started, hash mismatch, changed target)
  * - Strictly preserves Shot 10's receipt and historical diagnostic evidence
  * - Does not skip Shot 11, clear locks, automatically resume, or perform live Generate
- * - Keeps the 40-second scheduler interval unchanged
+ * - Keeps the queue's persisted scheduler interval unchanged
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -197,7 +197,7 @@ describe("imageQueue.retryBlocked (explicit guarded continuation)", () => {
       recordedAt: 1_000,
     });
 
-    // Step 2: Shot 11 claimed at 41_000 (after 40s deadline) and blocked at 41_100
+    // Step 2: Shot 11 claimed after the persisted deadline and blocked later
     const claimed1 = await repositories.claimTimedImageQueueItem({
       queueId,
       expectedRevision: receipt0.revision,
@@ -459,9 +459,9 @@ describe("imageQueue.retryBlocked (explicit guarded continuation)", () => {
     expect(shot11.readbackDiagnostic?.stage).toBe("pre_activation_inspection");
     expect(shot11.readbackDiagnostic?.mismatchCategory).toBe("length");
 
-    // 5. 40-second scheduler interval from Shot 10's receipt is preserved
+    // 5. The queue's persisted interval from Shot 10's receipt is preserved
     expect(updated.lastDispatchReceiptStoredAt).toBe(1_000);
-    expect(updated.nextEligibleDispatchAt).toBe(1_000 + 40_000); // 41_000
+    expect(updated.nextEligibleDispatchAt).toBe(1_000 + 20_000); // 21_000
 
     // 6. Durable readback verification in database
     const readback = await repositories.getTimedImageSubmissionQueue(

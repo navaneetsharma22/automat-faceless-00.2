@@ -1531,7 +1531,7 @@ export class ExtensionRepositories {
         lastDispatchReceiptStoredAt: input.recordedAt,
         nextEligibleDispatchAt: final
           ? null
-          : nextTimedDispatchDeadline(input.recordedAt),
+          : nextTimedDispatchDeadline(input.recordedAt, queue.intervalMs),
         revision: queue.revision + 1,
         updatedAt: input.recordedAt,
       };
@@ -2124,7 +2124,10 @@ export class ExtensionRepositories {
           items: updatedItems,
           lastDispatchReceiptStoredAt: queue.lastDispatchReceiptStoredAt,
           nextEligibleDispatchAt: queue.lastDispatchReceiptStoredAt
-            ? nextTimedDispatchDeadline(queue.lastDispatchReceiptStoredAt)
+            ? nextTimedDispatchDeadline(
+                queue.lastDispatchReceiptStoredAt,
+                queue.intervalMs,
+              )
             : null,
           revision: queue.revision + 1,
           updatedAt: input.at,

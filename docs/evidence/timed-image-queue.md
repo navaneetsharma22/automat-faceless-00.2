@@ -1,3 +1,9 @@
+## Image interval update — 15 November 2026
+
+New image queues use `20,000 ms`. The scheduler and receipt deadline use the interval persisted on each queue, so existing `40,000 ms` records remain readable and retain their saved deadline. The Images countdown meter and interval copy also read the stored value. Readiness checks still gate Generate; the first prompt behavior is unchanged. Flow and Vids video queue timing is unchanged. No queue migration, storage rewrite, Chrome reload, or live provider action occurred.
+
+Focused tests: **31/31 PASS** across image queue unit, sequence, restart, retry, and inspection suites. These include the boundary immediately before and at 20,000 ms, readiness-gated queue progression, and a 40,000 ms legacy record/deadline readback. Typecheck, scoped ESLint, production build, and `git diff --check` PASS. Build ID: `automat-faceless-0.1.0-mwhgklpd`.
+
 ## P06.1 timed queue evidence - 30 October 2026
 
 P06.1 now persists a separate timed image queue in additive Dexie v7 storage. Each record snapshots the exact saved source and source hash, ordered prompt bodies/hashes/source spans/shot IDs, Flow target binding, and current user-attested settings declaration. The fixed mode interval is 40,000 ms. New queues are `ready`; their items are `pending`; outcomes are `not_started`; no dispatch receipt or next-deadline exists. The dashboard reads actual queue rows and says provider submission/countdown are unavailable in this subphase.

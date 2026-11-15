@@ -165,7 +165,7 @@ describe("timed queue pause, stop, restart and lost response", () => {
       itemState: "sent",
       providerOutcome: "unknown",
     });
-    expect(result.nextEligibleDispatchAt).toBe(41_000);
+    expect(result.nextEligibleDispatchAt).toBe(21_000);
     expect(alarmsFixture.entries.size).toBe(0);
   });
 
@@ -229,15 +229,15 @@ describe("timed queue pause, stop, restart and lost response", () => {
       queue.queueId,
     );
     expect(dispatches).toBe(1);
-    expect(current?.nextEligibleDispatchAt).toBe(41_000);
+    expect(current?.nextEligibleDispatchAt).toBe(21_000);
     const paused = await scheduler.pause(queue.queueId, current!.revision);
     expect(
       (await scheduler.pause(queue.queueId, current!.revision)).revision,
     ).toBe(paused.revision);
-    clock(40_999);
+    clock(20_999);
     const resumed = await scheduler.resume(queue.queueId, paused.revision);
     expect(resumed.state).toBe("waiting");
-    expect(resumed.nextEligibleDispatchAt).toBe(41_000);
+    expect(resumed.nextEligibleDispatchAt).toBe(21_000);
     expect(dispatches).toBe(1);
     await scheduler.pause(queue.queueId, resumed.revision);
     current = await repositories.getTimedImageSubmissionQueue(queue.queueId);

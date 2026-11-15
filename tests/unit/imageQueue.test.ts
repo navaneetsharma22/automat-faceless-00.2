@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canTransitionImageQueue,
   canTransitionImageQueueItem,
+  ImageSubmissionQueueRecordSchema,
   nextTimedDispatchDeadline,
   TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
 } from "../../src/domain/jobs/queue";
@@ -156,7 +157,7 @@ describe("timed image submission queue foundation", () => {
     expect(queue).toEqual(readback);
     expect(queue).toMatchObject({
       mode: "timed_submission",
-      intervalMs: 40_000,
+      intervalMs: 20_000,
       sourceText: source,
       sourceHash: await sha256Hex(source),
       state: "ready",
@@ -185,6 +186,50 @@ describe("timed image submission queue foundation", () => {
     expect(
       queue.items.every((item) => item.providerOutcome === "not_started"),
     ).toBe(true);
+  });
+
+  it("continues to read legacy 40-second queue records and deadlines", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database, () => 500);
+    await repositories.savePromptBatch({
+      workspaceId: "image-workspace",
+      kind: "image",
+      sourceText: '1: {"shot_id":"01","text":"first"}',
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: settingsConfirmation.tabId,
+      canonicalTarget: settingsConfirmation.canonicalTarget,
+    });
+    const fresh = await repositories.createTimedImageSubmissionQueue({
+      workspaceId: "image-workspace",
+      queueId: "62457f0c-85c3-4fe2-b7c1-4ea8b803f008",
+      settingsConfirmation,
+    });
+    const legacy = {
+      ...fresh,
+      intervalMs: 40_000 as const,
+      state: "waiting" as const,
+      items: [
+        {
+          ...fresh.items[0]!,
+          itemState: "sent" as const,
+          providerOutcome: "unknown" as const,
+          dispatchReceipt: {
+            attemptId: "legacy-attempt",
+            storedAt: 1_000,
+            evidence: "activation_pair_sent_or_uncertain" as const,
+          },
+        },
+      ],
+      lastDispatchReceiptStoredAt: 1_000,
+      nextEligibleDispatchAt: 41_000,
+    };
+    expect(ImageSubmissionQueueRecordSchema.parse(legacy)).toEqual(legacy);
+    await database.imageSubmissionQueues.put(legacy);
+    expect(
+      await repositories.getTimedImageSubmissionQueue(fresh.queueId),
+    ).toEqual(legacy);
   });
 
   it("refuses an exact source held by an unresolved historical attempt", async () => {
@@ -406,9 +451,10 @@ describe("timed image submission queue foundation", () => {
     ).toHaveLength(1);
   });
 
-  it("defines safe transitions and deadlines exactly forty seconds after durable receipt", () => {
-    expect(TIMED_IMAGE_SUBMISSION_INTERVAL_MS).toBe(40_000);
-    expect(nextTimedDispatchDeadline(100_000)).toBe(140_000);
+  it("defines safe transitions and supports new and legacy receipt deadlines", () => {
+    expect(TIMED_IMAGE_SUBMISSION_INTERVAL_MS).toBe(20_000);
+    expect(nextTimedDispatchDeadline(100_000)).toBe(120_000);
+    expect(nextTimedDispatchDeadline(100_000, 40_000)).toBe(140_000);
     expect(canTransitionImageQueue("ready", "waiting")).toBe(true);
     expect(canTransitionImageQueue("waiting", "ready")).toBe(false);
     expect(canTransitionImageQueue("blocked", "ready")).toBe(false);
