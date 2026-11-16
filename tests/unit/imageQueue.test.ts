@@ -5,6 +5,7 @@ import {
   ImageSubmissionQueueRecordSchema,
   nextTimedDispatchDeadline,
   TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+  LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
 } from "../../src/domain/jobs/queue";
 import {
   ActiveFlowImageAttemptError,
@@ -230,6 +231,139 @@ describe("timed image submission queue foundation", () => {
     expect(
       await repositories.getTimedImageSubmissionQueue(fresh.queueId),
     ).toEqual(legacy);
+  });
+
+  it("migrates idle legacy queues without changing the armed deadline or receipt", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database, () => 60_000);
+    await repositories.savePromptBatch({
+      workspaceId: "image-workspace",
+      kind: "image",
+      sourceText: '{"shot_id":"01","text":"first"}',
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: settingsConfirmation.tabId,
+      canonicalTarget: settingsConfirmation.canonicalTarget,
+    });
+    const fresh = await repositories.createTimedImageSubmissionQueue({
+      workspaceId: "image-workspace",
+      queueId: "6ab9d29a-15db-407c-9a43-5668af28c82b",
+      settingsConfirmation,
+    });
+    const receipt = {
+      attemptId: "legacy-attempt",
+      storedAt: 10_000,
+      evidence: "activation_pair_sent_or_uncertain" as const,
+    };
+    const legacy = {
+      ...fresh,
+      intervalMs: LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+      state: "waiting" as const,
+      items: [{
+        ...fresh.items[0]!,
+        itemState: "sent" as const,
+        providerOutcome: "unknown" as const,
+        dispatchReceipt: receipt,
+      }],
+      lastDispatchReceiptStoredAt: receipt.storedAt,
+      nextEligibleDispatchAt: 50_000,
+      revision: 1,
+    };
+    await database.imageSubmissionQueues.put(legacy);
+    const migrated = await repositories.migrateTimedImageQueueInterval({
+      queueId: legacy.queueId,
+      expectedRevision: legacy.revision,
+      at: 60_000,
+    });
+    expect(migrated.intervalMs).toBe(TIMED_IMAGE_SUBMISSION_INTERVAL_MS);
+    expect(migrated.nextEligibleDispatchAt).toBe(50_000);
+    expect(migrated.items).toEqual(legacy.items);
+    expect(migrated.items[0]?.dispatchReceipt).toEqual(receipt);
+    expect(migrated.lastDispatchReceiptStoredAt).toBe(receipt.storedAt);
+    expect(
+      nextTimedDispatchDeadline(receipt.storedAt, migrated.intervalMs),
+    ).toBe(30_000);
+    expect(migrated.revision).toBe(legacy.revision + 1);
+    const repeated = await repositories.migrateTimedImageQueueInterval({
+      queueId: migrated.queueId,
+      expectedRevision: migrated.revision,
+      at: 70_000,
+    });
+    expect(repeated).toEqual(migrated);
+  });
+
+  it("refuses legacy interval migration while an item has a live readiness intent", async () => {
+    const database = createMemoryRepositoryDatabase();
+    const repositories = new ExtensionRepositories(database, () => 500);
+    await repositories.savePromptBatch({
+      workspaceId: "image-workspace",
+      kind: "image",
+      sourceText: '{"shot_id":"01","text":"first"}',
+    });
+    await repositories.recordSelectedTarget({
+      provider: "Flow",
+      tabId: settingsConfirmation.tabId,
+      canonicalTarget: settingsConfirmation.canonicalTarget,
+    });
+    const fresh = await repositories.createTimedImageSubmissionQueue({
+      workspaceId: "image-workspace",
+      queueId: "c7f9dc94-0eba-4f32-b01a-ef7f848e552f",
+      settingsConfirmation,
+    });
+    const legacy = {
+      ...fresh,
+      intervalMs: LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+      items: [
+        {
+          ...fresh.items[0]!,
+          dispatchIntent: {
+            attemptId: "readiness-attempt",
+            recordedAt: 100,
+            readinessStartedAt: 100,
+            readinessDeadlineAt: 60_100,
+            readinessCheckAt: 500,
+          },
+        },
+      ],
+    };
+    await database.imageSubmissionQueues.put(legacy);
+    await expect(
+      repositories.migrateTimedImageQueueInterval({
+        queueId: legacy.queueId,
+        expectedRevision: legacy.revision,
+        at: 500,
+      }),
+    ).rejects.toMatchObject({ code: "queue_interval_migration_unsafe" });
+    expect(await database.imageSubmissionQueues.get(legacy.queueId)).toEqual(legacy);
+
+    const uncertain = {
+      ...fresh,
+      intervalMs: LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+      state: "blocked" as const,
+      items: [
+        {
+          ...fresh.items[0]!,
+          itemState: "blocked" as const,
+          providerOutcome: "unknown" as const,
+          dispatchIntent: {
+            attemptId: "uncertain-attempt",
+            recordedAt: 200,
+            activationStartedAt: 201,
+          },
+        },
+      ],
+      revision: 2,
+    };
+    await database.imageSubmissionQueues.put(uncertain);
+    await expect(
+      repositories.migrateTimedImageQueueInterval({
+        queueId: uncertain.queueId,
+        expectedRevision: uncertain.revision,
+        at: 600,
+      }),
+    ).rejects.toMatchObject({ code: "queue_interval_migration_unsafe" });
+    expect(await database.imageSubmissionQueues.get(uncertain.queueId)).toEqual(uncertain);
   });
 
   it("refuses an exact source held by an unresolved historical attempt", async () => {

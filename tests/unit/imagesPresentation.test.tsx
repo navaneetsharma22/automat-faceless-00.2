@@ -380,7 +380,7 @@ describe("Images UI Part 1 presentation improvements", () => {
       const header = container!.querySelector('[class*="header"]');
       expect(header).not.toBeNull();
       expect(header!.textContent).toContain("Image queue");
-      expect(header!.textContent).toContain("40 seconds between prompts");
+      expect(header!.textContent).toContain("20 seconds between prompts");
       expect(header!.querySelector("h3")).not.toBeNull();
     }
   });
@@ -514,7 +514,9 @@ describe("Images UI Part 1 presentation improvements", () => {
         const heading = section.querySelector('[class*="header"]')!;
         const setup = section.querySelector('[class*="createCard"]')!;
         const current = section.querySelector('[class*="currentQueueBlock"]');
-        expect(heading.textContent).toContain("40 seconds between prompts");
+        expect(heading.textContent).toContain(
+          `${(fixture.queue?.intervalMs ?? 20_000) / 1_000} seconds between prompts`,
+        );
         if (fixture.queue) {
           expect(current, `${theme}/${fixture.name}`).not.toBeNull();
           expect(

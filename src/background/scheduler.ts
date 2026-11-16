@@ -2,6 +2,7 @@ import type {
   ImageSubmissionQueueRecord,
   PromptReadbackDiagnostic,
 } from "../domain/jobs/queue";
+import { TIMED_IMAGE_SUBMISSION_INTERVAL_MS } from "../domain/jobs/queue";
 import {
   ExtensionRepositories,
   ImageQueueEligibilityError,
@@ -129,6 +130,15 @@ export function createTimedImageQueueScheduler(input: {
         )
       )
         throw new Error("image_queue_unresolved_dispatch_intent");
+      if (
+        queue.intervalMs !== TIMED_IMAGE_SUBMISSION_INTERVAL_MS &&
+        ["ready", "waiting", "paused"].includes(queue.state)
+      )
+        queue = await input.repositories.migrateTimedImageQueueInterval({
+          queueId,
+          expectedRevision: queue.revision,
+          at: now(),
+        });
       if (
         queue.state === "blocked" ||
         queue.state === "stopped" ||
@@ -379,6 +389,24 @@ export function createTimedImageQueueScheduler(input: {
       const queues =
         await input.repositories.listAllTimedImageSubmissionQueues();
       for (const queue of queues) {
+        const safeToMigrate =
+          ["ready", "waiting", "paused"].includes(queue.state) &&
+          !queue.items.some(
+            (item) =>
+              item.itemState === "sending" ||
+              (item.dispatchIntent &&
+                item.itemState !== "sent" &&
+                item.itemState !== "blocked"),
+          );
+        const currentQueue =
+          queue.intervalMs !== TIMED_IMAGE_SUBMISSION_INTERVAL_MS &&
+          safeToMigrate
+            ? await input.repositories.migrateTimedImageQueueInterval({
+                queueId: queue.queueId,
+                expectedRevision: queue.revision,
+                at: now(),
+              })
+            : queue;
         const unresolved = queue.items.find(
           (item) =>
             item.itemState === "sending" ||
@@ -432,10 +460,13 @@ export function createTimedImageQueueScheduler(input: {
           });
           continue;
         }
-        if (queue.state !== "waiting" || queue.nextEligibleDispatchAt === null)
+        if (
+          currentQueue.state !== "waiting" ||
+          currentQueue.nextEligibleDispatchAt === null
+        )
           continue;
-        if (queue.state === "waiting" || queue.state === "ready")
-          await schedule(queue);
+        if (currentQueue.state === "waiting" || currentQueue.state === "ready")
+          await schedule(currentQueue);
       }
     },
   };

@@ -20,6 +20,7 @@ import {
 import {
   ImageSubmissionQueueRecordSchema,
   TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+  LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
   nextTimedDispatchDeadline,
   type ImageQueueManualSettingsDeclaration,
   type ImageSubmissionQueueRecord as QueueRecord,
@@ -1388,6 +1389,55 @@ export class ExtensionRepositories {
     return record;
   }
 
+  /** Migrate only an idle queue. Keep its armed deadline and evidence intact. */
+  async migrateTimedImageQueueInterval(input: {
+    queueId: string;
+    expectedRevision: number;
+    at: number;
+  }): Promise<QueueRecord> {
+    let result!: QueueRecord;
+    await this.tables.transaction(["imageSubmissionQueues"], async () => {
+      const queue = await this.tables.imageSubmissionQueues.get(input.queueId);
+      if (!queue || !(await isValidTimedQueueSnapshot(queue)))
+        throw new ImageQueueEligibilityError("queue_record_invalid");
+      if (queue.revision !== input.expectedRevision)
+        throw new ImageQueueEligibilityError("queue_revision_changed");
+      if (queue.intervalMs === TIMED_IMAGE_SUBMISSION_INTERVAL_MS) {
+        result = queue;
+        return;
+      }
+      if (
+        !["ready", "waiting", "paused"].includes(queue.state) ||
+        queue.items.some(
+          (item) =>
+            item.itemState === "sending" ||
+            (item.dispatchIntent &&
+              item.itemState !== "sent" &&
+              item.itemState !== "blocked"),
+        )
+      )
+        throw new ImageQueueEligibilityError("queue_interval_migration_unsafe");
+      if (queue.intervalMs !== LEGACY_TIMED_IMAGE_SUBMISSION_INTERVAL_MS)
+        throw new ImageQueueEligibilityError("queue_interval_invalid");
+      const next: QueueRecord = {
+        ...queue,
+        intervalMs: TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
+        revision: queue.revision + 1,
+        updatedAt: input.at,
+      };
+      if (!ImageSubmissionQueueRecordSchema.safeParse(next).success)
+        throw new ImageQueueEligibilityError("queue_interval_migration_invalid");
+      await this.tables.imageSubmissionQueues.put(next);
+      const readback = await this.tables.imageSubmissionQueues.get(input.queueId);
+      if (!readback || readback.revision !== next.revision ||
+          readback.intervalMs !== TIMED_IMAGE_SUBMISSION_INTERVAL_MS ||
+          readback.nextEligibleDispatchAt !== queue.nextEligibleDispatchAt)
+        throw new ImageQueueEligibilityError("queue_interval_migration_readback_failed");
+      result = readback;
+    });
+    return result;
+  }
+
   async claimTimedImageQueueItem(input: {
     queueId: string;
     expectedRevision: number;
@@ -2115,10 +2165,11 @@ export class ExtensionRepositories {
           };
         });
 
-        // The queue transitions safely to "paused" so that it does NOT automatically resume
-        // and does NOT perform live Generate. The 40s scheduler timing is preserved.
+        // This stays paused and does not authorize live Generate. Future gaps
+        // use the current interval while receipts remain intact.
         const next: QueueRecord = {
           ...queue,
+          intervalMs: TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
           state: "paused",
           pauseReason: "guarded_retry_ready",
           items: updatedItems,
@@ -2126,7 +2177,7 @@ export class ExtensionRepositories {
           nextEligibleDispatchAt: queue.lastDispatchReceiptStoredAt
             ? nextTimedDispatchDeadline(
                 queue.lastDispatchReceiptStoredAt,
-                queue.intervalMs,
+                TIMED_IMAGE_SUBMISSION_INTERVAL_MS,
               )
             : null,
           revision: queue.revision + 1,
