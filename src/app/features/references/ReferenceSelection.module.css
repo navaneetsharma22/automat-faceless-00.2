@@ -388,7 +388,7 @@
   top: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   justify-content: stretch;
   gap: var(--space-3);
   min-width: 0;
@@ -403,6 +403,58 @@
   margin: 0;
   font-size: var(--font-size-lg);
   overflow-wrap: anywhere;
+}
+
+.pickerHeading {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.pickerPromptContext {
+  min-width: 0;
+}
+
+.pickerPromptExcerpt {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.pickerPromptDisclosure {
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.pickerPromptDisclosure summary,
+.pickerCandidateDetails > summary,
+.thumbnailDiagnostics summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.pickerPromptDisclosure pre {
+  min-width: 0;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .pickerDialogActions {
@@ -490,6 +542,7 @@
 }
 
 .thumbnailDiagnostics {
+  min-width: 0;
   color: var(--color-text-muted);
   font-size: 11px;
   overflow-wrap: anywhere;
@@ -516,7 +569,43 @@
 }
 
 .thumbnailDiagnostics dd {
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pickerCandidateDetails {
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pickerAssetIdentity {
+  display: block;
+  min-width: 0;
+  margin-top: var(--space-2);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.previewReadyBadge {
+  display: inline-flex;
+  min-height: var(--control-height-compact);
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-success);
+  border-radius: var(--radius-pill);
+  background: var(--color-success-surface);
+  color: var(--color-success);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
 }
 
 .pickerGrid {
@@ -527,8 +616,9 @@
 }
 
 .pickerCard {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--space-3);
   min-width: 0;
   padding: var(--space-3);
@@ -552,6 +642,16 @@
 }
 
 .pickerCard > button {
+  width: 100%;
+}
+
+.pickerChooseAction {
+  min-width: 0;
+  margin-top: auto;
+  padding-top: var(--space-2);
+}
+
+.pickerChooseAction > button {
   width: 100%;
 }
 

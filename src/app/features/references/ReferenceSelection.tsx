@@ -1268,6 +1268,10 @@ export function ReferenceSelection({
     }
   };
 
+  const pickerPromptItem = activeSession
+    ? batch?.items.find((item) => item.shotId === activeSession.shotId)
+    : undefined;
+
   return (
     <div className={styles.workspaceGrid}>
       <section className={styles.panel} aria-labelledby="references-title">
@@ -1387,9 +1391,27 @@ export function ReferenceSelection({
                 }}
               >
                 <div className={refStyles.pickerDialogHeader}>
-                  <h2 id="flow-image-picker-title">
-                    Flow images for Shot {activeSession.shotId}
-                  </h2>
+                  <div className={refStyles.pickerHeading}>
+                    <h2 id="flow-image-picker-title">
+                      Flow images for Shot {activeSession.shotId}
+                    </h2>
+                    {pickerPromptItem ? (
+                      <div className={refStyles.pickerPromptContext}>
+                        <p
+                          className={refStyles.pickerPromptExcerpt}
+                          aria-label={`Prompt excerpt for Shot ${activeSession.shotId}`}
+                        >
+                          {pickerPromptItem.rawJsonBody}
+                        </p>
+                        <details className={refStyles.pickerPromptDisclosure}>
+                          <summary>
+                            Read complete prompt for Shot {activeSession.shotId}
+                          </summary>
+                          <pre>{pickerPromptItem.rawJsonBody}</pre>
+                        </details>
+                      </div>
+                    ) : null}
+                  </div>
                   <div className={refStyles.pickerDialogActions}>
                     <Button
                       type="button"
@@ -1524,22 +1546,31 @@ export function ReferenceSelection({
                             </div>
                           ) : null}
                         </div>
-                        <Button
-                          onClick={() =>
-                            void handleLoadPreview(candidateId)
-                          }
-                          disabled={
-                            actionPending ||
-                            !!previewLoading[candidateId] ||
-                            !!previewUrl
-                          }
-                        >
-                          {previewLoading[candidateId] || (previewUrl && !previewReady && !previewFailed)
-                            ? "Loading preview…"
-                            : previewReady
-                              ? "Preview loaded"
+                        {previewReady ? (
+                          <span
+                            className={refStyles.previewReadyBadge}
+                            role="status"
+                            aria-label={`Preview ready for Shot ${activeSession.shotId}`}
+                          >
+                            <span aria-hidden="true">✓</span> Preview ready
+                          </span>
+                        ) : (
+                          <Button
+                            variant="primary"
+                            onClick={() =>
+                              void handleLoadPreview(candidateId)
+                            }
+                            disabled={
+                              actionPending ||
+                              !!previewLoading[candidateId] ||
+                              !!previewUrl
+                            }
+                          >
+                            {previewLoading[candidateId] || (previewUrl && !previewReady && !previewFailed)
+                              ? "Loading preview…"
                               : "Load preview"}
-                        </Button>
+                          </Button>
+                        )}
                         {previewFailed ? (
                           <p className={refStyles.pickerWarning} role="status">
                             Thumbnail could not load. No substitute image was
@@ -1548,6 +1579,7 @@ export function ReferenceSelection({
                         ) : null}
                         {previewPermissionNeeded[candidateId] ? (
                           <Button
+                            variant="secondary"
                             onClick={() =>
                               void handleRequestMediaPermission(
                                 candidate.sourceUrl,
@@ -1560,41 +1592,47 @@ export function ReferenceSelection({
                             Allow Flow image host access
                           </Button>
                         ) : null}
-                        {thumbnailDiagnostics[candidate.candidateId] ? (
-                          <details className={refStyles.thumbnailDiagnostics}>
-                            <summary>Preview diagnostics</summary>
-                            <dl>
-                              {Object.entries(
-                                thumbnailDiagnostics[candidateId]!,
-                              ).map(([label, value]) => (
-                                <div key={label}>
-                                  <dt>{label}</dt>
-                                  <dd>{value}</dd>
-                                </div>
-                              ))}
-                            </dl>
-                          </details>
-                        ) : null}
-                        <span className={refStyles.candidateMeta}>
-                          {candidate.providerAssetId
-                            ? `Flow asset ${candidate.providerAssetId}`
-                            : "Image source observed in Flow"}
-                        </span>
-                        <Button
-                          onClick={() =>
-                            void handleChooseFlowCandidate(
-                              candidate.candidateId,
-                            )
-                          }
-                          disabled={
-                            actionPending ||
-                            !flowVerified ||
-                            !!thumbnailFailures[candidateId] ||
-                            !previewReady
-                          }
-                        >
-                          Choose for Shot {activeSession.shotId}
-                        </Button>
+                        <details className={refStyles.pickerCandidateDetails}>
+                          <summary>Details</summary>
+                          <span className={refStyles.pickerAssetIdentity}>
+                            {candidate.providerAssetId
+                              ? `Flow asset ${candidate.providerAssetId}`
+                              : "Image source observed in Flow"}
+                          </span>
+                          {thumbnailDiagnostics[candidate.candidateId] ? (
+                            <details className={refStyles.thumbnailDiagnostics}>
+                              <summary>Preview diagnostics</summary>
+                              <dl>
+                                {Object.entries(
+                                  thumbnailDiagnostics[candidateId]!,
+                                ).map(([label, value]) => (
+                                  <div key={label}>
+                                    <dt>{label}</dt>
+                                    <dd>{value}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </details>
+                          ) : null}
+                        </details>
+                        <div className={refStyles.pickerChooseAction}>
+                          <Button
+                            variant={previewReady ? "primary" : "secondary"}
+                            onClick={() =>
+                              void handleChooseFlowCandidate(
+                                candidate.candidateId,
+                              )
+                            }
+                            disabled={
+                              actionPending ||
+                              !flowVerified ||
+                              !!thumbnailFailures[candidateId] ||
+                              !previewReady
+                            }
+                          >
+                            Choose for Shot {activeSession.shotId}
+                          </Button>
+                        </div>
                       </article>
                       );
                     })}
