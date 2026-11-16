@@ -1443,6 +1443,52 @@ export function ReferenceSelection({
                     savedReference?.selectionVersion;
                 const isTargetOfActiveSession =
                   activeSession?.shotId === shotId;
+                const captureMessage = captureStatus[shotId];
+                const captureUncertain = Boolean(
+                  captureMessage &&
+                  /(uncertain|reconcil|could not be confirmed|check status)/i.test(
+                    captureMessage,
+                  ),
+                );
+                const captureFailed = Boolean(
+                  captureMessage && /\bfailed\b/i.test(captureMessage),
+                );
+                const captureCancelled = Boolean(
+                  captureMessage && /\bcancelled\b/i.test(captureMessage),
+                );
+                const cardState = captureUncertain
+                  ? "capture-uncertain"
+                  : captureOperationIds[shotId]
+                    ? "capture-pending"
+                    : captureFailed
+                      ? "capture-failed"
+                      : captureCancelled
+                        ? "capture-cancelled"
+                        : captureMessage === "Reference saved"
+                          ? "reference-saved"
+                          : candidate && !candidateIsSaved
+                            ? savedReference
+                              ? "replacement-not-saved"
+                              : "candidate-not-saved"
+                            : savedReference
+                              ? "reference-saved"
+                              : "no-candidate";
+                const cardStateLabel =
+                  cardState === "capture-pending"
+                    ? "Capture pending"
+                    : cardState === "capture-uncertain"
+                      ? "Capture outcome uncertain"
+                      : cardState === "capture-failed"
+                        ? "Capture failed"
+                        : cardState === "capture-cancelled"
+                          ? "Capture cancelled"
+                          : cardState === "replacement-not-saved"
+                            ? "Replacement selected — not saved"
+                            : cardState === "candidate-not-saved"
+                              ? "Candidate selected — not saved"
+                              : cardState === "reference-saved"
+                                ? "Reference saved"
+                                : "No candidate selected";
 
                 return (
                   <article
@@ -1450,139 +1496,248 @@ export function ReferenceSelection({
                     className={`${refStyles.shotCard} ${isTargetOfActiveSession ? refStyles.shotCardSelected : ""}`}
                   >
                     <div className={refStyles.shotHeader}>
-                      <span className={refStyles.shotBadge}>Shot {shotId}</span>
-                      <span className={refStyles.candidateMeta}>
-                        Order {item.order + 1}
+                      <div className={refStyles.shotIdentity}>
+                        <span className={refStyles.shotBadge}>
+                          Shot {shotId}
+                        </span>
+                        <span className={refStyles.shotOrder}>
+                          Order {item.order + 1}
+                        </span>
+                      </div>
+                      <span
+                        className={refStyles.shotState}
+                        data-state={cardState}
+                        aria-label={`Shot ${shotId}: ${cardStateLabel}`}
+                      >
+                        {cardStateLabel}
                       </span>
                     </div>
 
-                    <p className={refStyles.promptExcerpt}>
-                      {item.rawJsonBody}
-                    </p>
+                    <div className={refStyles.promptBlock}>
+                      <p className={refStyles.promptLabel}>Image prompt</p>
+                      <p className={refStyles.promptExcerpt}>
+                        {item.rawJsonBody}
+                      </p>
+                      <details className={refStyles.promptDisclosure}>
+                        <summary>Read complete prompt</summary>
+                        <pre>{item.rawJsonBody}</pre>
+                      </details>
+                    </div>
 
                     {savedReference ? (
-                      <div className={refStyles.candidateDisplay}>
-                        {savedReferenceUrls[shotId] ? (
-                          <img
-                            src={savedReferenceUrls[shotId]}
-                            alt={`Saved reference for Shot ${shotId}`}
-                            className={refStyles.candidateThumbnail}
-                          />
-                        ) : (
-                          <p className={refStyles.candidateMeta}>
-                            Loading saved image bytes…
-                          </p>
-                        )}
-                        <div className={refStyles.candidateDetails}>
-                          <span className={refStyles.candidateHonestStatus}>
-                            Saved reference
-                          </span>
-                          <span className={refStyles.candidateMeta}>
-                            Verified {savedReference.width} ×{" "}
-                            {savedReference.height} {savedReference.mimeType},{" "}
-                            {savedReference.byteSize} bytes
-                          </span>
-                          <span className={refStyles.candidateMeta}>
-                            SHA-256 {savedReference.sha256}
-                          </span>
-                          {savedReference.providerAssetId ? (
-                            <span className={refStyles.candidateMeta}>
-                              Flow asset {savedReference.providerAssetId}
-                            </span>
-                          ) : null}
+                      <section
+                        className={`${refStyles.referencePanel} ${refStyles.savedReferencePanel}`}
+                        aria-label={`Saved reference for Shot ${shotId}`}
+                      >
+                        <div className={refStyles.referencePreview}>
+                          {savedReferenceUrls[shotId] ? (
+                            <img
+                              src={savedReferenceUrls[shotId]}
+                              alt={`Saved reference for Shot ${shotId}`}
+                              className={refStyles.candidateThumbnail}
+                            />
+                          ) : (
+                            <span>Saved preview unavailable</span>
+                          )}
                         </div>
-                      </div>
+                        <div className={refStyles.referenceContent}>
+                          <div className={refStyles.referenceHeading}>
+                            <strong>Currently saved reference</strong>
+                            {candidate && !candidateIsSaved ? (
+                              <span>Kept until replacement is saved</span>
+                            ) : null}
+                          </div>
+                          <p className={refStyles.candidateMeta}>
+                            {savedReference.width} × {savedReference.height} ·{" "}
+                            {savedReference.mimeType} ·{" "}
+                            {savedReference.byteSize} bytes
+                          </p>
+                          <details className={refStyles.technicalDetails}>
+                            <summary>Saved reference details</summary>
+                            <dl>
+                              <div>
+                                <dt>SHA-256</dt>
+                                <dd> {savedReference.sha256}</dd>
+                              </div>
+                              <div>
+                                <dt>Reference ID</dt>
+                                <dd>{savedReference.referenceId}</dd>
+                              </div>
+                              <div>
+                                <dt>Capture operation</dt>
+                                <dd>{savedReference.captureOperationId}</dd>
+                              </div>
+                              <div>
+                                <dt>Assignment</dt>
+                                <dd>{savedReference.assignmentId} · v{savedReference.assignmentVersion}</dd>
+                              </div>
+                              {savedReference.providerAssetId ? (
+                                <div>
+                                  <dt>Flow asset ID</dt>
+                                  <dd>{savedReference.providerAssetId}</dd>
+                                </div>
+                              ) : null}
+                              <div>
+                                <dt>Prompt SHA-256</dt>
+                                <dd>{savedReference.promptHash}</dd>
+                              </div>
+                              <div>
+                                <dt>Observed source SHA-256</dt>
+                                <dd>{savedReference.observedSourceSha256}</dd>
+                              </div>
+                              <div>
+                                <dt>Captured</dt>
+                                <dd>
+                                  {new Date(
+                                    savedReference.capturedAt,
+                                  ).toLocaleString()}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Acquisition</dt>
+                                <dd>{savedReference.acquisitionProvenance}</dd>
+                              </div>
+                              <div>
+                                <dt>Quality</dt>
+                                <dd>{savedReference.qualityProvenance}</dd>
+                              </div>
+                            </dl>
+                          </details>
+                        </div>
+                      </section>
+                    ) : null}
+
+                    {candidate && !candidateIsSaved ? (
+                      <section
+                        className={`${refStyles.referencePanel} ${refStyles.candidatePanel}`}
+                        aria-label={`Selected candidate for Shot ${shotId}`}
+                      >
+                        <div
+                          className={refStyles.candidatePreview}
+                          aria-hidden="true"
+                        >
+                          Candidate preview is available in Browse Flow images.
+                        </div>
+                        <div className={refStyles.referenceContent}>
+                          <div className={refStyles.referenceHeading}>
+                            <strong>Selected candidate</strong>
+                            <span>Not saved</span>
+                          </div>
+                          <p className={refStyles.candidateNote}>
+                            Candidate selection is transient. Candidate selected
+                            — not saved yet. Saving captures and retains the
+                            original image bytes.
+                          </p>
+                          <details className={refStyles.technicalDetails}>
+                            <summary>Candidate details</summary>
+                            <dl>
+                              <div>
+                                <dt>Dimensions</dt>
+                                <dd>
+                                  {candidate.naturalWidth ||
+                                    candidate.displayWidth}{" "}
+                                  ×{" "}
+                                  {candidate.naturalHeight ||
+                                    candidate.displayHeight}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Flow card tag</dt>
+                                <dd>{candidate.cardTag}</dd>
+                              </div>
+                              {candidate.providerAssetId ? (
+                                <div>
+                                  <dt>Flow asset ID</dt>
+                                  <dd>{candidate.providerAssetId}</dd>
+                                </div>
+                              ) : null}
+                              {candidate.selectionVersion ? (
+                                <div>
+                                  <dt>Selection version</dt>
+                                  <dd>{candidate.selectionVersion}</dd>
+                                </div>
+                              ) : null}
+                              {candidate.promptHash ? (
+                                <div>
+                                  <dt>Prompt SHA-256</dt>
+                                  <dd>{candidate.promptHash}</dd>
+                                </div>
+                              ) : null}
+                              {candidate.observedSourceSha256 ? (
+                                <div>
+                                  <dt>Observed source SHA-256</dt>
+                                  <dd>{candidate.observedSourceSha256}</dd>
+                                </div>
+                              ) : null}
+                              {candidate.selectionSessionId ? (
+                                <div>
+                                  <dt>Selection session</dt>
+                                  <dd>{candidate.selectionSessionId}</dd>
+                                </div>
+                              ) : null}
+                            </dl>
+                          </details>
+                        </div>
+                      </section>
                     ) : null}
 
                     {candidate ? (
-                      <div className={refStyles.candidateDisplay}>
-                        <div className={refStyles.candidateDetails}>
-                          <span className={refStyles.candidateHonestStatus}>
-                            {candidateIsSaved
-                              ? "This selection is saved."
-                              : "Candidate selected — not saved yet."}
-                          </span>
-                          <span className={refStyles.candidateMeta}>
-                            Candidate selection is transient. Saving below
-                            captures and retains the original image bytes.
-                          </span>
-                          <span className={refStyles.candidateMeta}>
-                            Dimensions:{" "}
-                            {candidate.naturalWidth || candidate.displayWidth} ×{" "}
-                            {candidate.naturalHeight || candidate.displayHeight}
-                          </span>
-                          <span className={refStyles.candidateMeta}>
-                            Card tag: {candidate.cardTag}
-                          </span>
-                          {candidate.providerAssetId ? (
-                            <span className={refStyles.candidateMeta}>
-                              Provider asset ID: {candidate.providerAssetId}
-                            </span>
+                      <div className={refStyles.shotActions}>
+                        <div className={refStyles.cardActions}>
+                          {!candidateIsSaved ? (
+                            <Button
+                              onClick={() => void handleSaveReference(shotId)}
+                              disabled={
+                                !candidate.selectionVersion ||
+                                !!captureOperationIds[shotId]
+                              }
+                            >
+                              Save reference
+                            </Button>
                           ) : null}
-                          <div
-                            className={refStyles.cardActions}
-                            style={{ marginTop: "6px" }}
+                          {mediaPermissionNeeded[shotId] ? (
+                            <Button
+                              onClick={() =>
+                                void handleRequestMediaPermission(
+                                  candidate.sourceUrl,
+                                  candidate.providerAssetId,
+                                  shotId,
+                                )
+                              }
+                            >
+                              Allow Flow image host access
+                            </Button>
+                          ) : null}
+                          <Button
+                            onClick={(event) =>
+                              void handleStartSelection(
+                                shotId,
+                                true,
+                                event.currentTarget,
+                              )
+                            }
+                            disabled={!flowVerified || actionPending}
                           >
-                            {!candidateIsSaved ? (
-                              <Button
-                                onClick={() => void handleSaveReference(shotId)}
-                                disabled={
-                                  !candidate.selectionVersion ||
-                                  !!captureOperationIds[shotId]
-                                }
-                              >
-                                Save reference
-                              </Button>
-                            ) : null}
-                            {mediaPermissionNeeded[shotId] ? (
-                              <Button
-                                onClick={() =>
-                                  void handleRequestMediaPermission(
-                                    candidate.sourceUrl,
-                                    candidate.providerAssetId,
-                                    shotId,
-                                  )
-                                }
-                              >
-                                Allow Flow image host access
-                              </Button>
-                            ) : null}
-                            <Button
-                              onClick={(event) =>
-                                void handleStartSelection(
-                                  shotId,
-                                  true,
-                                  event.currentTarget,
-                                )
-                              }
-                              disabled={!flowVerified || actionPending}
-                            >
-                              Re-select candidate
-                            </Button>
-                            <Button
-                              onClick={(event) =>
-                                void handleStartSelection(
-                                  shotId,
-                                  true,
-                                  event.currentTarget,
-                                )
-                              }
-                              disabled={!flowVerified || actionPending}
-                            >
-                              Browse Flow images
-                            </Button>
-                            <Button
-                              onClick={() => handleClearCandidate(shotId)}
-                              disabled={actionPending}
-                            >
-                              Clear candidate
-                            </Button>
-                          </div>
-                          {captureStatus[shotId] ? (
-                            <p className={refStyles.pickerStatus} role="status">
-                              {captureStatus[shotId]}
-                            </p>
-                          ) : null}
+                            Re-select candidate
+                          </Button>
+                          <Button
+                            onClick={(event) =>
+                              void handleStartSelection(
+                                shotId,
+                                true,
+                                event.currentTarget,
+                              )
+                            }
+                            disabled={!flowVerified || actionPending}
+                          >
+                            Browse Flow images
+                          </Button>
+                          <Button
+                            onClick={() => handleClearCandidate(shotId)}
+                            disabled={actionPending}
+                          >
+                            Clear candidate
+                          </Button>
                           {captureOperationIds[shotId] ? (
                             <Button
                               onClick={() =>
@@ -1593,44 +1748,74 @@ export function ReferenceSelection({
                             </Button>
                           ) : null}
                         </div>
+                        {captureMessage ? (
+                          <p
+                            className={
+                              captureFailed || captureUncertain
+                                ? refStyles.captureAlert
+                                : refStyles.captureStatus
+                            }
+                            role={
+                              captureFailed || captureUncertain
+                                ? "alert"
+                                : "status"
+                            }
+                          >
+                            {captureMessage}
+                          </p>
+                        ) : null}
                       </div>
                     ) : (
-                      <div className={refStyles.cardActions}>
-                        <span className={refStyles.candidateMeta}>
+                      <div className={refStyles.shotActions}>
+                        <p className={refStyles.candidateNote}>
                           {isTargetOfActiveSession
                             ? "Selection is active. Choose an image from Flow or browse the verified images here."
                             : "No reference candidate selected."}
-                        </span>
-                        <Button
-                          onClick={() => void handleStartSelection(shotId)}
-                          disabled={
-                            !flowVerified ||
-                            actionPending ||
-                            isTargetOfActiveSession
-                          }
-                        >
-                          Start selection
-                        </Button>
-                        <Button
-                          onClick={(event) => {
-                            if (isTargetOfActiveSession && activeSession) {
-                              pickerOpenerRef.current = event.currentTarget;
-                              pickerScrollYRef.current = window.scrollY;
-                              void loadFlowImageCandidates(
-                                activeSession.sessionId,
-                              );
-                            } else {
-                              void handleStartSelection(
-                                shotId,
-                                true,
-                                event.currentTarget,
-                              );
+                        </p>
+                        <div className={refStyles.cardActions}>
+                          <Button
+                            onClick={() => void handleStartSelection(shotId)}
+                            disabled={
+                              !flowVerified ||
+                              actionPending ||
+                              isTargetOfActiveSession
                             }
-                          }}
-                          disabled={!flowVerified || actionPending}
-                        >
-                          Browse Flow images
-                        </Button>
+                          >
+                            Start selection
+                          </Button>
+                          <Button
+                            onClick={(event) => {
+                              if (isTargetOfActiveSession && activeSession) {
+                                pickerOpenerRef.current = event.currentTarget;
+                                pickerScrollYRef.current = window.scrollY;
+                                void loadFlowImageCandidates(
+                                  activeSession.sessionId,
+                                );
+                              } else {
+                                void handleStartSelection(
+                                  shotId,
+                                  true,
+                                  event.currentTarget,
+                                );
+                              }
+                            }}
+                            disabled={!flowVerified || actionPending}
+                          >
+                            Browse Flow images
+                          </Button>
+                        </div>
+                        {captureMessage ? (
+                          <p
+                            className={
+                              captureFailed
+                                ? refStyles.captureAlert
+                                : refStyles.captureStatus
+                            }
+                            role={captureFailed ? "alert" : "status"}
+                          >
+                            {captureMessage}
+                          </p>
+                        ) : null}
                       </div>
                     )}
                   </article>

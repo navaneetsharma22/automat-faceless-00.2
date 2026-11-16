@@ -1382,6 +1382,23 @@ export function createConnectionMessageListener(
           sendResponse(failure(request.requestId, "storage_failure", code, "The Vids queue could not safely continue. Review the queue stage and reconnect requirements before retrying.", stage));
           return;
         }
+        if (request.type.startsWith("flow.videoQueue.")) {
+          const rawCode = error instanceof Error ? error.message : "";
+          const code = /^[a-z0-9_]{1,64}$/.test(rawCode)
+            ? rawCode
+            : "flow_video_queue_operation_failed";
+          const stage = request.type.endsWith(".resume")
+            ? "resume_action"
+            : "queue_action";
+          sendResponse(failure(
+            request.requestId,
+            "storage_failure",
+            code,
+            "The Flow queue could not safely complete this action. Review the reported stage and queue reason before continuing.",
+            stage,
+          ));
+          return;
+        }
         if (request.type.startsWith("imageQueue.")) {
           sendResponse(
             failure(

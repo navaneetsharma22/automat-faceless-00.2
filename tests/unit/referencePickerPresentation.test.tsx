@@ -77,6 +77,7 @@ async function setup(
     shotIds?: string[];
     savedShotIds?: string[];
     failCapture?: boolean;
+    uncertainCapture?: boolean;
     failChoose?: boolean;
     deferChoose?: boolean;
     distinctSavedReferences?: boolean;
@@ -234,7 +235,9 @@ async function setup(
         return { saved: true, reference: next };
       }
       if (type === "flow.reference.getCaptureStatus")
-        return { status: "failed", reason: "fixture_capture_failed" };
+        return options.uncertainCapture
+          ? { status: "acquiring" }
+          : { status: "failed", reason: "fixture_capture_failed" };
       if (type === "flow.reference.clearCandidate") {
         delete chosenCandidates[String(payload?.shotId)];
         return { cleared: true };
@@ -314,6 +317,21 @@ async function setup(
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
     },
+    emitCaptureProgress: async (shotId: string) => {
+      await act(async () => {
+        for (const listener of messageListeners)
+          listener({
+            type: FLOW_REFERENCE_EVENT_MESSAGE,
+            event: "capture_progress",
+            captureOperationId: "10000000-0000-4000-8000-000000000099",
+            workspaceId: "default",
+            batchId: "batch-1",
+            batchSourceHash,
+            shotId,
+            stage: "capturing",
+          });
+      });
+    },
     setList: (fn: typeof listResponse) => {
       listResponse = fn;
     },
@@ -377,6 +395,18 @@ describe("References-owned Flow image picker", () => {
     });
     expect(container.textContent).toContain("Candidate selected for Shot 34");
     expect(container.textContent).toContain("Candidate selection is transient");
+    expect(container.textContent).toContain("Candidate selected — not saved");
+    expect(container.textContent).toContain("Read complete prompt");
+    expect(
+      container.querySelector('[class*="promptDisclosure"] pre')?.textContent,
+    ).toBe(
+      '{"shot_id":"34"}',
+    );
+    expect(
+      container
+        .querySelector('[class*="shotState"]')
+        ?.getAttribute("data-state"),
+    ).toBe("candidate-not-saved");
     expect(container.textContent).toContain("Save reference");
     expect(container.textContent).not.toContain("Flow images for Shot 34");
   });
@@ -409,6 +439,54 @@ describe("References-owned Flow image picker", () => {
       container.querySelector('img[alt="Saved reference for Shot 35"]'),
     ).toBeTruthy();
     expect(container.textContent).toContain("SHA-256 " + "d".repeat(64));
+    const shot35 = [...container.querySelectorAll("article")].find(
+      (article) =>
+        article.className.includes("shotCard") &&
+        article.textContent?.includes("Shot 35"),
+    );
+    expect(shot35?.querySelector('[class*="shotState"]')?.textContent).toBe(
+      "Reference saved",
+    );
+  });
+
+  it("labels an empty Shot without implying a candidate or saved reference", async () => {
+    await setup();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const card = [...container.querySelectorAll("article")].find((article) =>
+      article.textContent?.includes("Shot 34"),
+    )!;
+    expect(
+      card.querySelector('[class*="shotState"]')?.getAttribute("data-state"),
+    ).toBe("no-candidate");
+    expect(card.querySelector('[class*="shotState"]')?.textContent).toBe(
+      "No candidate selected",
+    );
+    expect(card.querySelector("img")).toBeNull();
+    expect(card.textContent).toContain("Start selection");
+    expect(card.textContent).toContain("Browse Flow images");
+  });
+
+  it("shows capture pending and retains the cancel control", async () => {
+    const { emitCaptureProgress } = await setup({
+      shotIds: ["35"],
+      savedShotIds: ["35"],
+    });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    await emitCaptureProgress("35");
+    const card = [...container.querySelectorAll("article")].find(
+      (article) =>
+        article.className.includes("shotCard") &&
+        article.textContent?.includes("Shot 35"),
+    )!;
+    expect(
+      card.querySelector('[class*="shotState"]')?.getAttribute("data-state"),
+    ).toBe("capture-pending");
+    expect(card.textContent).toContain("Capturing reference…");
+    expect(
+      [...card.querySelectorAll("button")].some(
+        (button) => button.textContent?.trim() === "Cancel capture",
+      ),
+    ).toBe(true);
   });
 
   it("cancelling re-selection preserves the saved image", async () => {
@@ -506,10 +584,11 @@ describe("References-owned Flow image picker", () => {
   });
 
   it("ignores a chooser response after a different Shot becomes the active session", async () => {
-    const { click, clickInShot, releaseChoose, emitSessionStarted } = await setup({
-      shotIds: ["34", "35"],
-      deferChoose: true,
-    });
+    const { click, clickInShot, releaseChoose, emitSessionStarted } =
+      await setup({
+        shotIds: ["34", "35"],
+        deferChoose: true,
+      });
     await clickInShot("34", "Browse Flow images");
     await click("Load preview");
     await act(async () =>
@@ -534,7 +613,9 @@ describe("References-owned Flow image picker", () => {
     expect(container.querySelector("dialog[open]")?.textContent).toContain(
       "Flow images for Shot 35",
     );
-    expect(container.textContent).not.toContain("Candidate selected for Shot 34");
+    expect(container.textContent).not.toContain(
+      "Candidate selected for Shot 34",
+    );
   });
 
   it("clearing the transient candidate preserves the saved image", async () => {
@@ -582,6 +663,12 @@ describe("References-owned Flow image picker", () => {
     expect(container.textContent).toContain(
       "Candidate selected — not saved yet.",
     );
+    const card = [...container.querySelectorAll("article")].find((article) =>
+      article.textContent?.includes("Shot 35"),
+    );
+    expect(
+      card?.querySelector('[class*="shotState"]')?.getAttribute("data-state"),
+    ).toBe("replacement-not-saved");
     expect(container.textContent).toContain("Save reference");
   });
 
@@ -686,10 +773,51 @@ describe("References-owned Flow image picker", () => {
     expect(container.textContent).toContain(
       "Capture failed (fixture_capture_failed)",
     );
+    const shot35 = [...container.querySelectorAll("article")].find(
+      (article) =>
+        article.className.includes("shotCard") &&
+        article.textContent?.includes("Shot 35"),
+    );
+    expect(
+      shot35?.querySelector('[class*="shotState"]')?.getAttribute("data-state"),
+    ).toBe("capture-failed");
     const shot36 = [...container.querySelectorAll("article")].find((article) =>
       article.textContent?.includes("Shot 36"),
     );
     expect(shot36?.textContent).toContain("SHA-256 " + "d".repeat(64));
+  });
+
+  it("labels an unresolved capture uncertain and keeps the prior saved reference", async () => {
+    const { click, clickInShot } = await setup({
+      shotIds: ["35"],
+      savedShotIds: ["35"],
+      failCapture: true,
+      uncertainCapture: true,
+    });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    await clickInShot("35", "Re-select candidate");
+    await click("Load preview");
+    await act(async () =>
+      container
+        .querySelector('img[alt^="Flow image candidate preview"]')!
+        .dispatchEvent(new Event("load")),
+    );
+    await click("Choose for Shot 35");
+    await clickInShot("35", "Save reference");
+
+    const card = [...container.querySelectorAll("article")].find(
+      (article) =>
+        article.className.includes("shotCard") &&
+        article.textContent?.includes("Shot 35"),
+    )!;
+    expect(
+      card.querySelector('[class*="shotState"]')?.getAttribute("data-state"),
+    ).toBe("capture-uncertain");
+    expect(card.textContent).toContain("Capture outcome uncertain");
+    expect(
+      card.querySelector('img[alt="Saved reference for Shot 35"]'),
+    ).toBeTruthy();
+    expect(card.textContent).toContain("SHA-256 " + "d".repeat(64));
   });
 
   it("reports failed thumbnail loading and prevents choosing an unseen substitute", async () => {

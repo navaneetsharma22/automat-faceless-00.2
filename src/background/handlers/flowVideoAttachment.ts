@@ -115,7 +115,7 @@ export function flowVideoAttachmentStructurePreflightInPage(): {
  * Resolve exactly one visible gallery tile by the pinned provider media ID.
  * Flow virtualizes its project gallery, so a tile can be absent from the DOM
  * at the current scroll position. Search the already-rendered DOM first, then
- * perform at most eight bounded scroll checks per visible project gallery
+ * perform bounded scroll checks per visible project gallery
  * viewport. The matching tile is left rendered for the follow-up detail/action
  * steps; a failed search restores every inspected scroll position.
  */
@@ -171,15 +171,20 @@ export async function flowVideoGalleryCandidateInPage(
       !scroller.closest("flow-base-prompt-box") &&
       !scroller.closest("[role=listbox][aria-label='Asset list']"),
   );
+  const maxChecksPerScroller = 256;
   for (const scroller of scrollers) {
     const originalTop = scroller.scrollTop;
     const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
     if (maxTop === 0) continue;
     const step = Math.max(1, Math.floor(scroller.clientHeight * 0.75));
-    const steps = Math.min(8, Math.max(1, Math.ceil(maxTop / step)));
+    const steps = Math.max(1, Math.ceil(maxTop / step) + 1);
+    if (steps > maxChecksPerScroller) {
+      scroller.scrollTop = originalTop;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { ok: false, href: location.href, reason: "candidate_search_incomplete" };
+    }
     for (let index = 0; index < steps; index++) {
-      scroller.scrollTop =
-        index === steps - 1 ? maxTop : Math.min(maxTop, index * step);
+      scroller.scrollTop = Math.min(maxTop, index * step);
       await new Promise((resolve) => setTimeout(resolve, 50));
       const state = read();
       if (state.reason)

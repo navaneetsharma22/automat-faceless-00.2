@@ -13,14 +13,14 @@
 }
 
 .noticeWarning {
-  border-color: #d29922;
-  background: rgba(210, 153, 34, 0.1);
-  color: #d29922;
+  border-color: var(--color-warning);
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
 }
 
 .noticeActive {
-  border-color: #1f6feb;
-  background: rgba(31, 111, 235, 0.12);
+  border-color: var(--color-info);
+  background: var(--color-info-surface);
   color: var(--color-text);
 }
 
@@ -33,20 +33,23 @@
 }
 
 .activeHeader strong {
-  color: #58a6ff;
+  color: var(--color-info);
   font-size: var(--font-size-md);
 }
 
 .shotList {
   display: grid;
-  gap: var(--space-3);
-  margin-top: var(--space-2);
+  gap: var(--space-4);
+  width: 100%;
+  min-width: 0;
+  margin-top: var(--space-3);
 }
 
 .shotCard {
   display: grid;
-  gap: var(--space-3);
-  padding: var(--space-4);
+  gap: var(--space-4);
+  min-width: 0;
+  padding: clamp(var(--space-3), 2vw, var(--space-6));
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   background: var(--color-surface);
@@ -54,14 +57,22 @@
 }
 
 .shotCardSelected {
-  border-color: #1f6feb;
-  box-shadow: 0 0 0 1px #1f6feb;
+  border-color: var(--color-focus);
+  box-shadow: var(--shadow-card-selected);
 }
 
 .shotHeader {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.shotIdentity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
@@ -69,12 +80,71 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   font-weight: 700;
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.shotOrder {
+  color: var(--color-text-muted);
   font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.shotState {
+  max-width: 100%;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+  line-height: var(--line-height-tight);
+}
+
+.shotState[data-state="reference-saved"] {
+  border-color: var(--color-success);
+  background: var(--color-success-surface);
+  color: var(--color-success);
+}
+
+.shotState[data-state="candidate-not-saved"],
+.shotState[data-state="replacement-not-saved"],
+.shotState[data-state="capture-pending"] {
+  border-color: var(--color-warning);
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+}
+
+.shotState[data-state="capture-failed"],
+.shotState[data-state="capture-uncertain"] {
+  border-color: var(--color-error);
+  background: var(--color-error-surface);
+  color: var(--color-error);
+}
+
+.promptBlock {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card-compact);
+  background: var(--color-surface-raised);
+}
+
+.promptLabel {
+  margin: 0;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .promptExcerpt {
@@ -82,48 +152,175 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
 }
 
-.candidateDisplay {
-  display: flex;
-  gap: var(--space-3);
+.promptDisclosure,
+.technicalDetails {
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.promptDisclosure summary,
+.technicalDetails summary {
+  width: fit-content;
+  color: var(--color-info);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.promptDisclosure pre {
+  max-height: 16rem;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: 0.8125rem/var(--line-height-relaxed) var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.referencePanel {
+  display: grid;
+  grid-template-columns: minmax(120px, 184px) minmax(0, 1fr);
+  align-items: stretch;
+  gap: var(--space-4);
+  min-width: 0;
   padding: var(--space-3);
   border-radius: var(--radius-card);
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
 }
 
-.candidateThumbnail {
-  width: 96px;
-  height: 96px;
-  object-fit: cover;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-  background: #000;
-  flex-shrink: 0;
+.candidatePanel {
+  border-color: var(--color-info);
 }
 
-.candidateDetails {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+.referencePreview,
+.candidatePreview {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-width: 0;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  text-align: center;
   font-size: var(--font-size-xs);
+  line-height: var(--line-height-body);
+}
+
+.candidatePreview {
+  padding: var(--space-3);
+  border-style: dashed;
+}
+
+.candidateThumbnail {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.referenceContent {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
   min-width: 0;
 }
 
-.candidateHonestStatus {
-  color: #3fb950;
-  font-weight: 600;
-  margin-bottom: 2px;
+.referenceHeading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+.referenceHeading span {
+  color: var(--color-warning);
+  font-size: var(--font-size-xs);
+}
+
+.referenceContent > p,
+.candidateNote {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-body);
+}
+
+.technicalDetails dl {
+  display: grid;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+}
+
+.technicalDetails dl > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.32fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+}
+
+.technicalDetails dt {
+  color: var(--color-text-subtle);
+  font-weight: 650;
+}
+
+.technicalDetails dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.shotActions {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
 }
 
 .candidateMeta {
   color: var(--color-text-muted);
+}
+
+.captureStatus,
+.captureAlert {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-info);
+  border-radius: var(--radius-control);
+  background: var(--color-info-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
+}
+
+.captureAlert {
+  border-color: var(--color-error);
+  background: var(--color-error-surface);
+  color: var(--color-error);
 }
 
 .pickerPanel {
@@ -294,6 +491,25 @@
 }
 
 @media (max-width: 40rem) {
+  .shotCard {
+    gap: var(--space-3);
+    padding: var(--space-3);
+  }
+
+  .referencePanel {
+    grid-template-columns: minmax(88px, 112px) minmax(0, 1fr);
+    gap: var(--space-3);
+    padding: var(--space-2);
+  }
+
+  .promptBlock {
+    padding: var(--space-3);
+  }
+
+  .technicalDetails dl > div {
+    grid-template-columns: minmax(5.5rem, 0.3fr) minmax(0, 1fr);
+  }
+
   .pickerDialog {
     width: calc(100vw - 1rem);
     height: 94dvh;

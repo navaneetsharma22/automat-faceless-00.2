@@ -96,6 +96,7 @@ export function FlowPreparedBatchReview({
   const [videoQueueBusy, setVideoQueueBusy] = useState(false);
   const [videoQueueAction, setVideoQueueAction] = useState<string | null>(null);
   const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
+  const [videoQueueErrorStage, setVideoQueueErrorStage] = useState<string | null>(null);
   const [videoQueueNotice, setVideoQueueNotice] = useState<string | null>(null);
   const toast = useOptionalToast();
   const previousAllSent = useRef<{ queueId: string; allSent: boolean } | null>(null);
@@ -128,6 +129,7 @@ export function FlowPreparedBatchReview({
     setVideoQueueBusy(true);
     setVideoQueueAction(action);
     setVideoQueueError(null);
+    setVideoQueueErrorStage(null);
     setVideoQueueNotice(null);
     const type = `flow.videoQueue.${action}` as const;
     const payload = action === "start"
@@ -146,6 +148,8 @@ export function FlowPreparedBatchReview({
     } catch (error) {
       const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "queue_request_failed";
       setVideoQueueError(code);
+      const stage = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.stage ?? "") ? error.stage! : null;
+      setVideoQueueErrorStage(stage);
       return false;
     } finally {
       setVideoQueueBusy(false);
@@ -327,7 +331,7 @@ export function FlowPreparedBatchReview({
             {videoQueue ? (
               <>
                 {videoQueueNotice ? <p role="status">{videoQueueNotice}</p> : null}
-                {videoQueueError ? <p role="alert">Queue action failed: {videoQueueError}</p> : null}
+                {videoQueueError ? <p role="alert">Queue action failed{videoQueueErrorStage ? ` at ${videoQueueErrorStage}` : ""}: {videoQueueError}</p> : null}
                 <div className={styles.queueOverview}>
                   <div className={styles.queueOverviewState}>
                     <span className={`${styles.stateBadge} ${styles[`state${videoQueueStatus.replace(/[^a-zA-Z0-9]/g, "")}`] ?? ""}`}>
