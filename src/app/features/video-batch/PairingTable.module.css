@@ -17,9 +17,11 @@
 
 .sourceSelectionHeader {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .sourceSelectionTitle {
@@ -31,6 +33,7 @@
 
 .sourceBadge {
   display: inline-flex;
+  max-width: 100%;
   align-items: center;
   padding: 2px 8px;
   border-radius: 4px;
@@ -39,13 +42,30 @@
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.sourceSelectionContent {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-3);
+}
+
+.sourceSelectionActions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .sourceDetails {
+  min-width: 0;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   margin: 0;
   line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
 }
 
 .summaryBar {
@@ -86,6 +106,8 @@
 }
 
 .tableWrapper {
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
@@ -94,6 +116,8 @@
 
 .table {
   width: 100%;
+  min-width: 42rem;
+  table-layout: fixed;
   border-collapse: collapse;
   text-align: left;
   font-size: var(--font-size-sm);
@@ -112,8 +136,13 @@
 }
 
 .table td {
+  min-width: 0;
   padding: var(--space-3);
   border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.table td:last-child {
   vertical-align: top;
 }
 
@@ -131,6 +160,7 @@
 
 .shotBadge {
   display: inline-flex;
+  max-width: 100%;
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
@@ -140,7 +170,8 @@
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   color: var(--color-text);
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .declaredShot {
@@ -152,26 +183,26 @@
 .thumbnailCell {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-width: 120px;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
 .thumbnailImage {
-  width: 72px;
-  height: 72px;
-  object-fit: cover;
-  border-radius: 4px;
+  width: 7rem;
+  height: 7rem;
+  object-fit: contain;
+  border-radius: var(--radius-control);
   border: 1px solid var(--color-border);
-  background: #000;
+  background: var(--color-surface-raised);
 }
 
 .thumbnailPlaceholder {
-  width: 72px;
-  height: 72px;
+  width: 7rem;
+  height: 7rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   border: 1px dashed var(--color-border);
   background: var(--color-surface-raised);
   color: var(--color-text-muted);
@@ -181,6 +212,7 @@
 }
 
 .thumbnailMeta {
+  max-width: 7rem;
   font-size: 11px;
   color: var(--color-text-muted);
   font-family: monospace;
@@ -243,10 +275,10 @@
   border: 1px solid var(--color-border);
   font-family: monospace;
   font-size: 11px;
-  max-height: 180px;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .unusedSection {
@@ -278,4 +310,24 @@
 .referencesNoticeText {
   margin: 0;
   color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .sourceSelectionBox {
+    padding: var(--space-3);
+  }
+
+  .sourceSelectionHeader > button {
+    max-width: 100%;
+  }
+
+  .referencesNotice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .referencesNotice > button {
+    align-self: flex-start;
+  }
 }

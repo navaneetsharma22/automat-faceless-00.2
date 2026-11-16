@@ -286,21 +286,14 @@ export function PairingTable({
         </div>
 
         {imageBatch && imageBatch.batch ? (
-          <div>
+          <div className={styles.sourceSelectionContent}>
             <p className={styles.sourceDetails}>
               Available saved image source:{" "}
               <span className={styles.sourceBadge}>{imageBatch.batch.id}</span>{" "}
               ({imageBatch.items.length} items
               {imageBatchHash ? `, hash: ${imageBatchHash.slice(0, 12)}…` : ""})
             </p>
-            <div
-              style={{
-                marginTop: "8px",
-                display: "flex",
-                gap: "8px",
-                alignItems: "center",
-              }}
-            >
+            <div className={styles.sourceSelectionActions}>
               {selectedImageSourceId === imageBatch.batch.id ? (
                 <>
                   <span className={styles.statusValid}>

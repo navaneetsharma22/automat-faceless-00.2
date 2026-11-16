@@ -91,6 +91,7 @@ function formatFlowRecoveryStatus(
 
 export type ImportPanelProps = {
   kind: PromptKind;
+  videoPresentation?: boolean;
   session: ImportPreviewSession;
   wrapLines: boolean;
   setWrapLines: (value: boolean) => void;
@@ -114,6 +115,7 @@ export type ImportPanelProps = {
 
 export function ImportPanel({
   kind,
+  videoPresentation = false,
   session,
   wrapLines,
   setWrapLines,
@@ -1064,7 +1066,7 @@ export function ImportPanel({
 
   return (
     <div
-      className={`${styles.importPanel} ${kind === "image" ? styles.imageImportPanel : ""}`}
+      className={`${styles.importPanel} ${kind === "image" ? styles.imageImportPanel : ""} ${videoPresentation && kind === "video" ? styles.videoImportPanel : ""}`}
       aria-busy={snapshot.status === "pending"}
     >
       <div
@@ -1256,7 +1258,7 @@ export function ImportPanel({
           </div>
         ) : null}
 
-        {kind === "video" ? validateActionRow : null}
+        {kind === "video" && !videoPresentation ? validateActionRow : null}
 
         {snapshot.status === "error" && snapshot.error ? (
           <Notice kind="error">
@@ -1405,7 +1407,7 @@ export function ImportPanel({
             </ul>
           </details>
         </details>
-        {kind === "video" ? saveValidatedBatchRow : null}
+        {kind === "video" && !videoPresentation ? saveValidatedBatchRow : null}
         {kind === "image" ? (
           <details className={styles.legacyTools}>
             <summary>
@@ -1863,6 +1865,12 @@ export function ImportPanel({
       </div>
       {kind === "image" ? (
         <div className={styles.imageActionFooter}>
+          {validateActionRow}
+          {saveValidatedBatchRow}
+        </div>
+      ) : null}
+      {kind === "video" && videoPresentation ? (
+        <div className={styles.videoActionFooter}>
           {validateActionRow}
           {saveValidatedBatchRow}
         </div>

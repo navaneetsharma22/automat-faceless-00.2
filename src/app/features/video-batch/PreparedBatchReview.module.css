@@ -80,7 +80,7 @@
   font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--color-text);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .metaSubtext {
@@ -89,16 +89,19 @@
 }
 
 .itemList {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+  align-items: start;
   gap: var(--space-3);
+  min-width: 0;
 }
 
 .itemCard {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: var(--space-3);
+  padding: var(--space-4);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card-compact);
   background: var(--color-surface);
@@ -106,14 +109,15 @@
 
 .itemHeader {
   display: flex;
-  align-items: center;
+  min-width: 0;
+  align-items: flex-start;
   gap: var(--space-3);
 }
 
 .thumbnailContainer {
-  width: 56px;
-  height: 56px;
-  border-radius: 4px;
+  width: 7rem;
+  height: 5.25rem;
+  border-radius: var(--radius-control);
   overflow: hidden;
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
@@ -126,7 +130,7 @@
 .thumbnailImage {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .thumbnailPlaceholder {
@@ -155,6 +159,7 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .details {
@@ -181,10 +186,10 @@
   font-size: var(--font-size-xs);
   line-height: var(--line-height-relaxed);
   color: var(--color-text);
-  overflow-x: auto;
+  overflow: visible;
   white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 200px;
+  overflow-wrap: anywhere;
+  max-height: none;
 }
 
 .videoQueue {
@@ -261,7 +266,7 @@
 
 .queueOverviewProgress progress {
   width: 100%;
-  height: 0.7rem;
+  height: 0.85rem;
   accent-color: var(--color-accent);
 }
 
@@ -270,6 +275,11 @@
   color: var(--color-text);
   font-size: var(--font-size-md);
   overflow-wrap: anywhere;
+}
+
+.queueOverviewProgress strong {
+  font-size: clamp(var(--font-size-md), 1.5vw, var(--font-size-lg));
+  font-variant-numeric: tabular-nums;
 }
 
 .queueOverviewShot code,
@@ -443,6 +453,7 @@
 .videoQueueActions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--space-2);
 }
 

@@ -872,7 +872,7 @@ export function VideosView({
   };
 
   return (
-    <div className={styles.workspaceGrid}>
+    <div className={`${styles.workspaceGrid} ${styles.videoWorkspaceGrid}`}>
       <section
         className={`${styles.panel} ${styles.editorPanel}`}
         aria-labelledby="video-provider-title"
@@ -917,7 +917,7 @@ export function VideosView({
           confirmed={confirmed}
           onConfirmationChange={setConfirmed}
         />
-        <div className={styles.actionRow}>
+        <div className={`${styles.actionRow} ${styles.videoPrepareActionRow}`}>
           <Button
             disabled={!canPrepare}
             onClick={handlePrepareBatch}

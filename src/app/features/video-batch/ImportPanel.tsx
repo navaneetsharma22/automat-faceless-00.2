@@ -28,6 +28,7 @@ export function VideoImportPanel({
   return (
     <SharedImportPanel
       kind="video"
+      videoPresentation
       workspaceId={workspaceId}
       persistenceClient={persistenceClient}
       session={session}

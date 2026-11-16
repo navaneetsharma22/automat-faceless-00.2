@@ -298,6 +298,11 @@
   align-items: start;
   gap: var(--space-4);
 }
+.videoWorkspaceGrid {
+  width: min(100%, 110rem);
+  margin-inline: auto;
+  grid-template-columns: minmax(0, 1fr);
+}
 .workspaceSideColumn {
   display: grid;
   min-width: 0;
@@ -343,6 +348,17 @@
   display: grid;
   justify-items: start;
   gap: var(--space-2);
+}
+.videoPrepareActionRow {
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-card);
+}
+.videoPrepareActionRow > button:first-child {
+  min-width: min(100%, 14rem);
 }
 .disabledReason {
   margin: 0;

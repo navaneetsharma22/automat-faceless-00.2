@@ -150,45 +150,47 @@ export function Destination({
         )}
       </div>
 
-      <div className={styles.durationField}>
-        <label className={styles.durationLabel} htmlFor="batch-duration-input">
-          Manual batch duration (seconds)
-        </label>
-        <input
-          id="batch-duration-input"
-          className={styles.durationInput}
-          type="number"
-          min="1"
-          max="3600"
-          step="1"
-          placeholder="e.g. 6 or 8"
-          value={declaredDuration}
-          onChange={(event) => {
-            onDeclaredDurationChange(event.target.value);
-          }}
-          disabled={disabled}
-        />
-        <p className={styles.durationHint}>
-          User-declared batch duration for tracking metadata. Automat Faceless
-          does not alter or inspect provider settings.
-        </p>
-      </div>
+      <div className={styles.manualSettingsGroup}>
+        <div className={styles.durationField}>
+          <label className={styles.durationLabel} htmlFor="batch-duration-input">
+            Manual batch duration (seconds)
+          </label>
+          <input
+            id="batch-duration-input"
+            className={styles.durationInput}
+            type="number"
+            min="1"
+            max="3600"
+            step="1"
+            placeholder="e.g. 6 or 8"
+            value={declaredDuration}
+            onChange={(event) => {
+              onDeclaredDurationChange(event.target.value);
+            }}
+            disabled={disabled}
+          />
+          <p className={styles.durationHint}>
+            User-declared batch duration for tracking metadata. Automat Faceless
+            does not alter or inspect provider settings.
+          </p>
+        </div>
 
-      <SettingsConfirmation
-        id="video-settings-confirm"
-        provider={destination}
-        contextLabel="this batch"
-        checked={confirmed}
-        onChange={onConfirmationChange}
-        disabled={disabled || !isTargetVerified || !isDurationValid}
-        hint={
-          !isTargetVerified
-            ? `Connect and verify ${destination} in Connections before confirming.`
-            : !isDurationValid
-              ? "Enter a valid duration in seconds (e.g. 6 or 8) before confirming."
-              : undefined
-        }
-      />
+        <SettingsConfirmation
+          id="video-settings-confirm"
+          provider={destination}
+          contextLabel="this batch"
+          checked={confirmed}
+          onChange={onConfirmationChange}
+          disabled={disabled || !isTargetVerified || !isDurationValid}
+          hint={
+            !isTargetVerified
+              ? `Connect and verify ${destination} in Connections before confirming.`
+              : !isDurationValid
+                ? "Enter a valid duration in seconds (e.g. 6 or 8) before confirming."
+                : undefined
+          }
+        />
+      </div>
     </div>
   );
 }

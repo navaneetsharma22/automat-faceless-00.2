@@ -97,6 +97,8 @@
 
 .targetHeader {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
@@ -111,6 +113,8 @@
 
 .targetBadgeVerified {
   display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
   align-items: center;
   padding: 2px 8px;
   border-radius: 4px;
@@ -123,6 +127,8 @@
 
 .targetBadgeUnverified {
   display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
   align-items: center;
   padding: 2px 8px;
   border-radius: 4px;
@@ -134,11 +140,12 @@
 }
 
 .targetDetails {
+  min-width: 0;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   margin: 0;
   line-height: var(--line-height-relaxed);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .targetError {
@@ -148,9 +155,22 @@
 }
 
 .durationField {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+}
+
+.manualSettingsGroup {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(12rem, 0.75fr) minmax(0, 1.25fr);
+  align-items: start;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
 }
 
 .durationLabel {
@@ -160,10 +180,11 @@
 }
 
 .durationInput {
+  width: min(100%, 12.5rem);
   max-width: 200px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-input, 6px);
+  border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
   font-size: var(--font-size-sm);
@@ -185,4 +206,5 @@
 @media (max-width: 680px) {
   .destinationOptions { grid-template-columns: minmax(0, 1fr); }
   .destinationOption { min-height: 0; padding: var(--space-4); }
+  .manualSettingsGroup { grid-template-columns: minmax(0, 1fr); }
 }

@@ -4,6 +4,89 @@
   gap: var(--space-4);
 }
 
+/* Opt-in Videos presentation. The shared panel's default and Images layout stay intact. */
+.videoImportPanel {
+  gap: var(--space-4);
+  padding: clamp(var(--space-3), 1.5vw, var(--space-5));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.videoImportPanel .imageImportContent {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-4);
+}
+
+.videoImportPanel textarea:not([class*="editorExpanded"]) {
+  max-height: min(52vh, 32rem);
+  min-height: clamp(12rem, 28vh, 24rem);
+}
+
+.videoImportPanel [role="group"][aria-label="JSON editor display options"] {
+  justify-content: flex-end;
+}
+
+.videoImportPanel .sourceToolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card-compact);
+  background: var(--color-surface-raised);
+}
+
+.videoImportPanel .sourceToolbar > div:first-child,
+.videoImportPanel .sourceToolbarButtons {
+  min-width: 0;
+}
+
+.videoImportPanel .sourceToolbarButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.videoImportPanel .fileInput {
+  border-radius: var(--radius-control);
+}
+
+.videoActionFooter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  justify-content: start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+  border-radius: var(--radius-card-compact);
+  background: var(--color-surface-raised);
+}
+
+.videoActionFooter .validateRow {
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.videoActionFooter button {
+  max-width: 100%;
+}
+
+.videoActionFooter .saveRow {
+  display: contents;
+  padding: 0;
+  border: 0;
+}
+
+.videoActionFooter .saveRow > p {
+  grid-column: 1 / -1;
+}
+
 .imageImportPanel {
   display: flex;
   height: 100%;
@@ -609,6 +692,22 @@
 
   .importResult {
     padding: var(--space-3);
+  }
+}
+
+@media (max-width: 640px) {
+  .videoImportPanel .sourceToolbarButtons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .videoImportPanel .sourceToolbarButtons button {
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .videoActionFooter {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
