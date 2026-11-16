@@ -13,9 +13,63 @@ import { sha256Hex } from "../../../domain/batches/hashPrompt";
 import { CONNECTION_STATE_CHANGED_MESSAGE } from "../../../shared/messages";
 import { requestProviderAccess } from "../../../platforms/shared/chromeConnectionPort";
 import { flowReferenceResource } from "../../../platforms/flow/referenceResource";
+import { useOptionalToast } from "../../components/ToastHost";
+import type { ToastManager } from "../../components/toastManager";
 import type { PromptBatchSnapshot } from "../../../storage/repositories";
 import styles from "../../Dashboard.module.css";
 import refStyles from "./ReferenceSelection.module.css";
+
+const referenceSuccessToastKeys = new WeakMap<ToastManager, Set<string>>();
+
+function notifyReferenceSuccess(
+  toast: ToastManager | null,
+  identity: string,
+  message: string,
+) {
+  if (!toast) return;
+  const notified = referenceSuccessToastKeys.get(toast) ?? new Set<string>();
+  if (notified.has(identity)) return;
+  notified.add(identity);
+  referenceSuccessToastKeys.set(toast, notified);
+  toast.add({
+    kind: "success",
+    message,
+    dedupeKey: `references-success:${identity}`,
+  });
+}
+
+function referenceEventIdentity(
+  kind: "selected" | "saved",
+  workspaceId: string,
+  batchId: string,
+  batchSourceHash: string,
+  shotId: string,
+  operationId: string,
+) {
+  return `${kind}:${workspaceId}:${batchId}:${batchSourceHash}:${shotId}:${operationId}`;
+}
+
+function isSavedReferenceForCapture(
+  reference: Omit<ReferenceAssignmentRecord, "bytes"> | undefined,
+  expected: {
+    workspaceId: string;
+    batchId: string;
+    batchSourceHash: string;
+    shotId: string;
+    selectionVersion: string;
+    captureOperationId: string;
+  },
+) {
+  return Boolean(
+    reference &&
+      reference.workspaceId === expected.workspaceId &&
+      reference.batchId === expected.batchId &&
+      reference.batchSourceHash === expected.batchSourceHash &&
+      reference.shotId === expected.shotId &&
+      reference.selectionVersion === expected.selectionVersion &&
+      reference.captureOperationId === expected.captureOperationId,
+  );
+}
 
 function PanelHeader({
   kicker,
@@ -109,6 +163,7 @@ export function ReferenceSelection({
   persistenceClient: FoundationClient;
   workspaceId?: string;
 }) {
+  const toast = useOptionalToast();
   const [batch, setBatch] = useState<PromptBatchSnapshot | null>(null);
   const [batchSourceHash, setBatchSourceHash] = useState<string | null>(null);
   const batchSourceHashRef = useRef<string | null>(null);
@@ -502,6 +557,20 @@ export function ReferenceSelection({
             eventMsg.candidate.batchId !== batch?.batch.id ||
             eventMsg.candidate.batchSourceHash !== batchSourceHash
           ) return;
+          if (eventMsg.candidate.selectionVersion) {
+            notifyReferenceSuccess(
+              toast,
+              referenceEventIdentity(
+                "selected",
+                workspaceId,
+                eventMsg.batchId,
+                eventMsg.batchSourceHash,
+                eventMsg.shotId,
+                eventMsg.candidate.selectionVersion,
+              ),
+              `Shot ${eventMsg.shotId} reference selected`,
+            );
+          }
           pickerReadGeneration.current += 1;
           clearPreviews();
           setPickerCandidates([]);
@@ -551,6 +620,18 @@ export function ReferenceSelection({
                 : "Saving reference…",
           }));
         } else if (eventMsg.event === "reference_saved") {
+          notifyReferenceSuccess(
+            toast,
+            referenceEventIdentity(
+              "saved",
+              workspaceId,
+              eventMsg.batchId,
+              eventMsg.batchSourceHash,
+              eventMsg.shotId,
+              eventMsg.captureOperationId,
+            ),
+            `Shot ${eventMsg.shotId} reference saved`,
+          );
           setCaptureStatus((current) => ({
             ...current,
             [eventMsg.shotId]: "Reference saved",
@@ -571,6 +652,7 @@ export function ReferenceSelection({
     };
   }, [
     workspaceId,
+    toast,
     batch?.batch.id,
     batchSourceHash,
     activeSession?.sessionId,
@@ -637,7 +719,7 @@ export function ReferenceSelection({
       setPickerUnsupportedCount(result.unsupportedCount);
       setPickerStatus(
         result.candidates.length === 0
-          ? "No unambiguous eligible Flow images are available in this document."
+          ? "No eligible Flow images are available in this verified document right now. Scroll Flow manually to load more, then refresh images."
           : `Showing ${result.candidates.length} eligible Flow image${result.candidates.length === 1 ? "" : "s"}. Choose one for this Shot.`,
       );
     } catch (err) {
@@ -676,6 +758,10 @@ export function ReferenceSelection({
           setMediaPermissionNeeded((current) => ({ ...current, [key]: false }));
         setPickerStatus(
           "Flow image host access granted. Retry the preview or Save reference action.",
+        );
+      } else {
+        setPickerStatus(
+          "Flow image host access was not granted. The preview remains unloaded; you can request access again from this candidate.",
         );
       }
     } catch {
@@ -899,6 +985,28 @@ export function ReferenceSelection({
         throw new Error(
           "The candidate was not accepted for this Shot. Refresh images and retry.",
         );
+      if (
+        batch &&
+        response.candidate.selectionVersion &&
+        response.candidate.workspaceId === workspaceId &&
+        response.candidate.batchId === batch?.batch.id &&
+        response.candidate.batchSourceHash === batchSourceHash &&
+        response.candidate.shotId === session.shotId &&
+        response.candidate.selectionSessionId === session.sessionId
+      ) {
+        notifyReferenceSuccess(
+          toast,
+          referenceEventIdentity(
+            "selected",
+            workspaceId,
+            batch.batch.id,
+            batchSourceHash!,
+            session.shotId,
+            response.candidate.selectionVersion,
+          ),
+          `Shot ${session.shotId} reference selected`,
+        );
+      }
       setSelectionNotice(
         `Candidate selected for Shot ${session.shotId}. Save reference to capture and keep image bytes.`,
       );
@@ -945,6 +1053,14 @@ export function ReferenceSelection({
       ...current,
       [shotId]: "Capturing reference…",
     }));
+    const expectedSave = {
+      workspaceId,
+      batchId: batch.batch.id,
+      batchSourceHash: batchSourceHash!,
+      shotId,
+      selectionVersion: candidate.selectionVersion,
+      captureOperationId,
+    };
     try {
       const result = (await persistenceClient.request(
         "flow.reference.capture",
@@ -957,8 +1073,26 @@ export function ReferenceSelection({
             savedReferences[shotId]?.assignmentVersion ?? 0,
           captureOperationId,
         },
-      )) as { saved?: boolean };
-      if (!result?.saved) throw new Error("capture_acknowledgement_missing");
+      )) as {
+        saved?: boolean;
+        reference?: Omit<ReferenceAssignmentRecord, "bytes">;
+      };
+      if (
+        result?.saved !== true ||
+        !isSavedReferenceForCapture(result.reference, expectedSave)
+      ) throw new Error("capture_acknowledgement_missing");
+      notifyReferenceSuccess(
+        toast,
+        referenceEventIdentity(
+          "saved",
+          workspaceId,
+          batch.batch.id,
+          batchSourceHash!,
+          shotId,
+          captureOperationId,
+        ),
+        `Shot ${shotId} reference saved`,
+      );
       setCaptureStatus((current) => ({
         ...current,
         [shotId]: "Reference saved",
@@ -974,8 +1108,27 @@ export function ReferenceSelection({
         const status = (await persistenceClient.request(
           "flow.reference.getCaptureStatus",
           { captureOperationId },
-        )) as { status: string; reason?: string };
-        if (status.status === "saved") {
+        )) as {
+          status: string;
+          reason?: string;
+          reference?: Omit<ReferenceAssignmentRecord, "bytes">;
+        };
+        if (
+          status.status === "saved" &&
+          isSavedReferenceForCapture(status.reference, expectedSave)
+        ) {
+          notifyReferenceSuccess(
+            toast,
+            referenceEventIdentity(
+              "saved",
+              workspaceId,
+              batch.batch.id,
+              batchSourceHash!,
+              shotId,
+              captureOperationId,
+            ),
+            `Shot ${shotId} reference saved`,
+          );
           setCaptureStatus((current) => ({
             ...current,
             [shotId]: "Reference saved",
@@ -1242,6 +1395,16 @@ export function ReferenceSelection({
                       type="button"
                       variant="secondary"
                       disabled={actionPending}
+                      onClick={() =>
+                        void loadFlowImageCandidates(activeSession.sessionId)
+                      }
+                    >
+                      Refresh images
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={actionPending}
                       onClick={() => void handleCancelSelection()}
                     >
                       Cancel selection
@@ -1274,14 +1437,6 @@ export function ReferenceSelection({
                       to load other images, then refresh this list.
                     </p>
                   </div>
-                  <Button
-                    onClick={() =>
-                      void loadFlowImageCandidates(activeSession.sessionId)
-                    }
-                    disabled={actionPending}
-                  >
-                    Refresh images
-                  </Button>
                 </div>
                 {pickerStatus ? (
                   <p className={refStyles.pickerStatus} role="status">
@@ -1291,87 +1446,112 @@ export function ReferenceSelection({
                 {pickerAmbiguousCount > 0 ? (
                   <p className={refStyles.pickerWarning}>
                     {pickerAmbiguousCount} Flow card
-                    {pickerAmbiguousCount === 1 ? " was" : "s were"} omitted
-                    because its image identity was ambiguous.
+                    {pickerAmbiguousCount === 1 ? " was" : "s were"} skipped
+                    because it could not be matched to one exact image identity. No similar image was substituted.
                   </p>
                 ) : null}
                 {pickerUnsupportedCount > 0 ? (
                   <p className={refStyles.pickerWarning}>
                     {pickerUnsupportedCount} image source
-                    {pickerUnsupportedCount === 1 ? " was" : "s were"} omitted
-                    because the source was unavailable or unsupported.
+                    {pickerUnsupportedCount === 1 ? " is" : "s are"} unavailable or unsupported in this verified document and cannot be previewed here.
                   </p>
                 ) : null}
                 {pickerCandidates.length > 0 ? (
                   <div className={refStyles.pickerGrid}>
-                    {pickerCandidates.map((candidate) => (
+                    {pickerCandidates.map((candidate) => {
+                      const candidateId = candidate.candidateId;
+                      const previewUrl = previewUrls[candidateId];
+                      const previewFailed = Boolean(thumbnailFailures[candidateId]);
+                      const previewReady = Boolean(previewLoaded[candidateId]);
+                      const previewState = previewFailed
+                        ? "failed"
+                        : previewLoading[candidateId] || (previewUrl && !previewReady)
+                          ? "loading"
+                          : previewReady
+                            ? "ready"
+                            : "not-loaded";
+                      const previewLabel = {
+                        "not-loaded": "Preview not loaded",
+                        loading: "Loading preview…",
+                        ready: "Preview ready",
+                        failed: "Preview failed",
+                      }[previewState];
+                      return (
                       <article
-                        key={candidate.candidateId}
+                        key={candidateId}
                         className={refStyles.pickerCard}
                       >
-                        {previewUrls[candidate.candidateId] ? (
-                          <img
-                            src={previewUrls[candidate.candidateId]}
-                            alt={`Flow image candidate preview for Shot ${activeSession.shotId}`}
-                            className={refStyles.pickerThumbnail}
-                            onLoad={() =>
-                              setPreviewLoaded((current) => ({
-                                ...current,
-                                [candidate.candidateId]: true,
-                              }))
-                            }
-                            onError={() => {
-                              setPreviewLoaded((current) => ({
-                                ...current,
-                                [candidate.candidateId]: false,
-                              }));
-                              setThumbnailFailures((current) => ({
-                                ...current,
-                                [candidate.candidateId]: true,
-                              }));
-                              setPickerStatus(
-                                "The transferred preview could not be displayed. Refresh images before choosing.",
-                              );
-                            }}
-                          />
-                        ) : (
-                          <div
-                            className={refStyles.pickerThumbnail}
-                            role="img"
-                            aria-label="Preview not loaded"
-                          >
-                            Preview not loaded
-                          </div>
-                        )}
+                        <div
+                          className={refStyles.pickerThumbnailFrame}
+                          data-preview-state={previewState}
+                          role="group"
+                          aria-label={`Shot ${activeSession.shotId} candidate: ${previewLabel}`}
+                        >
+                          {previewUrl && !previewFailed ? (
+                            <img
+                              src={previewUrl}
+                              alt={`Flow image candidate preview for Shot ${activeSession.shotId}`}
+                              className={refStyles.pickerThumbnail}
+                              onLoad={() =>
+                                setPreviewLoaded((current) => ({
+                                  ...current,
+                                  [candidateId]: true,
+                                }))
+                              }
+                              onError={() => {
+                                setPreviewLoaded((current) => ({
+                                  ...current,
+                                  [candidateId]: false,
+                                }));
+                                setThumbnailFailures((current) => ({
+                                  ...current,
+                                  [candidateId]: true,
+                                }));
+                                setPickerStatus(
+                                  "The transferred preview could not be displayed. Refresh images before choosing.",
+                                );
+                              }}
+                            />
+                          ) : null}
+                          {!previewReady ? (
+                            <div
+                              className={refStyles.previewPlaceholder}
+                              role={previewState === "loading" ? "status" : undefined}
+                              aria-live={previewState === "loading" ? "polite" : undefined}
+                            >
+                              {previewLabel}
+                            </div>
+                          ) : null}
+                        </div>
                         <Button
                           onClick={() =>
-                            void handleLoadPreview(candidate.candidateId)
+                            void handleLoadPreview(candidateId)
                           }
                           disabled={
                             actionPending ||
-                            !!previewLoading[candidate.candidateId] ||
-                            !!previewUrls[candidate.candidateId]
+                            !!previewLoading[candidateId] ||
+                            !!previewUrl
                           }
                         >
-                          {previewLoading[candidate.candidateId]
+                          {previewLoading[candidateId] || (previewUrl && !previewReady && !previewFailed)
                             ? "Loading preview…"
-                            : previewUrls[candidate.candidateId]
+                            : previewReady
                               ? "Preview loaded"
                               : "Load preview"}
                         </Button>
-                        {thumbnailFailures[candidate.candidateId] ? (
+                        {previewFailed ? (
                           <p className={refStyles.pickerWarning} role="status">
                             Thumbnail could not load. No substitute image was
                             used; refresh the picker or choose another image.
                           </p>
                         ) : null}
-                        {previewPermissionNeeded[candidate.candidateId] ? (
+                        {previewPermissionNeeded[candidateId] ? (
                           <Button
                             onClick={() =>
                               void handleRequestMediaPermission(
                                 candidate.sourceUrl,
                                 candidate.providerAssetId,
-                                candidate.candidateId,
+                                candidateId,
                                 true,
                               )
                             }
@@ -1384,7 +1564,7 @@ export function ReferenceSelection({
                             <summary>Preview diagnostics</summary>
                             <dl>
                               {Object.entries(
-                                thumbnailDiagnostics[candidate.candidateId]!,
+                                thumbnailDiagnostics[candidateId]!,
                               ).map(([label, value]) => (
                                 <div key={label}>
                                   <dt>{label}</dt>
@@ -1408,14 +1588,15 @@ export function ReferenceSelection({
                           disabled={
                             actionPending ||
                             !flowVerified ||
-                            !!thumbnailFailures[candidate.candidateId] ||
-                            !previewLoaded[candidate.candidateId]
+                            !!thumbnailFailures[candidateId] ||
+                            !previewReady
                           }
                         >
                           Choose for Shot {activeSession.shotId}
                         </Button>
                       </article>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : null}
               </section>

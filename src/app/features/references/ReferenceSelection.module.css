@@ -333,7 +333,7 @@
 }
 
 .pickerDialog {
-  width: min(72rem, calc(100vw - 2rem));
+  width: min(80rem, calc(100vw - 2rem));
   height: min(88dvh, 60rem);
   max-height: min(88dvh, 60rem);
   padding: 0;
@@ -356,9 +356,10 @@
 }
 
 .pickerDialogHeader {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
+  justify-content: stretch;
   gap: var(--space-3);
   padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--color-border);
@@ -366,14 +367,17 @@
 }
 
 .pickerDialogHeader h2 {
+  min-width: 0;
   margin: 0;
   font-size: var(--font-size-lg);
+  overflow-wrap: anywhere;
 }
 
 .pickerDialogActions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: var(--space-2);
 }
 
@@ -396,6 +400,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
+  min-width: 0;
 }
 
 .pickerHeader p {
@@ -404,14 +409,26 @@
 
 .pickerStatus {
   margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-info);
+  border-radius: var(--radius-control);
+  background: var(--color-info-surface);
   color: var(--color-text);
   font-size: var(--font-size-sm);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
 }
 
 .pickerWarning {
   margin: 0;
-  color: #d29922;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-control);
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
   font-size: var(--font-size-xs);
+  line-height: var(--line-height-body);
+  overflow-wrap: anywhere;
 }
 
 .thumbnailDiagnostics {
@@ -446,27 +463,103 @@
 
 .pickerGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
+  align-items: stretch;
+  gap: var(--space-4);
 }
 
 .pickerCard {
   display: grid;
   align-content: start;
-  gap: var(--space-2);
+  gap: var(--space-3);
   min-width: 0;
-  padding: var(--space-2);
+  padding: var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   background: var(--color-surface);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.pickerCard:hover {
+  transform: translateY(-1px);
+  border-color: var(--color-focus);
+  box-shadow: var(--shadow-card);
+}
+
+.pickerCard:focus-within {
+  border-color: var(--color-focus);
+}
+
+.pickerCard > button {
+  width: 100%;
+}
+
+.pickerThumbnailFrame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
 }
 
 .pickerThumbnail {
+  position: absolute;
+  inset: 0;
+  display: block;
   width: 100%;
-  aspect-ratio: 1;
+  height: 100%;
   object-fit: contain;
-  border-radius: 6px;
-  background: #000;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.pickerThumbnailFrame[data-preview-state="ready"] .pickerThumbnail {
+  opacity: 1;
+}
+
+.previewPlaceholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  color: var(--color-text-muted);
+  background: var(--color-surface-raised);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-body);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.pickerThumbnailFrame[data-preview-state="loading"] .previewPlaceholder {
+  color: var(--color-info);
+  background: var(--color-info-surface);
+}
+
+.pickerThumbnailFrame[data-preview-state="failed"] .previewPlaceholder {
+  color: var(--color-error);
+  background: var(--color-error-surface);
+}
+
+.pickerThumbnailFrame[data-preview-state="loading"] .previewPlaceholder::before {
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  content: "";
+  animation: referencePreviewSpin 700ms linear infinite;
+}
+
+@keyframes referencePreviewSpin {
+  to { transform: rotate(360deg); }
 }
 
 .cardActions {
@@ -517,10 +610,44 @@
   }
 
   .pickerDialogHeader {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
     padding: var(--space-3);
+  }
+
+  .pickerDialogActions {
+    justify-content: flex-start;
+  }
+
+  .pickerDialogActions > button {
+    flex: 1 1 8rem;
   }
 
   .pickerDialogScroll {
     padding: var(--space-3);
+  }
+
+  .pickerGrid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
+    gap: var(--space-3);
+  }
+
+  .pickerCard {
+    padding: var(--space-2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pickerCard,
+  .pickerThumbnail {
+    transition: none;
+  }
+
+  .pickerCard:hover {
+    transform: none;
+  }
+
+  .pickerThumbnailFrame[data-preview-state="loading"] .previewPlaceholder::before {
+    animation: none;
   }
 }

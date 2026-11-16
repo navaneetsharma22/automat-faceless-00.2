@@ -9,6 +9,7 @@ import {
 import type { FoundationClient } from "../../src/shared/messageClient";
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 import { FLOW_REFERENCE_EVENT_MESSAGE } from "../../src/shared/schemas";
+import { ToastHost } from "../../src/app/components/ToastHost";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 Object.defineProperties(HTMLDialogElement.prototype, {
@@ -81,8 +82,15 @@ async function setup(
     failChoose?: boolean;
     deferChoose?: boolean;
     distinctSavedReferences?: boolean;
+    deferPreview?: boolean;
+    failPreview?: boolean;
+    previewPermissionError?: boolean;
+    broadcastSelectionEvents?: boolean;
+    broadcastSavedEvents?: boolean;
   } = {},
 ) {
+  if (root) await act(async () => root.unmount());
+  container?.remove();
   const batchSourceHash = await sha256Hex("fixture source");
   const candidate = {
     candidateId: "00000000-0000-4000-8000-000000000001",
@@ -122,8 +130,12 @@ async function setup(
   );
   let activeShotId: string | null = null;
   let releaseChoose!: () => void;
+  let releasePreview!: () => void;
   const chooseGate = new Promise<void>((resolve) => {
     releaseChoose = resolve;
+  });
+  const previewGate = new Promise<void>((resolve) => {
+    releasePreview = resolve;
   });
   let listResponse = async () => ({
     sessionId: "session-1",
@@ -170,7 +182,14 @@ async function setup(
         };
       }
       if (type === "flow.reference.listCandidates") return listResponse();
-      if (type === "flow.reference.getPreview")
+      if (type === "flow.reference.getPreview") {
+        if (options.deferPreview) await previewGate;
+        if (options.failPreview) {
+          const error = new Error("fixture_preview_failed");
+          if (options.previewPermissionError)
+            Object.assign(error, { code: "reference_media_permission_needed" });
+          throw error;
+        }
         return {
           ok: true,
           sessionId: "session-1",
@@ -182,6 +201,7 @@ async function setup(
           height: 1,
           data: "AQID",
         };
+      }
       if (type === "flow.reference.chooseCandidate") {
         if (options.failChoose) throw new Error("fixture_candidate_rejected");
         const shotId = activeShotId!;
@@ -193,8 +213,24 @@ async function setup(
           batchId: "batch-1",
           batchSourceHash,
           shotId,
+          selectionSessionId: "session-1",
         };
         chosenCandidates[shotId] = acceptedCandidate;
+        if (options.broadcastSelectionEvents) {
+          for (const listener of messageListeners)
+            listener({
+              type: FLOW_REFERENCE_EVENT_MESSAGE,
+              event: "candidate_selected",
+              sessionId: "session-1",
+              workspaceId: "default",
+              batchId: "batch-1",
+              batchSourceHash,
+              shotId,
+              candidate: acceptedCandidate,
+              retained: false,
+              message: "Candidate selected — not saved. Save reference to capture and keep image bytes.",
+            });
+        }
         activeShotId = null;
         return { accepted: true, candidate: acceptedCandidate };
       }
@@ -216,6 +252,8 @@ async function setup(
         return { reference, data: dataBySize[reference.byteSize] ?? "AQID" };
       }
       if (type === "flow.reference.capture") {
+        if (options.uncertainCapture)
+          throw new Error("fixture_capture_transport_lost");
         if (options.failCapture) throw new Error("fixture_capture_failed");
         const shotId = String(payload?.shotId);
         const old = savedRecords.get(shotId);
@@ -226,12 +264,27 @@ async function setup(
             options.distinctSavedReferences,
           ),
           referenceId: `40000000-0000-4000-8000-${shotId.padStart(12, "0")}`,
+          captureOperationId: String(payload?.captureOperationId),
           selectionVersion: String(payload?.selectionVersion),
+          batchSourceHash,
           providerAssetId: `fixture-media-shot-${shotId}-replacement`,
           byteSize: 6,
           sha256: "e".repeat(64),
         };
         savedRecords.set(shotId, next);
+        if (options.broadcastSavedEvents) {
+          for (const listener of messageListeners)
+            listener({
+              type: FLOW_REFERENCE_EVENT_MESSAGE,
+              event: "reference_saved",
+              captureOperationId: String(payload?.captureOperationId),
+              workspaceId: "default",
+              batchId: "batch-1",
+              batchSourceHash,
+              shotId,
+              referenceId: next.referenceId,
+            });
+        }
         return { saved: true, reference: next };
       }
       if (type === "flow.reference.getCaptureStatus")
@@ -262,12 +315,17 @@ async function setup(
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  let selectionMount = 0;
+  const renderSelection = () => createElement(
+    ToastHost,
+    null,
+    createElement(ReferenceSelection, {
+      key: selectionMount++,
+      persistenceClient: { request } as unknown as FoundationClient,
+    }),
+  );
   await act(async () =>
-    root.render(
-      createElement(ReferenceSelection, {
-        persistenceClient: { request } as unknown as FoundationClient,
-      }),
-    ),
+    root.render(renderSelection()),
   );
   const click = async (label: string) => {
     const button = [...container.querySelectorAll("button")].find(
@@ -301,6 +359,7 @@ async function setup(
     clickInShot,
     chosenCandidates,
     releaseChoose: () => releaseChoose(),
+    releasePreview: () => releasePreview(),
     emitSessionStarted: async (shotId: string) => {
       activeShotId = shotId;
       await act(async () => {
@@ -332,19 +391,32 @@ async function setup(
           });
       });
     },
+    emitCandidateSelected: async (shotId: string) => {
+      const acceptedCandidate = chosenCandidates[shotId];
+      if (!acceptedCandidate) throw new Error("fixture_candidate_missing");
+      await act(async () => {
+        for (const listener of messageListeners)
+          listener({
+            type: FLOW_REFERENCE_EVENT_MESSAGE,
+            event: "candidate_selected",
+            sessionId: "session-1",
+            workspaceId: "default",
+            batchId: "batch-1",
+            batchSourceHash,
+            shotId,
+            candidate: { ...acceptedCandidate, selectionSessionId: "session-1" },
+            retained: false,
+            message: "Candidate selected — not saved. Save reference to capture and keep image bytes.",
+          });
+      });
+    },
     setList: (fn: typeof listResponse) => {
       listResponse = fn;
     },
     setDisplayOrder: async (nextOrder: string[]) => {
       shotIds = [...nextOrder];
-      await act(async () => root.unmount());
-      root = createRoot(container);
       await act(async () =>
-        root.render(
-          createElement(ReferenceSelection, {
-            persistenceClient: { request } as unknown as FoundationClient,
-          }),
-        ),
+        root.render(renderSelection()),
       );
       await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
     },
@@ -352,6 +424,118 @@ async function setup(
 }
 
 describe("References-owned Flow image picker", () => {
+  const successToastMessages = () =>
+    [...container.querySelectorAll('[data-toast-kind="success"] p')].map(
+      (item) => item.textContent?.trim(),
+    );
+
+  it("keeps preview geometry stable through manually loaded, loading, ready, and failed states", async () => {
+    const delayed = await setup({ deferPreview: true });
+    await delayed.click("Browse Flow images");
+    const dialog = container.querySelector("dialog[open]")!;
+    expect(dialog.querySelector("h2")?.textContent).toContain("Shot 34");
+    expect(dialog.querySelectorAll("button").length).toBeGreaterThanOrEqual(3);
+    const frame = dialog.querySelector('[data-preview-state="not-loaded"]')!;
+    const initialRect = frame.getBoundingClientRect();
+    expect(frame.textContent).toContain("Preview not loaded");
+    await delayed.click("Load preview");
+    expect(dialog.querySelector('[data-preview-state="loading"]')?.textContent).toContain("Loading preview");
+    delayed.releasePreview();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const image = dialog.querySelector('img[alt^="Flow image candidate preview"]')!;
+    expect(dialog.querySelector('[data-preview-state="loading"]')).toBeTruthy();
+    await act(async () => image.dispatchEvent(new Event("load")));
+    expect(dialog.querySelector('[data-preview-state="ready"]')?.textContent).toBe("");
+    expect(frame.getBoundingClientRect()).toEqual(initialRect);
+
+    const failed = await setup({ failPreview: true, previewPermissionError: true });
+    await failed.click("Browse Flow images");
+    await failed.click("Load preview");
+    const failedDialog = container.querySelector("dialog[open]")!;
+    expect(failedDialog.querySelector('[data-preview-state="failed"]')?.textContent).toContain("Preview failed");
+    expect(failedDialog.textContent).toContain("reference_media_permission_needed");
+    expect(failedDialog.textContent).toContain("Allow Flow image host access");
+  });
+
+  it("explains empty, ambiguous, and unsupported picker results while keeping header actions reachable", async () => {
+    const { click, setList } = await setup();
+    await click("Browse Flow images");
+    setList(async () => ({
+      sessionId: "session-1",
+      candidates: [],
+      ambiguousCount: 2,
+      unsupportedCount: 1,
+    }));
+    await click("Refresh images");
+    const dialog = container.querySelector("dialog[open]")!;
+    const header = dialog.querySelector('[class*="pickerDialogHeader"]')!;
+    expect(header.textContent).toContain("Shot 34");
+    expect(header.textContent).toContain("Refresh images");
+    expect(header.textContent).toContain("Close");
+    expect(header.textContent).toContain("Cancel selection");
+    expect(dialog.textContent).toContain("No eligible Flow images are available");
+    expect(dialog.textContent).toContain("one exact image identity");
+    expect(dialog.textContent).toContain("unavailable or unsupported");
+    expect(dialog.querySelector('[data-preview-state="not-loaded"]')).toBeNull();
+  });
+
+  it("announces accepted selections and persisted saves once despite event and response overlap", async () => {
+    const { click, clickInShot, setDisplayOrder } = await setup({
+      broadcastSelectionEvents: true,
+      broadcastSavedEvents: true,
+    });
+    await click("Browse Flow images");
+    await click("Load preview");
+    await act(async () =>
+      container
+        .querySelector('img[alt^="Flow image candidate preview"]')!
+        .dispatchEvent(new Event("load")),
+    );
+    await click("Choose for Shot 34");
+    expect(successToastMessages()).toEqual(["Shot 34 reference selected"]);
+
+    await clickInShot("34", "Save reference");
+    expect(successToastMessages()).toEqual([
+      "Shot 34 reference saved",
+      "Shot 34 reference selected",
+    ]);
+
+    await setDisplayOrder(["34"]);
+    expect(successToastMessages()).toEqual([
+      "Shot 34 reference saved",
+      "Shot 34 reference selected",
+    ]);
+  });
+
+  it("keeps startup hydration and failed or uncertain actions silent for success toasts", async () => {
+    await setup({ savedShotIds: ["34"] });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(successToastMessages()).toEqual([]);
+
+    const failed = await setup({ failChoose: true });
+    await failed.click("Browse Flow images");
+    await failed.click("Load preview");
+    await act(async () =>
+      container
+        .querySelector('img[alt^="Flow image candidate preview"]')!
+        .dispatchEvent(new Event("load")),
+    );
+    await failed.click("Choose for Shot 34");
+    expect(successToastMessages()).toEqual([]);
+
+    const uncertain = await setup({ uncertainCapture: true });
+    await uncertain.click("Browse Flow images");
+    await uncertain.click("Load preview");
+    await act(async () =>
+      container
+        .querySelector('img[alt^="Flow image candidate preview"]')!
+        .dispatchEvent(new Event("load")),
+    );
+    await uncertain.click("Choose for Shot 34");
+    await uncertain.clickInShot("34", "Save reference");
+    expect(successToastMessages()).toEqual(["Shot 34 reference selected"]);
+  });
+
   it("summarizes preview failure evidence without exposing signed URL components", () => {
     const diagnostic = summarizePickerThumbnailFailure({
       sourceUrl:
