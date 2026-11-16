@@ -85,6 +85,7 @@ async function setup(
     deferPreview?: boolean;
     failPreview?: boolean;
     previewPermissionError?: boolean;
+    previewFailureCode?: string;
     broadcastSelectionEvents?: boolean;
     broadcastSavedEvents?: boolean;
   } = {},
@@ -185,7 +186,9 @@ async function setup(
       if (type === "flow.reference.getPreview") {
         if (options.deferPreview) await previewGate;
         if (options.failPreview) {
-          const error = new Error("fixture_preview_failed");
+          const error = new Error(
+            options.previewFailureCode ?? "fixture_preview_failed",
+          );
           if (options.previewPermissionError)
             Object.assign(error, { code: "reference_media_permission_needed" });
           throw error;
@@ -457,6 +460,24 @@ describe("References-owned Flow image picker", () => {
     expect(failedDialog.textContent).toContain("Allow Flow image host access");
   });
 
+  it("keeps the reported preview error visible and blocks Choose until ready", async () => {
+    const failed = await setup({
+      failPreview: true,
+      previewFailureCode: "reference_origin_unsupported",
+    });
+    await failed.click("Browse Flow images");
+    await failed.click("Load preview");
+    const dialog = container.querySelector("dialog[open]")!;
+    expect(dialog.textContent).toContain("reference_origin_unsupported");
+    expect(
+      dialog.querySelector('[data-preview-state="failed"]')?.textContent,
+    ).toContain("Preview failed");
+    const choose = [...dialog.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Choose for Shot 34"),
+    );
+    expect(choose?.disabled).toBe(true);
+  });
+
   it("explains empty, ambiguous, and unsupported picker results while keeping header actions reachable", async () => {
     const { click, setList } = await setup();
     await click("Browse Flow images");
@@ -470,9 +491,14 @@ describe("References-owned Flow image picker", () => {
     const dialog = container.querySelector("dialog[open]")!;
     const header = dialog.querySelector('[class*="pickerDialogHeader"]')!;
     expect(header.textContent).toContain("Shot 34");
-    expect(header.textContent).toContain("Refresh images");
-    expect(header.textContent).toContain("Close");
-    expect(header.textContent).toContain("Cancel selection");
+    const actionGroup = header.querySelector('[class*="pickerDialogActions"]')!;
+    expect(
+      [...actionGroup.querySelectorAll("button")].map((button) =>
+        button.textContent?.trim(),
+      ),
+    ).toEqual(["Refresh images", "Cancel selection", "Close"]);
+    const close = actionGroup.querySelector('button[aria-label="Close Flow image picker"]')!;
+    expect(close.className).toContain("pickerCloseButton");
     expect(dialog.textContent).toContain("No eligible Flow images are available");
     expect(dialog.textContent).toContain("one exact image identity");
     expect(dialog.textContent).toContain("unavailable or unsupported");
@@ -808,6 +834,14 @@ describe("References-owned Flow image picker", () => {
       savedShotIds: ["35", "36"],
     });
     await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const shotCard = [...container.querySelectorAll("article")].find((article) =>
+      article.textContent?.includes("Shot 35"),
+    )!;
+    const clearButtons = [...shotCard.querySelectorAll("button")].filter(
+      (button) => button.textContent?.trim() === "Clear candidate",
+    );
+    expect(clearButtons).toHaveLength(1);
+    expect(clearButtons[0]?.parentElement?.className).toContain("shotHeaderActions");
     await clickInShot("35", "Clear candidate");
 
     expect(request).toHaveBeenCalledWith("flow.reference.clearCandidate", {

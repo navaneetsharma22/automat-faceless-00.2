@@ -45,3 +45,21 @@ The existing ToastHost receives 'Shot N reference selected' only after a session
 Focused References Vitest: 2 files / 68 tests PASS. Coverage includes manual preview states, permission and eligibility messages, empty/ambiguous/unsupported results, accepted selection, persisted save, event/response dedupe, silent hydration/remount, failed and uncertain operations, and existing modal/session behavior. Typecheck and scoped ESLint PASS. Local production package build PASS; ID automat-faceless-0.1.0-mwiz2irc. git diff --check PASS.
 
 Mocked local Chromium rendering (no installed extension or live Flow) covered light/dark at 1920x1080, 1366x768, and 390x844. All six checks kept Shot/Refresh/Close visible. Desktop rendered five columns and narrow rendered one, with matching geometry by theme. Loading/ready/failed placeholders rendered, and scrolling to the end left Refresh and Close reachable. Reduced-motion emulation disabled the loading spinner (animation-name: none). Screenshots: artifacts/references-part3-rendered/. No extension reload or live provider action occurred.
+
+## References UI Part 4 - final integrated verification - 16 November 2026
+
+Production package rebuilt successfully as automat-faceless-0.1.0-mwizid88. Existing focused References tests passed 3 files / 73 tests using Vitest --configLoader native --pool threads. Typecheck and scoped ESLint passed. No References source fix was needed. The component tests cover manual preview, accepted and stale selection, shot isolation, dismissal/reopen, focus restoration, manual save/readback, toast deduplication, silent hydration, and capture failure/uncertain/cancel states.
+
+The production app browser interaction and viewport screenshots are NOT_RUN. Playwright could not spawn Chrome (spawn EPERM); the Windows computer-use native pipe was unavailable; launching headless Chrome exited with Crashpad/Mojo Access is denied. The 50-shot production interaction, page/focus and modal scrolling, six theme/viewport combinations, and reduced-motion rendering were therefore not independently verified in this final integration pass. No installed extension reload or Flow action occurred. Final git diff --check passed.
+
+## References preview failure - UI review only - 16 November 2026
+
+The reported preview failure remains a separate pending functional issue. Added a test-only picker regression that injects `reference_origin_unsupported` and verifies the visible failure state and disabled Choose control. Focused preview/reference tests: 4 files / 82 tests PASS. Typecheck and scoped ESLint PASS. Only test and evidence/status files changed after package build `automat-faceless-0.1.0-mwj0kgfc`.
+
+The recording and live browser state were unavailable; CUA native bridge did not connect. Candidate host/path, pinned media identity relationship, and loaded dashboard/worker build remain unknown. Rendered review is NOT_RUN; DOM mocks are not visual verification. Preview fetching, origin validation, permissions, connectors, selection/save code and data were not changed. No extension reload or live Flow action occurred.
+
+## References modal and shot-card polish - 16 November 2026
+
+Presentation-only CSS and markup polish: added modal header insets and grouped actions, sticky opaque header/divider, bounded Close styling with focus outline, and rounded 24px modal / 18px cards / 11px preview frames. Clear candidate moved once into the shot header beside status with the existing candidate condition, handler, shot ID, and pending disable guard unchanged. No preview, selection, save, capture, permission, or storage behavior changed.
+
+Focused References tests: 2 files / 69 tests PASS. Tests assert the modal action group and uniqueness/header placement of Clear candidate while retaining its existing shot-scoped action test. Typecheck, scoped ESLint, build, and git diff --check PASS. Build ID automat-faceless-0.1.0-mwj16ian. Rendered light/dark desktop/narrow review is NOT_RUN because the CUA native pipe is unavailable. No screenshot or visual verification is claimed; no extension reload or provider action occurred.

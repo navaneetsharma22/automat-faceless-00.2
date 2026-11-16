@@ -1412,6 +1412,7 @@ export function ReferenceSelection({
                     <Button
                       type="button"
                       variant="quiet"
+                      className={refStyles.pickerCloseButton}
                       aria-label="Close Flow image picker"
                       disabled={actionPending}
                       onClick={() => setPickerOpen(false)}
@@ -1685,13 +1686,26 @@ export function ReferenceSelection({
                           Order {item.order + 1}
                         </span>
                       </div>
-                      <span
-                        className={refStyles.shotState}
-                        data-state={cardState}
-                        aria-label={`Shot ${shotId}: ${cardStateLabel}`}
-                      >
-                        {cardStateLabel}
-                      </span>
+                      <div className={refStyles.shotHeaderActions}>
+                        <span
+                          className={refStyles.shotState}
+                          data-state={cardState}
+                          aria-label={`Shot ${shotId}: ${cardStateLabel}`}
+                        >
+                          {cardStateLabel}
+                        </span>
+                        {candidate ? (
+                          <Button
+                            variant="secondary"
+                            size="compact"
+                            className={refStyles.clearCandidateButton}
+                            onClick={() => handleClearCandidate(shotId)}
+                            disabled={actionPending}
+                          >
+                            Clear candidate
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
 
                     <div className={refStyles.promptBlock}>
@@ -1912,12 +1926,6 @@ export function ReferenceSelection({
                             disabled={!flowVerified || actionPending}
                           >
                             Browse Flow images
-                          </Button>
-                          <Button
-                            onClick={() => handleClearCandidate(shotId)}
-                            disabled={actionPending}
-                          >
-                            Clear candidate
                           </Button>
                           {captureOperationIds[shotId] ? (
                             <Button
