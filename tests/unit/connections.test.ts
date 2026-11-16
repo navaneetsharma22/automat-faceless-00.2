@@ -34,7 +34,7 @@ import {
 import { FOUNDATION_WORKER_RESTARTED } from "../../src/shared/messages";
 import { PROTOCOL_VERSION } from "../../src/shared/buildInfo";
 import { FlowClipDownloadStartError } from "../../src/background/flowDownloadDiagnostic";
-import { flowClipDownloadStartFailure } from "../../src/background/handlers/connections";
+import { createConnectionMessageListener, flowClipDownloadStartFailure } from "../../src/background/handlers/connections";
 import {
   connectionApiDiagnostic,
   getChromeExecutionContext,
@@ -145,6 +145,32 @@ function expectProviderUntouched(
 }
 
 describe("explicit read-only Flow/Vids attachment", () => {
+  it("returns a bounded Flow Resume failure code and stage instead of operation_failed", async () => {
+    const listener = createConnectionMessageListener("extension-id", {
+      repositories: {} as never,
+      preferences: {} as never,
+      flowVideoQueue: {
+        resume: vi.fn().mockRejectedValue(new Error("flow_video_queue_or_operation_changed")),
+      } as never,
+    });
+    let response: unknown;
+    listener({
+      protocolVersion: PROTOCOL_VERSION,
+      buildId: BUILD_ID,
+      requestId: "resume-failure-test",
+      type: "flow.videoQueue.resume",
+      payload: { preparedBatchId: "prepared:test", expectedRevision: 4 },
+    }, { id: "extension-id", url: "chrome-extension://extension-id/index.html" }, (value) => { response = value; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: "flow_video_queue_or_operation_changed",
+        stage: "resume_action",
+      },
+    });
+  });
+
   it("accepts only the observed project routes and extracts stable IDs", () => {
     expect(
       providerTabFromUrl(

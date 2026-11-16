@@ -133,13 +133,16 @@ export function createFlowVideoQueueHandler(input: {
     );
     if (unresolved.length !== 1) return undefined;
     const failed = unresolved[0]!;
-    // Both failures are produced before the sole attachment action intent:
-    // target_changed fails target validation, candidate_missing fails exact
-    // provider-media-ID resolution. The operation check below still refuses
-    // recovery if any attachment/Generate intent was recorded.
+    // These failures are produced before the sole attachment action intent:
+    // target_changed fails target validation, candidate_missing means a full
+    // exact-ID gallery scan found no match, and candidate_search_incomplete
+    // means the bounded scan could not establish presence or absence. The
+    // operation check below refuses recovery if any attachment/Generate
+    // intent was recorded.
     if (
       failed.state !== "failed" ||
-      (failed.reason !== "target_changed" && failed.reason !== "candidate_missing")
+      (failed.reason !== "target_changed" && failed.reason !== "candidate_missing" &&
+        failed.reason !== "candidate_search_incomplete")
     )
       return undefined;
     if (!input.revalidate) return undefined;
@@ -223,7 +226,8 @@ export function createFlowVideoQueueHandler(input: {
       !latestFailed ||
       latestFailed.state !== "failed" ||
       (latestFailed.reason !== "target_changed" &&
-        latestFailed.reason !== "candidate_missing") ||
+        latestFailed.reason !== "candidate_missing" &&
+        latestFailed.reason !== "candidate_search_incomplete") ||
       latestFailed.referenceId !== failed.referenceId ||
       latestFailed.promptHash !== failed.promptHash
     )

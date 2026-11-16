@@ -10,7 +10,7 @@ import {
   flowResolveOriginalImageUrlInPage,
   flowRestoreGalleryAfterOriginalResolutionInPage,
 } from "../../src/platforms/flow/references";
-import { flowVideoAttachmentActionInPage } from "../../src/background/handlers/flowVideoAttachment";
+import { flowVideoAttachmentActionInPage, flowVideoGalleryCandidateInPage } from "../../src/background/handlers/flowVideoAttachment";
 import type { PreparedVideoBatchItem } from "../../src/domain/batches/types";
 import type { ReferenceAssignmentRecord } from "../../src/domain/media/references";
 
@@ -213,6 +213,61 @@ describe("Flow original reference source resolution", () => {
 });
 
 describe("production Flow video attachment picker action", () => {
+  it("finds the exact pinned asset in the middle of a long virtualized project gallery", async () => {
+    const doc = install("");
+    const viewport = doc.createElement("cdk-virtual-scroll-viewport");
+    viewport.style.overflowY = "auto";
+    Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 10_000 });
+    doc.body.append(viewport);
+    let top = 0;
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (value: number) => {
+        top = value;
+        viewport.replaceChildren();
+        if (value >= 5_900 && value <= 6_100) {
+          const tile = doc.createElement("flow-image-tile");
+          tile.innerHTML = `<img data-media-id="${MEDIA_ID}" src="${PINNED_URL}">`;
+          viewport.append(tile);
+          sizeElements(doc);
+        }
+      },
+    });
+    sizeElements(doc);
+
+    await expect(flowVideoGalleryCandidateInPage(MEDIA_ID)).resolves.toMatchObject({
+      ok: true,
+      candidate: { id: MEDIA_ID, url: PINNED_URL },
+    });
+    expect(viewport.scrollTop).toBeGreaterThan(5_000);
+  });
+
+  it("does not report missing when a bounded scan cannot cover an enormous gallery", async () => {
+    const doc = install("");
+    const viewport = doc.createElement("cdk-virtual-scroll-viewport");
+    viewport.style.overflowY = "auto";
+    Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 100 });
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 1_000_000 });
+    doc.body.append(viewport);
+    sizeElements(doc);
+
+    await expect(flowVideoGalleryCandidateInPage(MEDIA_ID)).resolves.toMatchObject({
+      ok: false,
+      reason: "candidate_search_incomplete",
+    });
+    expect(viewport.scrollTop).toBe(0);
+  });
+
+  it("reports an exact pinned asset as missing after a complete scan with no matching identity", async () => {
+    install("");
+    await expect(flowVideoGalleryCandidateInPage(MEDIA_ID)).resolves.toMatchObject({
+      ok: false,
+      reason: "candidate_missing",
+    });
+  });
+
   it("selects the exact gallery thumbnail before waiting for its delayed detail preview and Add control", async () => {
     const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
     const galleryUrl = "https://flow.google.com/asb/shot-two-gallery-representation";

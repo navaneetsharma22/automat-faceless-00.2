@@ -117,7 +117,7 @@ async function setup(options: {
 
 async function seedPausedTargetChangedQueue(
   f: Awaited<ReturnType<typeof setup>>,
-  reason: "target_changed" | "candidate_missing" = "target_changed",
+  reason: "target_changed" | "candidate_missing" | "candidate_search_incomplete" = "target_changed",
 ) {
   await f.repositories.createFlowVideoQueue({
     queueId: `flow-video:${batchId}`,
@@ -567,6 +567,21 @@ describe("P09.3 Flow video timed submission", () => {
     expect(f.revalidate).toHaveBeenCalled();
     expect(f.attach).toHaveBeenCalledTimes(1);
     expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks an incomplete bounded candidate scan without treating it as a confirmed missing asset", async () => {
+    const f = await setup();
+    await seedPausedTargetChangedQueue(f, "candidate_search_incomplete");
+    const resumed = await f.handler.resume(batchId, 0);
+    expect(resumed).toMatchObject({
+      state: "waiting",
+      items: [
+        { state: "sent", priorReason: "candidate_search_incomplete" },
+        { state: "pending" },
+      ],
+    });
+    expect(f.revalidate).toHaveBeenCalled();
+    expect(f.attach).toHaveBeenCalledTimes(1);
   });
 
   it("refuses candidate_missing recovery when attachment intent exists or target revalidation fails", async () => {
