@@ -928,4 +928,78 @@ describe("P09.3 Flow video timed submission", () => {
     expect(attach).not.toHaveBeenCalled();
     expect(generate).not.toHaveBeenCalled();
   });
+
+  it("creates a distinct 15-item queue for a new prepared snapshot and keeps same-batch requests idempotent", async () => {
+    const f = await setup({ disabledAttempts: 1 });
+    const sentQueue: FlowVideoQueueRecord = {
+      queueId: `flow-video:${f.batch.id}`,
+      preparedBatchId: f.batch.id,
+      state: "sent",
+      items: f.batch.items.map((item, order) => ({
+        itemId: item.itemId,
+        order,
+        shotId: item.canonicalShotId,
+        referenceId: item.reference.referenceId,
+        promptHash: item.contentHash,
+        state: "sent",
+        attemptId: `attempt-A-${order}`,
+        dispatchReceipt: { attemptId: `attempt-A-${order}`, storedAt: 200_000 + order },
+      })),
+      lastDispatchAt: 200_001,
+      nextActionAt: null,
+      revision: 7,
+      createdAt: 100,
+      updatedAt: 200_001,
+    };
+    await f.repositories.createFlowVideoQueue(sentQueue);
+    const batchBId = "prepared-video-new-15-shot-snapshot";
+    const batchBItems = await Promise.all(Array.from({ length: 15 }, async (_, order) => {
+      const rawJsonBody = JSON.stringify({ shot_id: String(order + 1), scene_title: `New batch B shot ${order + 1}` });
+      const prior = f.batch.items[order] ?? f.batch.items[0]!;
+      return {
+        ...prior,
+        itemId: order < 2 ? prior.itemId : `item-${order + 1}`,
+        order,
+        shotId: String(order + 1),
+        canonicalShotId: String(order + 1),
+        rawJsonBody,
+        contentHash: await sha256Hex(rawJsonBody),
+        sourceSpan: { start: order, end: order + rawJsonBody.length },
+        reference: {
+          ...prior.reference,
+          referenceId: order < 2 ? prior.reference.referenceId : `00000000-0000-4000-8000-${String(order + 1).padStart(12, "0")}`,
+        },
+      };
+    }));
+    const batchB: PreparedVideoBatchRecord = {
+      ...f.batch,
+      id: batchBId,
+      requestId: "44444444-4444-4444-8444-444444444444",
+      preparedAt: 300,
+      videoSourceHash: "d".repeat(64),
+      videoSourceText: JSON.stringify(batchBItems.map((item) => JSON.parse(item.rawJsonBody))),
+      itemCount: 15,
+      items: batchBItems,
+      createdAt: 300,
+      updatedAt: 300,
+    };
+    await f.db.preparedVideoBatches.put(batchB);
+
+    expect(await f.handler.get(batchBId)).toBeUndefined();
+    const startedB = await f.handler.start(batchBId);
+    expect(startedB).toMatchObject({
+      queueId: `flow-video:${batchBId}`,
+      preparedBatchId: batchBId,
+      items: expect.arrayContaining([
+        expect.objectContaining({ state: "waiting_for_generate" }),
+      ]),
+    });
+    expect(startedB?.items).toHaveLength(15);
+    expect(startedB?.items.filter((item) => item.dispatchReceipt)).toHaveLength(0);
+    const repeatedB = await f.handler.start(batchBId);
+    expect(repeatedB).toEqual(startedB);
+    expect(await f.handler.get(f.batch.id)).toEqual(sentQueue);
+    expect(await f.repositories.getFlowVideoQueue(`flow-video:${f.batch.id}`)).toEqual(sentQueue);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+  });
 });

@@ -48,7 +48,7 @@ type VideoQueueSnapshot = {
   nextActionAt: number | null;
   revision: number;
   items: Array<{
-    itemId: string; order: number; shotId: string; referenceId: string; state: string; reason?: string; priorReason?: string; attemptId?: string;
+    itemId: string; order: number; shotId: string; referenceId: string; promptHash: string; state: string; reason?: string; priorReason?: string; attemptId?: string;
     readinessStartedAt?: number; readinessDeadlineAt?: number;
     dispatchReceipt?: { attemptId: string; storedAt: number };
     byteMismatchDiagnostic?: {
@@ -93,6 +93,7 @@ export function FlowPreparedBatchReview({
     (currentImageSourceBatchId &&
       currentImageSourceBatchId !== preparedBatch.imageSourceBatchId);
   const [videoQueue, setVideoQueue] = useState<VideoQueueSnapshot | null>(null);
+  const [queueLoadState, setQueueLoadState] = useState<"loading" | "loaded" | "mismatch" | "error">("loading");
   const [videoQueueBusy, setVideoQueueBusy] = useState(false);
   const [videoQueueAction, setVideoQueueAction] = useState<string | null>(null);
   const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
@@ -105,14 +106,41 @@ export function FlowPreparedBatchReview({
 
   useEffect(() => {
     let cancelled = false;
-    const load = () => persistenceClient.request("flow.videoQueue.get", { preparedBatchId: preparedBatch.id })
-      .then((value) => { if (!cancelled) setVideoQueue(value ? value as VideoQueueSnapshot : null); })
-      .catch(() => undefined);
+    let latestRequest = 0;
+    setVideoQueue(null);
+    setQueueLoadState("loading");
+    const load = () => {
+      const requestNumber = ++latestRequest;
+      return persistenceClient.request("flow.videoQueue.get", { preparedBatchId: preparedBatch.id })
+        .then((value) => {
+          if (cancelled || requestNumber !== latestRequest) return;
+          if (value == null) {
+            setVideoQueue(null);
+            setQueueLoadState("loaded");
+            return;
+          }
+          const queue = value as VideoQueueSnapshot;
+          if (!queueMatchesPreparedBatch(queue, preparedBatch)) {
+            setVideoQueue(null);
+            setQueueLoadState("mismatch");
+            return;
+          }
+          setVideoQueue(queue);
+          setQueueLoadState("loaded");
+        })
+        .catch(() => {
+          if (!cancelled && requestNumber === latestRequest) {
+            setVideoQueue(null);
+            setQueueLoadState("error");
+          }
+        });
+    };
     void load();
     const timer = window.setInterval(() => void load(), 10_000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [preparedBatch.id, persistenceClient]);
 
+  const queueIsLoaded = queueLoadState === "loaded";
   const sentReceiptCount = videoQueue?.items.filter(hasDurableDispatchReceipt).length ?? 0;
   const allPromptsSent = Boolean(videoQueue && videoQueue.items.length > 0 && sentReceiptCount === videoQueue.items.length);
 
@@ -138,7 +166,14 @@ export function FlowPreparedBatchReview({
     try {
       const result = await persistenceClient.request(type, payload);
       if (result) {
-        setVideoQueue(result as VideoQueueSnapshot);
+        const queue = result as VideoQueueSnapshot;
+        if (!queueMatchesPreparedBatch(queue, preparedBatch)) {
+          setVideoQueue(null);
+          setQueueLoadState("mismatch");
+          return false;
+        }
+        setVideoQueue(queue);
+        setQueueLoadState("loaded");
         if (action === "reconcilePreAddFailure") setVideoQueueNotice("Shot 2's pre-Add failure was reconciled. Resume is a separate action; no attachment or Generate action was performed.");
         if (action === "retryPreAddPickerFailure") setVideoQueueNotice("The picker failure occurred before Add. The queue reconciled it and is retrying attachment; Generate dispatches only after the reference is verified.");
         if (action === "verifyAttachedReferenceAndContinue") setVideoQueueNotice("Add was not replayed. The queue is verifying the attached reference; Generate dispatches only if the exact pinned media ID is present and ready.");
@@ -215,10 +250,22 @@ export function FlowPreparedBatchReview({
   const activeQueueItem = videoQueue?.items.find((item) => item.state === "attaching" || item.state === "dispatching");
   const readinessQueueItem = videoQueue?.items.find((item) => item.state === "waiting_for_generate");
   const nextQueueItem = activeQueueItem ?? readinessQueueItem ?? videoQueue?.items.find((item) => item.state === "pending");
-  const videoQueueStatus = getVideoQueueStatus(videoQueue, allPromptsSent, activeQueueItem, readinessQueueItem);
+  const videoQueueStatus = queueLoadState === "loading"
+    ? "Loading"
+    : queueLoadState === "mismatch"
+      ? "Queue identity mismatch"
+      : queueLoadState === "error"
+        ? "Queue unavailable"
+        : getVideoQueueStatus(videoQueue, allPromptsSent, activeQueueItem, readinessQueueItem);
   const preparedHeading = allPromptsSent
     ? `All ${videoQueue?.items.length ?? 0} image–prompt pairs sent to Flow`
-    : videoQueueStatus === "Ready" || !videoQueue
+    : queueLoadState === "loading"
+      ? "Loading saved Flow queue…"
+      : queueLoadState === "mismatch"
+        ? "Saved queue does not match this prepared batch"
+        : queueLoadState === "error"
+          ? "Saved Flow queue unavailable"
+          : videoQueueStatus === "Ready" || !videoQueue
       ? "Prepared — not submitted to Flow."
       : videoQueueStatus === "Sending"
         ? "Sending video prompts to Flow"
@@ -289,16 +336,16 @@ export function FlowPreparedBatchReview({
                 <h3>Flow video queue</h3>
                 <p>One start action sends paired references and prompts in order. Sent means Generate was dispatched; provider completion is not verified here.</p>
               </div>
-              {!videoQueue || videoQueue.state === "ready" ? (
+              {queueIsLoaded && (!videoQueue || videoQueue.state === "ready") ? (
                 <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "start"} loadingLabel="Starting" onClick={() => void runVideoQueue("start")}>Start</Button>
-              ) : videoQueue.state === "waiting" ? (
+              ) : videoQueue?.state === "waiting" ? (
                 <div className={styles.videoQueueActions}>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} loading={videoQueueAction === "pause"} loadingLabel="Pausing" onClick={() => void runVideoQueue("pause")}>Pause</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
-              ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && recheckableFailure ? (
+              ) : videoQueue && (videoQueue.state === "paused" || videoQueue.state === "blocked") && recheckableFailure ? (
                 <Button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} loading={videoQueueAction === "recheckAndResume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</Button>
-              ) : (videoQueue.state === "paused" || videoQueue.state === "blocked") && reconcilablePreAddFailure ? (
+              ) : videoQueue && (videoQueue.state === "paused" || videoQueue.state === "blocked") && reconcilablePreAddFailure ? (
                 <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "reconcilePreAddFailure"} loadingLabel="Reconciling" onClick={() => void runVideoQueue("reconcilePreAddFailure")}>Reconcile Shot 2 pre-Add failure</Button>
               ) : retryablePickerFailure ? (
                 <div className={styles.videoQueueActions}>
@@ -315,7 +362,7 @@ export function FlowPreparedBatchReview({
                   <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("resume")}>Resume</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
-              ) : videoQueue.state === "paused" && !videoQueue.items.some((item) => item.state === "uncertain" || item.state === "failed") ? (
+              ) : videoQueue?.state === "paused" && !videoQueue.items.some((item) => item.state === "uncertain" || item.state === "failed") ? (
                 <div className={styles.videoQueueActions}>
                   <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Resuming" onClick={() => void runVideoQueue("resume")}>Resume</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
@@ -328,6 +375,9 @@ export function FlowPreparedBatchReview({
                 />
               ) : null}
             </div>
+            {queueLoadState === "loading" ? <p className={styles.queueChecking} role="status" aria-live="polite">Loading the queue for prepared batch {preparedBatch.id}…</p> : null}
+            {queueLoadState === "mismatch" ? <p className={styles.currentBlocker} role="alert">The saved Flow queue identity or shot snapshot does not match prepared batch {preparedBatch.id}. Queue controls are unavailable until the saved snapshot can be read correctly.</p> : null}
+            {queueLoadState === "error" ? <p className={styles.currentBlocker} role="alert">The saved Flow queue could not be read. Queue controls are unavailable while its state is unresolved.</p> : null}
             {videoQueue ? (
               <>
                 {videoQueueNotice ? <p role="status">{videoQueueNotice}</p> : null}
@@ -432,6 +482,30 @@ export function FlowPreparedBatchReview({
 
 function hasDurableDispatchReceipt(item: VideoQueueSnapshot["items"][number]): boolean {
   return Boolean(item.attemptId && item.dispatchReceipt?.attemptId === item.attemptId && Number.isFinite(item.dispatchReceipt.storedAt));
+}
+
+function queueMatchesPreparedBatch(
+  queue: VideoQueueSnapshot,
+  batch: PreparedVideoBatchRecord,
+): boolean {
+  if (
+    queue.preparedBatchId !== batch.id ||
+    queue.queueId !== `flow-video:${batch.id}` ||
+    !Array.isArray(queue.items) ||
+    queue.items.length !== batch.items.length ||
+    batch.itemCount !== batch.items.length
+  ) return false;
+  return batch.items.every((prepared, index) => {
+    const queued = queue.items[index];
+    return Boolean(
+      queued &&
+      queued.order === prepared.order &&
+      queued.itemId === prepared.itemId &&
+      queued.shotId === prepared.canonicalShotId &&
+      queued.referenceId === prepared.reference.referenceId &&
+      queued.promptHash === prepared.contentHash
+    );
+  });
 }
 
 function getVideoQueueStatus(

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "./components/Button";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import controlStyles from "./components/controls.module.css";
@@ -625,6 +625,7 @@ export function VideosView({
   const [imageSourceHash, setImageSourceHash] = useState<string | undefined>();
   const [preparedBatch, setPreparedBatch] =
     useState<PreparedVideoBatchRecord | null>(null);
+  const preparedBatchLoadEpoch = useRef(0);
   const [preparePending, setPreparePending] = useState(false);
   const [prepareError, setPrepareError] = useState<string | null>(null);
 
@@ -643,14 +644,15 @@ export function VideosView({
   }, [destination, targetConnectionStore]);
 
   const loadPreparedBatch = useCallback(async () => {
+    const loadEpoch = preparedBatchLoadEpoch.current;
     try {
       const result = (await persistenceClient.request(
         "videoBatch.getPrepared",
         { workspaceId: "default" },
       )) as PreparedVideoBatchRecord | null;
-      setPreparedBatch(result);
+      if (preparedBatchLoadEpoch.current === loadEpoch) setPreparedBatch(result);
     } catch {
-      setPreparedBatch(null);
+      if (preparedBatchLoadEpoch.current === loadEpoch) setPreparedBatch(null);
     }
   }, [persistenceClient]);
 
@@ -772,6 +774,7 @@ export function VideosView({
 
   const handlePrepareBatch = async () => {
     if (!canPrepare || !connectedTarget || !pairingResult) return;
+    preparedBatchLoadEpoch.current += 1;
     setPreparePending(true);
     setPrepareError(null);
     try {
@@ -814,6 +817,7 @@ export function VideosView({
 
   const handleStartNewVidsBatch = async () => {
     if (!canPrepare || destination !== "Vids" || !connectedTarget || !pairingResult || !imageSourceBatchId || !imageSourceHash || !videoBatchHash) return;
+    preparedBatchLoadEpoch.current += 1;
     setPreparePending(true);
     setPrepareError(null);
     try {

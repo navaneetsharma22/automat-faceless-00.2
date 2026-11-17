@@ -43,6 +43,7 @@ config.bat
 !docs/evidence/vids-downloads-ui-polish.md
 !docs/evidence/vids-download-status-idle.md
 !docs/evidence/vids-preparation-failure-evidence.md
+!docs/evidence/flow-video-batch-identity.md
 !/publication/
 !/publication/automat-faceless-picker/
 !/publication/automat-faceless-picker/README.md

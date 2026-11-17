@@ -267,14 +267,30 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     }),
   } as unknown as ReturnType<typeof createFoundationClient>;
 
-  it("renders 'Prepared — not submitted to Flow.' banner", () => {
-    act(() => {
+  const batchForQueueItems = (
+    batch: PreparedVideoBatchRecord,
+    items: Array<{ itemId: string; order: number; shotId: string; referenceId: string; promptHash: string }>,
+  ): PreparedVideoBatchRecord => ({
+    ...batch,
+    itemCount: items.length,
+    items: items.map((item) => ({
+      ...batch.items[0]!,
+      ...item,
+      canonicalShotId: item.shotId,
+      contentHash: item.promptHash,
+      reference: { ...batch.items[0]!.reference, referenceId: item.referenceId },
+    })),
+  });
+
+  it("renders 'Prepared — not submitted to Flow.' banner", async () => {
+    await act(async () => {
       root?.render(
         createElement(PreparedBatchReview, {
           preparedBatch: mockPreparedBatch,
           persistenceClient: mockPersistenceClient,
         }),
       );
+      await Promise.resolve();
     });
 
     expect(container?.textContent).toContain(
@@ -282,14 +298,15 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     );
   });
 
-  it("offers one Flow queue start action without per-shot action buttons", () => {
-    act(() => {
+  it("offers one Flow queue start action without per-shot action buttons", async () => {
+    await act(async () => {
       root?.render(
         createElement(PreparedBatchReview, {
           preparedBatch: mockPreparedBatch,
           persistenceClient: mockPersistenceClient,
         }),
       );
+      await Promise.resolve();
     });
 
     expect(container?.textContent).toContain("Flow video queue");
@@ -309,6 +326,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
       pauseReason: "candidate_bytes_mismatch", nextActionAt: null, revision: 4,
       items: [{ itemId: "import:default:video:item:0", order: 0, shotId: "1", referenceId: "00000000-0000-4000-8000-000000000001", promptHash: "x".repeat(64), state: "failed", reason: "candidate_bytes_mismatch" }],
     };
+    const preparedBatch = batchForQueueItems(mockPreparedBatch, queue.items);
     const inspected = {
       status: "inspected", matches: false,
       diagnostic: {
@@ -322,7 +340,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     const request = vi.fn(async (type: string) => type === "flow.videoQueue.get" ? queue : type === "flow.video.inspectReferenceBytes" ? inspected : type === "flow.videoQueue.recheckAndResume" ? queue : null);
     const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
     await act(async () => {
-      root?.render(createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client }));
+      root?.render(createElement(PreparedBatchReview, { preparedBatch, persistenceClient: client }));
       await Promise.resolve();
     });
     const inspectButton = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent?.includes("Inspect reference bytes"));
@@ -348,10 +366,11 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
         { itemId: "import:default:video:item:1", order: 1, shotId: "2", referenceId: "00000000-0000-4000-8000-000000000002", promptHash: "b".repeat(64), state: "pending" },
       ],
     };
+    const preparedBatch = batchForQueueItems(mockPreparedBatch, queue.items);
     const request = vi.fn(async (type: string) => type === "flow.videoQueue.get" ? queue : type === "flow.videoQueue.resume" ? queue : null);
     const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
     await act(async () => {
-      root?.render(createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client }));
+      root?.render(createElement(PreparedBatchReview, { preparedBatch, persistenceClient: client }));
       await Promise.resolve();
     });
     expect(container?.textContent).toContain("Current blocker: target_changed");
@@ -371,10 +390,11 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
         { itemId: "import:default:video:item:1", order: 1, shotId: "2", referenceId: "00000000-0000-4000-8000-000000000002", promptHash: "b".repeat(64), state: "pending" },
       ],
     };
+    const preparedBatch = batchForQueueItems(mockPreparedBatch, queue.items);
     const request = vi.fn(async (type: string) => type === "flow.videoQueue.get" ? queue : type === "flow.videoQueue.resume" ? queue : null);
     const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
     await act(async () => {
-      root?.render(createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client }));
+      root?.render(createElement(PreparedBatchReview, { preparedBatch, persistenceClient: client }));
       await Promise.resolve();
     });
     expect(container?.textContent).toContain("Current blocker: candidate_missing");
@@ -413,6 +433,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
         },
       ],
     };
+    const preparedBatch = batchForQueueItems(mockPreparedBatch, queue.items);
     const request = vi.fn(async (type: string) => {
       if (type === "flow.videoQueue.get") return queue;
       if (type === "flow.videoQueue.retryPreAddPickerFailure") return queue;
@@ -424,7 +445,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     await act(async () => {
       root?.render(
         createElement(PreparedBatchReview, {
-          preparedBatch: mockPreparedBatch,
+          preparedBatch,
           persistenceClient: client,
         }),
       );
@@ -488,6 +509,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
         },
       ],
     };
+    const preparedBatch = batchForQueueItems(mockPreparedBatch, queue.items);
     const request = vi.fn(async (type: string) => {
       if (type === "flow.videoQueue.get") return queue;
       if (type === "flow.videoQueue.verifyAttachedReferenceAndContinue") return queue;
@@ -499,7 +521,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     await act(async () => {
       root?.render(
         createElement(PreparedBatchReview, {
-          preparedBatch: mockPreparedBatch,
+          preparedBatch,
           persistenceClient: client,
         }),
       );
@@ -557,7 +579,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
       return null;
     });
     const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
-    const preparedBatch = { ...mockPreparedBatch, id: batchId };
+    const preparedBatch = { ...batchForQueueItems(mockPreparedBatch, base.items), id: batchId };
     await act(async () => {
       root?.render(createElement(PreparedBatchReview, { preparedBatch, persistenceClient: client }));
       await Promise.resolve();
@@ -577,7 +599,8 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
       itemId: `item-${order}`, order, shotId: String(order + 1), referenceId: `00000000-0000-4000-8000-00000000000${order + 1}`,
       promptHash: String(order).repeat(64), state: "pending", attemptId: undefined, dispatchReceipt: undefined,
     }));
-    let currentQueue = { queueId: "flow-video:toast-fixture", preparedBatchId: mockPreparedBatch.id, state: "ready", nextActionAt: null, revision: 1, items };
+    const preparedBatch = batchForQueueItems(mockPreparedBatch, items);
+    let currentQueue = { queueId: `flow-video:${preparedBatch.id}`, preparedBatchId: preparedBatch.id, state: "ready", nextActionAt: null, revision: 1, items };
     const sentQueue = { ...currentQueue, state: "sent", revision: 2, items: items.map((item) => ({ ...item, state: "sent", attemptId: `attempt-${item.order}`, dispatchReceipt: { attemptId: `attempt-${item.order}`, storedAt: 10_000 + item.order } })) };
     const request = vi.fn(async (type: string) => {
       if (type === "flow.videoQueue.get") return currentQueue;
@@ -587,7 +610,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     });
     const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
     await act(async () => {
-      root?.render(createElement(ToastHost, null, createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client })));
+      root?.render(createElement(ToastHost, null, createElement(PreparedBatchReview, { preparedBatch, persistenceClient: client })));
       await Promise.resolve();
     });
     const start = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent?.trim() === "Start");
@@ -600,7 +623,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 200));
       root?.render(createElement(ToastHost, null, null));
       await Promise.resolve();
-      root?.render(createElement(ToastHost, null, createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client })));
+      root?.render(createElement(ToastHost, null, createElement(PreparedBatchReview, { preparedBatch, persistenceClient: client })));
       await Promise.resolve();
     });
     expect(container?.textContent).not.toContain("All 2 video prompts sent to Flow successfully.");
@@ -624,5 +647,91 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     expect(container?.textContent).toContain("User-declared whole-batch metadata");
     expect(container?.textContent).toContain("Shot 1");
     expect(container?.textContent).toContain('{"scene":"Tiger leaping across stream"}');
+  });
+
+  it("keeps an old 14-item Sent response out of a newly prepared 15-item batch and its remount", async () => {
+    const makeBatch = (id: string, count: number, hashPrefix: string): PreparedVideoBatchRecord => ({
+      ...mockPreparedBatch,
+      id,
+      itemCount: count,
+      items: Array.from({ length: count }, (_, order) => {
+        const shotId = String(order + 1);
+        const referenceId = `00000000-0000-4000-8000-${String(order + 1).padStart(12, "0")}`;
+        return {
+          ...mockPreparedBatch.items[0]!,
+          itemId: `shared-import-item-${order}`,
+          order,
+          shotId,
+          canonicalShotId: shotId,
+          contentHash: hashPrefix.repeat(64),
+          rawJsonBody: JSON.stringify({ prompt: `${id}-${shotId}` }),
+          reference: { ...mockPreparedBatch.items[0]!.reference, referenceId },
+        };
+      }),
+    });
+    const batchA = makeBatch("prepared:batch-A", 14, "a");
+    const batchB = makeBatch("prepared:batch-B", 15, "b");
+    const queueFor = (batch: PreparedVideoBatchRecord, sent: boolean) => ({
+      queueId: `flow-video:${batch.id}`,
+      preparedBatchId: batch.id,
+      state: sent ? "sent" : "ready",
+      nextActionAt: null,
+      revision: 4,
+      items: batch.items.map((item, order) => ({
+        itemId: item.itemId,
+        order,
+        shotId: item.canonicalShotId,
+        referenceId: item.reference.referenceId,
+        promptHash: item.contentHash,
+        state: sent ? "sent" : "pending",
+        ...(sent ? { attemptId: `attempt-A-${order}`, dispatchReceipt: { attemptId: `attempt-A-${order}`, storedAt: 1000 + order } } : {}),
+      })),
+    });
+    let resolveA!: (queue: ReturnType<typeof queueFor>) => void;
+    let resolveB!: (queue: ReturnType<typeof queueFor>) => void;
+    let bReads = 0;
+    const request = vi.fn((type: string, payload: { preparedBatchId?: string }) => {
+      if (type === "flow.videoQueue.get" && payload.preparedBatchId === batchA.id) {
+        return new Promise<ReturnType<typeof queueFor>>((resolve) => { resolveA = resolve; });
+      }
+      if (type === "flow.videoQueue.get" && payload.preparedBatchId === batchB.id) {
+        bReads += 1;
+        return bReads === 1
+          ? new Promise<ReturnType<typeof queueFor>>((resolve) => { resolveB = resolve; })
+          : Promise.resolve(queueFor(batchB, false));
+      }
+      return Promise.resolve(null);
+    });
+    const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
+
+    await act(async () => {
+      root?.render(createElement(PreparedBatchReview, { preparedBatch: batchA, persistenceClient: client }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root?.render(createElement(PreparedBatchReview, { preparedBatch: batchB, persistenceClient: client }));
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain("Loading saved Flow queue");
+    expect(container?.textContent).not.toContain("All sent");
+    expect(container?.textContent).not.toContain("14 of 14 prompts sent");
+
+    await act(async () => { resolveA(queueFor(batchA, true)); await Promise.resolve(); });
+    expect(container?.textContent).toContain("Loading saved Flow queue");
+    expect(container?.textContent).not.toContain("All sent");
+
+    await act(async () => { resolveB(queueFor(batchB, false)); await Promise.resolve(); });
+    expect(container?.textContent).toContain("0 of 15 prompts sent");
+    expect(container?.textContent).not.toContain("All sent");
+    expect(container?.textContent).toContain("Prepared — not submitted to Flow.");
+
+    await act(async () => {
+      root?.render(null);
+      await Promise.resolve();
+      root?.render(createElement(PreparedBatchReview, { preparedBatch: batchB, persistenceClient: client }));
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain("0 of 15 prompts sent");
+    expect(container?.textContent).not.toContain("14 of 14 prompts sent");
   });
 });

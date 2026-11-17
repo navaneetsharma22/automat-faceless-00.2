@@ -15,5 +15,5 @@ export type PreparedBatchReviewProps = {
 export function PreparedBatchReview(props: PreparedBatchReviewProps) {
   return props.preparedBatch.destination === "Vids"
     ? <VidsPreparedBatchReview key={props.preparedBatch.id} preparedBatch={props.preparedBatch} persistenceClient={props.persistenceClient} onQueueCleared={props.onQueueCleared} />
-    : <FlowPreparedBatchReview {...props} />;
+    : <FlowPreparedBatchReview key={props.preparedBatch.id} {...props} />;
 }
