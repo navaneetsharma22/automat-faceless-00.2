@@ -28,6 +28,10 @@ import {
   inspectFlowImageButton,
   activateFlowImageGenerate,
 } from "../../platforms/flow/images";
+import {
+  flowExpectedMediaIdentityKeys,
+  flowMediaIdentitiesMatchExpected,
+} from "../../platforms/flow/mediaIdentity";
 import type { FlowDebuggerLease } from "./flow";
 
 type ScriptingPort = {
@@ -57,7 +61,7 @@ type GeneratePort = FlowPromptEntryPort &
 export function inspectFlowVideoReferenceInPage(): {
   href: string;
   composerCount: number;
-  chips: Array<{ busy: string | null; url?: string }>;
+  chips: Array<{ busy: string | null; urls: string[]; url?: string }>;
 } {
   const visible = (element: Element) => {
     const rect = element.getBoundingClientRect();
@@ -74,27 +78,44 @@ export function inspectFlowVideoReferenceInPage(): {
     ...document.querySelectorAll<HTMLElement>("flow-base-prompt-box"),
   ].filter(visible);
   const root = roots.length === 1 ? roots[0] : undefined;
-  const chips = root
-    ? [
-        ...root.querySelectorAll<HTMLButtonElement>(
-          "button[aria-label='Ingredient']",
-        ),
-      ]
-        .filter(visible)
-        .map((chip) => {
-          const image = chip.querySelector<HTMLImageElement>(
-            "img[alt='Ingredient image']",
-          );
-          return {
-            busy: chip.getAttribute("aria-busy"),
-            url:
-              image?.currentSrc ||
-              image?.src ||
-              image?.getAttribute("src") ||
-              undefined,
-          };
-        })
+  const components = root
+    ? [...root.querySelectorAll<HTMLElement>(
+        "flow-character-ingredient-chip, flow-video-ingredient-chip, flow-image-ingredient-chip",
+      )].filter((component) => !component.closest(".frame-trigger"))
     : [];
+  const recognized = root
+    ? components
+        .map((component) => component.querySelector<HTMLElement>("button.chip-container"))
+        .filter((button): button is HTMLElement => Boolean(button))
+    : [];
+  const chipButtons = recognized.length > 0
+    ? recognized
+    : root
+      ? [...root.querySelectorAll<HTMLElement>("button[aria-label='Ingredient']")]
+        .filter((button) => !button.closest(".frame-trigger"))
+      : [];
+  const chips = chipButtons
+    .filter(visible)
+    .map((chip) => {
+      const images = [...chip.querySelectorAll<HTMLImageElement>("img")];
+      const urls = images
+        .map((img) => img.currentSrc || img.src || img.getAttribute("src") || "")
+        .filter(Boolean);
+      const primary = chip.querySelector<HTMLImageElement>(
+        "img[alt='Ingredient image']",
+      );
+      const url =
+        primary?.currentSrc ||
+        primary?.src ||
+        primary?.getAttribute("src") ||
+        urls[0] ||
+        undefined;
+      return {
+        busy: chip.getAttribute("aria-busy"),
+        urls,
+        ...(url ? { url } : {}),
+      };
+    });
   return { href: location.href, composerCount: roots.length, chips };
 }
 
@@ -117,16 +138,19 @@ export function createFlowVideoGenerateHandler(deps: {
     text: string,
     frame: FrameIdentity,
     verifiedReferenceMediaId: string,
+    allowedReferenceAsbToken?: string,
   ) => Promise<FlowPromptEntryResult>;
   inspectGenerate?: (
     tabId: number,
     text: string,
     verifiedReferenceMediaId: string,
+    allowedReferenceAsbToken?: string,
   ) => Promise<TimedFlowGenerateInspection>;
   buttonPosition?: (
     tabId: number,
     buttonId: string,
     verifiedReferenceMediaId: string,
+    allowedReferenceAsbToken?: string,
   ) => Promise<{ x: number; y: number } | undefined>;
   activate?: (
     tabId: number,
@@ -142,14 +166,16 @@ export function createFlowVideoGenerateHandler(deps: {
   const now = deps.now ?? Date.now;
   const enter =
     deps.enterPrompt ??
-    ((text, frame, mediaId) =>
-      enterFlowVideoPrompt(text, { ...deps.promptPort, expectedFrame: frame }, mediaId));
+    ((text, frame, mediaId, asbToken) =>
+      enterFlowVideoPrompt(text, { ...deps.promptPort, expectedFrame: frame }, mediaId, asbToken));
   const inspect =
     deps.inspectGenerate ??
-    ((tabId, text, mediaId) => inspectTimedFlowGenerate(deps.promptPort, tabId, text, mediaId));
+    ((tabId, text, mediaId, asbToken) =>
+      inspectTimedFlowGenerate(deps.promptPort, tabId, text, mediaId, asbToken));
   const position =
     deps.buttonPosition ??
-    ((tabId, id, mediaId) => inspectFlowImageButton(deps.promptPort, tabId, id, mediaId));
+    ((tabId, id, mediaId, asbToken) =>
+      inspectFlowImageButton(deps.promptPort, tabId, id, mediaId, asbToken));
   const activate =
     deps.activate ??
     ((tabId, point) =>
@@ -219,6 +245,27 @@ export function createFlowVideoGenerateHandler(deps: {
       !pinned.providerAssetId
     )
       return undefined;
+
+    if (
+      !operation.verifiedAttachment ||
+      operation.verifiedAttachment.mediaId !== pinned.providerAssetId
+    )
+      return undefined;
+
+    if (
+      operation.observedAsbToken &&
+      operation.verifiedAttachment.asbToken &&
+      operation.observedAsbToken !== operation.verifiedAttachment.asbToken
+    )
+      return undefined;
+
+    const asbToken =
+      operation.observedAsbToken ?? operation.verifiedAttachment.asbToken;
+    const expectedKeys = flowExpectedMediaIdentityKeys({
+      mediaId: pinned.providerAssetId,
+      asbToken,
+    });
+
     const bytes = new Uint8Array(await pinned.bytes.arrayBuffer());
     if (
       bytes.byteLength !== item.reference.byteSize ||
@@ -248,17 +295,10 @@ export function createFlowVideoGenerateHandler(deps: {
     const readback = result[0]?.result as
       ReturnType<typeof inspectFlowVideoReferenceInPage> | undefined;
     const chip = readback?.chips?.[0];
-    let mediaId: string | undefined;
-    try {
-      const url = new URL(chip?.url ?? "");
-      if (url.protocol === "https:" && url.hostname === "flow-content.google")
-        mediaId =
-          /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
-            .exec(url.pathname)?.[1]
-            ?.toLowerCase();
-    } catch {
-      /* bounded invalid identity */
-    }
+    const rawUrls = chip?.urls ?? (chip?.url ? [chip.url] : []);
+    const match = chip
+      ? flowMediaIdentitiesMatchExpected(rawUrls, expectedKeys)
+      : { ok: false };
     if (
       result[0]?.documentId !== selected.binding.documentId ||
       flowTabFromUrl(selected.selected.tabId, "Flow", readback?.href)
@@ -266,7 +306,7 @@ export function createFlowVideoGenerateHandler(deps: {
       readback?.composerCount !== 1 ||
       readback.chips.length !== 1 ||
       chip?.busy !== "false" ||
-      mediaId !== pinned.providerAssetId.toLowerCase()
+      !match.ok
     )
       return undefined;
     return {
@@ -275,7 +315,8 @@ export function createFlowVideoGenerateHandler(deps: {
       selected: selected.selected,
       binding: selected.binding,
       target,
-      mediaId,
+      mediaId: pinned.providerAssetId,
+      asbToken,
     };
   }
 
@@ -357,7 +398,7 @@ export function createFlowVideoGenerateHandler(deps: {
       frameRoute.canonicalTarget !== ref.selected.canonicalTarget
     )
       return { status: "blocked", reason: "prompt_document_changed" };
-    const filled = await enter(item.rawJsonBody, frame, ref.mediaId);
+    const filled = await enter(item.rawJsonBody, frame, ref.mediaId, ref.asbToken);
     if (
       !filled.fillVerified ||
       !filled.immediateMatch ||
@@ -407,7 +448,7 @@ export function createFlowVideoGenerateHandler(deps: {
           status: "blocked",
           reason: "target_or_reference_changed_after_prompt",
         };
-      const generate = await inspect(ref.selected.tabId, item.rawJsonBody, ref.mediaId);
+      const generate = await inspect(ref.selected.tabId, item.rawJsonBody, ref.mediaId, ref.asbToken);
       if (
         generate.composer !== "identified" ||
         !generate.exactPrompt
@@ -422,7 +463,7 @@ export function createFlowVideoGenerateHandler(deps: {
         return { status: "blocked", reason: "generate_disabled" };
       if (generate.generate !== "identified" || !generate.buttonObjectId)
         return { status: "blocked", reason: "generate_control_or_prompt_preflight_failed" };
-      const point = await position(ref.selected.tabId, generate.buttonObjectId, ref.mediaId);
+      const point = await position(ref.selected.tabId, generate.buttonObjectId, ref.mediaId, ref.asbToken);
       if (!point)
         return { status: "blocked", reason: "generate_control_changed" };
       const createdAt = now();
@@ -466,9 +507,9 @@ export function createFlowVideoGenerateHandler(deps: {
         "Flow",
         finalFrame?.url,
       );
-      const finalGenerate = await inspect(ref.selected.tabId, item.rawJsonBody, ref.mediaId);
+      const finalGenerate = await inspect(ref.selected.tabId, item.rawJsonBody, ref.mediaId, ref.asbToken);
       const finalPoint = finalGenerate.buttonObjectId
-        ? await position(ref.selected.tabId, finalGenerate.buttonObjectId, ref.mediaId)
+        ? await position(ref.selected.tabId, finalGenerate.buttonObjectId, ref.mediaId, ref.asbToken)
         : undefined;
       if (
         !finalRef ||

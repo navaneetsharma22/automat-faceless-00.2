@@ -117,7 +117,7 @@ async function setup(options: {
 
 async function seedPausedTargetChangedQueue(
   f: Awaited<ReturnType<typeof setup>>,
-  reason: "target_changed" | "candidate_missing" | "candidate_search_incomplete" | "reference_origin_unsupported" | "reference_original_unavailable" = "target_changed",
+  reason: "target_changed" | "candidate_missing" | "candidate_search_incomplete" | "reference_origin_unsupported" | "reference_original_unavailable" | "reference_asb_token_missing" | "reference_asb_token_mismatch" | "candidate_capture_failed" = "target_changed",
 ) {
   await f.repositories.createFlowVideoQueue({
     queueId: `flow-video:${batchId}`,
@@ -1101,5 +1101,40 @@ describe("P09.3 Flow video timed submission", () => {
     expect(await f.handler.get(f.batch.id)).toEqual(sentQueue);
     expect(await f.repositories.getFlowVideoQueue(`flow-video:${f.batch.id}`)).toEqual(sentQueue);
     expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
+  describe("Flow video queue pre-intent ASB token recovery (Section 9.E)", () => {
+    for (const reason of [
+      "reference_asb_token_mismatch",
+      "reference_asb_token_missing",
+      "candidate_capture_failed",
+    ] as const) {
+      it(`recovers ${reason} with no attachment operation to pending/sent on resume`, async () => {
+        const f = await setup();
+        await seedPausedTargetChangedQueue(f, reason);
+        const resumed = await f.handler.resume(batchId, 0);
+        expect(resumed.state).toBe("waiting");
+        expect(resumed.items[0]).toMatchObject({ state: "sent", priorReason: reason });
+        expect(f.attach).toHaveBeenCalledTimes(1);
+        expect(f.generate).toHaveBeenCalledTimes(1);
+      });
+
+      it(`does not recover ${reason} when an attachment operation is present`, async () => {
+        const f = await setup();
+        await seedPausedTargetChangedQueue(f, reason);
+        await f.repositories.putFlowVideoAttachmentOperation({
+          id: `${batchId}:item-1`,
+          preparedBatchId: batchId,
+          itemId: "item-1",
+          referenceId: ref1,
+          status: "action_intent",
+          updatedAt: 2,
+        });
+        const blocked = await f.handler.resume(batchId, 0);
+        expect(blocked.state).toBe("blocked");
+        expect(f.attach).not.toHaveBeenCalled();
+        expect(f.generate).not.toHaveBeenCalled();
+      });
+    }
   });
 });

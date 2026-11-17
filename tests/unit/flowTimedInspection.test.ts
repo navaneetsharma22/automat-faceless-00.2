@@ -89,6 +89,50 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
       );
     });
 
+    it("identifies composer and Generate control when /asb reference token is supplied", async () => {
+      const mockCalls: Array<{ method: string; params?: unknown }> = [];
+      const asbToken = "token_timed_inspection_123";
+      const mediaId = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+      const port: FlowImagePagePort = {
+        attach: async () => undefined,
+        detach: async () => undefined,
+        now: () => 1_000,
+        sendCommand: async (_tabId, method, params) => {
+          mockCalls.push({ method, params });
+          if (method === "Runtime.evaluate") {
+            const expression = (params as { expression?: string })?.expression ?? "";
+            expect(expression).toContain(asbToken);
+            return { result: { objectId: "wrapper-obj-asb", type: "object" } };
+          }
+          if (method === "Runtime.callFunctionOn") {
+            const p = params as { functionDeclaration?: string };
+            if (p.functionDeclaration?.includes("hasButton:Boolean(this.button)")) {
+              return {
+                result: {
+                  value: {
+                    composer: "identified",
+                    exactPrompt: true,
+                    generate: "identified",
+                    actualText: promptShot13,
+                    hasButton: true,
+                  },
+                },
+              };
+            }
+            if (p.functionDeclaration?.includes("return this.button")) {
+              return { result: { objectId: "remote-button-node-asb", subtype: "node" } };
+            }
+          }
+          return {};
+        },
+      };
+
+      const result = await inspectTimedFlowGenerate(port, 42, promptShot13, mediaId, asbToken);
+      expect(result.exactPrompt).toBe(true);
+      expect(result.generate).toBe("identified");
+      expect(result.buttonObjectId).toBe("remote-button-node-asb");
+    });
+
     it("does not corrupt exactPrompt to false when the button is disabled", async () => {
       const port: FlowImagePagePort = {
         attach: async () => undefined,
@@ -147,6 +191,31 @@ describe("timed pre-activation inspection and button ownership revalidation", ()
 
       const pos = await inspectFlowImageButton(port, 42, "button-valid-1");
       expect(pos).toEqual({ x: 500, y: 300 });
+    });
+
+    it("returns coordinates with a /asb reference token", async () => {
+      const asbToken = "token_button_inspection_123";
+      const mediaId = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+      const port: FlowImagePagePort = {
+        attach: async () => undefined,
+        detach: async () => undefined,
+        now: () => 1_000,
+        sendCommand: async (_tabId, method, params) => {
+          if (method === "Runtime.callFunctionOn") {
+            const declaration = (params as { functionDeclaration?: string })?.functionDeclaration ?? "";
+            expect(declaration).toContain(asbToken);
+            return {
+              result: {
+                value: { x: 520, y: 310 },
+              },
+            };
+          }
+          return {};
+        },
+      };
+
+      const pos = await inspectFlowImageButton(port, 42, "button-valid-1", mediaId, asbToken);
+      expect(pos).toEqual({ x: 520, y: 310 });
     });
 
     it("returns undefined when DOM/button is replaced between round trips", async () => {

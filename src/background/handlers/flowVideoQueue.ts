@@ -1,7 +1,8 @@
-import type { FlowVideoQueueItem, FlowVideoQueueRecord } from "../../domain/jobs/videoQueue";
+import type { FlowVideoExistingChipDiagnostic, FlowVideoQueueItem, FlowVideoQueueRecord } from "../../domain/jobs/videoQueue";
 import type { ReferenceByteComparisonDiagnostic } from "../../domain/media/references";
 import {
   isFlowVideoPickerPreAddReason,
+  isFlowVideoPreAddRetryReason,
   isFlowVideoPostAddAttachmentReason,
   isFlowVideoPostAddRecoveryReason,
   nextVideoDispatchAt,
@@ -17,6 +18,16 @@ import { createQueueAlarmRuntime } from "../scheduler";
 import { FlowVideoStartupReconciliationError } from "../flowVideoAlarmLifecycle";
 
 export const FLOW_VIDEO_QUEUE_ALARM_PREFIX = "automat-flow-video-queue:";
+const PRE_INTENT_RECOVERY_REASONS = new Set([
+  "target_changed",
+  "candidate_missing",
+  "candidate_search_incomplete",
+  "reference_origin_unsupported",
+  "reference_original_unavailable",
+  "reference_asb_token_missing",
+  "reference_asb_token_mismatch",
+  "candidate_capture_failed",
+]);
 const HISTORIC_SHOT_ONE_BATCH = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
 const HISTORIC_SHOT_ONE_ITEM = "import:default:video:item:0";
 const HISTORIC_SHOT_TWO_BATCH = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
@@ -29,7 +40,12 @@ export type FlowVideoQueueView = FlowVideoQueueRecord;
 export function createFlowVideoQueueHandler(input: {
   repositories: ExtensionRepositories;
   alarms: Pick<typeof chrome.alarms, "create" | "clear">;
-  attachReference: (preparedBatchId: string, itemId: string) => Promise<{ status: string; reason?: string; diagnostic?: ReferenceByteComparisonDiagnostic }>;
+  attachReference: (preparedBatchId: string, itemId: string) => Promise<{
+    status: string;
+    reason?: string;
+    diagnostic?: ReferenceByteComparisonDiagnostic;
+    existingChipDiagnostic?: FlowVideoExistingChipDiagnostic;
+  }>;
   generateOnce: (preparedBatchId: string, itemId: string) => Promise<{ status: string; reason?: string; attemptId?: string }>;
   revalidate?: (preparedBatchId: string) => Promise<string | undefined>;
   inspectReferenceBytes?: (preparedBatchId: string, itemId: string) => Promise<{
@@ -90,11 +106,11 @@ export function createFlowVideoQueueHandler(input: {
   const schedule = (queue: FlowVideoQueueRecord) => alarms.schedule(queue.queueId,
     ["paused", "blocked", "stopped", "sent"].includes(queue.state) ? null : queue.nextActionAt);
 
-  async function fail(queue: FlowVideoQueueRecord, item: FlowVideoQueueItem, reason: string, uncertain: boolean, byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic) {
+  async function fail(queue: FlowVideoQueueRecord, item: FlowVideoQueueItem, reason: string, uncertain: boolean, byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic, existingChipDiagnostic?: FlowVideoExistingChipDiagnostic) {
     const latest = await input.repositories.getFlowVideoQueue(queue.queueId) ?? queue;
     const preserveControl = latest.state === "paused" || latest.state === "stopped";
     const saved = await save(latest, {
-      items: latest.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: uncertain ? "uncertain" as const : "failed" as const, reason, ...(byteMismatchDiagnostic ? { byteMismatchDiagnostic } : {}) } : entry),
+      items: latest.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: uncertain ? "uncertain" as const : "failed" as const, reason, ...(byteMismatchDiagnostic ? { byteMismatchDiagnostic } : {}), ...(existingChipDiagnostic ? { existingChipDiagnostic } : {}) } : entry),
       state: preserveControl ? latest.state : "paused",
       pauseReason: preserveControl ? latest.pauseReason : reason,
       nextActionAt: null,
@@ -144,10 +160,7 @@ export function createFlowVideoQueueHandler(input: {
     // before resource acquisition or attachment intent as well.
     if (
       failed.state !== "failed" ||
-      (failed.reason !== "target_changed" && failed.reason !== "candidate_missing" &&
-        failed.reason !== "candidate_search_incomplete" &&
-        failed.reason !== "reference_origin_unsupported" &&
-        failed.reason !== "reference_original_unavailable")
+      !PRE_INTENT_RECOVERY_REASONS.has(failed.reason ?? "")
     )
       return undefined;
     if (!input.revalidate) return undefined;
@@ -230,11 +243,7 @@ export function createFlowVideoQueueHandler(input: {
     if (
       !latestFailed ||
       latestFailed.state !== "failed" ||
-      (latestFailed.reason !== "target_changed" &&
-        latestFailed.reason !== "candidate_missing" &&
-        latestFailed.reason !== "candidate_search_incomplete" &&
-        latestFailed.reason !== "reference_origin_unsupported" &&
-        latestFailed.reason !== "reference_original_unavailable") ||
+      !PRE_INTENT_RECOVERY_REASONS.has(latestFailed.reason ?? "") ||
       latestFailed.referenceId !== failed.referenceId ||
       latestFailed.promptHash !== failed.promptHash
     )
@@ -285,7 +294,8 @@ export function createFlowVideoQueueHandler(input: {
     // These reasons are emitted by the in-page action only before its Add
     // click. The operation checks below still refuse any recorded attachment
     // verification, Generate intent, or snapshot drift.
-    if (failed.state !== "uncertain" || !isFlowVideoPickerPreAddReason(failed.reason))
+    const pickerFailure = isFlowVideoPickerPreAddReason(failed.reason);
+    if (failed.state !== "uncertain" || !isFlowVideoPreAddRetryReason(failed.reason))
       return undefined;
     if (!input.revalidate) return undefined;
 
@@ -327,14 +337,34 @@ export function createFlowVideoQueueHandler(input: {
     // Newer builds record the pre-Add proof explicitly. Legacy picker
     // operations predate the field; their reason is still proof because no
     // post-Add branch can emit a picker reason.
-    if (
-      failedOperation.pickerPreAddEvidence &&
-      (failedOperation.pickerPreAddEvidence.addClickAttempted !== false ||
-        failedOperation.pickerPreAddEvidence.reason !== failedOperation.reason ||
-        failedOperation.pickerPreAddEvidence.updatedAt !==
-          failedOperation.updatedAt)
-    )
-      return undefined;
+    const existingChipEvidence = failedOperation.existingChipPreAddEvidence;
+    if (pickerFailure) {
+      // A picker failure never carries existing-chip evidence; refuse a record
+      // that would otherwise mix the two gates.
+      if (existingChipEvidence) return undefined;
+      if (
+        failedOperation.pickerPreAddEvidence &&
+        (failedOperation.pickerPreAddEvidence.addClickAttempted !== false ||
+          failedOperation.pickerPreAddEvidence.reason !== failedOperation.reason ||
+          failedOperation.pickerPreAddEvidence.updatedAt !==
+            failedOperation.updatedAt)
+      )
+        return undefined;
+    } else {
+      // existing_chip_conflict is returned by the chip gate before the picker
+      // opens. Legacy operations predate existingChipPreAddEvidence; the
+      // closed reason set is still proof that no Add was activated.
+      if (failedOperation.pickerPreAddEvidence) return undefined;
+      if (
+        existingChipEvidence &&
+        (existingChipEvidence.addClickAttempted !== false ||
+          existingChipEvidence.reason !== failedOperation.reason ||
+          existingChipEvidence.updatedAt !== failedOperation.updatedAt ||
+          existingChipEvidence.producer !==
+            "existing_composer_chip_check_before_picker")
+      )
+        return undefined;
+    }
 
     const readOperations = async () =>
       Promise.all(
@@ -412,7 +442,9 @@ export function createFlowVideoQueueHandler(input: {
         priorStatus: "uncertain",
         priorReason: failed.reason,
         priorUpdatedAt: failedOperation.updatedAt,
-        producer: "picker_failure_before_add_activation",
+        producer: pickerFailure
+          ? ("picker_failure_before_add_activation" as const)
+          : ("existing_chip_failure_before_picker" as const),
         addClickAttempted: false,
         reconciledAt,
       },
@@ -647,7 +679,7 @@ export function createFlowVideoQueueHandler(input: {
     if (item.state === "pending") {
       queue = await save(queue, { state: "waiting", nextActionAt: null, items: queue.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: "attaching" as const, reason: undefined } : entry) });
       const attachment = await input.attachReference(queue.preparedBatchId, item.itemId).catch((): Awaited<ReturnType<typeof input.attachReference>> => ({ status: "uncertain", reason: "attachment_response_lost" }));
-      if (attachment.status !== "attached" && attachment.status !== "already_attached") return fail(queue, item, attachment.reason ?? "attachment_blocked", attachment.status === "uncertain", attachment.diagnostic);
+      if (attachment.status !== "attached" && attachment.status !== "already_attached") return fail(queue, item, attachment.reason ?? "attachment_blocked", attachment.status === "uncertain", attachment.diagnostic, attachment.existingChipDiagnostic);
       const operation = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${item.itemId}`);
       if (operation?.videoGeneration) {
         if (operation.videoGeneration.state === "dispatched") return persistReceipt(queue, item, operation.videoGeneration.attemptId, operation.videoGeneration.updatedAt);

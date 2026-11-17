@@ -31,6 +31,47 @@ P05 count-mode recovery is implemented as an explicit no-Generate ÃƒÆ’Ã‚
 
 Connection lifecycle changes are verified offline for worker-owned revalidation, readiness preservation, stale saved-binding recovery, guarded stale live-connector replacement, and non-navigation recovery. The reported readiness-triggered disconnect and Vids automatic refresh were not reproduced from the current extension paths; their historical triggers remain unknown. The current package is `automat-faceless-0.1.0-mvur6htk`; the connection/readiness live retest remains **NOT_RUN**.
 
+## Flow video same-origin /asb/<token>=s... reference image representation support — 17 November 2026
+
+Confirmed live blocker in Flow video queue: Flow's web application represents media assets as same-origin `https://flow.google.com/asb/<token>[=s<digits>[-rw]]` URLs across the composer Ingredient chip, project gallery tiles, and detail view route (`.../project/<projectId>/edit/<uuid>`), without any `flow-content.google/image/<uuid>` representation appearing.
+Previously:
+1. `flowResolveOriginalImageUrlInPage` rejected any detail URL starting with `/asb/` with `"unsupported"`, causing candidate acquisition to loop for 4 seconds and pause the queue at Shot 1 with `reference_original_unavailable`.
+2. `acquireCandidateBytes` in `flowVideoAttachment.ts` only attempted extension fetch via `flowReferenceResource` (which rejects `flow.google.com` origins).
+3. The Add action and read-only chip verification only recognized `flow-content.google/image/<uuid>` media IDs and failed closed when the chip used `/asb`.
+4. `flowComposerRuntime`, `enterFlowVideoPrompt`, `inspectTimedFlowGenerate`, and `inspectFlowImageButton` did not allow `/asb` reference tokens and treated the Ingredient chip as unexpected media (`composer_media_present`).
+
+Architecture and Implementation:
+1. Created `src/platforms/flow/mediaIdentity.ts`: strictly parses `flow-content.google/image/<uuid>` (lowercased UUID) and `flow.google.com/asb/<token>[=s<digits>[-rw]]` (token `[A-Za-z0-9_-]+`, max length 2048, no credentials, port 443, no extra path segments, valid `=s<digits>[-rw]` suffix). Evaluates identity sets via `flowMediaIdentitiesMatchExpected`: requires at least one recognized identity and every recognized identity must belong to the expected key set; extra recognized identities fail closed; unknown decorative badges (e.g. gstatic) are ignored.
+2. Inlined self-contained `/asb` parsing into MAIN-world and ISOLATED-world injected scripts (`flowResolveOriginalImageUrlInPage`, `flowVideoAttachmentActionInPage`, `flowComposerRuntime`, `inspectFlowVideoReferenceInPage`).
+3. In `flowResolveOriginalImageUrlInPage`: verifies the gallery tile has the expected `/asb` token, clicks the tile, accepts 0 or 1 visible pinned tile while detail is open, confirms unique read-only detail image, verifies detail `/asb` token matches gallery token, and returns detail URL. Token mismatches return `reference_asb_token_mismatch`; unparseable tokens return `reference_asb_token_missing`.
+4. Extended storage schemas (`FlowVideoAttachmentOperation`) and repositories to durably record `observedAsbToken` in `action_intent` and `verifiedAttachment.asbToken`.
+5. In `acquireCandidateBytes`: acquires `/asb` bytes using same-origin `flowReferenceCaptureInPage` in the page's MAIN world, base64 decodes into `Uint8Array`, and validates the SHA-256 byte digest against the prepared item's pinned hash. Never performs extension `fetchResource` on `/asb` URLs.
+6. In `flowVideoAttachmentActionInPage`: matches picker rows by token across `=s` suffix variants, clicks Add at most once, and polls for settled chip matching expected token.
+7. In `verifyAttachedReference`: verifies chip identity using `flowMediaIdentitiesMatchExpected` against `{ mediaId, asbToken }`. Legacy operations without `observedAsbToken` fail closed on `/asb` chips.
+8. Extended `flowComposerRuntime`, `enterFlowVideoPrompt`, `inspectTimedFlowGenerate`, and `inspectFlowImageButton` with `allowedReferenceAsbToken`.
+9. Extended `PRE_INTENT_RECOVERY_REASONS` in `flowVideoQueue.ts` with `reference_asb_token_missing`, `reference_asb_token_mismatch`, and `candidate_capture_failed` to allow safe resumption when no operation exists.
+
+Checks:
+- Targeted Flow video suites (`flowVideoReference.test.ts`, `flowVideoReferenceAttachment.test.ts`, `flowVideoQueue.test.ts`, `flowVideoGenerate.test.ts`): **4 files / 124 tests PASS**.
+- Full Vitest suite: **81 files / 1004 tests PASS**.
+- Typecheck (`tsc --noEmit`): **PASS** (0 errors).
+- Build (`node init; tsc -b; node tools/build.mjs`): **PASS**, package ID **`automat-faceless-0.1.0-mwkgpw47`** (4 JavaScript bundles).
+- Live verification is **NOT_RUN** / pending user action in browser.
+
+## Flow video verification chip image-set alignment — 17 November 2026
+
+Confirmed source blocker in the Flow video reference verification path (`verification_chip_not_exact_ready`): `verifyAttachedReference` in `src/background/handlers/flowVideoAttachment.ts` previously inspected only the first `<img>` element within the visible Ingredient chip. When Flow rendered a non-Flow image first or rendered multiple images within the chip, the verifier could not extract the Flow media ID and rejected the visibly attached chip as not exact-ready.
+
+The correction aligns the verification chip reader with the existing Add path (`flowVideoAttachmentActionInPage`), returning all image URLs for each visible chip and resolving the unambiguous Flow media ID via `flowVideoChipMediaIdFromImageUrl(url)`. The verifier still requires exactly one visible composer root, exactly one visible Ingredient chip, `aria-busy="false"`, and an exact match to the pinned `providerAssetId`. All existing safety rules (no Add replay, target and document binding, byte SHA checks, one-shot semantics) remain strictly preserved.
+
+Checks:
+- Vitest: `flowVideoReferenceAttachment.test.ts`, `flowVideoQueue.test.ts`, `flowVideoReference.test.ts` **3 files / 94 tests PASS** (including non-Flow first image and conflicting media IDs).
+- Typecheck (`tsc --noEmit`): **PASS** (0 errors).
+- ESLint (`src/background/handlers/flowVideoAttachment.ts`, `tests/integration/flowVideoReferenceAttachment.test.ts`): **PASS** (0 errors).
+- Build (`node init; tsc -b; node tools/build.mjs`): **PASS**, package ID **`automat-faceless-0.1.0-mwkedvww`**, 4 JavaScript bundles validated.
+- Whitespace check (`git diff --check`): **PASS**.
+- Live verification is **NOT_RUN** / pending user retry.
+
 ## Flow reference selection scripting permission timing and fail-closed resolution — 17 November 2026
 
 Confirmed source defect in Flow reference selection: `scripting` capability was captured once at handler construction time in `src/background/handlers/references.ts` (`const scripting = dependencies.scripting ?? ...`). Because `manifest.json` declares `"scripting"` as an optional permission granted during user-initiated Flow verification, the running service worker persisted the initial `undefined` reference across subsequent permission grants until worker restart. In addition, `startSelection()` failed open when `scripting` was absent by skipping tab/document inspection and selection script injection, creating an active session, and broadcasting `session_started`. When the dashboard subsequently requested `listCandidates()`, `validatePickerSession()` rejected with the misleading message: `"The verified Flow document cannot provide image candidates in this worker context."`

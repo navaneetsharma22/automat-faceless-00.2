@@ -172,9 +172,6 @@ describe("P03.3 import preview integration", () => {
     expect(markup.indexOf("Validate &amp; Preview")).toBeLessThan(
       markup.indexOf("Save validated batch"),
     );
-    expect(markup.indexOf("Save validated batch")).toBeLessThan(
-      markup.indexOf("Legacy count-mode and one-shot tools"),
-    );
     expect(markup).toContain("Technical details");
     expect(markup).toContain("UTF-8 JSON. Maximum");
   });

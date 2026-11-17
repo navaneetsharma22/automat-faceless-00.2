@@ -9,7 +9,7 @@ import type { JsonSpan } from "../domain/batches/jsonSpanScanner";
 import type { FlowImageAttemptRecord } from "../domain/jobs/attempt";
 import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
 import type { ImageSubmissionQueueRecord } from "../domain/jobs/queue";
-import type { FlowVideoQueueRecord } from "../domain/jobs/videoQueue";
+import type { FlowVideoQueueRecord, FlowVideoExistingChipDiagnostic } from "../domain/jobs/videoQueue";
 import type { VidsVideoAttachmentOperation } from "../domain/jobs/vidsVideoAttachment";
 import type { VidsVideoGenerationOperation } from "../domain/jobs/vidsVideoGeneration";
 import type { VidsVideoQueueRecord } from "../domain/jobs/vidsVideoQueue";
@@ -35,9 +35,11 @@ export type FlowVideoAttachmentOperation = {
   status: "action_intent" | "attached" | "uncertain" | "blocked";
   reason?: string;
   updatedAt: number;
+  observedAsbToken?: string;
   verifiedAttachment?: {
     documentId: string;
     mediaId: string;
+    asbToken?: string;
     verifiedAt: number;
   };
   videoGeneration?: {
@@ -72,7 +74,8 @@ export type FlowVideoAttachmentOperation = {
     priorUpdatedAt: number;
     producer:
       | "historical_candidate_missing_before_add_activation"
-      | "picker_failure_before_add_activation";
+      | "picker_failure_before_add_activation"
+      | "existing_chip_failure_before_picker";
     addClickAttempted: false;
     reconciledAt: number;
   };
@@ -88,10 +91,14 @@ export type FlowVideoAttachmentOperation = {
     addClickAttempted: false;
   };
   existingChipPreAddEvidence?: {
-    reason: "existing_chip_identity_unreadable" | "existing_chip_not_ready";
+    reason:
+      | "existing_chip_identity_unreadable"
+      | "existing_chip_not_ready"
+      | "existing_chip_conflict";
     updatedAt: number;
     producer: "existing_composer_chip_check_before_picker";
     addClickAttempted: false;
+    diagnostic?: FlowVideoExistingChipDiagnostic;
   };
 };
 

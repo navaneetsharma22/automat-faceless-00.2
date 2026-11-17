@@ -1,4 +1,4 @@
-﻿# P09.1 Flow video reference attachment
+# P09.1 Flow video reference attachment
 
 Date: 2 November 2026. Evidence scope: source review and offline DOM/resource fixtures. No live provider action was performed.
 
@@ -260,3 +260,35 @@ Explicit Resume now accepts legacy `reference_origin_unsupported` and new `refer
 
 Offline verification: focused resolver, attachment, queue and resource tests **4 files / 100 tests PASS**; typecheck and scoped ESLint PASS. Production build and final build ID will be recorded after generation. No extension reload, live queue mutation or provider action occurred.
 Build verification: production build PASS, ID **`automat-faceless-0.1.0-mwk7p239`** (4 validated JavaScript bundles; existing large-chunk and ignored `inlineDynamicImports` advisories). `git diff --check` PASS.
+
+### Flow same-origin /asb/<token>=s... reference image representation support — 17 November 2026
+
+Confirmed live root cause: Flow's web application represents media assets as same-origin `https://flow.google.com/asb/<token>[=s<digits>[-rw]]` URLs across the composer Ingredient chip, project gallery tiles, and detail view route (`.../project/<projectId>/edit/<uuid>`), without any `flow-content.google/image/<uuid>` representation appearing.
+Previously:
+1. `flowResolveOriginalImageUrlInPage` rejected any detail URL starting with `/asb/` with `"unsupported"`, causing candidate acquisition to loop for 4 seconds and pause the queue at Shot 1 with `reference_original_unavailable`.
+2. `acquireCandidateBytes` in `flowVideoAttachment.ts` only attempted extension fetch via `flowReferenceResource` (which rejects `flow.google.com` origins).
+3. The Add action and read-only chip verification only recognized `flow-content.google/image/<uuid>` media IDs and failed closed when the chip used `/asb`.
+4. `flowComposerRuntime`, `enterFlowVideoPrompt`, `inspectTimedFlowGenerate`, and `inspectFlowImageButton` did not allow `/asb` reference tokens and treated the Ingredient chip as unexpected media (`composer_media_present`).
+
+Architecture and Implementation:
+1. Created `src/platforms/flow/mediaIdentity.ts`: strictly parses `flow-content.google/image/<uuid>` (lowercased UUID) and `flow.google.com/asb/<token>[=s<digits>[-rw]]` (token `[A-Za-z0-9_-]+`, max length 2048, no credentials, port 443, no extra path segments, valid `=s<digits>[-rw]` suffix). Evaluates identity sets via `flowMediaIdentitiesMatchExpected`: requires at least one recognized identity and every recognized identity must belong to the expected key set; extra recognized identities fail closed; unknown decorative badges (e.g. gstatic) are ignored.
+2. Inlined self-contained `/asb` parsing into MAIN-world and ISOLATED-world injected scripts (`flowResolveOriginalImageUrlInPage`, `flowVideoAttachmentActionInPage`, `flowComposerRuntime`, `inspectFlowVideoReferenceInPage`).
+3. In `flowResolveOriginalImageUrlInPage`: verifies the gallery tile has the expected `/asb` token, clicks the tile, accepts 0 or 1 visible pinned tile while detail is open, confirms unique read-only detail image, verifies detail `/asb` token matches gallery token, and returns detail URL. Token mismatches return `reference_asb_token_mismatch`; unparseable tokens return `reference_asb_token_missing`.
+4. Extended storage schemas (`FlowVideoAttachmentOperation`) and repositories to durably record `observedAsbToken` in `action_intent` and `verifiedAttachment.asbToken`.
+5. In `acquireCandidateBytes`: acquires `/asb` bytes using same-origin `flowReferenceCaptureInPage` in the page's MAIN world, base64 decodes into `Uint8Array`, and validates the SHA-256 byte digest against the prepared item's pinned hash. Never performs extension `fetchResource` on `/asb` URLs.
+6. In `flowVideoAttachmentActionInPage`: matches picker rows by token across `=s` suffix variants, clicks Add at most once, and polls for settled chip matching expected token.
+7. In `verifyAttachedReference`: verifies chip identity using `flowMediaIdentitiesMatchExpected` against `{ mediaId, asbToken }`. Legacy operations without `observedAsbToken` fail closed on `/asb` chips.
+8. Extended `flowComposerRuntime`, `enterFlowVideoPrompt`, `inspectTimedFlowGenerate`, and `inspectFlowImageButton` with `allowedReferenceAsbToken`.
+9. Extended `PRE_INTENT_RECOVERY_REASONS` in `flowVideoQueue.ts` with `reference_asb_token_missing`, `reference_asb_token_mismatch`, and `candidate_capture_failed` to allow safe resumption when no operation exists.
+
+Offline verification:
+- Unit parser: `tests/unit/flowMediaIdentity.test.ts` (7 tests PASS).
+- Detail resolver: `tests/unit/flowVideoReference.test.ts` (39 tests PASS).
+- Request-to-handler integration: `tests/integration/flowVideoReferenceAttachment.test.ts` (38 tests PASS).
+- Queue recovery: `tests/integration/flowVideoQueue.test.ts` (38 tests PASS).
+- One-shot generate integration: `tests/integration/flowVideoGenerate.test.ts` (9 tests PASS).
+- Targeted Flow video suites: **4 files / 124 tests PASS**.
+- Full test suite: **81 files / 1004 tests PASS**.
+- Typecheck: `tsc --noEmit` **PASS** (0 errors).
+- Build: `npm run build` **PASS**, package ID **`automat-faceless-0.1.0-mwkgpw47`** (4 JavaScript bundles).
+- Live verification: **NOT_RUN** / pending user action in browser.

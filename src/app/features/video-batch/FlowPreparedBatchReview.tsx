@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PreparedVideoBatchRecord } from "../../../domain/batches/types";
 import {
   VIDEO_QUEUE_DISPATCH_GAP_MS,
-  isFlowVideoPickerPreAddReason,
+  isFlowVideoPreAddRetryReason,
   isFlowVideoPostAddRecoveryReason,
 } from "../../../domain/jobs/videoQueue";
 import {
@@ -56,6 +56,22 @@ type VideoQueueSnapshot = {
       candidateBytesSha256: string; candidateMediaId: string; mimeType: string;
       preparedByteSize: number; savedByteSize: number; candidateByteSize: number;
       preparedWidth: number; preparedHeight: number; candidateWidth?: number; candidateHeight?: number;
+    };
+    existingChipDiagnostic?: {
+      producer: "existing_composer_chip_check_before_picker";
+      chipCount: number;
+      visibleChipCount: number;
+      candidateCount: number;
+      chips: Array<{
+        visible: boolean;
+        busy: string | null;
+        imageCount: number;
+        mediaIds: string[];
+        asbTokens: string[];
+        asbSuffixes: string[];
+        expectedKeyMatches: number;
+        unexpectedKeyCount: number;
+      }>;
     };
   }>;
 };
@@ -250,7 +266,7 @@ export function FlowPreparedBatchReview({
     const unresolved = videoQueue.items.filter((item) =>
       ["failed", "uncertain", "attaching", "dispatching"].includes(item.state));
     if (unresolved.length !== 1 || unresolved[0]?.state !== "uncertain") return undefined;
-    return isFlowVideoPickerPreAddReason(unresolved[0].reason) ? unresolved[0] : undefined;
+    return isFlowVideoPreAddRetryReason(unresolved[0].reason) ? unresolved[0] : undefined;
   })();
   const retryablePickerFailure = pickerBlockedItem !== undefined;
   const verificationBlockedItem = (() => {
@@ -443,6 +459,24 @@ export function FlowPreparedBatchReview({
                             <dt>SHA-256: fetched candidate</dt><dd>{item.byteMismatchDiagnostic.candidateBytesSha256}</dd>
                             {item.byteMismatchDiagnostic.candidateWidth && item.byteMismatchDiagnostic.candidateHeight ? <><dt>Dimensions: prepared / candidate</dt><dd>{item.byteMismatchDiagnostic.preparedWidth}×{item.byteMismatchDiagnostic.preparedHeight} / {item.byteMismatchDiagnostic.candidateWidth}×{item.byteMismatchDiagnostic.candidateHeight}</dd></> : null}
                           </dl>
+                        </details>
+                      ) : null}
+                      {item.existingChipDiagnostic ? (
+                        <details>
+                          <summary>Existing composer chip evidence (no Add was activated)</summary>
+                          <dl>
+                            <dt>Recognized / visible chips</dt><dd>{item.existingChipDiagnostic.chipCount} / {item.existingChipDiagnostic.visibleChipCount}</dd>
+                            <dt>Chip hosts detected (frames excluded)</dt><dd>{item.existingChipDiagnostic.candidateCount}</dd>
+                          </dl>
+                          <ol>
+                            {item.existingChipDiagnostic.chips.map((chip, index) => (
+                              <li key={`${item.itemId}:chip:${index}`}>
+                                Chip {index + 1}: {chip.visible ? "visible" : "hidden"}, aria-busy {chip.busy ?? "unset"}, {chip.imageCount} image{chip.imageCount === 1 ? "" : "s"}, {chip.expectedKeyMatches} expected / {chip.unexpectedKeyCount} unexpected identity key{chip.unexpectedKeyCount === 1 ? "" : "s"}
+                                {chip.mediaIds.length ? <><br />Media: {chip.mediaIds.join(", ")}</> : null}
+                                {chip.asbTokens.length ? <><br />/asb: {chip.asbTokens.join(", ")}{chip.asbSuffixes.length ? ` (${chip.asbSuffixes.join(", ")})` : ""}</> : null}
+                              </li>
+                            ))}
+                          </ol>
                         </details>
                       ) : null}
                       {item.state === "failed" && item.reason === "candidate_bytes_mismatch" ? (

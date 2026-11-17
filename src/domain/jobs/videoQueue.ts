@@ -4,6 +4,45 @@ import { ReferenceByteComparisonDiagnosticSchema, type ReferenceByteComparisonDi
 export const VIDEO_QUEUE_DISPATCH_GAP_MS = 15_000 as const;
 export const VIDEO_QUEUE_READINESS_TIMEOUT_MS = 60_000 as const;
 
+const FLOW_MEDIA_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const FLOW_ASB_TOKEN = /^[A-Za-z0-9_-]{1,2048}$/;
+const FLOW_ASB_SUFFIX = /^=s\d+(-rw)?$/;
+
+/**
+ * URL-free snapshot of the visible composer ingredients at the moment the
+ * pre-Add chip gate refused. It records only bounded identity fragments
+ * (media UUIDs, `/asb` tokens, size suffixes) so a stale or different chip
+ * can be diagnosed without persisting image URLs or request signatures.
+ */
+export const FlowVideoExistingChipDiagnosticSchema = z
+  .object({
+    producer: z.literal("existing_composer_chip_check_before_picker"),
+    chipCount: z.number().int().nonnegative().max(32),
+    visibleChipCount: z.number().int().nonnegative().max(32),
+    candidateCount: z.number().int().nonnegative().max(32),
+    chips: z
+      .array(
+        z
+          .object({
+            visible: z.boolean(),
+            busy: z.string().max(32).nullable(),
+            imageCount: z.number().int().nonnegative().max(16),
+            mediaIds: z.array(z.string().regex(FLOW_MEDIA_UUID)).max(4),
+            asbTokens: z.array(z.string().regex(FLOW_ASB_TOKEN)).max(4),
+            asbSuffixes: z.array(z.string().regex(FLOW_ASB_SUFFIX)).max(4),
+            expectedKeyMatches: z.number().int().nonnegative().max(32),
+            unexpectedKeyCount: z.number().int().nonnegative().max(32),
+          })
+          .strict(),
+      )
+      .max(8),
+  })
+  .strict();
+export type FlowVideoExistingChipDiagnostic = z.infer<
+  typeof FlowVideoExistingChipDiagnosticSchema
+>;
+
 /**
  * Picker failures are returned by the in-page action before its sole Add
  * activation. The set is deliberately closed: a reason outside it never
@@ -26,6 +65,28 @@ export function isFlowVideoPickerPreAddReason(
   return (
     reason !== undefined &&
     (FLOW_VIDEO_PICKER_PRE_ADD_REASONS as readonly string[]).includes(reason)
+  );
+}
+
+/**
+ * The existing-composer chip gate runs before the picker opens and before the
+ * sole Add click. A conflict there is therefore replayable as a fresh
+ * attachment attempt once the user removes the offending chip: no Add, no
+ * picker selection, and no Generate has occurred for the item.
+ */
+export const FLOW_VIDEO_PRE_ADD_RETRY_REASONS = [
+  ...FLOW_VIDEO_PICKER_PRE_ADD_REASONS,
+  "existing_chip_conflict",
+] as const;
+export type FlowVideoPreAddRetryReason =
+  (typeof FLOW_VIDEO_PRE_ADD_RETRY_REASONS)[number];
+
+export function isFlowVideoPreAddRetryReason(
+  reason: string | undefined,
+): reason is FlowVideoPreAddRetryReason {
+  return (
+    reason !== undefined &&
+    (FLOW_VIDEO_PRE_ADD_RETRY_REASONS as readonly string[]).includes(reason)
   );
 }
 
@@ -125,6 +186,7 @@ export type FlowVideoQueueItem = {
   reason?: string;
   priorReason?: string;
   byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic;
+  existingChipDiagnostic?: FlowVideoExistingChipDiagnostic;
 };
 
 export type FlowVideoQueueRecord = {
@@ -157,6 +219,7 @@ const itemSchema = z.object({
   reason: z.string().min(1).max(64).optional(),
   priorReason: z.string().min(1).max(64).optional(),
   byteMismatchDiagnostic: ReferenceByteComparisonDiagnosticSchema.optional(),
+  existingChipDiagnostic: FlowVideoExistingChipDiagnosticSchema.optional(),
 }).strict();
 
 export const FlowVideoQueueRecordSchema = z.object({

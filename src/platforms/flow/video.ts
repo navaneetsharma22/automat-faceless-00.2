@@ -5,6 +5,8 @@ import {
   sha256Bytes,
 } from "../../domain/media/references";
 
+import { flowMediaIdFromImageUrl } from "./mediaIdentity";
+
 export type FlowVideoFailure =
   | "wrong_frame"
   | "composer_missing"
@@ -44,19 +46,7 @@ type GalleryCandidate = { url: string; mediaId: string };
 
 /** Reads only the observed Flow chip identity path; signed query values are ignored. */
 export function flowVideoChipMediaIdFromImageUrl(raw: string): string | undefined {
-  try {
-    const url = new URL(raw);
-    if (
-      url.protocol !== "https:" ||
-      url.hostname !== "flow-content.google" ||
-      url.username ||
-      url.password ||
-      url.port
-    ) return undefined;
-    return /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname)?.[1]?.toLowerCase();
-  } catch {
-    return undefined;
-  }
+  return flowMediaIdFromImageUrl(raw);
 }
 
 const operationByDocument = new WeakMap<

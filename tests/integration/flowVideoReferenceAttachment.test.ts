@@ -62,6 +62,10 @@ async function fixture(
     detailResolutionDocumentId?: string;
     detailRestoreDocumentId?: string;
     detailResolveFailure?: boolean;
+    detailResolveCode?: string;
+    captureBytes?: Uint8Array;
+    captureFails?: boolean;
+    captureCode?: string;
     candidateMimeType?: string;
     permissionResult?: boolean;
     permissionError?: Error;
@@ -77,8 +81,8 @@ async function fixture(
     omitManualSettings?: boolean;
     mismatchManualSettingsTarget?: boolean;
     verificationDocumentId?: string;
-    verificationChip?: { busy: string | null; url: string };
-    verificationChipSequence?: Array<{ busy: string | null; url: string }>;
+    verificationChip?: { busy: string | null; url?: string; urls?: string[] };
+    verificationChipSequence?: Array<{ busy: string | null; url?: string; urls?: string[] }>;
     galleryCandidates?: Array<{ id: string; url: string }>;
     galleryCandidateDocumentId?: string;
     galleryCandidateHref?: string;
@@ -253,7 +257,7 @@ async function fixture(
         opened: true,
         url: observedOriginalUrl,
         href: `${canonicalTarget}/edit/268e65f5-7fd4-4918-9e9e-6744371d16a8`,
-        ...(overrides.detailResolveFailure ? { code: "reference_detail_unavailable" } : {}),
+        ...(overrides.detailResolveFailure ? { code: overrides.detailResolveCode ?? "reference_detail_unavailable" } : {}),
       } }];
     }
     if (injection.func === flowRestoreGalleryAfterOriginalResolutionInPage) {
@@ -308,19 +312,31 @@ async function fixture(
     if (injection.func === flowReferenceCaptureInPage) {
       expect(injection.target).toEqual({ tabId, documentIds: [documentId] });
       expect(injection.args?.[0]).toMatchObject({
-        sourceUrl: observedCandidateUrl,
+        sourceUrl: observedOriginalUrl,
         expectedOrigin: "https://flow.google.com",
       });
+      if (overrides.captureFails) {
+        return [
+          {
+            documentId,
+            result: {
+              ok: false,
+              code: overrides.captureCode ?? "candidate_capture_failed",
+            },
+          },
+        ];
+      }
+      const captureData = overrides.captureBytes ?? overrides.candidateBytes ?? bytes;
       return [
         {
           documentId,
           result: {
             ok: true,
-            data: base64(overrides.candidateBytes ?? bytes),
-            mimeType: "image/png",
+            data: base64(captureData),
+            mimeType: overrides.candidateMimeType ?? "image/png",
             width: 1,
             height: 1,
-            byteLength: (overrides.candidateBytes ?? bytes).byteLength,
+            byteLength: captureData.byteLength,
           },
         },
       ];
@@ -331,6 +347,10 @@ async function fixture(
       const sequenceChip = sequence?.[
         Math.min(verificationChipReads++, sequence.length - 1)
       ];
+      const selectedChip = sequenceChip ?? overrides.verificationChip ?? {
+        busy: "false",
+        url: `https://flow-content.google/image/${mediaId}?signed=readback`,
+      };
       return [
         {
           documentId: overrides.verificationDocumentId ?? documentId,
@@ -338,9 +358,9 @@ async function fixture(
             ok: true,
             href: canonicalTarget,
             count: 1,
-            chips: [sequenceChip ?? overrides.verificationChip ?? {
-              busy: "false",
-              url: `https://flow-content.google/image/${mediaId}?signed=readback`,
+            chips: [{
+              busy: selectedChip.busy,
+              urls: selectedChip.urls ?? (selectedChip.url ? [selectedChip.url] : []),
             }],
           },
         },
@@ -760,7 +780,7 @@ describe("Flow video reference attachment request-to-handler integration (offlin
   });
 
   it("requires exactly one ready chip matching the pinned media identity", async () => {
-    const f = await fixture({ verificationChip: { busy: "true", url: `https://flow-content.google/image/${mediaId}` } });
+    const f = await fixture({ verificationChip: { busy: "true", urls: [`https://flow-content.google/image/${mediaId}`] } });
     const original = {
       id: `${batchId}:${itemId}`, preparedBatchId: batchId, itemId, referenceId,
       status: "uncertain" as const, reason: "attachment_unverified", updatedAt: 93,
@@ -771,7 +791,78 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     });
     expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toEqual(original);
     expect(f.addActivation).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it("verifies the exact chip identity when the first chip image is not the Flow thumbnail", async () => {
+    const f = await fixture({
+      verificationChip: {
+        busy: "false",
+        urls: [
+          "https://www.gstatic.com/flow/ingredient-badge.png",
+          `https://flow-content.google/image/${mediaId}?signed=settled`,
+        ],
+      },
+    });
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "verification_chip_not_exact_ready",
+      updatedAt: 93,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(
+      f.client.request("flow.video.verifyAttachedReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "attached",
+      operation: {
+        status: "attached",
+        verifiedAttachment: { mediaId },
+      },
+    });
+    const stored = await f.repositories.getFlowVideoAttachmentOperation(original.id);
+    expect(stored?.verifiedAttachment?.mediaId).toBe(mediaId);
+    expect(f.addActivation).not.toHaveBeenCalled();
   });
+
+  it("does not verify a chip whose images resolve to different Flow media identities", async () => {
+    const differentMediaId = "99999999-9999-4999-8999-999999999999";
+    const f = await fixture({
+      verificationChip: {
+        busy: "false",
+        urls: [
+          `https://flow-content.google/image/${mediaId}?signed=one`,
+          `https://flow-content.google/image/${differentMediaId}?signed=two`,
+        ],
+      },
+    });
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "attachment_unverified",
+      updatedAt: 93,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(
+      f.client.request("flow.video.verifyAttachedReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "uncertain",
+      reason: "verification_chip_not_exact_ready",
+    });
+    expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toEqual(original);
+    expect(f.addActivation).not.toHaveBeenCalled();
+  }, 10_000);
 
   it("waits for a settling chip identity during read-only verification without activating Add", async () => {
     const f = await fixture({
@@ -1147,7 +1238,7 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     const previewUrl = "https://flow.google.com/asb/detail-preview.webp";
     const f = await fixture({ originalSourceUrl: previewUrl });
     await expect(f.client.request("flow.video.attachReference", { preparedBatchId: batchId, itemId }))
-      .resolves.toMatchObject({ status: "blocked", stage: "reference_byte_acquisition", reason: "reference_origin_unsupported" });
+      .resolves.toMatchObject({ status: "blocked", stage: "reference_byte_acquisition", reason: "reference_asb_token_missing" });
     expect(f.fetchResource).not.toHaveBeenCalled();
     expect(f.addActivation).not.toHaveBeenCalled();
     expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
@@ -1164,6 +1255,277 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(mismatch.addActivation).not.toHaveBeenCalled();
     expect(await mismatch.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
   });
+
+  it("/asb gallery + /asb detail with same token captures same-origin bytes, records observedAsbToken, and attaches with Add clicked once without extension fetch", async () => {
+    const token = "token_asb_integration_success";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s320`;
+    const detailUrl = `https://flow.google.com/asb/${token}=s0`;
+    const chipUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const f = await fixture({
+      candidateSourceUrl: galleryUrl,
+      originalSourceUrl: detailUrl,
+      verificationChip: { busy: "false", urls: [chipUrl] },
+    });
+    const result = await f.client.request("flow.video.attachReference", {
+      preparedBatchId: batchId,
+      itemId,
+    });
+    expect(result).toEqual({ status: "attached" });
+    expect(f.addActivation).toHaveBeenCalledTimes(1);
+    expect(f.fetchResource).not.toHaveBeenCalled();
+    const stored = await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`);
+    expect(stored?.status).toBe("attached");
+    expect(stored?.observedAsbToken).toBe(token);
+    expect(stored?.verifiedAttachment?.asbToken).toBe(token);
+    expect(stored?.verifiedAttachment?.mediaId).toBe(mediaId);
+  });
+
+  it("blocks before operation and never activates Add when /asb detail has a different token", async () => {
+    const galleryToken = "token_gallery_token";
+    const detailToken = "token_different_detail_token";
+    const f = await fixture({
+      candidateSourceUrl: `https://flow.google.com/asb/${galleryToken}=s320`,
+      originalSourceUrl: `https://flow.google.com/asb/${detailToken}=s0`,
+    });
+    await expect(
+      f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      stage: "reference_byte_acquisition",
+      reason: "reference_asb_token_mismatch",
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(f.fetchResource).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
+  });
+
+  it("blocks before operation and never activates Add when /asb detail capture fails", async () => {
+    const token = "token_capture_fail";
+    const f = await fixture({
+      candidateSourceUrl: `https://flow.google.com/asb/${token}=s320`,
+      originalSourceUrl: `https://flow.google.com/asb/${token}=s0`,
+      captureFails: true,
+      captureCode: "candidate_capture_failed",
+    });
+    await expect(
+      f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      stage: "reference_byte_acquisition",
+      reason: "candidate_capture_failed",
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(f.fetchResource).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
+  });
+
+  it("blocks before Add when same-origin captured bytes differ from pinned SHA-256", async () => {
+    const token = "token_asb_bytes_diff";
+    const f = await fixture({
+      candidateSourceUrl: `https://flow.google.com/asb/${token}=s320`,
+      originalSourceUrl: `https://flow.google.com/asb/${token}=s0`,
+      candidateBytes: new Uint8Array([9, 9, 9, 9]),
+    });
+    await expect(
+      f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      stage: "candidate_byte_verification",
+      reason: "candidate_bytes_mismatch",
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(f.fetchResource).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
+  });
+
+  it("verifyAttachedReference accepts /asb chip with the stored token without Add", async () => {
+    const token = "token_verify_match";
+    const f = await fixture({
+      verificationChip: {
+        busy: "false",
+        urls: [`https://flow.google.com/asb/${token}=s1600-rw`],
+      },
+    });
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "verification_chip_not_exact_ready",
+      observedAsbToken: token,
+      updatedAt: 100,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(
+      f.client.request("flow.video.verifyAttachedReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "attached",
+      operation: {
+        status: "attached",
+        observedAsbToken: token,
+        verifiedAttachment: {
+          mediaId,
+          asbToken: token,
+        },
+      },
+    });
+    const stored = await f.repositories.getFlowVideoAttachmentOperation(original.id);
+    expect(stored?.verifiedAttachment?.asbToken).toBe(token);
+    expect(f.addActivation).not.toHaveBeenCalled();
+  });
+
+  it("verifyAttachedReference rejects /asb chip with different token without Add", async () => {
+    const token = "token_verify_stored";
+    const differentToken = "token_verify_different";
+    const f = await fixture({
+      verificationChip: {
+        busy: "false",
+        urls: [`https://flow.google.com/asb/${differentToken}=s1600-rw`],
+      },
+    });
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "attachment_unverified",
+      observedAsbToken: token,
+      updatedAt: 100,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(
+      f.client.request("flow.video.verifyAttachedReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "uncertain",
+      reason: "verification_chip_not_exact_ready",
+    });
+    expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toEqual(original);
+    expect(f.addActivation).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it("verifyAttachedReference fails closed when legacy operation has no observedAsbToken and chip is /asb", async () => {
+    const token = "token_legacy_test";
+    const f = await fixture({
+      verificationChip: {
+        busy: "false",
+        urls: [`https://flow.google.com/asb/${token}=s1600-rw`],
+      },
+    });
+    const legacy = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "attachment_unverified",
+      updatedAt: 100,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(legacy);
+    await expect(
+      f.client.request("flow.video.verifyAttachedReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "uncertain",
+      reason: "verification_chip_not_exact_ready",
+    });
+    expect(await f.repositories.getFlowVideoAttachmentOperation(legacy.id)).toEqual(legacy);
+    expect(f.addActivation).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it("verifies chip with badge image plus matching /asb image without Add", async () => {
+    const token = "token_badge_asb_match";
+    const f = await fixture({
+      verificationChip: {
+        busy: "false",
+        urls: [
+          "https://www.gstatic.com/flow/ingredient-badge.png",
+          `https://flow.google.com/asb/${token}=s1600-rw`,
+        ],
+      },
+    });
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "verification_chip_not_exact_ready",
+      observedAsbToken: token,
+      updatedAt: 100,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(
+      f.client.request("flow.video.verifyAttachedReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "attached",
+      operation: {
+        status: "attached",
+        observedAsbToken: token,
+        verifiedAttachment: { mediaId, asbToken: token },
+      },
+    });
+    const stored = await f.repositories.getFlowVideoAttachmentOperation(original.id);
+    expect(stored?.verifiedAttachment?.asbToken).toBe(token);
+    expect(f.addActivation).not.toHaveBeenCalled();
+  });
+
+  it("does not verify chip with matching /asb image plus a different recognized identity", async () => {
+    const token = "token_matching_asb_identity";
+    const differentMediaId = "88888888-8888-4888-8888-888888888888";
+    const f = await fixture({
+      verificationChip: {
+        busy: "false",
+        urls: [
+          `https://flow.google.com/asb/${token}=s1600-rw`,
+          `https://flow-content.google/image/${differentMediaId}?signed=extra`,
+        ],
+      },
+    });
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "attachment_unverified",
+      observedAsbToken: token,
+      updatedAt: 100,
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(
+      f.client.request("flow.video.verifyAttachedReference", {
+        preparedBatchId: batchId,
+        itemId,
+      }),
+    ).resolves.toMatchObject({
+      status: "uncertain",
+      reason: "verification_chip_not_exact_ready",
+    });
+    expect(await f.repositories.getFlowVideoAttachmentOperation(original.id)).toEqual(original);
+    expect(f.addActivation).not.toHaveBeenCalled();
+  }, 10_000);
 
   it("does not replay on concurrent requests, lost reply, or worker recreation after an injection error", async () => {
     const concurrent = await fixture({ delayAction: true });
@@ -1244,7 +1606,10 @@ describe("Flow video reference attachment request-to-handler integration (offlin
                   ok: true,
                   href: canonicalTarget,
                   count: 1,
-                  chips: [{ busy: "false", url: `https://flow-content.google/image/${mediaId}?signed=rotated` }],
+                  chips: [{
+                    busy: "false",
+                    urls: [`https://flow-content.google/image/${mediaId}?signed=rotated`],
+                  }],
                 },
               },
             ];

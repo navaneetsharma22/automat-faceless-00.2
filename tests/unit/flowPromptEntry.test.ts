@@ -288,6 +288,17 @@ describe("bounded Flow prompt entry", () => {
     expect(fixture.commands).not.toContain("Input.dispatchMouseEvent");
   });
 
+  it("enters one complete video JSON body with allowedReferenceAsbToken and verifies exact readback", async () => {
+    const videoPrompt = JSON.stringify({ shot_id: "1", prompt_type: "video", scene_title: "Shot 1", primary_instruction: "With ASB reference." });
+    const asbToken = "token_prompt_entry_asb_123";
+    const mediaId = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const fixture = makePort();
+    const result = await enterFlowVideoPrompt(videoPrompt, fixture.port, mediaId, asbToken);
+    expect(result).toMatchObject({ outcome: "filled", fillVerified: true, immediateMatch: true, settledMatch: true, stableReadback: true });
+    expect(fixture.inputCount).toBe(1);
+    expect(fixture.commands).toContain("Input.insertText");
+  });
+
   it("does not retry after uncertain partial insertion", async () => {
     const fixture = makePort({ inputError: true });
     const result = await enterFlowPrompt(prompt, fixture.port);

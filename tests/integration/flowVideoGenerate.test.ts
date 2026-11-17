@@ -32,6 +32,10 @@ async function fixture(
     verificationDocumentId?: string;
     verificationMediaId?: string;
     verificationBusy?: string | null;
+    verificationChipUrl?: string;
+    verificationAsbToken?: string;
+    asbToken?: string;
+    operationMediaId?: string;
     pinnedDocumentId?: string;
     pinnedProjectId?: string;
     pinnedTabId?: number;
@@ -174,6 +178,13 @@ async function fixture(
     referenceId,
     status: "attached" as const,
     updatedAt: 1,
+    ...(overrides.asbToken ? { observedAsbToken: overrides.asbToken } : {}),
+    verifiedAttachment: {
+      documentId,
+      mediaId: overrides.operationMediaId ?? mediaId,
+      ...(overrides.asbToken ? { asbToken: overrides.asbToken } : {}),
+      verifiedAt: 1,
+    },
   };
   await repositories.putFlowVideoAttachmentOperation(attachmentOperation);
   let referenceReads = 0;
@@ -181,6 +192,10 @@ async function fixture(
     async (input: { func: (...args: never[]) => unknown }) => {
       expect(input.func).toBe(inspectFlowVideoReferenceInPage);
       referenceReads++;
+      const chipUrl = overrides.verificationChipUrl ??
+        (overrides.verificationAsbToken
+          ? `https://flow.google.com/asb/${overrides.verificationAsbToken}=s1600-rw`
+          : `https://flow-content.google/image/${overrides.changeReferenceAfterFill && referenceReads > 1 ? otherMediaId : (overrides.verificationMediaId ?? mediaId)}?sig=ephemeral`);
       return [
         {
           documentId: overrides.verificationDocumentId ?? documentId,
@@ -190,7 +205,8 @@ async function fixture(
             chips: [
               {
                 busy: overrides.verificationBusy ?? "false",
-                url: `https://flow-content.google/image/${overrides.changeReferenceAfterFill && referenceReads > 1 ? otherMediaId : (overrides.verificationMediaId ?? mediaId)}?sig=ephemeral`,
+                urls: [chipUrl],
+                url: chipUrl,
               },
             ],
           },
@@ -295,6 +311,7 @@ describe("P09.2 one prepared Flow video item (offline)", () => {
       prompt,
       expect.objectContaining({ frameId: "main-frame" }),
       mediaId,
+      undefined,
     );
     expect(f.activate).toHaveBeenCalledTimes(1);
     expect(f.getReferenceReads()).toBe(3);
@@ -425,5 +442,44 @@ describe("P09.2 one prepared Flow video item (offline)", () => {
         )
       )?.videoGeneration?.state,
     ).toBe("uncertain");
+  });
+
+  it("dispatches exactly once with a verified /asb chip and matching token", async () => {
+    const token = "token_flow_video_generate_ok";
+    const f = await fixture({
+      asbToken: token,
+      verificationAsbToken: token,
+    });
+    const result = await f.handler.generateOnce(batchId, itemId);
+    expect(result).toMatchObject({
+      status: "dispatched",
+      activationCount: 1,
+    });
+    expect(f.activate).toHaveBeenCalledTimes(1);
+    expect(f.enterPrompt).toHaveBeenCalledWith(
+      prompt,
+      expect.anything(),
+      mediaId,
+      token,
+    );
+    const stored = await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`);
+    expect(stored?.videoGeneration?.state).toBe("dispatched");
+  });
+
+  it("blocks generation and never activates when the chip /asb token differs from the verified token", async () => {
+    const token = "token_flow_video_expected";
+    const wrongToken = "token_flow_video_wrong";
+    const f = await fixture({
+      asbToken: token,
+      verificationAsbToken: wrongToken,
+    });
+    const result = await f.handler.generateOnce(batchId, itemId);
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "matching_ready_reference_required",
+    });
+    expect(f.activate).not.toHaveBeenCalled();
+    const stored = await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`);
+    expect(stored?.videoGeneration).toBeUndefined();
   });
 });

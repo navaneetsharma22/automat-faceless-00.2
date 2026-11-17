@@ -109,6 +109,7 @@ export function flowComposerRuntime(
   returnEditor = false,
   readText = readFlowEditorRuntime,
   allowedReferenceMediaId?: string,
+  allowedReferenceAsbToken?: string,
 ): FlowComposerDiscovery | HTMLElement | null {
   const placeholderText = "what do you want to create?";
   const labelOf = (element: HTMLElement) => {
@@ -241,15 +242,12 @@ export function flowComposerRuntime(
     : "semantic-container";
   const mediaElements = Array.from(
     boundary.querySelectorAll("img, video, audio, canvas, iframe, object, embed"),
-  );
+  ).filter((element) => !element.closest(".frame-trigger"));
+  const ingredientChips = (scope: ParentNode) =>
+    [...scope.querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")]
+      .filter((chip) => !chip.closest(".frame-trigger"));
   const soleMatchingReadyReference = (element: Element) => {
-    if (
-      !allowedReferenceMediaId ||
-      element.tagName !== "IMG" ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-        allowedReferenceMediaId,
-      )
-    )
+    if ((!allowedReferenceMediaId && !allowedReferenceAsbToken) || element.tagName !== "IMG")
       return false;
     const image = element as HTMLImageElement;
     const chip = image.closest<HTMLButtonElement>(
@@ -257,25 +255,68 @@ export function flowComposerRuntime(
     );
     if (
       !chip ||
+      chip.closest(".frame-trigger") ||
       chip.getAttribute("aria-busy") !== "false" ||
       !chip.isConnected ||
       chip.getClientRects().length === 0 ||
-      boundary.querySelectorAll("button[aria-label='Ingredient']").length !== 1 ||
+      ingredientChips(boundary).length !== 1 ||
       chip.querySelectorAll("img[alt='Ingredient image']").length !== 1 ||
       chip.querySelector("img[alt='Ingredient image']") !== image
     )
       return false;
     try {
-      const url = new URL(image.currentSrc || image.src || image.getAttribute("src") || "");
-      const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname)?.[1];
-      return url.origin === "https://flow-content.google" && id?.toLowerCase() === allowedReferenceMediaId.toLowerCase();
+      const raw = image.currentSrc || image.src || image.getAttribute("src") || "";
+      const url = new URL(raw);
+      if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return false;
+      if (
+        allowedReferenceMediaId &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(allowedReferenceMediaId) &&
+        url.hostname === "flow-content.google"
+      ) {
+        const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname)?.[1];
+        if (id && id.toLowerCase() === allowedReferenceMediaId.toLowerCase()) return true;
+      }
+      if (
+        allowedReferenceAsbToken &&
+        url.hostname === "flow.google.com" &&
+        url.pathname.startsWith("/asb/")
+      ) {
+        const rest = url.pathname.slice("/asb/".length);
+        if (rest && !rest.includes("/")) {
+          const eq = rest.indexOf("=");
+          const token = eq === -1 ? rest : rest.slice(0, eq);
+          const suffix = eq === -1 ? "" : rest.slice(eq);
+          if (
+            token &&
+            token.length <= 2048 &&
+            /^[A-Za-z0-9_-]+$/.test(token) &&
+            (!suffix || /^=s\d+(-rw)?$/.test(suffix)) &&
+            token === allowedReferenceAsbToken
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
     } catch {
       return false;
     }
   };
-  const mediaPresent = mediaElements.length > 0 && !(
-    mediaElements.length === 1 && soleMatchingReadyReference(mediaElements[0]!)
-  );
+  let mediaPresent: boolean;
+  if (!allowedReferenceMediaId) {
+    mediaPresent =
+      mediaElements.length > 0 &&
+      !(mediaElements.length === 1 && soleMatchingReadyReference(mediaElements[0]!));
+  } else if (mediaElements.length === 0) {
+    mediaPresent = false;
+  } else {
+    const readyRef = mediaElements.find(soleMatchingReadyReference);
+    const chip = readyRef?.closest("button[aria-label='Ingredient']");
+    mediaPresent =
+      !readyRef ||
+      !chip ||
+      mediaElements.some((media) => !chip.contains(media));
+  }
   if (
     (editorKind === "contenteditable" && profile !== "flow-rich-text") ||
     mediaPresent
@@ -359,9 +400,10 @@ export function flowComposerRuntimeExpression(
   expectedText: string,
   returnEditor = false,
   allowedReferenceMediaId?: string,
+  allowedReferenceAsbToken?: string,
 ): string {
   // Pass dependencies positionally: production minification may rename bindings.
-  return `(${flowComposerRuntime.toString()})(${JSON.stringify(expectedText)},${returnEditor},(${readFlowEditorRuntime.toString()}),${JSON.stringify(allowedReferenceMediaId)})`;
+  return `(${flowComposerRuntime.toString()})(${JSON.stringify(expectedText)},${returnEditor},(${readFlowEditorRuntime.toString()}),${JSON.stringify(allowedReferenceMediaId)},${JSON.stringify(allowedReferenceAsbToken)})`;
 }
 
 export function classifyFlowEditorText(

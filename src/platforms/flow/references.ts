@@ -357,49 +357,139 @@ export async function flowResolveOriginalImageUrlInPage(input: {
     return element.isConnected && rect.width > 0 && rect.height > 0 &&
       style.display !== "none" && style.visibility !== "hidden";
   };
+  const parseAsbToken = (raw: string | undefined): string | undefined => {
+    if (!raw || raw.length > 4096) return undefined;
+    try {
+      const u = new URL(raw, location.href);
+      if (
+        u.protocol !== "https:" ||
+        u.hostname !== "flow.google.com" ||
+        u.username ||
+        u.password ||
+        (u.port && u.port !== "443")
+      )
+        return undefined;
+      if (!u.pathname.startsWith("/asb/")) return undefined;
+      const rest = u.pathname.slice("/asb/".length);
+      if (!rest || rest.includes("/")) return undefined;
+      const eq = rest.indexOf("=");
+      const token = eq === -1 ? rest : rest.slice(0, eq);
+      const suffix = eq === -1 ? "" : rest.slice(eq);
+      if (!token || token.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(token))
+        return undefined;
+      if (suffix && !/^=s\d+(-rw)?$/.test(suffix)) return undefined;
+      return token;
+    } catch {
+      return undefined;
+    }
+  };
+  const isAsbUrl = (raw: string | undefined): boolean => {
+    if (!raw) return false;
+    try {
+      const u = new URL(raw, location.href);
+      return (
+        u.protocol === "https:" &&
+        u.hostname === "flow.google.com" &&
+        /^\/asb(?:\/|$)/.test(u.pathname)
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const expectedAsbToken = parseAsbToken(input.galleryUrl);
+  if (isAsbUrl(input.galleryUrl) && !expectedAsbToken) {
+    return { ok: false, opened: false, href: location.href, code: "reference_asb_token_missing" };
+  }
+
   const detailImages = () => [...document.querySelectorAll<HTMLImageElement>('img[alt="Read-only image view"]')].filter(visible);
   if (detailImages().length) return { ok: false, opened: false, href: location.href, code: "reference_detail_already_open" };
   const matches = [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
     .filter((image) => image.dataset.mediaId === input.mediaId && visible(image));
   if (matches.length !== 1) return { ok: false, opened: false, href: location.href, code: matches.length ? "candidate_ambiguous" : "candidate_missing" };
   const image = matches[0]!;
-  if ((image.currentSrc || image.src) !== input.galleryUrl)
-    return { ok: false, opened: false, href: location.href, code: "candidate_changed" };
+  const tileImageSrc = image.currentSrc || image.src;
+  if (expectedAsbToken) {
+    const tileToken = parseAsbToken(tileImageSrc);
+    if (tileToken !== expectedAsbToken)
+      return { ok: false, opened: false, href: location.href, code: "candidate_changed" };
+  } else {
+    if (tileImageSrc !== input.galleryUrl)
+      return { ok: false, opened: false, href: location.href, code: "candidate_changed" };
+  }
   const tile = image.closest<HTMLElement>("flow-image-tile");
   if (!tile || !visible(tile)) return { ok: false, opened: false, href: location.href, code: "candidate_missing" };
   tile.click();
-  const originalUrlState = (raw: string | undefined): "ready" | "unsupported" | "wrong_media_id" => {
-    if (!raw || raw.length > 4096) return "unsupported";
-    try {
-      const url = new URL(raw);
-      if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return "unsupported";
-      if (url.hostname === "lh3.googleusercontent.com") return "ready";
-      if (url.hostname !== "flow-content.google") return "unsupported";
-      const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname)?.[1];
-      if (!id) return "unsupported";
-      return id.toLowerCase() === input.mediaId.toLowerCase() ? "ready" : "wrong_media_id";
-    } catch {
-      return "unsupported";
-    }
-  };
+
+  let observedWrongAsbToken = false;
   let lastPinnedTileCount = 0;
   for (let attempt = 0; attempt < 80; attempt++) {
-    // The detail overlay can render a loaded /asb preview before its original
-    // resource arrives. Re-resolve the exact tile while waiting, and never
-    // report a preview or object URL as the original bytes source.
     const liveTiles = [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
       .filter((candidate) => candidate.isConnected && candidate.dataset.mediaId === input.mediaId && visible(candidate));
     lastPinnedTileCount = liveTiles.length;
+    if (liveTiles.length > 1) {
+      return { ok: false, opened: true, href: location.href, code: "candidate_ambiguous" };
+    }
+    if (liveTiles.length === 1) {
+      const pinnedImg = liveTiles[0]!;
+      if (pinnedImg.dataset.mediaId !== input.mediaId) {
+        return { ok: false, opened: true, href: location.href, code: "candidate_changed" };
+      }
+      if (expectedAsbToken) {
+        const liveToken = parseAsbToken(pinnedImg.currentSrc || pinnedImg.src);
+        if (liveToken !== expectedAsbToken) {
+          return { ok: false, opened: true, href: location.href, code: "candidate_changed" };
+        }
+      }
+    }
     const detail = detailImages();
     if (detail.length > 1) return { ok: false, opened: true, href: location.href, code: "reference_detail_ambiguous" };
     const current = detail[0];
     const url = current?.currentSrc || current?.src;
-    const originalState = originalUrlState(url);
-    if (originalState === "wrong_media_id")
-      return { ok: false, opened: true, href: location.href, code: "reference_media_id_mismatch" };
-    if (liveTiles.length === 1 && current && url && originalState === "ready" && current.complete && current.naturalWidth > 0 && current.naturalHeight > 0)
-      return { ok: true, opened: true, url, href: location.href };
+
+    if (current && url) {
+      let accepted = false;
+      let wrongMediaId = false;
+      try {
+        const u = new URL(url);
+        if (u.protocol === "https:" && !u.username && !u.password && (!u.port || u.port === "443")) {
+          if (u.hostname === "lh3.googleusercontent.com") {
+            accepted = true;
+          } else if (u.hostname === "flow-content.google") {
+            const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(u.pathname)?.[1];
+            if (id) {
+              if (id.toLowerCase() === input.mediaId.toLowerCase()) accepted = true;
+              else wrongMediaId = true;
+            }
+          } else if (u.hostname === "flow.google.com" && /^\/asb(?:\/|$)/.test(u.pathname)) {
+            const detailToken = parseAsbToken(url);
+            if (!detailToken) {
+              return { ok: false, opened: true, href: location.href, code: "reference_asb_token_missing" };
+            }
+            if (expectedAsbToken && detailToken === expectedAsbToken) {
+              accepted = true;
+            } else {
+              observedWrongAsbToken = true;
+            }
+          }
+        }
+      } catch {
+        /* rejected url */
+      }
+
+      if (wrongMediaId) {
+        return { ok: false, opened: true, href: location.href, code: "reference_media_id_mismatch" };
+      }
+      if (accepted && (liveTiles.length === 0 || liveTiles.length === 1) && current.complete && current.naturalWidth > 0 && current.naturalHeight > 0) {
+        return { ok: true, opened: true, url, href: location.href };
+      }
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  if (observedWrongAsbToken) {
+    return { ok: false, opened: true, href: location.href, code: "reference_asb_token_mismatch" };
   }
   return { ok: false, opened: true, href: location.href, code: lastPinnedTileCount > 1 ? "candidate_ambiguous" : "reference_original_unavailable" };
 }

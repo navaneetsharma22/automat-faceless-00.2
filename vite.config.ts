@@ -44,6 +44,6 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    exclude: ["tests/browser/**", "node_modules/**", "dist/**"],
+    exclude: ["tests/browser/**", "e2e/**", "node_modules/**", "dist/**"],
   },
 });

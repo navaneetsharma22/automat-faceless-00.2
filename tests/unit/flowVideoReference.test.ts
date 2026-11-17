@@ -174,84 +174,149 @@ function addChip(
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-describe("Flow original reference source resolution", () => {
-  it("opens only the uniquely pinned gallery tile and returns its observed detail URL without constructing it", async () => {
+describe("Flow original reference source resolution (Section 9.B)", () => {
+  it("/asb detail with the same token and a different size suffix returns ok", async () => {
     const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
-    const observedOriginal = `https://flow-content.google/image/${id}?sig=fresh-signed-value`;
-    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
-    const tile = doc.querySelector("flow-image-tile")!;
-    tile.addEventListener("click", () => {
+    const token = "pinned_gallery_token_123";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const detailUrl = `https://flow.google.com/asb/${token}=s0`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
       const image = doc.createElement("img");
       image.alt = "Read-only image view";
-      image.src = observedOriginal;
+      image.src = detailUrl;
       Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
       doc.body.append(image);
       sizeElements(doc);
     });
-    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" });
-    expect(result).toMatchObject({ ok: true, opened: true, url: observedOriginal });
-    expect(result.url).toBe(observedOriginal);
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    expect(result).toMatchObject({ ok: true, opened: true, url: detailUrl });
   });
 
-  it("waits past a loaded /asb detail preview and returns only the later pinned original URL", async () => {
-    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
-    const original = `https://flow-content.google/image/${id}?sig=rotated-original`;
-    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
-    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
-      const image = doc.createElement("img");
-      image.alt = "Read-only image view";
-      image.src = "https://flow.google.com/asb/detail-preview.webp";
-      Object.defineProperties(image, { complete: { configurable: true, value: true }, naturalWidth: { configurable: true, value: 800 }, naturalHeight: { configurable: true, value: 450 } });
-      doc.body.append(image);
-      sizeElements(doc);
-      setTimeout(() => { image.src = original; }, 100);
-    });
-
-    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" });
-
-    expect(result).toMatchObject({ ok: true, opened: true, url: original });
-  });
-
-  it("does not return a loaded unsupported preview when an original never arrives", async () => {
+  it("/asb detail with a different token returns reference_asb_token_mismatch", async () => {
     vi.useFakeTimers();
     const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
-    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
+    const token = "pinned_gallery_token_123";
+    const differentToken = "other_token_999";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const detailUrl = `https://flow.google.com/asb/${differentToken}=s0`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
     doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
       const image = doc.createElement("img");
       image.alt = "Read-only image view";
-      image.src = "https://flow.google.com/asb/detail-preview.webp";
-      Object.defineProperties(image, { complete: { configurable: true, value: true }, naturalWidth: { configurable: true, value: 800 }, naturalHeight: { configurable: true, value: 450 } });
+      image.src = detailUrl;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
       doc.body.append(image);
       sizeElements(doc);
     });
-
-    const pending = flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" });
+    const pending = flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
     await vi.runAllTimersAsync();
     const result = await pending;
-
-    expect(result).toMatchObject({ ok: false, opened: true, code: "reference_original_unavailable" });
-    expect(result.url).toBeUndefined();
+    expect(result).toMatchObject({ ok: false, opened: true, code: "reference_asb_token_mismatch" });
   });
 
-  it("rejects a loaded original URL whose Flow media UUID belongs to another asset", async () => {
+  it("/asb detail with no parseable token returns reference_asb_token_missing", async () => {
     const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
-    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
+    const invalidUrl = "https://flow.google.com/asb/invalid.token.webp";
+    install(`<flow-image-tile><img data-media-id="${id}" src="${invalidUrl}"></flow-image-tile>`);
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: invalidUrl });
+    expect(result).toMatchObject({ ok: false, opened: false, code: "reference_asb_token_missing" });
+  });
+
+  it("zero visible pinned tiles while the detail is open still succeeds if the detail is unique", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "pinned_gallery_token_123";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const detailUrl = `https://flow.google.com/asb/${token}=s0`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
     doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      doc.querySelector("flow-image-tile")!.remove(); // hides gallery tile
       const image = doc.createElement("img");
       image.alt = "Read-only image view";
-      image.src = "https://flow-content.google/image/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 800 }, naturalHeight: { value: 450 } });
+      image.src = detailUrl;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
       doc.body.append(image);
       sizeElements(doc);
     });
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    expect(result).toMatchObject({ ok: true, opened: true, url: detailUrl });
+  });
 
-    await expect(flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" }))
-      .resolves.toMatchObject({ ok: false, opened: true, code: "reference_media_id_mismatch" });
+  it("two visible pinned tiles return candidate_ambiguous", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "pinned_gallery_token_123";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const detailUrl = `https://flow.google.com/asb/${token}=s0`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const dup = doc.createElement("flow-image-tile");
+      dup.innerHTML = `<img data-media-id="${id}" src="${galleryUrl}">`;
+      doc.body.append(dup);
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = detailUrl;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    expect(result).toMatchObject({ ok: false, opened: true, code: "candidate_ambiguous" });
+  });
+
+  it("legacy flow-content /image/<pinned-uuid> still succeeds", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = `https://flow-content.google/image/${id}?sig=gallery`;
+    const detailUrl = `https://flow-content.google/image/${id}?sig=original`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = detailUrl;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    expect(result).toMatchObject({ ok: true, opened: true, url: detailUrl });
+  });
+
+  it("flow-content /image/<wrong-uuid> returns reference_media_id_mismatch", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const wrongId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const galleryUrl = `https://flow-content.google/image/${id}?sig=gallery`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = `https://flow-content.google/image/${wrongId}?sig=wrong`;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    expect(result).toMatchObject({ ok: false, opened: true, code: "reference_media_id_mismatch" });
+  });
+
+  it("lh3 still succeeds", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = `https://flow-content.google/image/${id}?sig=gallery`;
+    const detailUrl = "https://lh3.googleusercontent.com/sample-lh3-url";
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = detailUrl;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    expect(result).toMatchObject({ ok: true, opened: true, url: detailUrl });
   });
 
   it("restores the gallery with Escape and refuses an ambiguous pinned tile", async () => {
     const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
-    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/a"></flow-image-tile>`);
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/token_a"></flow-image-tile>`);
     const detail = doc.createElement("img");
     detail.alt = "Read-only image view";
     doc.body.append(detail);
@@ -261,10 +326,10 @@ describe("Flow original reference source resolution", () => {
     expect(await flowRestoreGalleryAfterOriginalResolutionInPage({ mediaId: id })).toMatchObject({ ok: true });
     doc.removeEventListener("keydown", escape);
     const duplicate = doc.createElement("flow-image-tile");
-    duplicate.innerHTML = `<img data-media-id="${id}" src="https://flow.google.com/asb/b">`;
+    duplicate.innerHTML = `<img data-media-id="${id}" src="https://flow.google.com/asb/token_b">`;
     doc.body.append(duplicate);
     sizeElements(doc);
-    expect(await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/a" })).toMatchObject({ ok: false, code: "candidate_ambiguous" });
+    expect(await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/token_a" })).toMatchObject({ ok: false, code: "candidate_ambiguous" });
   });
 });
 
@@ -388,6 +453,62 @@ describe("production Flow video attachment picker action", () => {
       sizeElements(doc);
     });
     const result = await flowVideoAttachmentActionInPage(id, galleryUrl);
+    expect(result).toEqual({ ok: false, reason: "picker_exact_row_missing" });
+    expect(doc.querySelector("button.add-to-prompt")).toBeNull();
+  });
+
+  it("finds picker row /asb with a different =s suffix by token and clicks Add exactly once", async () => {
+    const token = "token_picker_suffix_test";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s320`;
+    const rowUrl = `https://flow.google.com/asb/${token}=s100`;
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    let addClicked = 0;
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="${rowUrl}"></button></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+      const row = section.querySelector<HTMLButtonElement>("button.asset-item")!;
+      row.addEventListener("click", () => {
+        const preview = doc.createElement("img");
+        preview.className = "detail-preview-image";
+        preview.alt = "Preview of selected asset";
+        preview.src = `https://flow.google.com/asb/${token}=s640`;
+        const add = doc.createElement("button");
+        add.className = "add-to-prompt";
+        add.textContent = "Add to prompt";
+        add.addEventListener("click", () => {
+          addClicked++;
+          const chip = doc.createElement("button");
+          chip.setAttribute("aria-label", "Ingredient");
+          chip.setAttribute("aria-busy", "false");
+          chip.innerHTML = `<img src="https://flow.google.com/asb/${token}=s1600-rw">`;
+          doc.querySelector("flow-base-prompt-box")!.append(chip);
+          sizeElements(doc);
+        });
+        section.querySelector("aside")!.append(preview, add);
+        sizeElements(doc);
+      });
+    });
+
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const result = await flowVideoAttachmentActionInPage(id, galleryUrl);
+    expect(result).toEqual({ ok: true, already: false });
+    expect(addClicked).toBe(1);
+  });
+
+  it("returns picker_exact_row_missing and never clicks Add when picker row has different /asb token", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "token_expected_123";
+    const otherToken = "token_different_456";
+    const doc = install(`<flow-base-prompt-box><button aria-label="Add ingredients to the prompt box">Open picker</button></flow-base-prompt-box>`);
+    doc.querySelector("button[aria-label='Add ingredients to the prompt box']")!.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `<div role="listbox" aria-label="Asset list"><button role="option" class="asset-item"><img class="asset-thumbnail-image" src="https://flow.google.com/asb/${otherToken}=s100"></button></div><aside></aside>`;
+      doc.body.append(section);
+      sizeElements(doc);
+    });
+    const result = await flowVideoAttachmentActionInPage(id, `https://flow.google.com/asb/${token}=s320`);
     expect(result).toEqual({ ok: false, reason: "picker_exact_row_missing" });
     expect(doc.querySelector("button.add-to-prompt")).toBeNull();
   });

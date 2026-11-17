@@ -442,8 +442,8 @@ export async function inspectFlowProjectVideosInPage(input: {
     const rect = owner.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0)
       return { reason: "unavailable" as const };
-    const viewportWidth = Math.max(window.innerWidth, document.documentElement.clientWidth);
-    const viewportHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
+    const viewportWidth = Math.max(typeof window !== "undefined" && window.innerWidth ? window.innerWidth : 1024, document.documentElement?.clientWidth ?? 0);
+    const viewportHeight = Math.max(typeof window !== "undefined" && window.innerHeight ? window.innerHeight : 768, document.documentElement?.clientHeight ?? 0);
     const fractions = [0.5, 0.35, 0.65];
     const points = fractions.flatMap((yFraction) => fractions.map((xFraction) => ({
       x: rect.left + rect.width * xFraction,

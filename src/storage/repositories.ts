@@ -3804,6 +3804,7 @@ export class ExtensionRepositories {
     expected: FlowVideoAttachmentOperation;
     documentId: string;
     mediaId: string;
+    asbToken?: string;
     verifiedAt: number;
   }): Promise<boolean> {
     return this.tables.transaction(["flowVideoAttachmentOperations"], async () => {
@@ -3820,6 +3821,7 @@ export class ExtensionRepositories {
         verifiedAttachment: {
           documentId: input.documentId,
           mediaId: input.mediaId,
+          ...(input.asbToken !== undefined ? { asbToken: input.asbToken } : {}),
           verifiedAt: input.verifiedAt,
         },
       });
