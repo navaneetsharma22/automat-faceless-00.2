@@ -441,13 +441,11 @@ export function createFlowVideoQueueHandler(input: {
   }
 
   /**
-   * Continues a queue paused after Add was already activated. It never replays
-   * Add: the reset item is processed through attachReference, which delegates
-   * to the read-only verifyAttachedReference path while the operation remains
-   * uncertain/action_intent. Generate runs only after that exact chip check
-   * succeeds.
+   * Continues a queue paused on an unresolved composer chip. It never replays
+   * Add: attachReference delegates the uncertain operation to read-only
+   * verifyAttachedReference. Generate runs only after that exact chip check.
    */
-  async function recoverPostAddVerificationFailure(
+  async function recoverUncertainChipVerificationFailure(
     queue: FlowVideoQueueRecord,
     expectedRevision: number,
   ): Promise<FlowVideoQueueRecord | undefined> {
@@ -500,6 +498,13 @@ export function createFlowVideoQueueHandler(input: {
       failedOperation.videoGeneration
     )
       return undefined;
+    const existingChipEvidence = failedOperation.existingChipPreAddEvidence;
+    if (existingChipEvidence && (
+      existingChipEvidence.reason !== failedOperation.reason ||
+      existingChipEvidence.updatedAt !== failedOperation.updatedAt ||
+      existingChipEvidence.producer !== "existing_composer_chip_check_before_picker" ||
+      existingChipEvidence.addClickAttempted !== false
+    )) return undefined;
     // The first post-Add failure keeps the same reason on both records. Later
     // read-only verification attempts may replace only the queue-item reason.
     if (
@@ -675,7 +680,7 @@ export function createFlowVideoQueueHandler(input: {
 
   async function run(queueId: string) { return alarms.serialize(queueId, () => process(queueId)); }
   return {
-    get: async (preparedBatchId: string) => input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId)) ?? null,
+    get: async (preparedBatchId: string) => (await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId))) ?? null,
     start: async (preparedBatchId: string) => {
       const queue = await makeQueue(preparedBatchId);
       if (queue.state === "ready") return run(queue.queueId);
@@ -712,7 +717,7 @@ export function createFlowVideoQueueHandler(input: {
       const queue = await input.repositories.getFlowVideoQueue(queueId);
       if (!queue || queue.revision !== expectedRevision || !["paused", "blocked"].includes(queue.state))
         throw new Error("flow_video_queue_verification_invalid");
-      const recovered = await recoverPostAddVerificationFailure(queue, expectedRevision);
+      const recovered = await recoverUncertainChipVerificationFailure(queue, expectedRevision);
       if (!recovered) throw new Error("flow_video_queue_verification_not_recoverable");
       return run(recovered.queueId);
     },

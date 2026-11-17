@@ -221,7 +221,7 @@ async function fixture(
   const observedCandidateUrl = overrides.candidateSourceUrl ?? candidateUrl;
   const observedOriginalUrl = overrides.originalSourceUrl ?? `https://flow-content.google/image/${mediaId}?signed=fresh-original`;
   const hasMediaHostPermission = vi.fn(async (permission: string) => {
-    expect(permission).toBe("https://flow-content.google/*");
+    expect(permission).toBe(`https://${new URL(observedOriginalUrl).hostname}/*`);
     if (overrides.permissionError) throw overrides.permissionError;
     return overrides.permissionResult ?? true;
   });
@@ -460,6 +460,26 @@ describe("Flow video reference attachment request-to-handler integration (offlin
         `${batchId}:${itemId}`,
       ),
     ).toMatchObject({ status: "attached", referenceId });
+  });
+
+  it("records durable proof that an unreadable existing chip failed before picker/Add", async () => {
+    const f = await fixture({
+      pageResult: { ok: false, reason: "existing_chip_identity_unreadable" },
+    });
+    await expect(f.client.request("flow.video.attachReference", {
+      preparedBatchId: batchId,
+      itemId,
+    })).resolves.toMatchObject({ status: "uncertain", reason: "existing_chip_identity_unreadable" });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toMatchObject({
+      status: "uncertain",
+      reason: "existing_chip_identity_unreadable",
+      existingChipPreAddEvidence: {
+        reason: "existing_chip_identity_unreadable",
+        producer: "existing_composer_chip_check_before_picker",
+        addClickAttempted: false,
+      },
+    });
   });
 
   it("accepts a pinned reference from an older document in the same tab/project after a Flow reload", async () => {
@@ -786,6 +806,38 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     ).toHaveLength(2);
   });
 
+  it("read-only verifies the exact existing chip after a proven pre-Add identity failure", async () => {
+    const f = await fixture();
+    const original = {
+      id: `${batchId}:${itemId}`,
+      preparedBatchId: batchId,
+      itemId,
+      referenceId,
+      status: "uncertain" as const,
+      reason: "existing_chip_identity_unreadable",
+      updatedAt: 100,
+      existingChipPreAddEvidence: {
+        reason: "existing_chip_identity_unreadable" as const,
+        updatedAt: 100,
+        producer: "existing_composer_chip_check_before_picker" as const,
+        addClickAttempted: false as const,
+      },
+    };
+    await f.repositories.putFlowVideoAttachmentOperation(original);
+    await expect(f.client.request("flow.video.verifyAttachedReference", {
+      preparedBatchId: batchId,
+      itemId,
+    })).resolves.toMatchObject({
+      status: "attached",
+      operation: {
+        status: "attached",
+        verifiedAttachment: { documentId, mediaId },
+        existingChipPreAddEvidence: { addClickAttempted: false },
+      },
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+  });
+
 
   it("blocks a missing attachment control before durable intent and activation", async () => {
     const f = await fixture({
@@ -1056,6 +1108,29 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(galleryChecks.length).toBeGreaterThanOrEqual(2);
     expect(galleryChecks[0]).toBeLessThan(calls.indexOf(flowResolveOriginalImageUrlInPage));
     expect(galleryChecks[1]).toBeGreaterThan(calls.indexOf(flowRestoreGalleryAfterOriginalResolutionInPage));
+    expect(f.addActivation).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts the previously supported verified lh3 original URL through the production attachment path", async () => {
+    const originalJpeg = new Uint8Array([0xff, 0xd8, 0xff, 0x01]);
+    const originalUrl = "https://lh3.googleusercontent.com/image/verified-original?token=fresh";
+    const f = await fixture({
+      candidateBytes: originalJpeg,
+      savedReferenceBytes: originalJpeg,
+      candidateMimeType: "image/jpeg",
+      originalSourceUrl: originalUrl,
+    });
+
+    const result = await f.client.request("flow.video.attachReference", {
+      preparedBatchId: batchId,
+      itemId,
+    });
+
+    expect(result).toEqual({ status: "attached" });
+    expect(f.fetchResource).toHaveBeenCalledWith(originalUrl, expect.anything());
+    expect(f.hasMediaHostPermission).toHaveBeenCalledWith(
+      "https://lh3.googleusercontent.com/*",
+    );
     expect(f.addActivation).toHaveBeenCalledTimes(1);
   });
 

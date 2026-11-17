@@ -18,7 +18,6 @@ import {
 } from "../../platforms/flow/references";
 import {
   fetchFlowReferenceBytes,
-  FLOW_CONTENT_MEDIA_HOST,
   flowReferenceResource,
   resolveFlowReferenceFetcher,
 } from "../../platforms/flow/referenceResource";
@@ -209,10 +208,14 @@ export async function flowVideoAttachmentActionInPage(
     return el.isConnected && r.width > 0 && r.height > 0 &&
       style.display !== "none" && style.visibility !== "hidden";
   };
-  const roots = [...document.querySelectorAll("flow-base-prompt-box")].filter(visible);
-  const chips = () => roots[0]
-    ? [...roots[0].querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")]
-    : [];
+  const roots = () => [...document.querySelectorAll("flow-base-prompt-box")].filter(visible);
+  const chips = (root?: Element) => {
+    const liveRoot = root ?? roots()[0];
+    return liveRoot?.isConnected
+      ? [...liveRoot.querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")]
+        .filter((chip) => chip.isConnected)
+      : [];
+  };
   const wait = (ms: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, ms));
   const expectedMediaId = expectedId.toLowerCase();
@@ -418,16 +421,40 @@ export async function flowVideoAttachmentActionInPage(
     return ambiguous ? { ambiguous: true } : {};
   };
 
-  if (roots.length !== 1) return { ok: false, reason: "composer_unavailable_after_preflight" };
-  const attachmentControls = [...roots[0]!.querySelectorAll<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']")].filter(visible);
+  if (roots().length !== 1) return { ok: false, reason: "composer_unavailable_after_preflight" };
+  const liveRoot = roots()[0]!;
+  const attachmentControls = [...liveRoot.querySelectorAll<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']")].filter(visible);
   if (attachmentControls.length !== 1 || attachmentControls[0]!.disabled || attachmentControls[0]!.getAttribute("aria-disabled") === "true")
     return { ok: false, reason: "attachment_control_unavailable" };
-  let existing = chips();
-  if (existing.some((chip) => !idFromChip(chip))) return { ok: false, reason: "existing_chip_identity_unreadable" };
-  if (existing.filter((chip) => idFromChip(chip) === expectedMediaId).length > 1) return { ok: false, reason: "duplicate_matching_chips" };
-  if (existing.length && !(existing.length === 1 && idFromChip(existing[0]!) === expectedMediaId && existing[0]!.getAttribute("aria-busy") === "false"))
-    return { ok: false, reason: "existing_chip_conflict" };
-  if (existing.length === 1) return { ok: true, already: true };
+  let existing: HTMLButtonElement[];
+  const existingIdentity = () => {
+    const liveRoots = roots();
+    if (liveRoots.length !== 1) return "composer_settling" as const;
+    const liveRoot = liveRoots[0]!;
+    const liveChips = chips(liveRoot);
+    if (!liveRoot.isConnected || roots()[0] !== liveRoot) return "composer_settling" as const;
+    if (!liveChips.length) return "none" as const;
+    if (liveChips.length !== 1) return "conflict" as const;
+    if (!visible(liveChips[0]!)) return "busy" as const;
+    const mediaId = idFromChip(liveChips[0]!);
+    if (!mediaId) return "unreadable" as const;
+    if (mediaId !== expectedMediaId) return "conflict" as const;
+    if (liveChips[0]!.getAttribute("aria-busy") !== "false") return "busy" as const;
+    return "matching" as const;
+  };
+  let existingState = existingIdentity();
+  // Existing chips can be replaced with the composer during Angular rerenders.
+  // Resolve the live composer/chip on each bounded poll before deciding whether
+  // it is safe to treat the pinned reference as already attached.
+  for (let attempt = 0; attempt < 50 && (existingState === "unreadable" || existingState === "busy" || existingState === "composer_settling"); attempt++) {
+    await wait(100);
+    existingState = existingIdentity();
+  }
+  if (existingState === "matching") return { ok: true, already: true };
+  if (existingState === "unreadable") return { ok: false, reason: "existing_chip_identity_unreadable" };
+  if (existingState === "busy") return { ok: false, reason: "existing_chip_not_ready" };
+  if (existingState === "composer_settling") return { ok: false, reason: "composer_unavailable_after_preflight" };
+  if (existingState === "conflict") return { ok: false, reason: "existing_chip_conflict" };
 
   // A previous picker may remain in the DOM hidden. Give an animating overlay
   // a moment to become visible before toggling the trigger again.
@@ -436,7 +463,8 @@ export async function flowVideoAttachmentActionInPage(
       await wait(50);
   }
   if (!read().list) {
-    const open = roots[0]!.querySelector<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']");
+    const currentRoot = roots()[0];
+    const open = currentRoot?.querySelector<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']");
     if (!open || !visible(open)) return { ok: false, reason: "picker_missing" };
     open.click();
     for (let attempt = 0; attempt < 40 && !read().list; attempt++) await wait(50);
@@ -539,8 +567,6 @@ export function createFlowVideoAttachmentHandler(deps: {
         if (!isBoundFlowProjectUrl(resolution.href, input.projectId))
           throw new Error("target_changed");
         const original = flowReferenceResource(resolution.url, input.mediaId);
-        if (new URL(resolution.url).hostname !== FLOW_CONTENT_MEDIA_HOST)
-          throw new Error("reference_origin_unsupported");
         acquired = await extensionFetch(original.fetchUrl, "verified_detail_original_extension_fetch");
       } catch (error) {
         failure = error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "reference_resource_failed";
@@ -1273,6 +1299,16 @@ export function createFlowVideoAttachmentHandler(deps: {
               reason: failureReason,
               updatedAt: failedAt,
               producer: "picker_failure_before_add_activation" as const,
+              addClickAttempted: false as const,
+            },
+          }
+        : {}),
+      ...(failureReason === "existing_chip_identity_unreadable" || failureReason === "existing_chip_not_ready"
+        ? {
+            existingChipPreAddEvidence: {
+              reason: failureReason,
+              updatedAt: failedAt,
+              producer: "existing_composer_chip_check_before_picker" as const,
               addClickAttempted: false as const,
             },
           }

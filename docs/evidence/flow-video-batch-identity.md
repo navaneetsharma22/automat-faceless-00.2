@@ -25,3 +25,11 @@ No queue records, receipts, attempts, IDs, or live data were changed. Queue iden
 - `npm run typecheck` **PASS**; scoped ESLint on changed app and test files **PASS**; `git diff --check` **PASS**.
 - Production build **PASS**, ID `automat-faceless-0.1.0-mwj9h85p` (existing large-chunk and ignored `inlineDynamicImports` advisories remain).
 - Runtime/IndexedDB inspection and installed build identification: **NOT_RUN**. Browser native pipe was unavailable. No extension reload, live queue mutation, or live provider action occurred.
+
+## Saved queue read recovery — 17 November 2026
+
+Source trace confirmed the concrete missing-row defect: `createFlowVideoQueueHandler.get` used `repositoryPromise ?? null` without awaiting it. The fallback therefore did not apply; a missing IndexedDB row resolved to `undefined`, which Chrome message serialization can omit from the response envelope and the dashboard schema then rejects. Separately, the UI swallowed read error codes/stages and polled at the same 10-second interval as the request timeout, superseding unresolved reads. The specific historical live response code remains **NOT_READ**.
+
+The handler now awaits the repository lookup and returns explicit `null` for confirmed absence. Flow reads schedule the next poll only after the current request settles, keep errors guarded, and display the returned safe code/stage. A later successful read clears the error; confirmed absence unlocks the normal Start path, while identity mismatch and invalid/error outcomes remain guarded. Existing prepared-snapshot identity checks remain in force.
+
+Focused production-path checks: `destinationPresentation`, `flowVideoQueue`, `videoBatchPreparation` — **3 files / 59 tests PASS**, including explicit-null handler behavior, missing-queue Start eligibility, state/identity preservation, delayed A after B, remount, and failed-read recovery. Typecheck, scoped ESLint and `git diff --check` **PASS**. Build **PASS**, ID `automat-faceless-0.1.0-mwk54ro0`. All queue and worker checks are mocked/offline; current installed extension and live queue state are **NOT_READ**. No extension reload, live queue change or provider action occurred.

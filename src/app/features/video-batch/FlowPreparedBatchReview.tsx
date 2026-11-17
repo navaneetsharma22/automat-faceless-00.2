@@ -94,6 +94,7 @@ export function FlowPreparedBatchReview({
       currentImageSourceBatchId !== preparedBatch.imageSourceBatchId);
   const [videoQueue, setVideoQueue] = useState<VideoQueueSnapshot | null>(null);
   const [queueLoadState, setQueueLoadState] = useState<"loading" | "loaded" | "mismatch" | "error">("loading");
+  const [queueReadFailure, setQueueReadFailure] = useState<{ code: string; stage: string | null } | null>(null);
   const [videoQueueBusy, setVideoQueueBusy] = useState(false);
   const [videoQueueAction, setVideoQueueAction] = useState<string | null>(null);
   const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
@@ -107,37 +108,46 @@ export function FlowPreparedBatchReview({
   useEffect(() => {
     let cancelled = false;
     let latestRequest = 0;
+    let timer: number | undefined;
     setVideoQueue(null);
     setQueueLoadState("loading");
-    const load = () => {
+    setQueueReadFailure(null);
+    const scheduleNextRead = () => {
+      if (!cancelled) timer = window.setTimeout(() => void load(), 10_000);
+    };
+    const load = async () => {
       const requestNumber = ++latestRequest;
-      return persistenceClient.request("flow.videoQueue.get", { preparedBatchId: preparedBatch.id })
-        .then((value) => {
-          if (cancelled || requestNumber !== latestRequest) return;
-          if (value == null) {
-            setVideoQueue(null);
-            setQueueLoadState("loaded");
-            return;
-          }
-          const queue = value as VideoQueueSnapshot;
-          if (!queueMatchesPreparedBatch(queue, preparedBatch)) {
-            setVideoQueue(null);
-            setQueueLoadState("mismatch");
-            return;
-          }
-          setVideoQueue(queue);
+      try {
+        const value = await persistenceClient.request("flow.videoQueue.get", { preparedBatchId: preparedBatch.id });
+        if (cancelled || requestNumber !== latestRequest) return;
+        setQueueReadFailure(null);
+        if (value == null) {
+          setVideoQueue(null);
           setQueueLoadState("loaded");
-        })
-        .catch(() => {
-          if (!cancelled && requestNumber === latestRequest) {
-            setVideoQueue(null);
-            setQueueLoadState("error");
-          }
-        });
+          return;
+        }
+        const queue = value as VideoQueueSnapshot;
+        if (!queueMatchesPreparedBatch(queue, preparedBatch)) {
+          setVideoQueue(null);
+          setQueueLoadState("mismatch");
+          return;
+        }
+        setVideoQueue(queue);
+        setQueueLoadState("loaded");
+      } catch (error) {
+        if (!cancelled && requestNumber === latestRequest) {
+          const code = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "queue_read_failed";
+          const stage = error instanceof FoundationClientError && /^[a-z0-9_]{1,64}$/.test(error.stage ?? "") ? error.stage! : null;
+          setVideoQueue(null);
+          setQueueLoadState("error");
+          setQueueReadFailure({ code, stage });
+        }
+      } finally {
+        scheduleNextRead();
+      }
     };
     void load();
-    const timer = window.setInterval(() => void load(), 10_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
   }, [preparedBatch.id, persistenceClient]);
 
   const queueIsLoaded = queueLoadState === "loaded";
@@ -175,8 +185,12 @@ export function FlowPreparedBatchReview({
         setVideoQueue(queue);
         setQueueLoadState("loaded");
         if (action === "reconcilePreAddFailure") setVideoQueueNotice("Shot 2's pre-Add failure was reconciled. Resume is a separate action; no attachment or Generate action was performed.");
-        if (action === "retryPreAddPickerFailure") setVideoQueueNotice("The picker failure occurred before Add. The queue reconciled it and is retrying attachment; Generate dispatches only after the reference is verified.");
-        if (action === "verifyAttachedReferenceAndContinue") setVideoQueueNotice("Add was not replayed. The queue is verifying the attached reference; Generate dispatches only if the exact pinned media ID is present and ready.");
+        if (action === "retryPreAddPickerFailure") setVideoQueueNotice(queue.state === "waiting"
+          ? "The pre-Add failure was reconciled and a retry is scheduled. Generate remains guarded by exact reference verification."
+          : `The retry action completed, but the queue remains ${queue.state}${queue.pauseReason ? ` (${queue.pauseReason})` : ""}; no retry is running.`);
+        if (action === "verifyAttachedReferenceAndContinue") setVideoQueueNotice(queue.state === "waiting"
+          ? "Read-only chip verification completed and the queue continued. Add was not replayed; Generate remains guarded by reference and readiness checks."
+          : `Add was not replayed. Chip verification did not clear the blocker; the queue remains ${queue.state}${queue.pauseReason ? ` (${queue.pauseReason})` : ""}.`);
         return true;
       }
       return false;
@@ -249,7 +263,8 @@ export function FlowPreparedBatchReview({
   const retryableVerificationFailure = verificationBlockedItem !== undefined;
   const activeQueueItem = videoQueue?.items.find((item) => item.state === "attaching" || item.state === "dispatching");
   const readinessQueueItem = videoQueue?.items.find((item) => item.state === "waiting_for_generate");
-  const nextQueueItem = activeQueueItem ?? readinessQueueItem ?? videoQueue?.items.find((item) => item.state === "pending");
+  const blockingQueueItem = videoQueue?.items.find((item) => item.state === "failed" || item.state === "uncertain");
+  const nextQueueItem = blockingQueueItem ?? activeQueueItem ?? readinessQueueItem ?? videoQueue?.items.find((item) => item.state === "pending");
   const videoQueueStatus = queueLoadState === "loading"
     ? "Loading"
     : queueLoadState === "mismatch"
@@ -377,7 +392,7 @@ export function FlowPreparedBatchReview({
             </div>
             {queueLoadState === "loading" ? <p className={styles.queueChecking} role="status" aria-live="polite">Loading the queue for prepared batch {preparedBatch.id}…</p> : null}
             {queueLoadState === "mismatch" ? <p className={styles.currentBlocker} role="alert">The saved Flow queue identity or shot snapshot does not match prepared batch {preparedBatch.id}. Queue controls are unavailable until the saved snapshot can be read correctly.</p> : null}
-            {queueLoadState === "error" ? <p className={styles.currentBlocker} role="alert">The saved Flow queue could not be read. Queue controls are unavailable while its state is unresolved.</p> : null}
+            {queueLoadState === "error" ? <p className={styles.currentBlocker} role="alert">The saved Flow queue could not be read{queueReadFailure ? ` (${queueReadFailure.code}${queueReadFailure.stage ? ` at ${queueReadFailure.stage}` : ""})` : ""}. Queue controls are unavailable while its state is unresolved; the dashboard will retry automatically.</p> : null}
             {videoQueue ? (
               <>
                 {videoQueueNotice ? <p role="status">{videoQueueNotice}</p> : null}
@@ -396,7 +411,7 @@ export function FlowPreparedBatchReview({
                     {allPromptsSent ? <p>Video completion is checked in Flow.</p> : null}
                   </div>
                   <div className={styles.queueOverviewShot}>
-                    <span>{activeQueueItem ? "Current Shot" : "Current / next Shot"}</span>
+                    <span>{blockingQueueItem ? "Blocked / next required Shot" : activeQueueItem ? "Current Shot" : "Current / next Shot"}</span>
                     <strong>{nextQueueItem ? `Shot ${nextQueueItem.shotId}` : allPromptsSent ? "All prompts sent" : videoQueue.state === "stopped" ? "Queue stopped" : "No pending Shot"}</strong>
                     {nextQueueItem?.reason && (nextQueueItem.state === "failed" || nextQueueItem.state === "uncertain") ? <code>{nextQueueItem.reason}</code> : null}
                   </div>

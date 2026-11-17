@@ -194,6 +194,7 @@ async function seedPausedPostAddQueue(
     operationReason?: string;
     verifiedAttachment?: boolean;
     pickerPreAddEvidence?: boolean;
+    existingChipPreAddEvidence?: boolean;
     actionIntent?: boolean;
   } = {},
 ) {
@@ -227,6 +228,16 @@ async function seedPausedPostAddQueue(
           },
         }
       : {}),
+    ...(options.existingChipPreAddEvidence
+      ? {
+          existingChipPreAddEvidence: {
+            reason: reason as "existing_chip_identity_unreadable" | "existing_chip_not_ready",
+            updatedAt: 1,
+            producer: "existing_composer_chip_check_before_picker" as const,
+            addClickAttempted: false as const,
+          },
+        }
+      : {}),
   });
   await f.repositories.createFlowVideoQueue({
     queueId: `flow-video:${batchId}`,
@@ -252,6 +263,11 @@ async function seedPausedPostAddQueue(
 
 
 describe("P09.3 Flow video timed submission", () => {
+  it("returns explicit null for a confirmed missing queue through the production handler", async () => {
+    const f = await setup();
+    await expect(f.handler.get(f.batch.id)).resolves.toBeNull();
+  });
+
   it("waits 15 seconds after a durable receipt before advancing without completion evidence", async () => {
     const f = await setup();
     let queue = await f.handler.start(batchId);
@@ -704,6 +720,29 @@ describe("P09.3 Flow video timed submission", () => {
     expect(operation?.videoGeneration?.state).toBe("dispatched");
   });
 
+  it("recovers an existing unreadable chip through read-only verification without replaying Add or Generate", async () => {
+    const f = await setup();
+    await seedPausedPostAddQueue(f, {
+      reason: "existing_chip_identity_unreadable",
+      existingChipPreAddEvidence: true,
+    });
+    const continued = await f.handler.verifyAttachedReferenceAndContinue(batchId, 0);
+    expect(continued).toMatchObject({
+      state: "waiting",
+      items: [
+        { state: "sent", priorReason: "existing_chip_identity_unreadable", attemptId: "attempt-1" },
+        { state: "pending" },
+      ],
+    });
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    await expect(f.handler.verifyAttachedReferenceAndContinue(batchId, continued.revision))
+      .rejects.toThrow("flow_video_queue_verification_invalid");
+    await f.getQueue();
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers an action_intent operation through read-only verification only when no attachment was recorded", async () => {
     const f = await setup();
     await seedPausedPostAddQueue(f, {
@@ -985,7 +1024,7 @@ describe("P09.3 Flow video timed submission", () => {
     };
     await f.db.preparedVideoBatches.put(batchB);
 
-    expect(await f.handler.get(batchBId)).toBeUndefined();
+    expect(await f.handler.get(batchBId)).toBeNull();
     const startedB = await f.handler.start(batchBId);
     expect(startedB).toMatchObject({
       queueId: `flow-video:${batchBId}`,

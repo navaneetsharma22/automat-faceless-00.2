@@ -30,12 +30,13 @@ export function isFlowVideoPickerPreAddReason(
 }
 
 /**
- * Attachment outcomes that can only be observed after Add was activated. They
- * never authorize replaying Add; recovery is limited to a read-only chip
- * verification that continues Generate only when the exact pinned media ID is
- * present and settled.
+ * Unresolved chip outcomes after Add, or an unreadable existing composer chip
+ * detected before Add. Recovery never replays Add: it performs read-only chip
+ * verification and continues only when the exact pinned media ID is settled.
  */
 export const FLOW_VIDEO_POST_ADD_ATTACHMENT_REASONS = [
+  "existing_chip_identity_unreadable",
+  "existing_chip_not_ready",
   "chip_identity_unreadable_after_add",
   "attachment_uncertain",
   "attachment_unverified",

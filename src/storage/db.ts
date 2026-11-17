@@ -87,6 +87,12 @@ export type FlowVideoAttachmentOperation = {
     producer: "picker_failure_before_add_activation";
     addClickAttempted: false;
   };
+  existingChipPreAddEvidence?: {
+    reason: "existing_chip_identity_unreadable" | "existing_chip_not_ready";
+    updatedAt: number;
+    producer: "existing_composer_chip_check_before_picker";
+    addClickAttempted: false;
+  };
 };
 
 export type SelectedTargetRecord = {

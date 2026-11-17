@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Destination } from "../../src/app/features/video-batch/Destination";
 import { PreparedBatchReview } from "../../src/app/features/video-batch/PreparedBatchReview";
 import { ToastHost } from "../../src/app/components/ToastHost";
-import type { createFoundationClient } from "../../src/shared/messageClient";
+import { FoundationClientError, type createFoundationClient } from "../../src/shared/messageClient";
 import type { PreparedVideoBatchRecord } from "../../src/domain/batches/types";
 import type { SelectedTargetRecord } from "../../src/storage/db";
 
@@ -34,6 +34,7 @@ afterEach(async () => {
   }
   container?.remove();
   container = null;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -469,7 +470,8 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
         expectedRevision: 7,
       },
     );
-    expect(container?.textContent).toContain("occurred before Add");
+    expect(container?.textContent).toContain("The retry action completed");
+    expect(container?.textContent).not.toContain("retrying attachment");
     expect(
       request.mock.calls.some(
         ([type]) =>
@@ -481,12 +483,12 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     ).toBe(false);
   });
 
-  it("offers a read-only verification continuation for one post-Add unreadable chip", async () => {
+  it("offers read-only verification for an unreadable existing chip and keeps the blocked Shot current", async () => {
     const queue = {
       queueId: "flow-video:prepared:default:req-12345",
       preparedBatchId: "prepared:default:req-12345",
       state: "paused",
-      pauseReason: "chip_identity_unreadable_after_add",
+      pauseReason: "existing_chip_identity_unreadable",
       nextActionAt: null,
       revision: 8,
       items: [
@@ -497,7 +499,7 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
           referenceId: "00000000-0000-4000-8000-000000000001",
           promptHash: "a".repeat(64),
           state: "uncertain",
-          reason: "chip_identity_unreadable_after_add",
+          reason: "existing_chip_identity_unreadable",
         },
         {
           itemId: "import:default:video:item:1",
@@ -528,8 +530,9 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
       await Promise.resolve();
     });
     expect(container?.textContent).toContain(
-      "Current blocker: chip_identity_unreadable_after_add",
+      "Current blocker: existing_chip_identity_unreadable",
     );
+    expect(container?.textContent).toContain("Blocked / next required ShotShot 1");
     const verify = Array.from(
       container?.querySelectorAll("button") ?? [],
     ).find((button) => button.textContent?.trim() === "Verify Shot 1 & Continue");
@@ -546,6 +549,8 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
       },
     );
     expect(container?.textContent).toContain("Add was not replayed");
+    expect(container?.textContent).toContain("Chip verification did not clear the blocker; the queue remains paused");
+    expect(container?.textContent).not.toContain("retrying attachment");
     expect(
       request.mock.calls.some(
         ([type]) =>
@@ -733,5 +738,34 @@ describe("P08.3 PreparedBatchReview presentation UI", () => {
     });
     expect(container?.textContent).toContain("0 of 15 prompts sent");
     expect(container?.textContent).not.toContain("14 of 14 prompts sent");
+  });
+
+  it("shows the concrete queue read failure and recovers to Start on the next poll", async () => {
+    vi.useFakeTimers();
+    let queueReads = 0;
+    const request = vi.fn((type: string) => {
+      if (type !== "flow.videoQueue.get") return Promise.resolve(null);
+      queueReads += 1;
+      return queueReads === 1
+        ? Promise.reject(new FoundationClientError("storage_failure", "flow_video_queue_invalid", "Invalid queue", "queue_action"))
+        : Promise.resolve(null);
+    });
+    const client = { request } as unknown as ReturnType<typeof createFoundationClient>;
+
+    await act(async () => {
+      root?.render(createElement(PreparedBatchReview, { preparedBatch: mockPreparedBatch, persistenceClient: client }));
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain("flow_video_queue_invalid at queue_action");
+    expect(Array.from(container?.querySelectorAll("button") ?? []).some((button) => button.textContent?.trim() === "Start")).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(queueReads).toBe(2);
+    expect(container?.textContent).toContain("Prepared — not submitted to Flow.");
+    expect(container?.textContent).not.toContain("flow_video_queue_invalid");
+    expect(Array.from(container?.querySelectorAll("button") ?? []).some((button) => button.textContent?.trim() === "Start")).toBe(true);
+    vi.useRealTimers();
   });
 });

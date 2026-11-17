@@ -172,7 +172,7 @@ function addChip(
   sizeElements(doc);
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("Flow original reference source resolution", () => {
   it("opens only the uniquely pinned gallery tile and returns its observed detail URL without constructing it", async () => {
@@ -643,6 +643,68 @@ describe("production Flow video attachment picker action", () => {
     });
 
     await expect(flowVideoAttachmentActionInPage(id, galleryUrl)).resolves.toEqual({ ok: true, already: false });
+  });
+
+  it("accepts the exact existing chip after its initially delayed identity and busy state settle", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const doc = install(composer());
+    const chip = doc.createElement("button");
+    chip.setAttribute("aria-label", "Ingredient");
+    chip.setAttribute("aria-busy", "true");
+    chip.innerHTML = `<img src="https://flow-content.google/image/not-yet-readable">`;
+    doc.querySelector("flow-base-prompt-box")!.append(chip);
+    sizeElements(doc);
+    setTimeout(() => {
+      chip.querySelector("img")!.src = `https://flow-content.google/image/${id}?signed=settled`;
+      chip.setAttribute("aria-busy", "false");
+    }, 140);
+
+    await expect(flowVideoAttachmentActionInPage(id, PINNED_URL)).resolves.toEqual({ ok: true, already: true });
+  });
+
+  it("re-resolves the chip from the replacement composer after a rerender", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const doc = install(composer());
+    const oldChip = doc.createElement("button");
+    oldChip.setAttribute("aria-label", "Ingredient");
+    oldChip.innerHTML = `<img src="https://flow-content.google/image/not-yet-readable">`;
+    doc.querySelector("flow-base-prompt-box")!.append(oldChip);
+    sizeElements(doc);
+    setTimeout(() => {
+      const replacement = doc.createElement("flow-base-prompt-box");
+      replacement.innerHTML = `<button aria-label="Add ingredients to the prompt box">Open picker</button><button aria-label="Ingredient" aria-busy="false"><img src="https://flow-content.google/image/${id}?signed=rerendered"></button>`;
+      doc.querySelector("flow-base-prompt-box")!.replaceWith(replacement);
+      sizeElements(doc);
+    }, 140);
+
+    await expect(flowVideoAttachmentActionInPage(id, PINNED_URL)).resolves.toEqual({ ok: true, already: true });
+    expect(oldChip.isConnected).toBe(false);
+  });
+
+  it("blocks an existing chip with a readable but wrong reference identity", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const other = "77777777-7777-4777-8777-777777777777";
+    const chip = `<button aria-label="Ingredient" aria-busy="false"><img src="https://flow-content.google/image/${other}"></button>`;
+    const doc = install(composer().replace("</flow-base-prompt-box>", `${chip}</flow-base-prompt-box>`));
+    const result = await flowVideoAttachmentActionInPage(id, PINNED_URL);
+    expect(result).toEqual({ ok: false, reason: "existing_chip_conflict" });
+    expect(doc.querySelector("[role=listbox]")).toBeNull();
+  });
+
+  it("keeps a persistently unreadable or busy existing chip guarded after the settle bound", async () => {
+    vi.useFakeTimers();
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    for (const { chip, reason } of [
+      { chip: `<button aria-label="Ingredient" aria-busy="false"><img src="https://flow-content.google/image/not-readable"></button>`, reason: "existing_chip_identity_unreadable" },
+      { chip: `<button aria-label="Ingredient" aria-busy="true"><img src="https://flow-content.google/image/${id}"></button>`, reason: "existing_chip_not_ready" },
+    ]) {
+      const doc = install(composer().replace("</flow-base-prompt-box>", `${chip}</flow-base-prompt-box>`));
+      const resultPromise = flowVideoAttachmentActionInPage(id, PINNED_URL);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await resultPromise).toEqual({ ok: false, reason });
+      expect(doc.querySelector("[role=listbox]")).toBeNull();
+    }
+    vi.useRealTimers();
   });
 });
 
