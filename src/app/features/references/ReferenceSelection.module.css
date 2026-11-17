@@ -529,6 +529,11 @@
   overflow-wrap: anywhere;
 }
 
+.pickerGrantAction {
+  display: flex;
+  margin: var(--space-2) 0 0;
+}
+
 .pickerWarning {
   margin: 0;
   padding: var(--space-3) var(--space-4);

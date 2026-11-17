@@ -173,6 +173,8 @@ export function ReferenceSelection({
   const [activeSession, setActiveSession] =
     useState<ActiveReferenceSelectionSession | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerScriptingPermissionMissing, setPickerScriptingPermissionMissing] =
+    useState(false);
   const pickerDialogRef = useRef<HTMLDialogElement>(null);
   const pickerOpenerRef = useRef<HTMLElement | null>(null);
   const pickerScrollYRef = useRef<number | null>(null);
@@ -689,6 +691,7 @@ export function ReferenceSelection({
     const generation = ++pickerReadGeneration.current;
     clearPreviews();
     setActionPending(true);
+    setPickerScriptingPermissionMissing(false);
     setPickerAmbiguousCount(0);
     setPickerUnsupportedCount(0);
     setPickerStatus("Reading eligible images from the verified Flow document…");
@@ -724,6 +727,14 @@ export function ReferenceSelection({
       );
     } catch (err) {
       if (generation !== pickerReadGeneration.current) return;
+      const isScriptingMissing =
+        (err as { code?: string })?.code === "scripting_permission_missing" ||
+        (err instanceof Error &&
+          (err.message.includes("Chrome's scripting permission for Flow is not available") ||
+            err.message.includes("scripting_permission_missing")));
+      if (isScriptingMissing) {
+        setPickerScriptingPermissionMissing(true);
+      }
       setPickerStatus(
         err instanceof Error
           ? err.message
@@ -768,6 +779,31 @@ export function ReferenceSelection({
       setPickerStatus(
         "Flow image host permission could not be checked or requested. Retry from this button.",
       );
+    }
+  };
+
+  const handleGrantScriptingPermission = async () => {
+    if (!activeSession) return;
+    const targetShotId = activeSession.shotId;
+    setActionPending(true);
+    try {
+      const granted = await requestProviderAccess({
+        permissions: ["scripting"],
+      });
+      if (granted) {
+        setPickerScriptingPermissionMissing(false);
+        await handleStartSelection(targetShotId, true);
+      } else {
+        setPickerStatus(
+          "Chrome's scripting permission for Flow was not granted. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+        );
+      }
+    } catch {
+      setPickerStatus(
+        "Permission request failed. Open Connections, click Allow requested access for Flow, then retry.",
+      );
+    } finally {
+      setActionPending(false);
     }
   };
 
@@ -908,6 +944,7 @@ export function ReferenceSelection({
     setSelectionNotice(null);
     setActionPending(true);
     setActionError(null);
+    setPickerScriptingPermissionMissing(false);
     try {
       const res = (await persistenceClient.request(
         "flow.reference.startSelection",
@@ -1228,6 +1265,7 @@ export function ReferenceSelection({
     clearPreviews();
     pickerReadGeneration.current += 1;
     setPickerCandidates([]);
+    setPickerScriptingPermissionMissing(false);
     setActionPending(true);
     setActionError(null);
     try {
@@ -1377,9 +1415,13 @@ export function ReferenceSelection({
                 aria-describedby="flow-image-picker-description"
                 onCancel={(event) => {
                   event.preventDefault();
-                  if (!actionPending) setPickerOpen(false);
+                  if (!actionPending) {
+                    setPickerScriptingPermissionMissing(false);
+                    setPickerOpen(false);
+                  }
                 }}
                 onClose={() => {
+                  setPickerScriptingPermissionMissing(false);
                   setPickerOpen(false);
                   restorePickerFocus();
                 }}
@@ -1387,7 +1429,10 @@ export function ReferenceSelection({
                   if (
                     event.target === event.currentTarget &&
                     !actionPending
-                  ) setPickerOpen(false);
+                  ) {
+                    setPickerScriptingPermissionMissing(false);
+                    setPickerOpen(false);
+                  }
                 }}
               >
                 <div className={refStyles.pickerDialogHeader}>
@@ -1437,7 +1482,10 @@ export function ReferenceSelection({
                       className={refStyles.pickerCloseButton}
                       aria-label="Close Flow image picker"
                       disabled={actionPending}
-                      onClick={() => setPickerOpen(false)}
+                      onClick={() => {
+                        setPickerScriptingPermissionMissing(false);
+                        setPickerOpen(false);
+                      }}
                     >
                       Close
                     </Button>
@@ -1465,6 +1513,17 @@ export function ReferenceSelection({
                   <p className={refStyles.pickerStatus} role="status">
                     {pickerStatus}
                   </p>
+                ) : null}
+                {pickerScriptingPermissionMissing && activeSession ? (
+                  <div className={refStyles.pickerGrantAction}>
+                    <Button
+                      type="button"
+                      disabled={actionPending}
+                      onClick={() => void handleGrantScriptingPermission()}
+                    >
+                      Grant Flow access
+                    </Button>
+                  </div>
                 ) : null}
                 {pickerAmbiguousCount > 0 ? (
                   <p className={refStyles.pickerWarning}>

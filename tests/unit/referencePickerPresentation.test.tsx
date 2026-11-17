@@ -307,6 +307,7 @@ async function setup(
     },
   );
   const messageListeners = new Set<(message: unknown) => void>();
+  const permissionRequestMock = vi.fn(async () => true);
   Object.defineProperty(globalThis, "chrome", {
     configurable: true,
     value: {
@@ -317,6 +318,9 @@ async function setup(
           removeListener: (listener: (message: unknown) => void) =>
             messageListeners.delete(listener),
         },
+      },
+      permissions: {
+        request: permissionRequestMock,
       },
     },
   });
@@ -428,6 +432,7 @@ async function setup(
       );
       await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
     },
+    permissionRequest: permissionRequestMock,
   };
 }
 
@@ -1163,5 +1168,57 @@ describe("References-owned Flow image picker", () => {
     );
     expect(container.textContent).toBe("");
     root = createRoot(container);
+  });
+
+  it("shows Grant Flow access button only on scripting_permission_missing and restarts selection without attach/generate", async () => {
+    const { click, setList, request, permissionRequest } = await setup();
+
+    // 1. Generic error does NOT show Grant Flow access button
+    setList(() => {
+      const err = new Error("candidate_list_unavailable");
+      Object.assign(err, { code: "candidate_list_unavailable" });
+      return Promise.reject(err);
+    });
+    await click("Browse Flow images");
+    expect(
+      [...container.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Grant Flow access",
+      ),
+    ).toBeUndefined();
+
+    // 2. scripting_permission_missing DOES show Grant Flow access button
+    setList(() => {
+      const err = new Error(
+        "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+      );
+      Object.assign(err, { code: "scripting_permission_missing" });
+      return Promise.reject(err);
+    });
+    await click("Refresh images");
+
+    const grantBtn = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Grant Flow access",
+    );
+    expect(grantBtn).toBeDefined();
+
+    // 3. Clicking Grant Flow access requests permission and restarts selection
+    await click("Grant Flow access");
+
+    expect(permissionRequest).toHaveBeenCalledWith({
+      permissions: ["scripting"],
+    });
+
+    const startCalls = request.mock.calls.filter(
+      (c) => c[0] === "flow.reference.startSelection",
+    );
+    expect(startCalls.length).toBeGreaterThanOrEqual(1);
+
+    // 4. Assert: No attach or generate requests were made
+    const forbiddenCalls = request.mock.calls.filter(
+      (c) =>
+        typeof c[0] === "string" &&
+        (c[0].includes("attach") || c[0].includes("generate")),
+    );
+    expect(forbiddenCalls).toHaveLength(0);
   });
 });

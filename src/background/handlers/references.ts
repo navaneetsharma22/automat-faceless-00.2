@@ -142,11 +142,22 @@ export function createFlowReferenceHandler(
       ? chrome.storage.session
       : new MemorySessionStorage());
 
-  const scripting =
-    dependencies.scripting ??
-    (typeof chrome !== "undefined" && chrome.scripting
-      ? chrome.scripting
-      : undefined);
+  const resolveScripting = () => {
+    if (
+      dependencies.scripting &&
+      typeof dependencies.scripting.executeScript === "function"
+    ) {
+      return dependencies.scripting;
+    }
+    if (
+      typeof chrome !== "undefined" &&
+      chrome.scripting &&
+      typeof chrome.scripting.executeScript === "function"
+    ) {
+      return chrome.scripting;
+    }
+    return undefined;
+  };
 
   const broadcast =
     dependencies.broadcastMessage ??
@@ -200,7 +211,14 @@ export function createFlowReferenceHandler(
     active: ActiveReferenceSelectionSession,
     candidateId: string,
   ): Promise<FlowReferencePickerCandidate> => {
-    const raw = await dependencies.sendToDocument!(
+    if (!dependencies.sendToDocument) {
+      throw new ReferenceSelectionError(
+        "picker_transport_unavailable",
+        "Picker transport to the verified Flow document is unavailable. Keep the project open and retry.",
+        "context_invalidated",
+      );
+    }
+    const raw = await dependencies.sendToDocument(
       active.tabId,
       active.documentId,
       {
@@ -369,10 +387,18 @@ export function createFlowReferenceHandler(
         "The saved batch or Shot binding changed. Reload References and retry.",
       );
     }
-    if (!scripting?.executeScript || !dependencies.sendToDocument) {
+    const scripting = resolveScripting();
+    if (!scripting) {
       throw new ReferenceSelectionError(
-        "picker_unavailable",
-        "The verified Flow document cannot provide image candidates in this worker context.",
+        "scripting_permission_missing",
+        "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+        "invalid_request",
+      );
+    }
+    if (!dependencies.sendToDocument) {
+      throw new ReferenceSelectionError(
+        "picker_transport_unavailable",
+        "Picker transport to the verified Flow document is unavailable. Keep the project open and retry.",
         "context_invalidated",
       );
     }
@@ -491,8 +517,16 @@ export function createFlowReferenceHandler(
         "Reconnect the same verified Flow project and document before saving this reference.",
       );
     }
+    const scripting = resolveScripting();
+    if (!scripting) {
+      throw new ReferenceSelectionError(
+        "scripting_permission_missing",
+        "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+        "invalid_request",
+      );
+    }
     try {
-      const [document] = await scripting!.executeScript({
+      const [document] = await scripting.executeScript({
         target: { tabId: selected.tabId, frameIds: [0] },
         func: () => location.href,
       });
@@ -508,7 +542,8 @@ export function createFlowReferenceHandler(
         route.canonicalTarget !== candidate.canonicalTarget
       )
         throw new Error("document_changed");
-    } catch {
+    } catch (err) {
+      if (err instanceof ReferenceSelectionError) throw err;
       throw new ReferenceSelectionError(
         "capture_document_changed",
         "The verified Flow project document changed or is unavailable. Reconnect before saving.",
@@ -521,7 +556,15 @@ export function createFlowReferenceHandler(
     session: ActiveReferenceSelectionSession,
     candidate: ReferenceCandidate,
   ) => {
-    const [result] = await scripting!.executeScript(
+    const scripting = resolveScripting();
+    if (!scripting) {
+      throw new ReferenceSelectionError(
+        "scripting_permission_missing",
+        "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+        "invalid_request",
+      );
+    }
+    const [result] = await scripting.executeScript(
       createFlowReferenceCaptureResolverInjection({
         tabId: session.tabId,
         documentId: session.documentId,
@@ -965,6 +1008,7 @@ export function createFlowReferenceHandler(
       const savedBatchSourceHash = savedBatch
         ? await sha256Hex(savedBatch.batch.sourceText)
         : "";
+      const scripting = resolveScripting();
       if (
         !dependencies.contextMenu ||
         !selected ||
@@ -982,7 +1026,7 @@ export function createFlowReferenceHandler(
         savedBatch?.batch.id !== active.batchId ||
         active.sourceHash !== savedBatchSourceHash ||
         matchingShots?.length !== 1 ||
-        !scripting?.executeScript
+        !scripting
       ) {
         return false;
       }
@@ -1090,46 +1134,60 @@ export function createFlowReferenceHandler(
 
       // 4. Verify document identity in tab
       const tabDocumentId = binding.documentId;
-      if (scripting?.executeScript) {
-        try {
-          const [doc] = await scripting.executeScript({
-            target: { tabId: selected.tabId, frameIds: [0] },
-            func: () => location.href,
-          });
-          if (
-            !doc?.documentId ||
-            doc.documentId !== binding.documentId ||
-            doc.frameId !== 0
-          ) {
-            throw new ReferenceSelectionError(
-              "document_changed",
-              "The selected Flow document has changed. Revalidate connection in Connections.",
-              "context_invalidated",
-            );
-          }
-          const tabBinding = flowTabFromUrl(
-            selected.tabId,
-            "",
-            doc.result as string,
-          );
-          if (
-            !tabBinding ||
-            tabBinding.canonicalTarget !== selected.canonicalTarget
-          ) {
-            throw new ReferenceSelectionError(
-              "project_route_mismatch",
-              "The current Flow page does not match the connected project.",
-              "context_invalidated",
-            );
-          }
-        } catch (err) {
-          if (err instanceof ReferenceSelectionError) throw err;
+      const scripting = resolveScripting();
+      if (!scripting) {
+        throw new ReferenceSelectionError(
+          "scripting_permission_missing",
+          "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+          "invalid_request",
+        );
+      }
+      if (!dependencies.sendToDocument) {
+        throw new ReferenceSelectionError(
+          "picker_transport_unavailable",
+          "Picker transport to the verified Flow document is unavailable. Keep the project open and retry.",
+          "context_invalidated",
+        );
+      }
+
+      try {
+        const [doc] = await scripting.executeScript({
+          target: { tabId: selected.tabId, frameIds: [0] },
+          func: () => location.href,
+        });
+        if (
+          !doc?.documentId ||
+          doc.documentId !== binding.documentId ||
+          doc.frameId !== 0
+        ) {
           throw new ReferenceSelectionError(
-            "target_check_failed",
-            "Could not inspect the connected Flow tab.",
+            "document_changed",
+            "The selected Flow document has changed. Revalidate connection in Connections.",
             "context_invalidated",
           );
         }
+        const tabBinding = flowTabFromUrl(
+          selected.tabId,
+          "",
+          doc.result as string,
+        );
+        if (
+          !tabBinding ||
+          tabBinding.canonicalTarget !== selected.canonicalTarget
+        ) {
+          throw new ReferenceSelectionError(
+            "project_route_mismatch",
+            "The current Flow page does not match the connected project.",
+            "context_invalidated",
+          );
+        }
+      } catch (err) {
+        if (err instanceof ReferenceSelectionError) throw err;
+        throw new ReferenceSelectionError(
+          "target_check_failed",
+          "Could not inspect the connected Flow tab.",
+          "context_invalidated",
+        );
       }
 
       // Invalidate any existing selection session
@@ -1138,13 +1196,11 @@ export function createFlowReferenceHandler(
         await abortSessionPreviews(existing.sessionId);
         await setActiveSession(null);
         await removeContextMenu(existing.sessionId);
-        if (scripting?.executeScript) {
-          await scripting
-            .executeScript(
-              createFlowReferenceSelectionInjection(existing, "cancel"),
-            )
-            .catch(() => undefined);
-        }
+        await scripting
+          .executeScript(
+            createFlowReferenceSelectionInjection(existing, "cancel"),
+          )
+          .catch(() => undefined);
         await broadcast({
           type: FLOW_REFERENCE_EVENT_MESSAGE,
           event: "session_cancelled",
@@ -1186,11 +1242,9 @@ export function createFlowReferenceHandler(
       }
 
       // 6. Inject selection mode script into the verified Flow tab (world: ISOLATED)
-      if (scripting?.executeScript) {
-        await scripting.executeScript(
-          createFlowReferenceSelectionInjection(session, "start"),
-        );
-      }
+      await scripting.executeScript(
+        createFlowReferenceSelectionInjection(session, "start"),
+      );
 
       await broadcast({
         type: FLOW_REFERENCE_EVENT_MESSAGE,
@@ -1223,7 +1277,8 @@ export function createFlowReferenceHandler(
       await setActiveSession(null);
       await removeContextMenu(current.sessionId);
 
-      if (scripting?.executeScript) {
+      const scripting = resolveScripting();
+      if (scripting) {
         await scripting
           .executeScript(
             createFlowReferenceSelectionInjection(current, "cancel"),
@@ -1249,7 +1304,8 @@ export function createFlowReferenceHandler(
       await abortSessionPreviews(current.sessionId);
       await setActiveSession(null);
       await removeContextMenu(current.sessionId);
-      if (scripting?.executeScript) {
+      const scripting = resolveScripting();
+      if (scripting) {
         await scripting
           .executeScript(
             createFlowReferenceSelectionInjection(current, "cancel"),
@@ -1324,9 +1380,16 @@ export function createFlowReferenceHandler(
       unsupportedCount: number;
     }> {
       const active = await validatePickerSession(sessionId);
+      if (!dependencies.sendToDocument) {
+        throw new ReferenceSelectionError(
+          "picker_transport_unavailable",
+          "Picker transport to the verified Flow document is unavailable. Keep the project open and retry.",
+          "context_invalidated",
+        );
+      }
       let raw: unknown;
       try {
-        raw = await dependencies.sendToDocument!(
+        raw = await dependencies.sendToDocument(
           active.tabId,
           active.documentId,
           {
@@ -1595,9 +1658,16 @@ export function createFlowReferenceHandler(
       candidateClaims.add(sessionId);
       try {
         let active = await validatePickerSession(sessionId);
+        if (!dependencies.sendToDocument) {
+          throw new ReferenceSelectionError(
+            "picker_transport_unavailable",
+            "Picker transport to the verified Flow document is unavailable. Keep the project open and retry.",
+            "context_invalidated",
+          );
+        }
         let raw: unknown;
         try {
-          raw = await dependencies.sendToDocument!(
+          raw = await dependencies.sendToDocument(
             active.tabId,
             active.documentId,
             {
@@ -1684,14 +1754,16 @@ export function createFlowReferenceHandler(
             "The candidate failed final session or project validation. Refresh References and retry.",
           );
         }
-        try {
-          await dependencies.sendToDocument!(active.tabId, active.documentId, {
-            type: FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
-            sessionId: active.sessionId,
-            shotId: active.shotId,
-          });
-        } catch {
-          // The dashboard event and session-scoped candidate state are authoritative.
+        if (dependencies.sendToDocument) {
+          try {
+            await dependencies.sendToDocument(active.tabId, active.documentId, {
+              type: FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
+              sessionId: active.sessionId,
+              shotId: active.shotId,
+            });
+          } catch {
+            // The dashboard event and session-scoped candidate state are authoritative.
+          }
         }
         return { accepted: true, candidate: parsed.data };
       } finally {
@@ -1818,8 +1890,9 @@ export function createFlowReferenceHandler(
           return { accepted: false, code: "unsupported_or_wrong_page" };
         }
 
-        if (!scripting?.executeScript) {
-          return { accepted: false, code: "document_unavailable" };
+        const scripting = resolveScripting();
+        if (!scripting) {
+          return { accepted: false, code: "scripting_permission_missing" };
         }
         try {
           const [document] = await scripting.executeScript({

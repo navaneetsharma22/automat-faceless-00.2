@@ -25,7 +25,7 @@ import { referenceAssignmentId, sha256Bytes, type ReferenceAssignmentRecord } fr
 import { sha256Hex } from "../../src/domain/batches/hashPrompt";
 
 describe("Phase 07.1 Reference Selection Sessions", () => {
-  async function createFixture() {
+  async function createFixture(options: { omitScripting?: boolean } = {}) {
     const database = createMemoryRepositoryDatabase();
     let clock = 10_000;
     const repositories = new ExtensionRepositories(database, () => clock);
@@ -96,76 +96,82 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
         documentMessages.push({ tabId, documentId, message });
         return documentReply;
       },
-      scripting: {
-        executeScript: async (injection) => {
-          scriptInjections.push(injection);
-          if (
-            (injection as { func?: unknown }).func ===
-            flowReferenceCaptureResolver
-          ) {
-            const args = (
-              injection as { args?: Array<Record<string, unknown>> }
-            ).args?.[0];
-            return [
-              {
-                documentId: currentDocumentId,
-                frameId: 0,
-                result: {
-                  ok: true,
-                  candidate: {
-                    ...args,
-                    sourceUrl: typeof args?.sourceUrl === "string"
-                      ? args.sourceUrl
-                      : "https://lh3.googleusercontent.com/media/sample-card-40.jpg?token=live",
-                    providerAssetId: typeof args?.providerAssetId === "string"
-                      ? args.providerAssetId
-                      : "asset-genuine-40",
-                    cardTag: "flow-image-tile",
-                    naturalWidth: 1024,
-                    naturalHeight: 1024,
+      ...(options.omitScripting
+        ? {}
+        : {
+            scripting: {
+              executeScript: async (injection) => {
+                scriptInjections.push(injection);
+                if (
+                  (injection as { func?: unknown }).func ===
+                  flowReferenceCaptureResolver
+                ) {
+                  const args = (
+                    injection as { args?: Array<Record<string, unknown>> }
+                  ).args?.[0];
+                  return [
+                    {
+                      documentId: currentDocumentId,
+                      frameId: 0,
+                      result: {
+                        ok: true,
+                        candidate: {
+                          ...args,
+                          sourceUrl:
+                            typeof args?.sourceUrl === "string"
+                              ? args.sourceUrl
+                              : "https://lh3.googleusercontent.com/media/sample-card-40.jpg?token=live",
+                          providerAssetId:
+                            typeof args?.providerAssetId === "string"
+                              ? args.providerAssetId
+                              : "asset-genuine-40",
+                          cardTag: "flow-image-tile",
+                          naturalWidth: 1024,
+                          naturalHeight: 1024,
+                        },
+                      },
+                    },
+                  ];
+                }
+                if (
+                  (injection as { func?: unknown }).func ===
+                  flowReferencePreviewInPage
+                ) {
+                  const args = (
+                    injection as {
+                      args?: Array<{
+                        sessionId: string;
+                        candidateId: string;
+                        previewId: string;
+                      }>;
+                    }
+                  ).args?.[0];
+                  return [
+                    {
+                      documentId: currentDocumentId,
+                      frameId: 0,
+                      result: {
+                        ok: true,
+                        ...args,
+                        mimeType: "image/webp",
+                        width: 1,
+                        height: 1,
+                        byteLength: 3,
+                        data: "AQID",
+                      },
+                    },
+                  ];
+                }
+                return [
+                  {
+                    documentId: currentDocumentId,
+                    frameId: 0,
+                    result: "https://flow.google.com/project/proj-1",
                   },
-                },
+                ];
               },
-            ];
-          }
-          if (
-            (injection as { func?: unknown }).func ===
-            flowReferencePreviewInPage
-          ) {
-            const args = (
-              injection as {
-                args?: Array<{
-                  sessionId: string;
-                  candidateId: string;
-                  previewId: string;
-                }>;
-              }
-            ).args?.[0];
-            return [
-              {
-                documentId: currentDocumentId,
-                frameId: 0,
-                result: {
-                  ok: true,
-                  ...args,
-                  mimeType: "image/webp",
-                  width: 1,
-                  height: 1,
-                  byteLength: 3,
-                  data: "AQID",
-                },
-              },
-            ];
-          }
-          return [
-            {
-              documentId: currentDocumentId,
-              frameId: 0,
-              result: "https://flow.google.com/project/proj-1",
             },
-          ];
-        },
-      },
+          }),
       now: () => clock,
     });
 
@@ -2609,6 +2615,199 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       expect(
         mockDoc.getElementById("automat-faceless-selection-banner"),
       ).toBeNull();
+    });
+  });
+
+  describe("Scripting capability and permission lifecycle", () => {
+    it("fails closed when scripting capability is missing at startSelection", async () => {
+      const originalChrome = (globalThis as unknown as { chrome?: unknown })
+        .chrome;
+      try {
+        delete (globalThis as unknown as { chrome?: unknown }).chrome;
+        const fixture = await createFixture({ omitScripting: true });
+        await setupVerifiedFlowTarget(fixture.repositories, fixture.database);
+        await fixture.repositories.savePromptBatch({
+          workspaceId: "ws-1",
+          kind: "image",
+          sourceText: '1: {"shot_id":"1","prompt":"Scene 1"}',
+        });
+        const batch = await fixture.repositories.getPromptBatch("ws-1", "image");
+
+        let thrown: unknown;
+        try {
+          await fixture.handler.startSelection({
+            workspaceId: "ws-1",
+            batchId: batch!.batch.id,
+            shotId: "1",
+          });
+        } catch (err) {
+          thrown = err;
+        }
+
+        expect(thrown).toBeInstanceOf(ReferenceSelectionError);
+        expect((thrown as ReferenceSelectionError).code).toBe(
+          "scripting_permission_missing",
+        );
+        expect((thrown as ReferenceSelectionError).message).toBe(
+          "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+        );
+
+        // Assert: no active session stored
+        const activeState = await fixture.handler.getState("ws-1");
+        expect(activeState.activeSession).toBeNull();
+
+        // Assert: no session_started broadcast
+        const sessionStarted = fixture.broadcastEvents.find(
+          (e: unknown) =>
+            e !== null &&
+            typeof e === "object" &&
+            "type" in e &&
+            (e as { type: string }).type === FLOW_REFERENCE_EVENT_MESSAGE &&
+            "event" in e &&
+            (e as { event: string }).event === "session_started",
+        );
+        expect(sessionStarted).toBeUndefined();
+
+        // Assert: no executeScript call
+        expect(fixture.scriptInjections).toHaveLength(0);
+      } finally {
+        if (originalChrome !== undefined) {
+          (globalThis as unknown as { chrome: unknown }).chrome =
+            originalChrome;
+        } else {
+          delete (globalThis as unknown as { chrome?: unknown }).chrome;
+        }
+      }
+    });
+
+    it("dynamically picks up scripting when permission is granted after handler construction and fails closed if removed", async () => {
+      const originalChrome = (globalThis as unknown as { chrome?: unknown })
+        .chrome;
+      try {
+        delete (globalThis as unknown as { chrome?: unknown }).chrome;
+        const fixture = await createFixture({ omitScripting: true });
+        await setupVerifiedFlowTarget(fixture.repositories, fixture.database);
+        await fixture.repositories.savePromptBatch({
+          workspaceId: "ws-1",
+          kind: "image",
+          sourceText: '1: {"shot_id":"1","prompt":"Scene 1"}',
+        });
+        const batch = await fixture.repositories.getPromptBatch("ws-1", "image");
+
+        // Fails closed initially
+        await expect(
+          fixture.handler.startSelection({
+            workspaceId: "ws-1",
+            batchId: batch!.batch.id,
+            shotId: "1",
+          }),
+        ).rejects.toMatchObject({ code: "scripting_permission_missing" });
+
+        // After handler construction, make chrome.scripting.executeScript available
+        const executeScriptMock = vi.fn(async (injection: unknown) => {
+          fixture.scriptInjections.push(injection);
+          return [
+            {
+              documentId: "doc-flow-1",
+              frameId: 0,
+              result: "https://flow.google.com/project/proj-1",
+            },
+          ];
+        });
+        (globalThis as unknown as { chrome: unknown }).chrome = {
+          scripting: {
+            executeScript: executeScriptMock,
+          },
+        };
+
+        // startSelection must succeed without recreating the handler
+        const started = await fixture.handler.startSelection({
+          workspaceId: "ws-1",
+          batchId: batch!.batch.id,
+          shotId: "1",
+        });
+        expect(started.status).toBe("started");
+        expect(started.shotId).toBe("1");
+
+        // listCandidates must also succeed
+        fixture.setDocumentReply({
+          ok: true,
+          buildId: BUILD_ID,
+          sessionId: started.sessionId,
+          candidates: [],
+        });
+        const candidates = await fixture.handler.listCandidates(
+          started.sessionId,
+        );
+        expect(candidates.candidates).toEqual([]);
+
+        // Remove scripting after construction. startSelection must fail closed and must not create a session.
+        delete (
+          (globalThis as unknown as { chrome: { scripting?: unknown } }).chrome
+        ).scripting;
+        let thrownAfterRemove: unknown;
+        try {
+          await fixture.handler.startSelection({
+            workspaceId: "ws-1",
+            batchId: batch!.batch.id,
+            shotId: "1",
+          });
+        } catch (err) {
+          thrownAfterRemove = err;
+        }
+        expect(thrownAfterRemove).toBeInstanceOf(ReferenceSelectionError);
+        expect((thrownAfterRemove as ReferenceSelectionError).code).toBe(
+          "scripting_permission_missing",
+        );
+      } finally {
+        if (originalChrome !== undefined) {
+          (globalThis as unknown as { chrome: unknown }).chrome =
+            originalChrome;
+        } else {
+          delete (globalThis as unknown as { chrome?: unknown }).chrome;
+        }
+      }
+    });
+
+    it("returns safe coded error if scripting is missing during captureReference", async () => {
+      const originalChrome = (globalThis as unknown as { chrome?: unknown })
+        .chrome;
+      try {
+        delete (globalThis as unknown as { chrome?: unknown }).chrome;
+        const fixture = await createFixture({ omitScripting: true });
+        await setupVerifiedFlowTarget(fixture.repositories, fixture.database);
+        await fixture.repositories.savePromptBatch({
+          workspaceId: "ws-1",
+          kind: "image",
+          sourceText: '1: {"shot_id":"1","prompt":"Scene 1"}',
+        });
+        const batch = await fixture.repositories.getPromptBatch("ws-1", "image");
+
+        let thrown: unknown;
+        try {
+          await fixture.handler.captureReference({
+            workspaceId: "ws-1",
+            batchId: batch!.batch.id,
+            shotId: "1",
+            selectionVersion: "ver-1",
+            expectedAssignmentVersion: 0,
+            captureOperationId: "cap-op-1",
+          });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Must return safe coded ReferenceSelectionError, not throw TypeError
+        expect(thrown).toBeInstanceOf(ReferenceSelectionError);
+        expect(thrown).not.toBeInstanceOf(TypeError);
+      } finally {
+        if (originalChrome !== undefined) {
+          (globalThis as unknown as { chrome: unknown }).chrome =
+            originalChrome;
+        } else {
+          delete (globalThis as unknown as { chrome?: unknown }).chrome;
+        }
+      }
     });
   });
 });
