@@ -1143,6 +1143,16 @@ describe("Flow video reference attachment request-to-handler integration (offlin
     expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
   });
 
+  it("never fetches a loaded /asb detail preview as the original reference resource", async () => {
+    const previewUrl = "https://flow.google.com/asb/detail-preview.webp";
+    const f = await fixture({ originalSourceUrl: previewUrl });
+    await expect(f.client.request("flow.video.attachReference", { preparedBatchId: batchId, itemId }))
+      .resolves.toMatchObject({ status: "blocked", stage: "reference_byte_acquisition", reason: "reference_origin_unsupported" });
+    expect(f.fetchResource).not.toHaveBeenCalled();
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toBeUndefined();
+  });
+
   it("blocks a detail document change and an original byte SHA mismatch before action intent", async () => {
     const changed = await fixture({ detailResolutionDocumentId: "changed-document" });
     await expect(changed.client.request("flow.video.attachReference", { preparedBatchId: batchId, itemId })).resolves.toMatchObject({ status: "blocked" });

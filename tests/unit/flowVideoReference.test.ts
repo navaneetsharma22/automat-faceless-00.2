@@ -193,6 +193,62 @@ describe("Flow original reference source resolution", () => {
     expect(result.url).toBe(observedOriginal);
   });
 
+  it("waits past a loaded /asb detail preview and returns only the later pinned original URL", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const original = `https://flow-content.google/image/${id}?sig=rotated-original`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = "https://flow.google.com/asb/detail-preview.webp";
+      Object.defineProperties(image, { complete: { configurable: true, value: true }, naturalWidth: { configurable: true, value: 800 }, naturalHeight: { configurable: true, value: 450 } });
+      doc.body.append(image);
+      sizeElements(doc);
+      setTimeout(() => { image.src = original; }, 100);
+    });
+
+    const result = await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" });
+
+    expect(result).toMatchObject({ ok: true, opened: true, url: original });
+  });
+
+  it("does not return a loaded unsupported preview when an original never arrives", async () => {
+    vi.useFakeTimers();
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = "https://flow.google.com/asb/detail-preview.webp";
+      Object.defineProperties(image, { complete: { configurable: true, value: true }, naturalWidth: { configurable: true, value: 800 }, naturalHeight: { configurable: true, value: 450 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+
+    const pending = flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" });
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(result).toMatchObject({ ok: false, opened: true, code: "reference_original_unavailable" });
+    expect(result.url).toBeUndefined();
+  });
+
+  it("rejects a loaded original URL whose Flow media UUID belongs to another asset", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/representation.webp"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = "https://flow-content.google/image/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 800 }, naturalHeight: { value: 450 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+
+    await expect(flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/representation.webp" }))
+      .resolves.toMatchObject({ ok: false, opened: true, code: "reference_media_id_mismatch" });
+  });
+
   it("restores the gallery with Escape and refuses an ambiguous pinned tile", async () => {
     const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
     const doc = install(`<flow-image-tile><img data-media-id="${id}" src="https://flow.google.com/asb/a"></flow-image-tile>`);

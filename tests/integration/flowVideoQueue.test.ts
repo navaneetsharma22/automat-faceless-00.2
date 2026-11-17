@@ -117,7 +117,7 @@ async function setup(options: {
 
 async function seedPausedTargetChangedQueue(
   f: Awaited<ReturnType<typeof setup>>,
-  reason: "target_changed" | "candidate_missing" | "candidate_search_incomplete" = "target_changed",
+  reason: "target_changed" | "candidate_missing" | "candidate_search_incomplete" | "reference_origin_unsupported" | "reference_original_unavailable" = "target_changed",
 ) {
   await f.repositories.createFlowVideoQueue({
     queueId: `flow-video:${batchId}`,
@@ -583,6 +583,67 @@ describe("P09.3 Flow video timed submission", () => {
     expect(f.revalidate).toHaveBeenCalled();
     expect(f.attach).toHaveBeenCalledTimes(1);
     expect(f.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes a prior unsupported-preview failure only when operation evidence proves no Add or Generate intent", async () => {
+    const f = await setup();
+    await seedPausedTargetChangedQueue(f, "reference_origin_unsupported");
+    const sentItem = f.batch.items[1]!;
+    const receiptAt = 50_000;
+    await f.repositories.putFlowVideoAttachmentOperation({
+      id: `${batchId}:item-2`, preparedBatchId: batchId, itemId: "item-2",
+      referenceId: ref2, status: "dispatched", updatedAt: receiptAt,
+      videoGeneration: {
+        attemptId: "existing-attempt-2", preparedBatchId: batchId, itemId: "item-2",
+        canonicalShotId: sentItem.canonicalShotId, promptHash: sentItem.contentHash,
+        referenceId: ref2, tabId: 7, projectId: "p", canonicalTarget: "https://flow.google.com/project/p",
+        documentId: "doc", state: "dispatched", createdAt: receiptAt, updatedAt: receiptAt,
+      },
+    });
+    const initialQueue = await f.getQueue();
+    expect(initialQueue).toBeDefined();
+    await f.repositories.updateFlowVideoQueue({
+      expectedRevision: initialQueue!.revision,
+      next: {
+        ...initialQueue!,
+        items: initialQueue!.items.map((entry) => entry.itemId === "item-2"
+          ? { ...entry, state: "sent" as const, attemptId: "existing-attempt-2", dispatchReceipt: { attemptId: "existing-attempt-2", storedAt: receiptAt } }
+          : entry),
+        lastDispatchAt: receiptAt,
+        revision: initialQueue!.revision + 1,
+        updatedAt: receiptAt,
+      },
+    });
+    const resumed = await f.handler.resume(batchId, 1);
+    expect(resumed).toMatchObject({
+      preparedBatchId: batchId,
+      state: "sent",
+      items: [
+        { itemId: "item-1", state: "sent", priorReason: "reference_origin_unsupported" },
+        { itemId: "item-2", state: "sent", dispatchReceipt: { attemptId: "existing-attempt-2", storedAt: receiptAt } },
+      ],
+    });
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+
+    const unsafe = await setup();
+    await seedPausedTargetChangedQueue(unsafe, "reference_origin_unsupported");
+    await unsafe.repositories.putFlowVideoAttachmentOperation({
+      id: `${batchId}:item-1`, preparedBatchId: batchId, itemId: "item-1",
+      referenceId: ref1, status: "action_intent", updatedAt: 2,
+    });
+    const blocked = await unsafe.handler.resume(batchId, 0);
+    expect(blocked.state).toBe("blocked");
+    expect(unsafe.attach).not.toHaveBeenCalled();
+    expect(unsafe.generate).not.toHaveBeenCalled();
+
+    const unavailable = await setup();
+    await seedPausedTargetChangedQueue(unavailable, "reference_original_unavailable");
+    const retried = await unavailable.handler.resume(batchId, 0);
+    expect(retried.preparedBatchId).toBe(batchId);
+    expect(retried.items[0]).toMatchObject({ state: "sent", priorReason: "reference_original_unavailable" });
+    expect(unavailable.attach).toHaveBeenCalledTimes(1);
+    expect(unavailable.generate).toHaveBeenCalledTimes(1);
   });
 
   it("rechecks an incomplete bounded candidate scan without treating it as a confirmed missing asset", async () => {

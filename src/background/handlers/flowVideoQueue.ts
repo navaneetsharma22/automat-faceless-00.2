@@ -136,13 +136,18 @@ export function createFlowVideoQueueHandler(input: {
     // These failures are produced before the sole attachment action intent:
     // target_changed fails target validation, candidate_missing means a full
     // exact-ID gallery scan found no match, and candidate_search_incomplete
-    // means the bounded scan could not establish presence or absence. The
-    // operation check below refuses recovery if any attachment/Generate
-    // intent was recorded.
+    // means the bounded scan could not establish presence or absence.
+    // reference_origin_unsupported is also pre-intent: resource validation
+    // happens before an attachment operation is claimed. The operation check
+    // below still refuses recovery if any attachment/Generate intent exists.
+    // reference_original_unavailable is emitted by the bounded in-page resolver
+    // before resource acquisition or attachment intent as well.
     if (
       failed.state !== "failed" ||
       (failed.reason !== "target_changed" && failed.reason !== "candidate_missing" &&
-        failed.reason !== "candidate_search_incomplete")
+        failed.reason !== "candidate_search_incomplete" &&
+        failed.reason !== "reference_origin_unsupported" &&
+        failed.reason !== "reference_original_unavailable")
     )
       return undefined;
     if (!input.revalidate) return undefined;
@@ -227,7 +232,9 @@ export function createFlowVideoQueueHandler(input: {
       latestFailed.state !== "failed" ||
       (latestFailed.reason !== "target_changed" &&
         latestFailed.reason !== "candidate_missing" &&
-        latestFailed.reason !== "candidate_search_incomplete") ||
+        latestFailed.reason !== "candidate_search_incomplete" &&
+        latestFailed.reason !== "reference_origin_unsupported" &&
+        latestFailed.reason !== "reference_original_unavailable") ||
       latestFailed.referenceId !== failed.referenceId ||
       latestFailed.promptHash !== failed.promptHash
     )

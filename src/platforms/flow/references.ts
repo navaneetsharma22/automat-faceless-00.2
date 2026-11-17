@@ -368,16 +368,40 @@ export async function flowResolveOriginalImageUrlInPage(input: {
   const tile = image.closest<HTMLElement>("flow-image-tile");
   if (!tile || !visible(tile)) return { ok: false, opened: false, href: location.href, code: "candidate_missing" };
   tile.click();
+  const originalUrlState = (raw: string | undefined): "ready" | "unsupported" | "wrong_media_id" => {
+    if (!raw || raw.length > 4096) return "unsupported";
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return "unsupported";
+      if (url.hostname === "lh3.googleusercontent.com") return "ready";
+      if (url.hostname !== "flow-content.google") return "unsupported";
+      const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname)?.[1];
+      if (!id) return "unsupported";
+      return id.toLowerCase() === input.mediaId.toLowerCase() ? "ready" : "wrong_media_id";
+    } catch {
+      return "unsupported";
+    }
+  };
+  let lastPinnedTileCount = 0;
   for (let attempt = 0; attempt < 80; attempt++) {
+    // The detail overlay can render a loaded /asb preview before its original
+    // resource arrives. Re-resolve the exact tile while waiting, and never
+    // report a preview or object URL as the original bytes source.
+    const liveTiles = [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
+      .filter((candidate) => candidate.isConnected && candidate.dataset.mediaId === input.mediaId && visible(candidate));
+    lastPinnedTileCount = liveTiles.length;
     const detail = detailImages();
     if (detail.length > 1) return { ok: false, opened: true, href: location.href, code: "reference_detail_ambiguous" };
     const current = detail[0];
     const url = current?.currentSrc || current?.src;
-    if (current && url && current.complete && current.naturalWidth > 0 && current.naturalHeight > 0)
+    const originalState = originalUrlState(url);
+    if (originalState === "wrong_media_id")
+      return { ok: false, opened: true, href: location.href, code: "reference_media_id_mismatch" };
+    if (liveTiles.length === 1 && current && url && originalState === "ready" && current.complete && current.naturalWidth > 0 && current.naturalHeight > 0)
       return { ok: true, opened: true, url, href: location.href };
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return { ok: false, opened: true, href: location.href, code: "reference_detail_unavailable" };
+  return { ok: false, opened: true, href: location.href, code: lastPinnedTileCount > 1 ? "candidate_ambiguous" : "reference_original_unavailable" };
 }
 
 /** Closes only the detail overlay opened by the resolver and confirms the gallery tile is restored. */
