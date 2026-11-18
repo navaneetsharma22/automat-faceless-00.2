@@ -1339,6 +1339,84 @@ describe("production Flow video attachment picker action", () => {
       },
     });
   }, 10_000);
+
+  it("resolves row and preview when gallery URL has /u/0/ account prefix", async () => {
+    const id = "e4f7a637-29cb-4c5b-9d41-382a51f893e1";
+    const galleryUrl = "https://flow.google.com/u/0/asb/multi-account-token=s1600-rw";
+    const rowUrl = "https://flow.google.com/u/0/asb/multi-account-token=s200";
+    const previewUrl = "https://flow.google.com/u/0/asb/multi-account-token=s640";
+    const chipUrl = "https://flow.google.com/u/0/asb/multi-account-token=s1600-rw";
+    const doc = install(composer());
+    const openBtn = doc.querySelector<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']")!;
+    openBtn.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `
+        <div role="listbox" aria-label="Asset list">
+          <button role="option" class="asset-item" data-media-id="${id}">
+            <img class="asset-thumbnail-image" src="${rowUrl}">
+          </button>
+        </div>
+        <aside>
+          <img class="detail-preview-image" alt="Preview of selected asset" src="${previewUrl}">
+          <button class="add-to-prompt">Add to prompt</button>
+        </aside>
+      `;
+      section.querySelector("button.add-to-prompt")!.addEventListener("click", () => {
+        const chip = doc.createElement("button");
+        chip.setAttribute("aria-label", "Ingredient");
+        chip.setAttribute("aria-busy", "false");
+        chip.innerHTML = `<img alt="Ingredient image" src="${chipUrl}">`;
+        doc.querySelector("flow-base-prompt-box")!.append(chip);
+        sizeElements(doc);
+      });
+      doc.body.append(section);
+      sizeElements(doc);
+    });
+
+    const result = await flowVideoAttachmentActionInPage(id, galleryUrl);
+    expect(result).toEqual({ ok: true, already: false });
+  });
+
+  it("resolves row by UUID when gallery URL has no ASB token and associates row /asb token for preview", async () => {
+    const id = "e4f7a637-29cb-4c5b-9d41-382a51f893e1";
+    const galleryUrl = `https://flow-content.google/image/${id}?sig=ephemeral`;
+    const asbToken = "discovered-row-token";
+    const rowUrl = `https://flow.google.com/asb/${asbToken}=s200`;
+    const previewUrl = `https://flow.google.com/asb/${asbToken}=s800`;
+    const chipUrl = `https://flow.google.com/asb/${asbToken}=s1600-rw`;
+    const doc = install(composer());
+    const openBtn = doc.querySelector<HTMLButtonElement>("button[aria-label='Add ingredients to the prompt box']")!;
+    openBtn.addEventListener("click", () => {
+      const section = doc.createElement("section");
+      section.innerHTML = `
+        <div role="listbox" aria-label="Asset list">
+          <button role="option" class="asset-item" data-name="decoy">
+            <img class="asset-thumbnail-image" src="https://flow.google.com/asb/dunes-unrelated=s200">
+          </button>
+          <button role="option" class="asset-item" data-asset-id="${id}">
+            <img class="asset-thumbnail-image" src="${rowUrl}">
+          </button>
+        </div>
+        <aside>
+          <img class="detail-preview-image" alt="Preview of selected asset" src="${previewUrl}">
+          <button class="add-to-prompt">Add to prompt</button>
+        </aside>
+      `;
+      section.querySelector("button.add-to-prompt")!.addEventListener("click", () => {
+        const chip = doc.createElement("button");
+        chip.setAttribute("aria-label", "Ingredient");
+        chip.setAttribute("aria-busy", "false");
+        chip.innerHTML = `<img alt="Ingredient image" src="${chipUrl}">`;
+        doc.querySelector("flow-base-prompt-box")!.append(chip);
+        sizeElements(doc);
+      });
+      doc.body.append(section);
+      sizeElements(doc);
+    });
+
+    const result = await flowVideoAttachmentActionInPage(id, galleryUrl);
+    expect(result).toEqual({ ok: true, already: false });
+  });
 });
 
 describe("Flow pinned video reference attachment (offline fixtures)", () => {

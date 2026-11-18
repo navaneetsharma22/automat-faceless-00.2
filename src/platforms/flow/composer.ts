@@ -291,12 +291,15 @@ export function flowComposerRuntime(
         const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(url.pathname)?.[1];
         if (id && id.toLowerCase() === allowedReferenceMediaId.toLowerCase()) return true;
       }
+      let pathname = url.pathname;
+      const acctMatch = /^\/u\/\d+(\/.*)$/.exec(pathname);
+      if (acctMatch) pathname = acctMatch[1]!;
       if (
         allowedReferenceAsbToken &&
         url.hostname === "flow.google.com" &&
-        url.pathname.startsWith("/asb/")
+        pathname.startsWith("/asb/")
       ) {
-        const rest = url.pathname.slice("/asb/".length);
+        const rest = pathname.slice("/asb/".length);
         if (rest && !rest.includes("/")) {
           const eq = rest.indexOf("=");
           const token = eq === -1 ? rest : rest.slice(0, eq);

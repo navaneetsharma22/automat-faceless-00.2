@@ -369,8 +369,11 @@ export async function flowResolveOriginalImageUrlInPage(input: {
         (u.port && u.port !== "443")
       )
         return undefined;
-      if (!u.pathname.startsWith("/asb/")) return undefined;
-      const rest = u.pathname.slice("/asb/".length);
+      let pathname = u.pathname;
+      const acctMatch = /^\/u\/\d+(\/.*)$/.exec(pathname);
+      if (acctMatch) pathname = acctMatch[1]!;
+      if (!pathname.startsWith("/asb/")) return undefined;
+      const rest = pathname.slice("/asb/".length);
       if (!rest || rest.includes("/")) return undefined;
       const eq = rest.indexOf("=");
       const token = eq === -1 ? rest : rest.slice(0, eq);
@@ -387,10 +390,13 @@ export async function flowResolveOriginalImageUrlInPage(input: {
     if (!raw) return false;
     try {
       const u = new URL(raw, location.href);
+      let pathname = u.pathname;
+      const acctMatch = /^\/u\/\d+(\/.*)$/.exec(pathname);
+      if (acctMatch) pathname = acctMatch[1]!;
       return (
         u.protocol === "https:" &&
         u.hostname === "flow.google.com" &&
-        /^\/asb(?:\/|$)/.test(u.pathname)
+        /^\/asb(?:\/|$)/.test(pathname)
       );
     } catch {
       return false;
@@ -461,7 +467,7 @@ export async function flowResolveOriginalImageUrlInPage(input: {
               if (id.toLowerCase() === input.mediaId.toLowerCase()) accepted = true;
               else wrongMediaId = true;
             }
-          } else if (u.hostname === "flow.google.com" && /^\/asb(?:\/|$)/.test(u.pathname)) {
+          } else if (u.hostname === "flow.google.com" && isAsbUrl(url)) {
             const detailToken = parseAsbToken(url);
             if (!detailToken) {
               return { ok: false, opened: true, href: location.href, code: "reference_asb_token_missing" };

@@ -117,4 +117,17 @@ describe("Flow media identity parser (Section 9.A)", () => {
     expect(match.ok).toBe(false);
     expect(match.keys.size).toBe(0);
   });
+
+  it("parses multi-account /u/[0-9]+/asb/<token> URLs correctly", () => {
+    const rawU0 = "https://flow.google.com/u/0/asb/token_multi_account=s1600-rw";
+    const rawU2 = "https://flow.google.com/u/2/asb/token_multi_account";
+
+    expect(flowAsbTokenFromImageUrl(rawU0)).toBe("token_multi_account");
+    expect(flowAsbTokenFromImageUrl(rawU2)).toBe("token_multi_account");
+    expect(flowMediaIdentityFromImageUrl(rawU0)).toEqual({
+      kind: "asb",
+      token: "token_multi_account",
+      key: "asb:token_multi_account",
+    });
+  });
 });

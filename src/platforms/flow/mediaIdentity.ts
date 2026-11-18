@@ -62,8 +62,11 @@ export function flowAsbTokenFromImageUrl(raw: string | undefined): string | unde
       (url.port && url.port !== "443")
     )
       return undefined;
-    if (!url.pathname.startsWith("/asb/")) return undefined;
-    const rest = url.pathname.slice("/asb/".length);
+    let pathname = url.pathname;
+    const acctMatch = /^\/u\/\d+(\/.*)$/.exec(pathname);
+    if (acctMatch) pathname = acctMatch[1]!;
+    if (!pathname.startsWith("/asb/")) return undefined;
+    const rest = pathname.slice("/asb/".length);
     if (!rest || rest.includes("/")) return undefined;
     const eqIndex = rest.indexOf("=");
     const token = eqIndex === -1 ? rest : rest.slice(0, eqIndex);

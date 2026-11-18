@@ -31,6 +31,44 @@ P05 count-mode recovery is implemented as an explicit no-Generate ÃƒÆ’Ã‚
 
 Connection lifecycle changes are verified offline for worker-owned revalidation, readiness preservation, stale saved-binding recovery, guarded stale live-connector replacement, and non-navigation recovery. The reported readiness-triggered disconnect and Vids automatic refresh were not reproduced from the current extension paths; their historical triggers remain unknown. The current package is `automat-faceless-0.1.0-mvur6htk`; the connection/readiness live retest remains **NOT_RUN**.
 
+## Flow picker row resolution and multi-account /asb token fix — 18 November 2026
+
+Confirmed live diagnostic evidence on Shot 1 `picker_selected_preview_mismatch`:
+- `Expected identity`: Media UUID: `true`, /asb token: `false`.
+- `Rows total / matching / active`: `15 / 0 / 1`.
+- `Preview candidates / visible`: `1 / 1`.
+- `Preview present / visible / loaded`: `true / true / true`.
+- `Preview identity`: `asb (size suffix)`.
+- `Preview keys: expected / unexpected`: `0 / 1`.
+- `Preview exact match`: `false`.
+- `Add buttons found (not clicked)`: `1`.
+
+Root Cause & Architecture Fix:
+1. **Multi-account `/u/\d+/` prefix rejection**: `asbParts`, `flowAsbTokenFromImageUrl`, `parseAsbToken`, and `isAsbUrl` strictly matched pathnames starting with `/asb/`. In multi-account sessions where Flow URLs use `/u/[0-9]+/asb/...` (e.g. `https://flow.google.com/u/0/asb/<token>=s...`), `/asb/` token extraction returned `undefined`. Consequently, `expectedAsbToken` was `false`, and `expectedKeys` only contained `media:<uuid>`.
+2. **Eager rejection of picker rows in `rowMatches`**: When `expectedAsbToken` was not in `expectedKeys`, `rowMatches(row)` looped over `keysFor(row)` and immediately rejected ANY row with an `/asb/<token>` thumbnail (`if (!expectedKeys.has(k)) return false;`) before evaluating whether `rowMediaId === expectedMediaId`. Since all Flow picker rows use `/asb/<token>` thumbnails, 100% of rows were rejected (`matchingRowCount: 0`).
+3. **Picker row media ID extraction gap**: Attribute lookups only checked `data-media-id` and omitted `data-asset-id`, `data-id`, `data-row-id`, `data-item-id`, `id` (e.g. `asset-<uuid>`), and child elements.
+4. **Dynamic ASB token association**: When a row matches by exact media UUID, its thumbnail `/asb/<token>` is the verified asset token. Without associating this token into `expectedKeys`, subsequent preview checks on `selected.preview` (`https://flow.google.com/asb/<token>=s...`) failed with `picker_selected_preview_mismatch` because `expectedKeys` only knew the UUID.
+5. **Virtualized scrolling & tab navigation in picker**: Virtualized scrolling requires dispatching a `"scroll"` event when updating `scrollTop`. Tab selection requires dispatching full pointer and mouse event sequences for Angular Material tabs, and `pickerTabs` must recognize `[role="tablist"]`.
+
+Implementation:
+1. `src/platforms/flow/mediaIdentity.ts` & `src/platforms/flow/references.ts`: Allowed optional `/u/\d+/` multi-account prefix in `flowAsbTokenFromImageUrl`, `parseAsbToken`, and `isAsbUrl`.
+2. `src/platforms/flow/composer.ts`: Allowed optional `/u/\d+/` in `soleMatchingReadyReference` for `/asb` Ingredient chip recognition.
+3. `src/background/handlers/flowVideoAttachment.ts`:
+   - Updated `asbParts` and `isAsbUrl` to accept optional `/u/\d+/` and valid `:443` port.
+   - Added `extractRowMediaId`: recursively checks `data-media-id`, `data-asset-id`, `data-id`, `data-row-id`, `data-item-id`, and element/child `id` for canonical UUIDs.
+   - Fixed `rowMatches`: matches rows with `rowMediaId === expectedMediaId` directly without rejecting unassociated `/asb/` tokens, and ensures no contradictions with known `expectedAsbToken`.
+   - Added `associateRowAsbTokens`: dynamically registers the matching row's thumbnail `/asb/<token>` in `expectedKeys`, enabling the preview checker `sameAssetUrl` to verify the single visible preview.
+   - Enhanced `findScroller` (parent search depth up to 6), `findExactRow` (scroll event dispatch on virtual scroll viewports), `pickerTabs` (detects `[role='tablist']`), and `selectTab` (dispatches pointer/mouse event sequences).
+   - In `pickerDiagnostic`: accepts `matchingRow` fallback to ensure accurate reporting of matching row active state and media ID even during settling ticks.
+   - Preserved strict pre-Add guard: sole Add click occurs only when visible preview exact match, single active Add button, and 0 existing chips are verified. Zero replay.
+
+Checks:
+- Targeted Flow video test suites (`flowVideoReference.test.ts`, `flowMediaIdentity.test.ts`, `flowVideoReferenceAttachment.test.ts`, `flowVideoQueue.test.ts`, `flowVideoGenerate.test.ts`): **5 files / 153 tests PASS**.
+- Full test suite: **81 files / 1026 tests PASS**.
+- Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
+- Build (`node init; tsc -b; node tools/build.mjs`): **PASS**, package ID **`automat-faceless-0.1.0-mwlinjie`** (4 JavaScript bundles).
+- Live verification is **NOT_RUN** / pending user action in browser.
+
 ## Flow picker selection / preview diagnostic and single-visible preview scoping — 17 November 2026
 
 Confirmed live blocker: Following the safe resolution of `existing_chip_conflict` and a single guarded retry, the Flow video batch failed at Shot 1 with `picker_selected_preview_mismatch` before Add.

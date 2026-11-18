@@ -85,7 +85,10 @@ function isAsbUrl(raw: string | undefined): boolean {
   if (!raw) return false;
   try {
     const url = new URL(raw);
-    return url.protocol === "https:" && url.hostname === "flow.google.com" && /^\/asb(?:\/|$)/.test(url.pathname);
+    let pathname = url.pathname;
+    const acctMatch = /^\/u\/\d+(\/.*)$/.exec(pathname);
+    if (acctMatch) pathname = acctMatch[1]!;
+    return url.protocol === "https:" && url.hostname === "flow.google.com" && /^\/asb(?:\/|$)/.test(pathname);
   } catch {
     return false;
   }
@@ -289,8 +292,11 @@ export async function flowVideoAttachmentActionInPage(
         (u.port && u.port !== "443")
       )
         return undefined;
-      if (!u.pathname.startsWith("/asb/")) return undefined;
-      const rest = u.pathname.slice("/asb/".length);
+      let pathname = u.pathname;
+      const acctMatch = /^\/u\/\d+(\/.*)$/.exec(pathname);
+      if (acctMatch) pathname = acctMatch[1]!;
+      if (!pathname.startsWith("/asb/")) return undefined;
+      const rest = pathname.slice("/asb/".length);
       if (!rest || rest.includes("/")) return undefined;
       const eq = rest.indexOf("=");
       const token = eq === -1 ? rest : rest.slice(0, eq);
@@ -434,17 +440,71 @@ export async function flowVideoAttachmentActionInPage(
     return false;
   };
 
+  const extractRowMediaId = (el: HTMLElement): string | undefined => {
+    const attrs = [
+      "data-media-id",
+      "data-asset-id",
+      "data-id",
+      "data-row-id",
+      "data-item-id",
+    ];
+    for (const attr of attrs) {
+      const val = el.getAttribute(attr);
+      if (val) {
+        const match =
+          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(
+            val,
+          );
+        if (match) return match[1].toLowerCase();
+      }
+    }
+    for (const attr of attrs) {
+      const target = el.querySelector(`[${attr}]`);
+      const val = target?.getAttribute(attr);
+      if (val) {
+        const match =
+          /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(
+            val,
+          );
+        if (match) return match[1].toLowerCase();
+      }
+    }
+    const idMatch =
+      /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(
+        el.id || "",
+      );
+    if (idMatch) return idMatch[1].toLowerCase();
+    const childWithId = el.querySelector("[id*='-']");
+    if (childWithId) {
+      const childIdMatch =
+        /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(
+          childWithId.id,
+        );
+      if (childIdMatch) return childIdMatch[1].toLowerCase();
+    }
+    return undefined;
+  };
+
+  const associateRowAsbTokens = (row: HTMLElement) => {
+    for (const url of imageUrls(row)) {
+      const tok = asbToken(url);
+      if (tok) expectedKeys.add("asb:" + tok);
+    }
+  };
+
   const rowMatches = (row: HTMLElement): boolean => {
-    const rowMediaId = (
-      row.getAttribute("data-media-id") ??
-      row.querySelector("[data-media-id]")?.getAttribute("data-media-id")
-    )?.trim().toLowerCase();
+    const rowMediaId = extractRowMediaId(row);
     if (rowMediaId && rowMediaId !== expectedMediaId) return false;
     const keys = keysFor(row);
-    for (const k of keys) {
-      if (!expectedKeys.has(k)) return false;
+    if (rowMediaId === expectedMediaId) {
+      if (expectedAsbToken) {
+        for (const k of keys) {
+          if (!expectedKeys.has(k)) return false;
+        }
+      }
+      return true;
     }
-    if (rowMediaId === expectedMediaId) return true;
+    if (keys.size === 0) return false;
     return matchesExpected(keys);
   };
 
@@ -489,6 +549,9 @@ export async function flowVideoAttachmentActionInPage(
     const panel = preview?.parentElement?.closest("section,[data-picker-detail-scope]") ?? preview?.parentElement?.parentElement;
     const rows = [...(list?.querySelectorAll<HTMLElement>("[role=option]") ?? [])];
     const matches = rows.filter(rowMatches);
+    if (matches.length === 1) {
+      associateRowAsbTokens(matches[0]!);
+    }
     const action = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .filter((b) => b.textContent?.trim().toLowerCase() === "add to prompt" && visible(b));
     return {
@@ -503,19 +566,22 @@ export async function flowVideoAttachmentActionInPage(
       action,
     };
   };
-  const pickerDiagnostic = (state: ReturnType<typeof read>): FlowVideoPickerDiagnostic => {
+  const pickerDiagnostic = (
+    state: ReturnType<typeof read>,
+    matchingRow?: HTMLElement,
+  ): FlowVideoPickerDiagnostic => {
     const isActive = (row: Element): boolean =>
       row.getAttribute("aria-selected") === "true" ||
       row.getAttribute("aria-current") === "true" ||
       row.getAttribute("data-selected") === "true" ||
       row.classList.contains("asset-item-active") ||
-      Boolean(row.querySelector(".asset-item-active"));
-    const row = state.row;
+      row.classList.contains("selected") ||
+      Boolean(row.querySelector(".asset-item-active, [aria-selected='true'], .selected"));
+    const row =
+      state.row ??
+      (matchingRow && rowMatches(matchingRow) ? matchingRow : undefined);
     const rowKeys = row ? keysFor(row) : new Set<string>();
-    const rowMediaId = row && (
-      row.getAttribute("data-media-id") ??
-      row.querySelector("[data-media-id]")?.getAttribute("data-media-id")
-    );
+    const rowMediaId = row && extractRowMediaId(row);
     // For a stale/multiple visible preview, report the first candidate's
     // properties but never grant an Add from it.
     const preview = state.preview ?? state.visiblePreviews[0] ?? state.previews[0];
@@ -576,7 +642,7 @@ export async function flowVideoAttachmentActionInPage(
     const nested = [...list.querySelectorAll<HTMLElement>("*")].find((element) => scrolls(element));
     if (nested) return nested;
     let parent = list.parentElement;
-    for (let depth = 0; parent && depth < 4; depth++, parent = parent.parentElement) {
+    for (let depth = 0; parent && depth < 6; depth++, parent = parent.parentElement) {
       if (scrolls(parent)) return parent;
     }
     return undefined;
@@ -603,6 +669,9 @@ export async function flowVideoAttachmentActionInPage(
     let ambiguous = false;
     for (let index = 0; index < steps; index++) {
       scroller.scrollTop = Math.round((index * maxTop) / (steps - 1));
+      try {
+        scroller.dispatchEvent(new Event("scroll"));
+      } catch {}
       await wait(120);
       state = read();
       if (state.ambiguous) {
@@ -623,6 +692,18 @@ export async function flowVideoAttachmentActionInPage(
   const pickerTabs = (): HTMLElement[] => {
     const list = read().list;
     if (!list) return [];
+    const tablist = document.querySelector<HTMLElement>("[role='tablist']");
+    if (tablist) {
+      const clickables = [...tablist.querySelectorAll<HTMLElement>("button, [role='tab'], [role='button']")]
+        .filter((element) => visible(element) &&
+          !(element as HTMLButtonElement).disabled &&
+          element.getAttribute("aria-disabled") !== "true");
+      const labels = new Set(clickables.map(normalizedLabel));
+      if (PICKER_ASSET_TAB_LABELS.some((label) => labels.has(label.toLowerCase()))) {
+        return clickables.filter((element) =>
+          PICKER_ASSET_TAB_LABELS.some((label) => normalizedLabel(element) === label.toLowerCase()));
+      }
+    }
     let scope: Element | null = list;
     for (let depth = 0; depth < 8 && scope && scope !== document.body; depth++, scope = scope.parentElement) {
       const clickables = [...scope.querySelectorAll<HTMLElement>("button, [role='tab'], [role='button']")]
@@ -649,7 +730,12 @@ export async function flowVideoAttachmentActionInPage(
     const target = pickerTabs().find((element) => normalizedLabel(element) === label.toLowerCase());
     if (!target) return false;
     if (activeTabLabel() === label.toLowerCase()) return true;
-    target.click();
+    const opts = { bubbles: true, cancelable: true, view: window };
+    try { target.dispatchEvent(new PointerEvent("pointerdown", opts)); } catch {}
+    try { target.dispatchEvent(new MouseEvent("mousedown", opts)); } catch {}
+    try { target.dispatchEvent(new PointerEvent("pointerup", opts)); } catch {}
+    try { target.dispatchEvent(new MouseEvent("mouseup", opts)); } catch {}
+    try { target.click(); } catch {}
     for (let attempt = 0; attempt < 30; attempt++) {
       await wait(50);
       if (read().list && attempt >= 4) return true;
@@ -743,10 +829,12 @@ export async function flowVideoAttachmentActionInPage(
 
   // Explicit selection action on found.row (scrolling into view, pointer/mouse events, inner clickable)
   selectRow(found.row);
+  associateRowAsbTokens(found.row);
 
   let selected = read();
   for (let i = 0; i < 40; i++) {
     selected = read();
+    if (selected.row) associateRowAsbTokens(selected.row);
     if (
       (selected.row || rowMatches(found.row)) &&
       selected.preview &&
@@ -764,7 +852,7 @@ export async function flowVideoAttachmentActionInPage(
     !selected.preview ||
     !sameAssetUrl(selected.preview.currentSrc || selected.preview.src || undefined)
   )
-    return { ok: false, reason: "picker_selected_preview_mismatch", diagnostic: pickerDiagnostic(selected) };
+    return { ok: false, reason: "picker_selected_preview_mismatch", diagnostic: pickerDiagnostic(selected, found.row) };
   if (
     selected.action.length !== 1 ||
     selected.action[0]!.disabled ||
@@ -817,7 +905,10 @@ export function createFlowVideoAttachmentHandler(deps: {
     const target = { tabId: input.tabId, documentIds: [input.documentId] };
     const documentOrigin = new URL(input.documentHref).origin;
     const observed = new URL(input.galleryUrl);
-    const isAsbRepresentation = observed.protocol === "https:" && observed.hostname === "flow.google.com" && /^\/asb(?:\/|$)/.test(observed.pathname);
+    let observedPathname = observed.pathname;
+    const acctMatch = /^\/u\/\d+(\/.*)$/.exec(observedPathname);
+    if (acctMatch) observedPathname = acctMatch[1]!;
+    const isAsbRepresentation = observed.protocol === "https:" && observed.hostname === "flow.google.com" && /^\/asb(?:\/|$)/.test(observedPathname);
     const extensionFetch = async (url: string, route: CandidateAcquisition["route"]): Promise<CandidateAcquisition> => {
       const fetched = await fetchFlowReferenceBytes({
         url, mediaId: input.mediaId, signal: new AbortController().signal,
@@ -1661,13 +1752,19 @@ export function createFlowVideoAttachmentHandler(deps: {
       };
     }
     if (outcome?.ok) {
+      const outcomeAsbToken =
+        typeof (outcome as { asbToken?: unknown })?.asbToken === "string"
+          ? (outcome as { asbToken?: string }).asbToken
+          : undefined;
+      const finalAsbToken = candidateAsbToken ?? outcomeAsbToken;
       await deps.repositories.putFlowVideoAttachmentOperation({
         ...op,
         status: "attached",
+        ...(finalAsbToken ? { observedAsbToken: finalAsbToken } : {}),
         verifiedAttachment: {
           documentId: binding.documentId,
           mediaId: pinned.providerAssetId!,
-          ...(candidateAsbToken ? { asbToken: candidateAsbToken } : {}),
+          ...(finalAsbToken ? { asbToken: finalAsbToken } : {}),
           verifiedAt: Date.now(),
         },
         updatedAt: Date.now(),
