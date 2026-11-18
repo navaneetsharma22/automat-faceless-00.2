@@ -31,6 +31,31 @@ P05 count-mode recovery is implemented as an explicit no-Generate ÃƒÆ’Ã‚
 
 Connection lifecycle changes are verified offline for worker-owned revalidation, readiness preservation, stale saved-binding recovery, guarded stale live-connector replacement, and non-navigation recovery. The reported readiness-triggered disconnect and Vids automatic refresh were not reproduced from the current extension paths; their historical triggers remain unknown. The current package is `automat-faceless-0.1.0-mvur6htk`; the connection/readiness live retest remains **NOT_RUN**.
 
+## References preview /asb/ origin support and in-page transport — 18 November 2026
+
+User report: In References → Browse Flow images for Shot 1, candidate cards are discovered but several display `Preview failed`, `Thumbnail could not load. No substitute image was used`, and disabled `Choose for Shot 1` buttons. Preceding References state was: `"The verified Flow document cannot provide image candidates in this worker context."`
+
+Root Cause & Investigation:
+1. **Pre-existing Defect vs Regression**: Commit history confirms this is an unresolved pre-existing limitation, not a regression from Flow video queue or picker fixes. `src/platforms/flow/referenceResource.ts` had not been modified since 2 November 2026 (`f30080a`), where `flowReferenceResource` strictly restricted valid origins to `lh3.googleusercontent.com` and `flow-content.google`.
+2. **Same-origin `/asb/` media representation**: Modern Flow documents serve image candidates from same-origin `/asb/<token>=s...` and multi-account `/u/[0-9]+/asb/<token>=s...` paths on `flow.google.com` (and `labs.google`). When candidate cards were rendered, `getPreview` called `flowReferenceResource()`, which immediately threw `reference_origin_unsupported`.
+3. **Execution context & authentication**: The service worker runs in the extension origin with `credentials: "omit"`, incapable of fetching Flow `/asb/` resources that require session cookies. Flow same-origin candidates require in-page fetch (`mode: "same-origin"`, `credentials: "same-origin"`), which `flowReferencePreviewInPage` and `flowReferenceCaptureInPage` in `src/platforms/flow/references.ts` were already designed to perform inside the Flow document.
+
+Implementation:
+1. `src/platforms/flow/referenceResource.ts`: Added `flow.google.com` (and `labs.google`) as supported hosts, extracting `/asb/` tokens via `flowAsbTokenFromImageUrl`. Canonicalized `resourceKey` to `https://${url.hostname}/asb/${asbToken}`, stripping sizing suffixes (`=s1600-rw`, `=s0`) and `/u/\d+/` prefixes so `sameFlowReferenceResource` matches assets across representations.
+2. `src/platforms/flow/references.ts`: Added `cancelled?: boolean; timedOut?: boolean;` to preview map item type.
+3. `src/background/handlers/references.ts`: Dual-path transport routing:
+   - For same-origin Flow documents, dispatches `flowReferencePreviewInPage` and `flowReferenceCaptureInPage` in `world: "MAIN"`, recording `acquisitionProvenance: "verified_flow_document_same_origin_fetch"`.
+   - For cross-origin CDNs (`lh3.googleusercontent.com`, `flow-content.google`), executes the background worker fetch with `acquisitionProvenance: "verified_flow_document_extension_fetch"`.
+   - Handled in-page cancellation for active same-origin preview and capture claims.
+4. Preserved strict image identity, SHA-256 byte verification, target/document binding, and zero-replay guarantees.
+
+Checks:
+- Unit regressions: **5 files / 95 tests PASS** (`flowReferenceResource.test.ts`, `flowReferencePreview.test.ts`, `referenceCapture.test.ts`, `referenceSelection.test.ts`, `referencePickerPresentation.test.tsx`).
+- Full test suite: **81 files / 1029 tests PASS**.
+- Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
+- Build: **PASS**, package ID **`automat-faceless-0.1.0-mwlkbvtq`** (4 JavaScript bundles in `dist/`).
+- Live verification is **NOT_RUN** / pending user action in browser.
+
 ## Flow picker row resolution and multi-account /asb token fix — 18 November 2026
 
 Confirmed live diagnostic evidence on Shot 1 `picker_selected_preview_mismatch`:

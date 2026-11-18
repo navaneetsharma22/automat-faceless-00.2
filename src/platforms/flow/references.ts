@@ -539,7 +539,13 @@ export async function flowReferencePreviewInPage(input: {
   const scope = globalThis as typeof globalThis & {
     [key]?: Map<
       string,
-      { sessionId: string; candidateId: string; controller: AbortController }
+      {
+        sessionId: string;
+        candidateId: string;
+        controller: AbortController;
+        cancelled?: boolean;
+        timedOut?: boolean;
+      }
     >;
   };
   const pending = (scope[key] ??= new Map());

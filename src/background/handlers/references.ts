@@ -26,6 +26,8 @@ import {
 import {
   createFlowReferenceSelectionInjection,
   createFlowReferenceCaptureResolverInjection,
+  flowReferencePreviewInPage,
+  flowReferenceCaptureInPage,
   FLOW_REFERENCE_CONTEXT_MENU_ACK_MESSAGE,
   flowReferenceContextMenuId,
 } from "../../platforms/flow/references";
@@ -204,6 +206,7 @@ export function createFlowReferenceHandler(
       candidateId: string;
       active: ActiveReferenceSelectionSession;
       controller: AbortController;
+      sourceUrl: string;
     }
   >();
 
@@ -265,8 +268,42 @@ export function createFlowReferenceHandler(
     return parsed.data;
   };
   const abortSessionPreviews = async (sessionId: string) => {
-    for (const claim of previewClaims.values())
-      if (claim.sessionId === sessionId) claim.controller.abort();
+    const claims = [...previewClaims.entries()].filter(
+      ([, claim]) => claim.sessionId === sessionId,
+    );
+    await Promise.all(
+      claims.map(async ([previewId, claim]) => {
+        claim.controller.abort();
+        try {
+          const pageOrigin = new URL(claim.active.canonicalTarget).origin;
+          const isSameOrigin = new URL(claim.sourceUrl).origin === pageOrigin;
+          if (isSameOrigin) {
+            const scripting = resolveScripting();
+            if (scripting) {
+              await scripting.executeScript({
+                target: {
+                  tabId: claim.active.tabId,
+                  documentIds: [claim.active.documentId],
+                },
+                world: "MAIN",
+                func: flowReferencePreviewInPage,
+                args: [
+                  {
+                    action: "cancel",
+                    sessionId,
+                    candidateId: claim.candidateId,
+                    previewId,
+                    expectedOrigin: pageOrigin,
+                  },
+                ],
+              });
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
   };
 
   const getActiveSession =
@@ -606,6 +643,28 @@ export function createFlowReferenceHandler(
   };
   const cancelCaptureInPage = async (captureOperationId: string) => {
     captureControllers.get(captureOperationId)?.abort();
+    const session = activeCaptures.get(captureOperationId);
+    if (session) {
+      const scripting = resolveScripting();
+      if (scripting) {
+        try {
+          await scripting.executeScript({
+            target: { tabId: session.tabId, documentIds: [session.documentId] },
+            world: "MAIN",
+            func: flowReferenceCaptureInPage,
+            args: [
+              {
+                action: "cancel",
+                captureOperationId,
+                expectedOrigin: new URL(session.canonicalTarget).origin,
+              },
+            ],
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   };
   const cancelCapturesForShot = async (
     workspaceId: string,
@@ -780,52 +839,142 @@ export function createFlowReferenceHandler(
         );
       const controller = new AbortController();
       captureControllers.set(input.captureOperationId, controller);
-      const hasPermission =
-        dependencies.hasMediaHostPermission ??
-        (async (permission: string) => {
-          if (typeof chrome === "undefined" || !chrome.permissions?.contains)
-            throw new Error("permission_api_unavailable");
-          return chrome.permissions.contains({ origins: [permission] });
+      const pageOrigin = new URL(flowSession.canonicalTarget).origin;
+      const isSameOriginCapture =
+        new URL(resolved.sourceUrl as string).origin === pageOrigin;
+
+      let fetchedBytes: Uint8Array;
+      let fetchedMimeType: string;
+      let decodedWidth: number;
+      let decodedHeight: number;
+      let acquisitionProvenance:
+        | "verified_flow_document_same_origin_fetch"
+        | "verified_flow_document_extension_fetch";
+
+      if (isSameOriginCapture) {
+        const scripting = resolveScripting();
+        if (!scripting) {
+          throw new ReferenceSelectionError(
+            "scripting_permission_missing",
+            "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+            "invalid_request",
+          );
+        }
+        let captured: Array<{
+          documentId?: string;
+          frameId?: number;
+          result?: unknown;
+        }>;
+        try {
+          captured = await scripting.executeScript({
+            target: {
+              tabId: flowSession.tabId,
+              documentIds: [flowSession.documentId],
+            },
+            world: "MAIN",
+            func: flowReferenceCaptureInPage,
+            args: [
+              {
+                action: "fetch",
+                captureOperationId: input.captureOperationId,
+                sourceUrl: resolved.sourceUrl as string,
+                expectedOrigin: pageOrigin,
+              },
+            ],
+          });
+        } catch {
+          throw new ReferenceSelectionError(
+            "reference_resource_transport_failed",
+            "Reference capture in the Flow document failed. Keep the project open and retry.",
+          );
+        }
+        if (
+          captured[0]?.documentId !== flowSession.documentId ||
+          captured[0]?.frameId !== 0
+        ) {
+          throw new ReferenceSelectionError(
+            "target_changed",
+            "The capture came from a different Flow document.",
+            "context_invalidated",
+          );
+        }
+        const payload = captured[0]?.result as
+          | {
+              ok?: boolean;
+              data?: string;
+              code?: string;
+              mimeType?: string;
+              width?: number;
+              height?: number;
+              byteLength?: number;
+            }
+          | undefined;
+        if (!payload?.ok || !payload.data || !payload.mimeType) {
+          const code = payload?.code;
+          throw new ReferenceSelectionError(
+            code ?? "candidate_capture_failed",
+            `Reference capture failed (${code ?? "candidate_capture_failed"}). Nothing was saved.`,
+          );
+        }
+        const binary = atob(payload.data);
+        fetchedBytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        fetchedMimeType = payload.mimeType;
+        decodedWidth = payload.width ?? 0;
+        decodedHeight = payload.height ?? 0;
+        acquisitionProvenance = "verified_flow_document_same_origin_fetch";
+      } else {
+        const hasPermission =
+          dependencies.hasMediaHostPermission ??
+          (async (permission: string) => {
+            if (typeof chrome === "undefined" || !chrome.permissions?.contains)
+              throw new Error("permission_api_unavailable");
+            return chrome.permissions.contains({ origins: [permission] });
+          });
+        const fetched = await fetchFlowReferenceBytes({
+          url: resolved.sourceUrl as string,
+          mediaId: resolved.providerAssetId as string | undefined,
+          signal: controller.signal,
+          hasPermission,
+          fetcher,
+        }).catch((error: unknown) => {
+          const code =
+            error instanceof Error
+              ? error.message
+              : "reference_resource_transport_failed";
+          throw new ReferenceSelectionError(
+            code,
+            `Reference capture failed (${code}). Nothing was saved.`,
+          );
         });
-      const fetched = await fetchFlowReferenceBytes({
-        url: resolved.sourceUrl as string,
-        mediaId: resolved.providerAssetId as string | undefined,
-        signal: controller.signal,
-        hasPermission,
-        fetcher,
-      }).catch((error: unknown) => {
-        const code =
-          error instanceof Error
-            ? error.message
-            : "reference_resource_transport_failed";
-        throw new ReferenceSelectionError(
-          code,
-          `Reference capture failed (${code}). Nothing was saved.`,
-        );
-      });
-      let bitmap: ImageBitmap;
-      try {
-        bitmap = await decodeFlowReferenceImage(
-          fetched.bytes,
-          fetched.mimeType,
-          controller.signal,
-        );
-      } catch (error) {
-        const code =
-          error instanceof Error ? error.message : "capture_decode_failed";
-        throw new ReferenceSelectionError(
-          code,
-          "The fetched image could not be decoded or capture was interrupted. Nothing was saved.",
-        );
+        let bitmap: ImageBitmap;
+        try {
+          bitmap = await decodeFlowReferenceImage(
+            fetched.bytes,
+            fetched.mimeType,
+            controller.signal,
+          );
+        } catch (error) {
+          const code =
+            error instanceof Error ? error.message : "capture_decode_failed";
+          throw new ReferenceSelectionError(
+            code,
+            "The fetched image could not be decoded or capture was interrupted. Nothing was saved.",
+          );
+        }
+        decodedWidth = bitmap.width;
+        decodedHeight = bitmap.height;
+        bitmap.close();
+        fetchedBytes = fetched.bytes;
+        fetchedMimeType = fetched.mimeType;
+        acquisitionProvenance = "verified_flow_document_extension_fetch";
       }
       const result = {
         captureOperationId: input.captureOperationId,
-        mimeType: fetched.mimeType,
-        byteLength: fetched.bytes.byteLength,
-        width: bitmap.width,
-        height: bitmap.height,
+        mimeType: fetchedMimeType,
+        byteLength: fetchedBytes.byteLength,
+        width: decodedWidth,
+        height: decodedHeight,
       };
-      bitmap.close();
       if (
         !("captureOperationId" in result) ||
         result.captureOperationId !== input.captureOperationId ||
@@ -847,8 +996,8 @@ export function createFlowReferenceHandler(
           "capture_response_invalid",
           "The Flow document returned invalid or oversized image data.",
         );
-      const bytes = fetched.bytes;
-      const mimeType = result.mimeType;
+      const bytes = fetchedBytes;
+      const mimeType = fetchedMimeType;
       if (!flowReferenceSignatureValid(mimeType, bytes))
         throw new ReferenceSelectionError(
           "capture_signature_mismatch",
@@ -883,7 +1032,7 @@ export function createFlowReferenceHandler(
         width: result.width,
         height: result.height,
         capturedAt,
-        acquisitionProvenance: "verified_flow_document_extension_fetch",
+        acquisitionProvenance,
         qualityProvenance: "observed_resource_original_bytes_no_upscale",
       };
       if (!ReferenceAssignmentRecordSchema.safeParse(assignment).success)
@@ -1522,8 +1671,133 @@ export function createFlowReferenceHandler(
         candidateId,
         active,
         controller,
+        sourceUrl: candidate.sourceUrl,
       });
       try {
+        const pageOrigin = new URL(active.canonicalTarget).origin;
+        const candidateOrigin = new URL(candidate.sourceUrl).origin;
+        const isSameOrigin = candidateOrigin === pageOrigin;
+
+        if (isSameOrigin) {
+          const scripting = resolveScripting();
+          if (!scripting) {
+            throw new ReferenceSelectionError(
+              "scripting_permission_missing",
+              "Chrome's scripting permission for Flow is not available. Open Connections, click Allow requested access for Flow, then retry Browse Flow images.",
+              "invalid_request",
+            );
+          }
+          let injected: Array<{
+            documentId?: string;
+            frameId?: number;
+            result?: unknown;
+          }>;
+          try {
+            injected = await scripting.executeScript({
+              target: { tabId: active.tabId, documentIds: [active.documentId] },
+              world: "MAIN",
+              func: flowReferencePreviewInPage,
+              args: [
+                {
+                  action: "fetch",
+                  sessionId,
+                  candidateId,
+                  previewId,
+                  sourceUrl: candidate.sourceUrl,
+                  expectedOrigin: pageOrigin,
+                },
+              ],
+            });
+          } catch {
+            throw new ReferenceSelectionError(
+              "preview_transport_failed",
+              "Preview execution in the Flow document failed. Keep the project open and retry.",
+            );
+          }
+          if (
+            injected[0]?.documentId !== active.documentId ||
+            injected[0]?.frameId !== 0
+          ) {
+            throw new ReferenceSelectionError(
+              "wrong_document",
+              "The preview came from a different Flow document.",
+              "context_invalidated",
+            );
+          }
+          const result = injected[0]?.result as
+            | Record<string, unknown>
+            | undefined;
+          if (!result || typeof result !== "object" || result.ok !== true) {
+            const code =
+              result &&
+              typeof result === "object" &&
+              typeof result.code === "string"
+                ? result.code.slice(0, 64)
+                : "preview_failed";
+            throw new ReferenceSelectionError(
+              code,
+              `Preview failed (${code}). Refresh the candidate and retry.`,
+            );
+          }
+          if (
+            result.sessionId !== sessionId ||
+            result.candidateId !== candidateId ||
+            result.previewId !== previewId ||
+            result.mimeType !== "image/webp" ||
+            typeof result.byteLength !== "number" ||
+            result.byteLength < 1 ||
+            result.byteLength > 96 * 1024 ||
+            typeof result.width !== "number" ||
+            result.width < 1 ||
+            result.width > 320 ||
+            typeof result.height !== "number" ||
+            result.height < 1 ||
+            result.height > 320 ||
+            typeof result.data !== "string" ||
+            result.data.length > 128 * 1024
+          ) {
+            throw new ReferenceSelectionError(
+              "preview_invalid_response",
+              "Flow returned an invalid or oversized preview.",
+            );
+          }
+          const fresh = await validatePickerSession(sessionId);
+          const confirmed = await resolvePickerCandidate(fresh, candidateId);
+          if (
+            !sameFlowReferenceResource(
+              confirmed.sourceUrl,
+              candidate.sourceUrl,
+              candidate.providerAssetId,
+            ) ||
+            confirmed.providerAssetId !== candidate.providerAssetId ||
+            confirmed.cardTag !== candidate.cardTag ||
+            confirmed.naturalWidth !== candidate.naturalWidth ||
+            confirmed.naturalHeight !== candidate.naturalHeight
+          ) {
+            throw new ReferenceSelectionError(
+              "candidate_missing_or_changed",
+              "The candidate changed while its preview was loading. Refresh the picker.",
+            );
+          }
+          if (controller.signal.aborted) {
+            throw new ReferenceSelectionError(
+              "reference_capture_cancelled",
+              "Preview cancelled.",
+            );
+          }
+          return {
+            ok: true,
+            sessionId,
+            candidateId,
+            previewId,
+            data: result.data,
+            mimeType: "image/webp",
+            byteLength: result.byteLength,
+            width: result.width,
+            height: result.height,
+          };
+        }
+
         const hasPermission =
           dependencies.hasMediaHostPermission ??
           (async (permission: string) => {
@@ -1642,6 +1916,34 @@ export function createFlowReferenceHandler(
       if (!claim || claim.sessionId !== sessionId)
         return { ok: true, cancelled: false };
       claim.controller.abort();
+      try {
+        const pageOrigin = new URL(claim.active.canonicalTarget).origin;
+        const isSameOrigin = new URL(claim.sourceUrl).origin === pageOrigin;
+        if (isSameOrigin) {
+          const scripting = resolveScripting();
+          if (scripting) {
+            await scripting.executeScript({
+              target: {
+                tabId: claim.active.tabId,
+                documentIds: [claim.active.documentId],
+              },
+              world: "MAIN",
+              func: flowReferencePreviewInPage,
+              args: [
+                {
+                  action: "cancel",
+                  sessionId,
+                  candidateId: claim.candidateId,
+                  previewId,
+                  expectedOrigin: pageOrigin,
+                },
+              ],
+            }).catch(() => undefined);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
       return { ok: true, cancelled: true };
     },
 

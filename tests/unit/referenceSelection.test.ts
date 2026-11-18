@@ -8,6 +8,7 @@ import {
   createFlowReferenceContextMenuProperties,
   createFlowReferenceSelectionInjection,
   flowReferencePreviewInPage,
+  flowReferenceCaptureInPage,
   flowReferenceCaptureResolver,
   flowReferenceContextMenuId,
   flowReferenceSelectionProducer,
@@ -158,6 +159,42 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
                         height: 1,
                         byteLength: 3,
                         data: "AQID",
+                      },
+                    },
+                  ];
+                }
+                if (
+                  (injection as { func?: unknown }).func ===
+                  flowReferenceCaptureInPage
+                ) {
+                  const args = (
+                    injection as {
+                      args?: Array<{
+                        action: string;
+                        captureOperationId: string;
+                        sourceUrl: string;
+                        expectedOrigin: string;
+                      }>;
+                    }
+                  ).args?.[0];
+                  const testBytes = new Uint8Array([
+                    0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+                  ]);
+                  let binary = "";
+                  for (let i = 0; i < testBytes.length; i += 1)
+                    binary += String.fromCharCode(testBytes[i]!);
+                  return [
+                    {
+                      documentId: currentDocumentId,
+                      frameId: 0,
+                      result: {
+                        ok: true,
+                        captureOperationId: args?.captureOperationId,
+                        mimeType: "image/webp",
+                        width: 1376,
+                        height: 768,
+                        byteLength: testBytes.length,
+                        data: btoa(binary),
                       },
                     },
                   ];
@@ -731,6 +768,63 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       vi.unstubAllGlobals();
     });
 
+    it("requests a preview for same-origin Flow ASB candidates via flowReferencePreviewInPage in the document", async () => {
+      const fixture = await setupActiveSession();
+      const { handler, setDocumentReply, scriptInjections } = fixture;
+      const active = (await handler.getActiveSession())!;
+      const candidateId = "00000000-0000-4000-8000-000000000099";
+      const previewId = "00000000-0000-4000-8000-000000000098";
+      const asbCandidate = {
+        candidateId,
+        sourceUrl: "https://flow.google.com/asb/token-dunes-123=s1600-rw",
+        providerAssetId: "5a836a9f-197d-4400-aa12-2d4c7492a444",
+        naturalWidth: 1376,
+        naturalHeight: 768,
+        displayWidth: 300,
+        displayHeight: 168,
+        cardTag: "flow-image-tile",
+        selectedAt: 10000,
+      };
+      setDocumentReply({
+        ok: true,
+        buildId: BUILD_ID,
+        sessionId: active.sessionId,
+        candidate: asbCandidate,
+      });
+
+      const result = await handler.getPreview(
+        active.sessionId,
+        candidateId,
+        previewId,
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        sessionId: active.sessionId,
+        candidateId,
+        previewId,
+        mimeType: "image/webp",
+        byteLength: 3,
+        data: "AQID",
+      });
+      const inPageInjection = scriptInjections.find(
+        (entry) =>
+          (entry as { func?: unknown }).func === flowReferencePreviewInPage,
+      );
+      expect(inPageInjection).toBeDefined();
+      expect((inPageInjection as { world?: string }).world).toBe("MAIN");
+      expect(
+        (inPageInjection as { args?: unknown[] }).args?.[0],
+      ).toMatchObject({
+        action: "fetch",
+        sessionId: active.sessionId,
+        candidateId,
+        previewId,
+        sourceUrl: asbCandidate.sourceUrl,
+        expectedOrigin: "https://flow.google.com",
+      });
+    });
+
     it("rejects a Flow content image whose re-resolved gallery media ID changes during preview acquisition", async () => {
       const fixture = await setupActiveSession();
       const { handler, setDocumentReply, setMediaFetcher } = fixture;
@@ -1300,6 +1394,68 @@ describe("Phase 07.1 Reference Selection Sessions", () => {
       );
       expect(candidate.sourceUrl).not.toContain("token=");
       vi.unstubAllGlobals();
+    });
+
+    it("persists exact same-origin Flow ASB reference bytes via flowReferenceCaptureInPage with same_origin_fetch provenance", async () => {
+      const {
+        handler,
+        candidatePayload,
+        validSender,
+        repositories,
+        scriptInjections,
+      } = await setupActiveSession();
+      const asbCandidatePayload: FlowReferenceCandidateSelectedMessage = {
+        ...candidatePayload,
+        candidate: {
+          ...candidatePayload.candidate,
+          sourceUrl: "https://flow.google.com/asb/token-dunes-genuine=s1600-rw",
+        },
+      };
+      const accepted = await handler.handleCandidateSelected(
+        asbCandidatePayload,
+        validSender,
+      );
+      expect(accepted.accepted).toBe(true);
+      const state = await handler.getState("ws-1");
+      const candidate = state.candidates["40"]!;
+      expect(candidate.sourceUrl).toBe(
+        "https://flow.google.com/asb/token-dunes-genuine",
+      );
+
+      const captureOperationId = "00000000-0000-4000-8000-000000000088";
+      const result = await handler.captureReference({
+        workspaceId: "ws-1",
+        batchId: candidate.batchId,
+        shotId: "40",
+        selectionVersion: candidate.selectionVersion!,
+        expectedAssignmentVersion: 0,
+        captureOperationId,
+      });
+
+      expect(result.saved).toBe(true);
+      const stored = await repositories.getReferenceAssignment(
+        "ws-1",
+        candidate.batchId,
+        "40",
+        candidate.batchSourceHash,
+      );
+      const expectedBytes = new Uint8Array([
+        0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+      ]);
+      expect(stored?.bytes).toBeInstanceOf(Blob);
+      expect(new Uint8Array(await stored!.bytes.arrayBuffer())).toEqual(
+        expectedBytes,
+      );
+      expect(stored?.sha256).toBe(await sha256Bytes(expectedBytes));
+      expect(stored?.acquisitionProvenance).toBe(
+        "verified_flow_document_same_origin_fetch",
+      );
+      const inPageCapture = scriptInjections.find(
+        (entry) =>
+          (entry as { func?: unknown }).func === flowReferenceCaptureInPage,
+      );
+      expect(inPageCapture).toBeDefined();
+      expect((inPageCapture as { world?: string }).world).toBe("MAIN");
     });
 
     it("keeps reused Shot 01 references isolated by image source hash across reimport and capture", async () => {

@@ -1,8 +1,12 @@
+import { flowAsbTokenFromImageUrl } from "./mediaIdentity";
+
 /** Narrow media-resource policy for Flow gallery references. */
 export const FLOW_REFERENCE_MEDIA_HOST = "lh3.googleusercontent.com";
 export const FLOW_REFERENCE_MEDIA_PERMISSION = `https://${FLOW_REFERENCE_MEDIA_HOST}/*`;
 export const FLOW_CONTENT_MEDIA_HOST = "flow-content.google";
 export const FLOW_CONTENT_MEDIA_PERMISSION = `https://${FLOW_CONTENT_MEDIA_HOST}/*`;
+export const FLOW_ORIGIN_MEDIA_HOST = "flow.google.com";
+export const FLOW_ORIGIN_MEDIA_PERMISSION = `https://${FLOW_ORIGIN_MEDIA_HOST}/*`;
 export const FLOW_REFERENCE_MEDIA_MAX_BYTES = 12 * 1024 * 1024;
 
 export function flowReferenceSignatureValid(
@@ -34,6 +38,7 @@ export type FlowReferenceResource = {
   resourceKey: string;
   permission: string;
   mediaId?: string;
+  asbToken?: string;
 };
 
 /** Preserve the platform fetch receiver when production passes fetch as a value. */
@@ -67,10 +72,12 @@ export function flowReferenceResource(
     throw new Error("reference_origin_unsupported");
   if (
     url.hostname !== FLOW_REFERENCE_MEDIA_HOST &&
-    url.hostname !== FLOW_CONTENT_MEDIA_HOST
+    url.hostname !== FLOW_CONTENT_MEDIA_HOST &&
+    url.hostname !== FLOW_ORIGIN_MEDIA_HOST
   )
     throw new Error("reference_origin_unsupported");
   let mediaId: string | undefined;
+  let asbToken: string | undefined;
   if (url.hostname === FLOW_CONTENT_MEDIA_HOST) {
     const match =
       /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
@@ -81,15 +88,27 @@ export function flowReferenceResource(
     mediaId = match[1]!.toLowerCase();
     if (mediaId !== expectedMediaId!.toLowerCase())
       throw new Error("reference_media_id_mismatch");
+  } else if (url.hostname === FLOW_ORIGIN_MEDIA_HOST) {
+    asbToken = flowAsbTokenFromImageUrl(url.href);
+    if (!asbToken) {
+      throw new Error("reference_source_invalid");
+    }
+    if (expectedMediaId && UUID_PATTERN.test(expectedMediaId)) {
+      mediaId = expectedMediaId.toLowerCase();
+    }
   }
   url.hash = "";
   const stable = new URL(url.href);
   stable.search = "";
+  const resourceKey = asbToken
+    ? `https://${url.hostname}/asb/${asbToken}`
+    : stable.href;
   return {
     fetchUrl: url.href,
-    resourceKey: stable.href,
+    resourceKey,
     permission: `https://${url.hostname}/*`,
     ...(mediaId ? { mediaId } : {}),
+    ...(asbToken ? { asbToken } : {}),
   };
 }
 

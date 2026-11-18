@@ -229,4 +229,46 @@ describe("Flow reference media acquisition policy", () => {
     reading.abort();
     await expect(pending).rejects.toThrow("reference_capture_cancelled");
   });
+
+  it("accepts flow.google.com/asb URLs, strips size suffixes and account routes from resourceKey, and matches same token", () => {
+    const asbUrl1 = "https://flow.google.com/asb/token-genuine-123=s1600-rw";
+    const asbUrl2 = "https://flow.google.com/u/0/asb/token-genuine-123=s0";
+    const asbUrl3 = "https://flow.google.com/asb/token-genuine-123";
+    const otherTokenUrl =
+      "https://flow.google.com/asb/token-different-456=s1600-rw";
+
+    const res1 = flowReferenceResource(asbUrl1);
+    expect(res1).toEqual({
+      fetchUrl: asbUrl1,
+      resourceKey: "https://flow.google.com/asb/token-genuine-123",
+      permission: "https://flow.google.com/*",
+      asbToken: "token-genuine-123",
+    });
+
+    const res2 = flowReferenceResource(
+      asbUrl2,
+      "5a836a9f-197d-4400-aa12-2d4c7492a444",
+    );
+    expect(res2).toEqual({
+      fetchUrl: asbUrl2,
+      resourceKey: "https://flow.google.com/asb/token-genuine-123",
+      permission: "https://flow.google.com/*",
+      asbToken: "token-genuine-123",
+      mediaId: "5a836a9f-197d-4400-aa12-2d4c7492a444",
+    });
+
+    expect(sameFlowReferenceResource(asbUrl1, asbUrl2)).toBe(true);
+    expect(sameFlowReferenceResource(asbUrl1, asbUrl3)).toBe(true);
+    expect(sameFlowReferenceResource(asbUrl1, otherTokenUrl)).toBe(false);
+
+    expect(() =>
+      flowReferenceResource("https://flow.google.com/other/path"),
+    ).toThrow("reference_source_invalid");
+    expect(() =>
+      flowReferenceResource("https://flow.google.com/asb/bad*token"),
+    ).toThrow("reference_source_invalid");
+    expect(() =>
+      flowReferenceResource("https://flow.google.com/asb/"),
+    ).toThrow("reference_source_invalid");
+  });
 });

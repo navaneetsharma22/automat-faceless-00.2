@@ -382,3 +382,43 @@ Offline verification:
 - Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
 - Build (`node init; tsc -b; node tools/build.mjs`): **PASS**, package ID **`automat-faceless-0.1.0-mwlinjie`** (4 JavaScript bundles).
 - Live verification: **NOT_RUN** / pending user browser execution.
+
+## References preview /asb/ origin support and in-page transport — 18 November 2026
+
+User report: Following recent Flow video picker fixes, References → Browse Flow images for Shot 1 displays candidate cards, but several show:
+- `Preview failed`
+- `Thumbnail could not load. No substitute image was used`
+- Disabled `Choose for Shot 1` buttons
+Preceding References failure was: `"The verified Flow document cannot provide image candidates in this worker context."`
+
+### Root Cause & Investigation: Pre-existing Defect vs Regression
+An audit of git commit history confirmed this was an **unresolved pre-existing References issue**, not a regression from Flow video queue or picker fixes:
+1. `src/platforms/flow/referenceResource.ts` had not been modified since commit `f30080a` (2 Nov 2026).
+2. `src/background/handlers/references.ts` was last touched in commit `cdc4468` (2 Nov 2026).
+3. In that state, `flowReferenceResource` strictly restricted valid origins to `lh3.googleusercontent.com` and `flow-content.google`.
+4. Modern Flow documents render candidate thumbnails and assets using same-origin `/asb/<token>=s...` or multi-account `/u/[0-9]+/asb/<token>=s...` URLs on `flow.google.com` (and `labs.google`).
+5. Although `collectPickerCandidates()` in `src/platforms/flow/references.ts` successfully extracted these `img.currentSrc` values once scripting permissions were granted, the background handler `getPreview` immediately passed each URL to `flowReferenceResource()`, which threw `Error("reference_origin_unsupported")`.
+6. Furthermore, the background service worker executes with extension origin and `credentials: "omit"`. Flow `/asb/` endpoints require Google session authentication cookies, which are only present in requests originating from the Flow document itself.
+
+### Implementation: Dual-Path Transport & Canonical Resource Identity
+1. **Resource validation & canonical identity (`src/platforms/flow/referenceResource.ts`)**:
+   - Added `FLOW_ORIGIN_MEDIA_HOST = "flow.google.com"` and optional host permission `FLOW_ORIGIN_MEDIA_PERMISSION = "https://flow.google.com/*"`.
+   - Allowed `flow.google.com` (and `labs.google`) in `flowReferenceResource`, extracting the ASB token via `flowAsbTokenFromImageUrl(url.href)`.
+   - Canonicalized `resourceKey` to `https://${url.hostname}/asb/${asbToken}`, stripping sizing suffixes (e.g. `=s1600-rw`, `=s0`) and multi-account prefixes (`/u/\d+/`). This ensures `sameFlowReferenceResource` correctly compares references across varying sizing representations without false mismatches.
+   - Existing CDN sources (`lh3.googleusercontent.com` and `flow-content.google`) remain fully valid and supported.
+2. **Same-origin in-page preview & capture dispatch (`src/background/handlers/references.ts`)**:
+   - Reused the existing, dedicated in-page helpers `flowReferencePreviewInPage` and `flowReferenceCaptureInPage` in `src/platforms/flow/references.ts`, which run inside the Flow document (`world: "MAIN"`) using `{ mode: "same-origin", credentials: "same-origin" }`.
+   - Updated `getPreview`: if candidate `sourceUrl` is same-origin with `active.canonicalTarget`, dispatches `flowReferencePreviewInPage` in the page; otherwise executes the worker fetch path with omitted credentials.
+   - Stored `sourceUrl` on active preview claims to route `abortSessionPreviews` and `cancelPreview` to in-page cancellation when appropriate.
+   - Updated `captureReference`: if `resolved.sourceUrl` is same-origin, executes `flowReferenceCaptureInPage` in `world: "MAIN"` and records `acquisitionProvenance: "verified_flow_document_same_origin_fetch"`; otherwise executes worker fetch with `acquisitionProvenance: "verified_flow_document_extension_fetch"`.
+   - In-page capture preserves exact response byte decoding, byte limit bounds, dimensions, SHA-256 computation over original bytes, and transaction-bound assignment persistence.
+3. **Type safety (`src/platforms/flow/references.ts`)**:
+   - Added optional `cancelled` and `timedOut` boolean fields to `__AUTOMAT_FLOW_REFERENCE_PREVIEW_V1__` Map entry type.
+
+### Verification
+- Unit regressions: **5 files / 95 tests PASS** (`flowReferenceResource.test.ts`, `flowReferencePreview.test.ts`, `referenceCapture.test.ts`, `referenceSelection.test.ts`, `referencePickerPresentation.test.tsx`).
+- Full Vitest suite: **81 files / 1029 tests PASS**.
+- Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
+- Production build: **PASS**, package ID **`automat-faceless-0.1.0-mwlkbvtq`** (4 JavaScript bundles in `dist/`).
+- Flow video queue, Vids queue, and image queue functionality remain intact and unaffected.
+- Live browser verification: **NOT_RUN** / pending user verification in the browser.
