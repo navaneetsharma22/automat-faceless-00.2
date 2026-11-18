@@ -20,6 +20,8 @@ export const ReferenceByteComparisonDiagnosticSchema = z.object({
   preparedHeight: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS),
   candidateWidth: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS).optional(),
   candidateHeight: z.number().int().positive().max(MAX_REFERENCE_CAPTURE_PIXELS).optional(),
+  attemptedRepresentation: z.enum(["detail_original", "asb_webp_s1600_rw", "gallery_tile"]).optional(),
+  representationFailureReason: z.string().min(1).max(64).optional(),
 }).strict();
 export type ReferenceByteComparisonDiagnostic = z.infer<typeof ReferenceByteComparisonDiagnosticSchema>;
 

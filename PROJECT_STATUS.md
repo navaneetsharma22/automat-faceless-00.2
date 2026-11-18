@@ -2862,3 +2862,30 @@ Verification: **82 files / 1049 tests PASS**, including the pinned-document relo
 The next live Inspect still returned the umbrella `target_changed`, so the exact failing guard remained unknown. `inspectReferenceBytes` now returns a distinct code per gate while enforcing the same conditions: `inspection_target_unverified`, `inspection_selection_changed`, `inspection_project_changed`, `inspection_document_changed`, `inspection_extension_build_changed`, `inspection_connector_build_changed`, `inspection_pin_binding_changed`, `inspection_route_changed`, `inspection_candidate_document_changed`, and `inspection_reference_document_changed`. No check was removed or relaxed; this is observability only.
 
 Verification: **82 files / 1050 tests PASS**, including the new exact-gate regressions; typecheck PASS. Production build PASS, ID **`automat-faceless-0.1.0-mwln1zgr`**. No extension reload, live queue mutation, retry, or provider action occurred.
+
+## Flow ASB WebP representation fallback for video attachment â€” 18 November 2026
+
+Live Inspect on Shot 1 returned `candidate_bytes_mismatch`: expected/saved bytes `271916` (`image/webp`, SHA-256 `cf9948f4...118b2b`), actual acquired bytes `337691` (prior `337688`, `image/jpeg`, SHA-256 `e7d89cf2...9769`), dimensions identical at `1376x768`.
+
+Root Cause:
+1. When saved in References browsing, the Flow card image contained `-rw` (`=s1600-rw`), prompting Google's ASB backend to serve static deterministic WebP (`271916` bytes, SHA-256 `cf9948f4...`).
+2. The detail modal (`img[alt="Read-only image view"]`) URL lacks `-rw`, prompting Google's ASB backend to transcode on-the-fly to dynamic JPEG (`337691` bytes), with slight 3-byte header/metadata timestamp drift between requests altering the SHA-256 hash.
+3. The previous gallery fallback only checked `input.galleryUrl`, which in a reloaded project gallery is a low-resolution thumbnail tile (`=s320`/`=s400`, ~15-30 KB), which could never match the full-resolution WebP hash.
+
+Correction (`src/background/handlers/flowVideoAttachment.ts`, `src/domain/media/references.ts`):
+1. In `acquireCandidateBytes`, when `isAsbRepresentation` is true and detail JPEG bytes fail the prepared reference SHA-256 check:
+   - For the verified, matching same-origin ASB token on `https://flow.google.com`, attempts the evidenced `=s1600-rw` WebP representation (`${documentOrigin}${acctPrefix}/asb/${verifiedAsbToken}=s1600-rw`).
+   - Verifies the constructed URL contains the exact verified token before issuing same-origin document fetch.
+   - Accepts the representation **only if its raw-byte SHA-256 strictly equals `input.expectedSha256`**.
+   - If WebP representation does not match or fails, falls back to `input.galleryUrl` (if distinct).
+   - Preserves bounded diagnostic metadata (`attemptedRepresentation`, `representationFailureReason`).
+   - If document changes during acquisition, immediately rethrows `target_changed` to fail closed.
+2. Invariant guarantees:
+   - Strict raw-byte SHA-256 verification is 100% maintained; no mismatch bypass, visual approximation, or hash rewriting.
+   - Provider media ID and ASB token validation remain 100% strict.
+   - Safe document rebinding, single-Add protection, Generate no-replay safeguards, and all existing References, Images, and Vids features are fully preserved.
+
+Verification:
+- **83 files / 1067 tests PASS** (+6 targeted regression tests for WebP match, wrong bytes, wrong token, inspection match, fetch failure, and document mutation); `npm run typecheck` PASS.
+- Production build PASS, ID **`automat-faceless-0.1.0-mwlv8pep`** (4 validated JavaScript bundles; existing chunk-size / `inlineDynamicImports` advisories).
+- No extension reload, queue mutation, clear IndexedDB, or live provider action performed.

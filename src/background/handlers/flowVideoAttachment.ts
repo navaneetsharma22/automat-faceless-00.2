@@ -894,6 +894,8 @@ export function createFlowVideoAttachmentHandler(deps: {
     width?: number;
     height?: number;
     route: "verified_document_same_origin" | "scoped_extension_fetch" | "verified_detail_original_extension_fetch";
+    attemptedRepresentation?: "detail_original" | "asb_webp_s1600_rw" | "gallery_tile";
+    representationFailureReason?: string;
   };
   async function acquireCandidateBytes(input: {
     tabId: number;
@@ -943,6 +945,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       let resolution: { ok?: boolean; opened?: boolean; url?: string; href?: string; code?: string } | undefined;
       let acquired: CandidateAcquisition | undefined;
       let failure: string | undefined;
+      let verifiedAsbToken: string | undefined;
       try {
         const result = await deps.scripting.executeScript({
           target, world: "MAIN", func: flowResolveOriginalImageUrlInPage,
@@ -961,6 +964,7 @@ export function createFlowVideoAttachmentHandler(deps: {
           if (!expectedToken || !asbToken) throw new Error("reference_asb_token_missing");
           if (asbToken !== expectedToken) throw new Error("reference_asb_token_mismatch");
           if (documentOrigin !== "https://flow.google.com") throw new Error("reference_origin_unsupported");
+          verifiedAsbToken = asbToken;
           const captured = await deps.scripting.executeScript({
             target,
             world: "MAIN",
@@ -992,10 +996,12 @@ export function createFlowVideoAttachmentHandler(deps: {
             width: payload.width,
             height: payload.height,
             route: "verified_document_same_origin",
+            attemptedRepresentation: "detail_original",
           };
         } else {
           const original = flowReferenceResource(resolution.url, input.mediaId);
           acquired = await extensionFetch(original.fetchUrl, "verified_detail_original_extension_fetch");
+          acquired.attemptedRepresentation = "detail_original";
         }
       } catch (error) {
         failure = error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "reference_resource_failed";
@@ -1016,16 +1022,64 @@ export function createFlowVideoAttachmentHandler(deps: {
         }
       }
       if (failure) throw new Error(failure);
-      // A saved reference may be the gallery-card representation rather than
-      // the detail original: same pixels, different ASB size suffix. When the
-      // detail bytes differ, try the pinned gallery URL before failing. The
-      // hash gate is unchanged; only an exact match is accepted.
+      // When the detail original bytes differ (e.g. dynamic JPEG without -rw vs saved WebP with -rw),
+      // attempt the evidenced =s1600-rw WebP representation for the verified same-origin ASB token
+      // before attempting the gallery URL. The hash gate is strictly enforced; only an exact match is accepted.
       if (!failure && acquired && (await sha256Bytes(acquired.bytes)) !== input.expectedSha256) {
-        try {
-          const gallery = await captureSameOrigin(input.galleryUrl);
-          if ((await sha256Bytes(gallery.bytes)) === input.expectedSha256) acquired = gallery;
-        } catch {
-          /* keep the detail result and report it */
+        let fallbackFailureReason: string | undefined;
+        let webpUrl: string | undefined;
+        if (verifiedAsbToken && documentOrigin === "https://flow.google.com") {
+          try {
+            const acctPrefix = /^\/u\/\d+/.exec(new URL(input.galleryUrl).pathname)?.[0] ?? "";
+            webpUrl = `${documentOrigin}${acctPrefix}/asb/${verifiedAsbToken}=s1600-rw`;
+            const tokenCheck = flowAsbTokenFromImageUrl(webpUrl);
+            if (tokenCheck === verifiedAsbToken) {
+              const webpCandidate = await captureSameOrigin(webpUrl);
+              const webpSha = await sha256Bytes(webpCandidate.bytes);
+              if (webpSha === input.expectedSha256) {
+                acquired = {
+                  ...webpCandidate,
+                  attemptedRepresentation: "asb_webp_s1600_rw",
+                };
+              } else {
+                fallbackFailureReason = "webp_sha256_mismatch";
+              }
+            } else {
+              fallbackFailureReason = "candidate_url_token_invalid";
+            }
+          } catch (error) {
+            if (error instanceof Error && error.message === "target_changed") throw error;
+            fallbackFailureReason =
+              error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message)
+                ? error.message
+                : "webp_fetch_failed";
+          }
+        }
+        if ((await sha256Bytes(acquired.bytes)) !== input.expectedSha256) {
+          if (input.galleryUrl !== webpUrl) {
+            try {
+              const gallery = await captureSameOrigin(input.galleryUrl);
+              if ((await sha256Bytes(gallery.bytes)) === input.expectedSha256) {
+                acquired = {
+                  ...gallery,
+                  attemptedRepresentation: "gallery_tile",
+                };
+              } else if (!fallbackFailureReason) {
+                fallbackFailureReason = "gallery_sha256_mismatch";
+              }
+            } catch (error) {
+              if (error instanceof Error && error.message === "target_changed") throw error;
+              if (!fallbackFailureReason) {
+                fallbackFailureReason =
+                  error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message)
+                    ? error.message
+                    : "gallery_fetch_failed";
+              }
+            }
+          }
+        }
+        if ((await sha256Bytes(acquired.bytes)) !== input.expectedSha256 && fallbackFailureReason) {
+          acquired.representationFailureReason = fallbackFailureReason;
         }
       }
       if (!acquired) throw new Error("reference_resource_failed");
@@ -1516,6 +1570,8 @@ export function createFlowVideoAttachmentHandler(deps: {
       mimeType, preparedByteSize: item.reference.byteSize, savedByteSize: savedBytes.byteLength,
       candidateByteSize: bytes.byteLength, preparedWidth: item.reference.width, preparedHeight: item.reference.height,
       ...(width ? { candidateWidth: width } : {}), ...(height ? { candidateHeight: height } : {}),
+      ...(acquired.attemptedRepresentation ? { attemptedRepresentation: acquired.attemptedRepresentation } : {}),
+      ...(acquired.representationFailureReason ? { representationFailureReason: acquired.representationFailureReason } : {}),
     });
     if (!diagnostic.success) return { status: "blocked", reason: "inspection_diagnostic_invalid" };
     return { status: "inspected", matches: item.reference.sha256 === actualSha256, diagnostic: diagnostic.data };
@@ -1679,6 +1735,8 @@ export function createFlowVideoAttachmentHandler(deps: {
         preparedHeight: item.reference.height,
         ...(acquired.width ? { candidateWidth: acquired.width } : {}),
         ...(acquired.height ? { candidateHeight: acquired.height } : {}),
+        ...(acquired.attemptedRepresentation ? { attemptedRepresentation: acquired.attemptedRepresentation } : {}),
+        ...(acquired.representationFailureReason ? { representationFailureReason: acquired.representationFailureReason } : {}),
       });
       return {
         status: "blocked",
