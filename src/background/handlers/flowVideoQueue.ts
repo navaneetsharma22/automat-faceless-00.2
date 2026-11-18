@@ -1,4 +1,5 @@
 import type {
+  FlowVideoExecutionRebind,
   FlowVideoExistingChipDiagnostic,
   FlowVideoPickerDiagnostic,
   FlowVideoQueueItem,
@@ -22,6 +23,8 @@ import type { FlowVideoAttachmentOperation } from "../../storage/db";
 import { ReferenceAssignmentRecordSchema, sha256Bytes } from "../../domain/media/references";
 import { createQueueAlarmRuntime } from "../scheduler";
 import { FlowVideoStartupReconciliationError } from "../flowVideoAlarmLifecycle";
+import { BUILD_ID, PROTOCOL_VERSION } from "../../shared/buildInfo";
+import { CONNECTOR_PROTOCOL_VERSION } from "../../platforms/shared/contracts";
 
 export const FLOW_VIDEO_QUEUE_ALARM_PREFIX = "automat-flow-video-queue:";
 const PRE_INTENT_RECOVERY_REASONS = new Set([
@@ -68,11 +71,13 @@ export function createFlowVideoQueueHandler(input: {
     batch: PreparedVideoBatchRecord,
     item: PreparedVideoBatchRecord["items"][number],
     generation: NonNullable<FlowVideoAttachmentOperation["videoGeneration"]>,
+    rebound?: FlowVideoExecutionRebind,
   ) => generation.preparedBatchId === batch.id && generation.itemId === item.itemId &&
     generation.canonicalShotId === item.canonicalShotId && generation.promptHash === item.contentHash &&
-    generation.referenceId === item.reference.referenceId && generation.tabId === batch.target.tabId &&
+    generation.referenceId === item.reference.referenceId && generation.tabId === (rebound?.toTabId ?? batch.target.tabId) &&
     generation.projectId === batch.target.projectId && generation.canonicalTarget === batch.target.canonicalTarget &&
-    generation.documentId === batch.target.documentId;
+    (generation.documentId === (rebound?.toDocumentId ?? batch.target.documentId) ||
+     (rebound !== undefined && generation.documentId === rebound.fromDocumentId));
 
   async function makeQueue(preparedBatchId: string): Promise<FlowVideoQueueRecord> {
     const old = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
@@ -240,7 +245,7 @@ export function createFlowVideoQueueHandler(input: {
         if (
           !sentItem ||
           generation?.state !== "dispatched" ||
-          !generationMatches(batch, sentItem, generation) ||
+          !generationMatches(batch, sentItem, generation, queue.executionDocumentRebind) ||
           entry.dispatchReceipt?.attemptId !== generation.attemptId
         )
           return undefined;
@@ -416,7 +421,7 @@ export function createFlowVideoQueueHandler(input: {
         if (
           !sentItem ||
           generation?.state !== "dispatched" ||
-          !generationMatches(batch, sentItem, generation) ||
+          !generationMatches(batch, sentItem, generation, queue.executionDocumentRebind) ||
           entry.dispatchReceipt?.attemptId !== generation.attemptId
         )
           return undefined;
@@ -602,7 +607,7 @@ export function createFlowVideoQueueHandler(input: {
         if (
           !sentItem ||
           generation?.state !== "dispatched" ||
-          !generationMatches(batch, sentItem, generation) ||
+          !generationMatches(batch, sentItem, generation, queue.executionDocumentRebind) ||
           entry.dispatchReceipt?.attemptId !== generation.attemptId
         )
           return undefined;
@@ -733,7 +738,7 @@ export function createFlowVideoQueueHandler(input: {
     if (generation?.state === "dispatched") {
       const batch = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
       const preparedItem = batch.success ? batch.data.items.find((entry) => entry.itemId === item.itemId) : undefined;
-      if (!batch.success || !preparedItem || !generationMatches(batch.data, preparedItem, generation))
+      if (!batch.success || !preparedItem || !generationMatches(batch.data, preparedItem, generation, queue.executionDocumentRebind))
         return fail(queue, item, "dispatched_generation_binding_mismatch", true);
       return persistReceipt(queue, item, generation.attemptId, generation.updatedAt);
     }
@@ -763,7 +768,7 @@ export function createFlowVideoQueueHandler(input: {
     },
     pause: async (preparedBatchId: string, expectedRevision: number) => command(preparedBatchId, expectedRevision, "paused", "user_paused"),
     stop: async (preparedBatchId: string, expectedRevision: number) => command(preparedBatchId, expectedRevision, "stopped", "user_stopped"),
-    resume: async (preparedBatchId: string, expectedRevision: number) => {
+    resume: async (preparedBatchId: string, expectedRevision: number, confirmSameAccount?: boolean) => {
       const queue = await input.repositories.getFlowVideoQueue(queueIdFor(preparedBatchId));
       if (!queue || queue.revision !== expectedRevision || queue.state !== "paused") throw new Error("flow_video_queue_resume_invalid");
       const unresolved = queue.items.filter((entry) => entry.state === "uncertain" || entry.state === "failed");
@@ -773,8 +778,45 @@ export function createFlowVideoQueueHandler(input: {
         const blocked = unresolved[0]!;
         const saved = await save(queue, { state: "blocked", pauseReason: blocked.reason ?? "item_requires_review", nextActionAt: null }); await schedule(saved); return saved;
       }
+
+      const batchResult = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(preparedBatchId));
+      if (!batchResult.success || batchResult.data.destination !== "Flow") throw new Error("prepared_flow_batch_invalid");
+      const batch = batchResult.data;
+
+      const targetCheck = await input.revalidate?.(preparedBatchId);
+      if (targetCheck) throw new Error("target_revalidation_failed");
+      const selected = await input.repositories.getSelectedTarget("Flow");
+      const binding = selected?.verificationBinding;
+      const priorTabId = queue.executionDocumentRebind?.toTabId ?? batch.target.tabId;
+      const priorDocumentId = queue.executionDocumentRebind?.toDocumentId ?? batch.target.documentId;
+      let executionDocumentRebind = queue.executionDocumentRebind;
+      if (selected && binding) {
+        if (selected.provider !== "Flow" || binding.provider !== "Flow") throw new Error("flow_resume_provider_mismatch");
+        if (selected.tabId !== priorTabId || binding.tabId !== selected.tabId) throw new Error("flow_resume_binding_tab_id_mismatch");
+        if (selected.canonicalTarget !== batch.target.canonicalTarget || binding.canonicalTarget !== selected.canonicalTarget) throw new Error("flow_resume_binding_canonical_target_mismatch");
+        if (binding.projectId !== batch.target.projectId) throw new Error("flow_resume_binding_project_id_mismatch");
+        if (binding.extensionBuildId !== BUILD_ID || binding.connectorBuildId !== BUILD_ID) throw new Error("flow_resume_binding_build_mismatch");
+        if (binding.extensionProtocolVersion !== PROTOCOL_VERSION || binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION) throw new Error("flow_resume_binding_protocol_mismatch");
+        const rebind = Boolean(binding.tabId !== priorTabId || binding.documentId !== priorDocumentId);
+        if (rebind && !confirmSameAccount) {
+          throw new Error("flow_same_account_confirmation_required");
+        }
+        if (rebind) {
+          executionDocumentRebind = {
+            fromTabId: queue.executionDocumentRebind?.fromTabId ?? batch.target.tabId,
+            toTabId: binding.tabId,
+            fromDocumentId: queue.executionDocumentRebind?.fromDocumentId ?? batch.target.documentId ?? "unknown-document",
+            toDocumentId: binding.documentId,
+            projectId: binding.projectId,
+            canonicalTarget: binding.canonicalTarget,
+            verifiedAt: binding.verifiedAt,
+            sameAccountConfirmedAt: now(),
+          };
+        }
+      }
+
       const items = queue.items.map((entry) => entry.state === "waiting_for_generate" ? { ...entry, readinessStartedAt: now(), readinessDeadlineAt: nextVideoReadinessDeadline(now()) } : entry);
-      const next = await save(queue, { state: "waiting", pauseReason: undefined, items, nextActionAt: queue.nextActionAt && queue.nextActionAt > now() ? queue.nextActionAt : now() });
+      const next = await save(queue, { state: "waiting", pauseReason: undefined, items, ...(executionDocumentRebind ? { executionDocumentRebind } : {}), nextActionAt: queue.nextActionAt && queue.nextActionAt > now() ? queue.nextActionAt : now() });
       return run(next.queueId);
     },
     retryPreAddPickerFailure: async (preparedBatchId: string, expectedRevision: number) => {
@@ -795,7 +837,7 @@ export function createFlowVideoQueueHandler(input: {
       if (!recovered) throw new Error("flow_video_queue_verification_not_recoverable");
       return run(recovered.queueId);
     },
-    recheckAndResume: async (preparedBatchId: string, expectedRevision: number) => {
+    recheckAndResume: async (preparedBatchId: string, expectedRevision: number, confirmSameAccount?: boolean) => {
       const queueId = queueIdFor(preparedBatchId);
       const queue = await input.repositories.getFlowVideoQueue(queueId);
       if (!queue || queue.revision !== expectedRevision || !["paused", "blocked"].includes(queue.state))
@@ -825,7 +867,7 @@ export function createFlowVideoQueueHandler(input: {
         if (entry.state === "sent") {
           const sentPreparedItem = batch.items.find((candidate) => candidate.itemId === itemId);
           const generation = operation?.videoGeneration;
-          if (!sentPreparedItem || generation?.state !== "dispatched" || !generationMatches(batch, sentPreparedItem, generation) || entry.dispatchReceipt?.attemptId !== generation.attemptId)
+          if (!sentPreparedItem || generation?.state !== "dispatched" || !generationMatches(batch, sentPreparedItem, generation, queue.executionDocumentRebind) || entry.dispatchReceipt?.attemptId !== generation.attemptId)
             throw new Error("sent_item_operation_changed");
           continue;
         }
@@ -842,6 +884,22 @@ export function createFlowVideoQueueHandler(input: {
 
       const targetBefore = await input.revalidate(preparedBatchId).catch(() => "target_revalidation_failed");
       if (targetBefore) throw new Error("target_revalidation_failed");
+      const selected = await input.repositories.getSelectedTarget("Flow");
+      const binding = selected?.verificationBinding;
+      const priorTabId = queue.executionDocumentRebind?.toTabId ?? batch.target.tabId;
+      const priorDocumentId = queue.executionDocumentRebind?.toDocumentId ?? batch.target.documentId;
+      if (selected && binding) {
+        if (selected.provider !== "Flow" || binding.provider !== "Flow") throw new Error("flow_resume_provider_mismatch");
+        if (selected.tabId !== priorTabId || binding.tabId !== selected.tabId) throw new Error("flow_resume_binding_tab_id_mismatch");
+        if (selected.canonicalTarget !== batch.target.canonicalTarget || binding.canonicalTarget !== selected.canonicalTarget) throw new Error("flow_resume_binding_canonical_target_mismatch");
+        if (binding.projectId !== batch.target.projectId) throw new Error("flow_resume_binding_project_id_mismatch");
+        if (binding.extensionBuildId !== BUILD_ID || binding.connectorBuildId !== BUILD_ID) throw new Error("flow_resume_binding_build_mismatch");
+        if (binding.extensionProtocolVersion !== PROTOCOL_VERSION || binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION) throw new Error("flow_resume_binding_protocol_mismatch");
+      }
+      const rebind = Boolean(binding && (binding.tabId !== priorTabId || binding.documentId !== priorDocumentId));
+      if (rebind && !confirmSameAccount) {
+        throw new Error("flow_same_account_confirmation_required");
+      }
       const inspection = await input.inspectReferenceBytes(preparedBatchId, failedItem.itemId);
       if (inspection.status !== "inspected" || inspection.matches !== true ||
         inspection.diagnostic?.preparedSha256 !== preparedItem.reference.sha256 ||
@@ -861,6 +919,19 @@ export function createFlowVideoQueueHandler(input: {
       const targetAfter = await input.revalidate(preparedBatchId).catch(() => "target_revalidation_failed");
       if (targetAfter) throw new Error("target_revalidation_failed");
 
+      const executionDocumentRebind: FlowVideoExecutionRebind | undefined = rebind && binding
+        ? {
+            fromTabId: queue.executionDocumentRebind?.fromTabId ?? batch.target.tabId,
+            toTabId: binding.tabId,
+            fromDocumentId: queue.executionDocumentRebind?.fromDocumentId ?? batch.target.documentId ?? "unknown-document",
+            toDocumentId: binding.documentId,
+            projectId: binding.projectId,
+            canonicalTarget: binding.canonicalTarget,
+            verifiedAt: binding.verifiedAt,
+            sameAccountConfirmedAt: now(),
+          }
+        : queue.executionDocumentRebind;
+
       const updatedItems = latestQueue.items.map((entry) => entry.itemId === failedItem.itemId
         ? { ...entry, state: "pending" as const, priorReason: entry.priorReason ?? entry.reason, reason: undefined }
         : entry);
@@ -869,6 +940,7 @@ export function createFlowVideoQueueHandler(input: {
         items: updatedItems,
         state: "waiting",
         pauseReason: undefined,
+        ...(executionDocumentRebind ? { executionDocumentRebind } : {}),
         nextActionAt: nextVideoDispatchAt(latestQueue.lastDispatchAt, now()),
         revision: latestQueue.revision + 1,
         updatedAt: now(),
@@ -917,7 +989,7 @@ export function createFlowVideoQueueHandler(input: {
         if (entry.state === "sent") {
           const sentItem = batch.items.find((candidate) => candidate.itemId === entry.itemId);
           const generation = operation?.videoGeneration;
-          if (!sentItem || generation?.state !== "dispatched" || !generationMatches(batch, sentItem, generation) || entry.dispatchReceipt?.attemptId !== generation.attemptId)
+          if (!sentItem || generation?.state !== "dispatched" || !generationMatches(batch, sentItem, generation, queue.executionDocumentRebind) || entry.dispatchReceipt?.attemptId !== generation.attemptId)
             throw new Error("sent_item_operation_changed");
           continue;
         }
@@ -992,7 +1064,7 @@ export function createFlowVideoQueueHandler(input: {
           const generation = operation?.videoGeneration;
           const batch = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
           const preparedItem = batch.success ? batch.data.items.find((item) => item.itemId === entry.itemId) : undefined;
-          if (generation?.state !== "dispatched" || !batch.success || !preparedItem || !generationMatches(batch.data, preparedItem, generation)) continue;
+          if (generation?.state !== "dispatched" || !batch.success || !preparedItem || !generationMatches(batch.data, preparedItem, generation, queue.executionDocumentRebind)) continue;
           items[index] = { ...entry, state: "sent", attemptId: generation.attemptId, dispatchReceipt: { attemptId: generation.attemptId, storedAt: generation.updatedAt }, priorReason: entry.reason, reason: undefined };
           changed = true;
         }
@@ -1015,7 +1087,7 @@ export function createFlowVideoQueueHandler(input: {
           const generation = operation?.videoGeneration;
           const batch = PreparedVideoBatchRecordSchema.safeParse(await input.repositories.getPreparedVideoBatchById(queue.preparedBatchId));
           const preparedItem = batch.success ? batch.data.items.find((item) => item.itemId === inFlight.itemId) : undefined;
-          if (generation?.state === "dispatched" && batch.success && preparedItem && generationMatches(batch.data, preparedItem, generation)) {
+          if (generation?.state === "dispatched" && batch.success && preparedItem && generationMatches(batch.data, preparedItem, generation, queue.executionDocumentRebind)) {
             const saved = await persistReceipt(queue, inFlight, generation.attemptId, generation.updatedAt);
             if (saved.state === "waiting") await schedule(saved);
           } else {

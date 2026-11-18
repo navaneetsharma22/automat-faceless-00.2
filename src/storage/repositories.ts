@@ -74,7 +74,7 @@ export class VidsVideoQueueListValidationError extends Error {
   }
 }
 
-const FLOW_VIDEO_QUEUE_RECORD_FIELDS = new Set(["queueId", "preparedBatchId", "state", "pauseReason", "items", "lastDispatchAt", "nextActionAt", "revision", "createdAt", "updatedAt", "itemId", "order", "shotId", "referenceId", "promptHash", "attemptId", "readinessStartedAt", "readinessDeadlineAt", "dispatchReceipt", "storedAt", "resultIdentity", "nextCheckAt", "completedAt", "reason", "priorReason", "byteMismatchDiagnostic"]);
+const FLOW_VIDEO_QUEUE_RECORD_FIELDS = new Set(["queueId", "preparedBatchId", "state", "pauseReason", "items", "lastDispatchAt", "nextActionAt", "revision", "createdAt", "updatedAt", "itemId", "order", "shotId", "referenceId", "promptHash", "attemptId", "readinessStartedAt", "readinessDeadlineAt", "dispatchReceipt", "storedAt", "resultIdentity", "nextCheckAt", "completedAt", "reason", "priorReason", "byteMismatchDiagnostic", "existingChipDiagnostic", "pickerDiagnostic", "executionDocumentRebind", "fromTabId", "toTabId", "fromDocumentId", "toDocumentId", "projectId", "canonicalTarget", "verifiedAt", "sameAccountConfirmedAt"]);
 const MAX_FLOW_VIDEO_QUEUE_STARTUP_DIAGNOSTICS = 8;
 
 export type FlowVideoQueueStartupValidation = {

@@ -1233,7 +1233,7 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   }),
   requestBase.extend({
     type: z.literal("flow.videoQueue.resume"),
-    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative(), confirmSameAccount: z.boolean().optional() }).strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.videoQueue.stop"),
@@ -1241,15 +1241,15 @@ export const AppRequestSchema = z.discriminatedUnion("type", [
   }),
   requestBase.extend({
     type: z.literal("flow.videoQueue.recheckAndResume"),
-    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative(), confirmSameAccount: z.boolean().optional() }).strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.videoQueue.retryPreAddPickerFailure"),
-    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative(), confirmSameAccount: z.boolean().optional() }).strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.videoQueue.verifyAttachedReferenceAndContinue"),
-    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative() }).strict(),
+    payload: z.object({ preparedBatchId: z.string().min(1).max(512), expectedRevision: z.number().int().nonnegative(), confirmSameAccount: z.boolean().optional() }).strict(),
   }),
   requestBase.extend({
     type: z.literal("flow.videoQueue.reconcilePreAddFailure"),

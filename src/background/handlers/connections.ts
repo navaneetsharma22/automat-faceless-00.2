@@ -165,10 +165,10 @@ export type FoundationDependencies = {
     get: (preparedBatchId: string) => Promise<unknown>;
     start: (preparedBatchId: string) => Promise<unknown>;
     pause: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
-    resume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
-    recheckAndResume: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
-    retryPreAddPickerFailure: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
-    verifyAttachedReferenceAndContinue: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
+    resume: (preparedBatchId: string, expectedRevision: number, confirmSameAccount?: boolean) => Promise<unknown>;
+    recheckAndResume: (preparedBatchId: string, expectedRevision: number, confirmSameAccount?: boolean) => Promise<unknown>;
+    retryPreAddPickerFailure: (preparedBatchId: string, expectedRevision: number, confirmSameAccount?: boolean) => Promise<unknown>;
+    verifyAttachedReferenceAndContinue: (preparedBatchId: string, expectedRevision: number, confirmSameAccount?: boolean) => Promise<unknown>;
     reconcilePreAddFailure: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
     stop: (preparedBatchId: string, expectedRevision: number) => Promise<unknown>;
   };
@@ -922,7 +922,16 @@ async function dispatch(
     case "flow.videoQueue.retryPreAddPickerFailure":
     case "flow.videoQueue.verifyAttachedReferenceAndContinue":
       if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
-      return await dependencies.flowVideoQueue[request.type.slice("flow.videoQueue.".length) as "pause" | "resume" | "stop" | "recheckAndResume" | "retryPreAddPickerFailure" | "verifyAttachedReferenceAndContinue"](request.payload.preparedBatchId, request.payload.expectedRevision);
+      const sameAccountConfirmed = (request.payload as { confirmSameAccount?: boolean }).confirmSameAccount;
+      if (request.type === "flow.videoQueue.resume")
+        return await dependencies.flowVideoQueue.resume(request.payload.preparedBatchId, request.payload.expectedRevision, sameAccountConfirmed);
+      if (request.type === "flow.videoQueue.recheckAndResume")
+        return await dependencies.flowVideoQueue.recheckAndResume(request.payload.preparedBatchId, request.payload.expectedRevision, sameAccountConfirmed);
+      if (request.type === "flow.videoQueue.retryPreAddPickerFailure")
+        return await dependencies.flowVideoQueue.retryPreAddPickerFailure(request.payload.preparedBatchId, request.payload.expectedRevision, sameAccountConfirmed);
+      if (request.type === "flow.videoQueue.verifyAttachedReferenceAndContinue")
+        return await dependencies.flowVideoQueue.verifyAttachedReferenceAndContinue(request.payload.preparedBatchId, request.payload.expectedRevision, sameAccountConfirmed);
+      return await dependencies.flowVideoQueue[request.type.slice("flow.videoQueue.".length) as "pause" | "stop"](request.payload.preparedBatchId, request.payload.expectedRevision);
     case "flow.videoQueue.reconcilePreAddFailure":
       if (!dependencies.flowVideoQueue) throw new FoundationOperationError("worker_error", "flow_video_queue_unavailable", "Flow video queue is unavailable.");
       return await dependencies.flowVideoQueue.reconcilePreAddFailure(request.payload.preparedBatchId, request.payload.expectedRevision);

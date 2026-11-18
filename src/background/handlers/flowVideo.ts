@@ -192,12 +192,24 @@ export function createFlowVideoGenerateHandler(deps: {
   ) {
     await deps.revalidate();
     const selected = await deps.repositories.getSelectedTarget("Flow");
+    const queueRecord = await deps.repositories.getFlowVideoQueue(`flow-video:${batch.id}`);
+    const rebound = queueRecord?.executionDocumentRebind;
+    const expectedTabId = rebound?.toTabId ?? batch.target.tabId;
+    const expectedDocumentId = rebound?.toDocumentId ?? batch.target.documentId;
+    if (
+      rebound &&
+      (rebound.fromDocumentId !== batch.target.documentId ||
+        rebound.projectId !== batch.target.projectId ||
+        rebound.canonicalTarget !== batch.target.canonicalTarget)
+    )
+      return undefined;
+
     const binding = selected?.verificationBinding;
     if (
       !selected ||
       selected.verification !== "verified" ||
       !binding ||
-      selected.tabId !== batch.target.tabId ||
+      selected.tabId !== expectedTabId ||
       selected.canonicalTarget !== batch.target.canonicalTarget ||
       selected.tabId !== batch.manualSettingsDeclaration.tabId ||
       selected.canonicalTarget !==
@@ -206,7 +218,7 @@ export function createFlowVideoGenerateHandler(deps: {
       binding.tabId !== selected.tabId ||
       binding.canonicalTarget !== selected.canonicalTarget ||
       binding.projectId !== batch.target.projectId ||
-      binding.documentId !== batch.target.documentId ||
+      binding.documentId !== expectedDocumentId ||
       binding.extensionBuildId !== BUILD_ID ||
       binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
       binding.connectorBuildId !== BUILD_ID ||
@@ -361,13 +373,16 @@ export function createFlowVideoGenerateHandler(deps: {
     const confirmation = VideoSettingsConfirmationSchema.safeParse(
       batch.manualSettingsDeclaration,
     );
+    const queueRecord = await deps.repositories.getFlowVideoQueue(`flow-video:${batch.id}`);
+    const rebound = queueRecord?.executionDocumentRebind;
+    const declarationDocId = rebound ? rebound.fromDocumentId : batch.target.documentId;
     if (
       !confirmation.success ||
       confirmation.data.destination !== "Flow" ||
       confirmation.data.tabId !== batch.target.tabId ||
       confirmation.data.canonicalTarget !== batch.target.canonicalTarget ||
       confirmation.data.projectId !== batch.target.projectId ||
-      confirmation.data.documentId !== batch.target.documentId
+      confirmation.data.documentId !== declarationDocId
     )
       return {
         status: "blocked",

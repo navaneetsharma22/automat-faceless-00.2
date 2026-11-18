@@ -902,6 +902,7 @@ export function createFlowVideoAttachmentHandler(deps: {
     documentHref: string;
     galleryUrl: string;
     mediaId: string;
+    expectedSha256: string;
   }): Promise<CandidateAcquisition> {
     const target = { tabId: input.tabId, documentIds: [input.documentId] };
     const documentOrigin = new URL(input.documentHref).origin;
@@ -920,6 +921,22 @@ export function createFlowVideoAttachmentHandler(deps: {
         fetcher,
       });
       return { bytes: fetched.bytes, mimeType: fetched.mimeType, route };
+    };
+    const captureSameOrigin = async (url: string): Promise<CandidateAcquisition> => {
+      const captured = await deps.scripting.executeScript({
+        target, world: "MAIN", func: flowReferenceCaptureInPage,
+        args: [{ action: "fetch", captureOperationId: crypto.randomUUID(), sourceUrl: url, expectedOrigin: documentOrigin }],
+      });
+      if (captured[0]?.documentId !== input.documentId) throw new Error("target_changed");
+      const payload = captured[0]?.result as { ok?: boolean; data?: string; code?: string; mimeType?: string; width?: number; height?: number } | undefined;
+      if (!payload?.ok || !payload.data || !payload.mimeType) throw new Error(payload?.code ?? "candidate_capture_failed");
+      const binary = atob(payload.data);
+      return {
+        bytes: Uint8Array.from(binary, (character) => character.charCodeAt(0)),
+        mimeType: payload.mimeType,
+        width: payload.width, height: payload.height,
+        route: "verified_document_same_origin",
+      };
     };
 
     if (isAsbRepresentation) {
@@ -999,24 +1016,23 @@ export function createFlowVideoAttachmentHandler(deps: {
         }
       }
       if (failure) throw new Error(failure);
+      // A saved reference may be the gallery-card representation rather than
+      // the detail original: same pixels, different ASB size suffix. When the
+      // detail bytes differ, try the pinned gallery URL before failing. The
+      // hash gate is unchanged; only an exact match is accepted.
+      if (!failure && acquired && (await sha256Bytes(acquired.bytes)) !== input.expectedSha256) {
+        try {
+          const gallery = await captureSameOrigin(input.galleryUrl);
+          if ((await sha256Bytes(gallery.bytes)) === input.expectedSha256) acquired = gallery;
+        } catch {
+          /* keep the detail result and report it */
+        }
+      }
       if (!acquired) throw new Error("reference_resource_failed");
       return acquired;
     }
 
-    if (observed.origin === documentOrigin) {
-      const captured = await deps.scripting.executeScript({
-        target, world: "MAIN", func: flowReferenceCaptureInPage,
-        args: [{ action: "fetch", captureOperationId: crypto.randomUUID(), sourceUrl: input.galleryUrl, expectedOrigin: documentOrigin }],
-      });
-      if (captured[0]?.documentId !== input.documentId) throw new Error("target_changed");
-      const payload = captured[0]?.result as { ok?: boolean; data?: string; code?: string; mimeType?: string; width?: number; height?: number } | undefined;
-      if (!payload?.ok || !payload.data || !payload.mimeType) throw new Error(payload?.code ?? "candidate_capture_failed");
-      const binary = atob(payload.data);
-      return {
-        bytes: Uint8Array.from(binary, (character) => character.charCodeAt(0)), mimeType: payload.mimeType,
-        width: payload.width, height: payload.height, route: "verified_document_same_origin",
-      };
-    }
+    if (observed.origin === documentOrigin) return await captureSameOrigin(input.galleryUrl);
     return extensionFetch(input.galleryUrl, "scoped_extension_fetch");
   }
   async function resolveGalleryCandidate(input: {
@@ -1144,17 +1160,28 @@ export function createFlowVideoAttachmentHandler(deps: {
       return { status: "blocked", reason: "reference_bytes_corrupt" };
 
     await deps.revalidate();
+    const queueRecord = await deps.repositories.getFlowVideoQueue(`flow-video:${batch.id}`);
+    const rebound = queueRecord?.executionDocumentRebind;
+    const expectedTabId = rebound?.toTabId ?? batch.target.tabId;
+    const expectedDocumentId = rebound?.toDocumentId ?? batch.target.documentId;
+    if (
+      rebound &&
+      (rebound.fromDocumentId !== batch.target.documentId ||
+        rebound.projectId !== batch.target.projectId ||
+        rebound.canonicalTarget !== batch.target.canonicalTarget)
+    )
+      return { status: "blocked", reason: "target_changed" };
     const selected = await deps.repositories.getSelectedTarget("Flow");
     const binding = selected?.verificationBinding;
     if (
       !selected || selected.verification !== "verified" || !binding ||
-      selected.tabId !== batch.target.tabId ||
+      selected.tabId !== expectedTabId ||
       selected.canonicalTarget !== batch.target.canonicalTarget ||
       binding.provider !== "Flow" ||
       binding.tabId !== selected.tabId ||
       binding.canonicalTarget !== selected.canonicalTarget ||
       binding.projectId !== batch.target.projectId ||
-      binding.documentId !== batch.target.documentId ||
+      binding.documentId !== expectedDocumentId ||
       binding.extensionBuildId !== BUILD_ID ||
       binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
       binding.connectorBuildId !== BUILD_ID ||
@@ -1397,19 +1424,33 @@ export function createFlowVideoAttachmentHandler(deps: {
     await deps.revalidate();
     const selected = await deps.repositories.getSelectedTarget("Flow");
     const binding = selected?.verificationBinding;
+    // A saved reference may predate a Flow reload: tab, project, canonical
+    // target, and the exact media identity stay bound, while the live document
+    // is proven by the current binding and route below. This mirrors the
+    // attachment path, which deliberately ignores the pin's original document.
+    // Each gate returns a distinct read-only code so the dashboard reports the
+    // exact binding that changed instead of the old umbrella `target_changed`.
+    if (!selected || selected.verification !== "verified" || !binding || !binding.documentId)
+      return { status: "blocked", reason: "inspection_target_unverified" };
     if (
-      !selected || selected.verification !== "verified" || !binding || selected.tabId !== batch.target.tabId ||
-      selected.canonicalTarget !== batch.target.canonicalTarget || binding.provider !== "Flow" ||
-      binding.tabId !== selected.tabId || binding.canonicalTarget !== selected.canonicalTarget ||
-      binding.projectId !== batch.target.projectId || binding.documentId !== batch.target.documentId ||
-      binding.extensionBuildId !== BUILD_ID || binding.connectorBuildId !== BUILD_ID ||
-      binding.extensionProtocolVersion !== PROTOCOL_VERSION || binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
-      pinned.tabId !== selected.tabId || pinned.flowProjectId !== binding.projectId || pinned.documentId !== binding.documentId
-    ) return { status: "blocked", reason: "target_changed" };
+      selected.tabId !== batch.target.tabId ||
+      selected.canonicalTarget !== batch.target.canonicalTarget ||
+      binding.provider !== "Flow" ||
+      binding.tabId !== selected.tabId ||
+      binding.canonicalTarget !== selected.canonicalTarget
+    ) return { status: "blocked", reason: "inspection_selection_changed" };
+    if (binding.projectId !== batch.target.projectId)
+      return { status: "blocked", reason: "inspection_project_changed" };
+    if (binding.extensionBuildId !== BUILD_ID || binding.extensionProtocolVersion !== PROTOCOL_VERSION)
+      return { status: "blocked", reason: "inspection_extension_build_changed" };
+    if (binding.connectorBuildId !== BUILD_ID || binding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION)
+      return { status: "blocked", reason: "inspection_connector_build_changed" };
+    if (pinned.tabId !== selected.tabId || pinned.flowProjectId !== binding.projectId)
+      return { status: "blocked", reason: "inspection_pin_binding_changed" };
     const tab = await deps.getTab(selected.tabId);
     const route = flowTabFromUrl(selected.tabId, "Flow", tab.url);
     if (!route || route.projectId !== binding.projectId || route.canonicalTarget !== selected.canonicalTarget)
-      return { status: "blocked", reason: "target_changed" };
+      return { status: "blocked", reason: "inspection_route_changed" };
     const resolveCandidate = () =>
       resolveGalleryCandidate({
         tabId: selected.tabId,
@@ -1420,17 +1461,22 @@ export function createFlowVideoAttachmentHandler(deps: {
 
     let resolved: Awaited<ReturnType<typeof resolveCandidate>>;
     try { resolved = await resolveCandidate(); }
-    catch (error) { return { status: "blocked", reason: error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "candidate_resolution_failed" }; }
+    catch (error) {
+      const raw = error instanceof Error ? error.message : "";
+      return { status: "blocked", reason: raw === "target_changed" ? "inspection_candidate_document_changed" : /^[a-z0-9_]{1,64}$/.test(raw) ? raw : "candidate_resolution_failed" };
+    }
     let acquired: CandidateAcquisition;
     try {
       acquired = await acquireCandidateBytes({
         tabId: selected.tabId, documentId: binding.documentId, projectId: binding.projectId,
         documentHref: resolved.href, galleryUrl: resolved.candidate.url!, mediaId: pinned.providerAssetId!,
+        expectedSha256: item.reference.sha256,
       });
     } catch (error) {
-      const reason = error instanceof Error && ACQUISITION_REASONS.has(error.message)
-        ? error.message
-        : error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message) ? error.message : "reference_resource_failed";
+      const raw = error instanceof Error ? error.message : "";
+      const reason = raw === "target_changed" ? "inspection_reference_document_changed"
+        : ACQUISITION_REASONS.has(raw) ? raw
+        : /^[a-z0-9_]{1,64}$/.test(raw) ? raw : "reference_resource_failed";
       return { status: "blocked", reason };
     }
     const bytes = acquired.bytes;
@@ -1456,11 +1502,13 @@ export function createFlowVideoAttachmentHandler(deps: {
       latestTarget?.verification !== "verified" || latestTarget.tabId !== selected.tabId ||
       latestTarget.canonicalTarget !== selected.canonicalTarget || !latestBinding || latestBinding.provider !== "Flow" ||
       latestBinding.tabId !== selected.tabId || latestBinding.canonicalTarget !== selected.canonicalTarget ||
-      latestBinding.projectId !== binding.projectId || latestBinding.documentId !== binding.documentId ||
+      latestBinding.projectId !== binding.projectId ||
       latestBinding.extensionBuildId !== BUILD_ID || latestBinding.connectorBuildId !== BUILD_ID ||
       latestBinding.extensionProtocolVersion !== PROTOCOL_VERSION || latestBinding.connectorProtocolVersion !== CONNECTOR_PROTOCOL_VERSION ||
       !latestRoute || latestRoute.projectId !== binding.projectId || latestRoute.canonicalTarget !== selected.canonicalTarget
     ) return { status: "blocked", reason: "inspection_binding_changed" };
+    if (latestBinding.documentId !== binding.documentId)
+      return { status: "blocked", reason: "inspection_document_changed" };
     const diagnostic = ReferenceByteComparisonDiagnosticSchema.safeParse({
       stage: "read_only_reference_inspection", acquisitionRoute: acquired.route,
       preparedSha256: item.reference.sha256, metadataSha256: pinned.sha256, savedBytesSha256,
@@ -1499,12 +1547,25 @@ export function createFlowVideoAttachmentHandler(deps: {
     if (!parsed.success || parsed.data.destination !== "Flow")
       return { status: "blocked", reason: "prepared_flow_item_required" };
     const batch = parsed.data;
+    const queueRecord = await deps.repositories.getFlowVideoQueue(`flow-video:${batch.id}`);
+    const rebound = queueRecord?.executionDocumentRebind;
+    const expectedTabId = rebound?.toTabId ?? batch.target.tabId;
+    const expectedDocumentId = rebound?.toDocumentId ?? batch.target.documentId;
+    if (
+      rebound &&
+      (rebound.fromDocumentId !== batch.target.documentId ||
+        rebound.projectId !== batch.target.projectId ||
+        rebound.canonicalTarget !== batch.target.canonicalTarget)
+    )
+      return { status: "blocked", reason: "target_changed" };
+
+    const declarationDocId = rebound ? rebound.fromDocumentId : batch.target.documentId;
     if (
       confirmation.data.destination !== "Flow" ||
       confirmation.data.tabId !== batch.target.tabId ||
       confirmation.data.canonicalTarget !== batch.target.canonicalTarget ||
       confirmation.data.projectId !== batch.target.projectId ||
-      confirmation.data.documentId !== batch.target.documentId
+      confirmation.data.documentId !== declarationDocId
     )
       return {
         status: "blocked",
@@ -1544,12 +1605,13 @@ export function createFlowVideoAttachmentHandler(deps: {
       !selected ||
       selected.verification !== "verified" ||
       !binding ||
-      selected.tabId !== batch.target.tabId ||
+      selected.tabId !== expectedTabId ||
       selected.canonicalTarget !== batch.target.canonicalTarget ||
+      binding.provider !== "Flow" ||
+      binding.tabId !== selected.tabId ||
+      binding.canonicalTarget !== selected.canonicalTarget ||
       binding.projectId !== batch.target.projectId ||
-      binding.documentId !== batch.target.documentId ||
-      (batch.target.documentId &&
-        batch.target.documentId !== binding.documentId) ||
+      binding.documentId !== expectedDocumentId ||
       binding.extensionBuildId !== BUILD_ID ||
       binding.extensionProtocolVersion !== PROTOCOL_VERSION ||
       binding.connectorBuildId !== BUILD_ID ||
@@ -1591,6 +1653,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       acquired = await acquireCandidateBytes({
         tabId: selected.tabId, documentId: binding.documentId, projectId: binding.projectId,
         documentHref: resolved.href, galleryUrl: candidate.url, mediaId: pinned.providerAssetId!,
+        expectedSha256: item.reference.sha256,
       });
     } catch (error) {
       const raw = error instanceof Error ? error.message : "reference_resource_failed";

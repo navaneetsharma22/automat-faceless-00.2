@@ -31,6 +31,62 @@ P05 count-mode recovery is implemented as an explicit no-Generate ÃƒÆ’Ã‚
 
 Connection lifecycle changes are verified offline for worker-owned revalidation, readiness preservation, stale saved-binding recovery, guarded stale live-connector replacement, and non-navigation recovery. The reported readiness-triggered disconnect and Vids automatic refresh were not reproduced from the current extension paths; their historical triggers remain unknown. The current package is `automat-faceless-0.1.0-mvur6htk`; the connection/readiness live retest remains **NOT_RUN**.
 
+## Safe Flow document rebinding after page reload — 18 November 2026
+
+Confirmed live blocker: Following the granular diagnostic split, inspecting Shot 1 returned `inspection_document_changed`. The current Flow project URL, project ID, and tab ID matched the intended target, but Chrome's internal `documentId` changed because the page was reloaded after batch preparation.
+
+Root Cause Analysis:
+1. `inspectReferenceBytes` previously checked `binding.documentId !== batch.target.documentId` prior to candidate byte acquisition and immediately blocked with `inspection_document_changed`, even when the active tab, project, canonical target, build, and route were identical.
+2. `attachReference`, `verifyAttachedReference`, and `generateOnce` strictly enforced the prepared `batch.target.documentId`.
+3. The prepared batch record (`batch.target`) must remain immutable for auditability, pairing integrity, and replay protection; it cannot simply be overwritten upon page reload.
+
+Implementation: Safe Document Rebinding
+1. **Phase 1 — Read-Only Inspection (`src/background/handlers/flowVideoAttachment.ts`)**:
+   - Removed pre-acquisition `binding.documentId !== batch.target.documentId` blocker in `inspectReferenceBytes`.
+   - Allows read-only acquisition and byte-level SHA-256 verification of candidate bytes in the current live document when tab ID, project ID, canonical target, extension/connector build IDs, and protocol versions match.
+   - Binds injected script operations to the freshly verified current `documentId`.
+   - Retains post-acquisition revalidation: if the document mutates *during* inspection (`latestBinding.documentId !== binding.documentId`), safely fails closed with `inspection_document_changed`.
+   - Batch target in storage remains completely immutable.
+2. **Phase 2 — Explicit Safe Action Rebind (`src/domain/jobs/videoQueue.ts`, `src/storage/repositories.ts`, `src/background/handlers/flowVideoQueue.ts`)**:
+   - Added `FlowVideoExecutionRebindSchema` and `executionDocumentRebind?: FlowVideoExecutionRebind` to `FlowVideoQueueRecord`.
+   - When a reload is detected on the same project and tab, user must confirm same Google account (`confirmSameAccount: true`).
+   - Durable audit evidence is recorded with `fromTabId`, `toTabId`, `fromDocumentId`, `toDocumentId`, `projectId`, `canonicalTarget`, `verifiedAt`, and `sameAccountConfirmedAt`.
+   - Rebind is strictly guarded: denied if the queue has in-flight workers, uncertain items, or unresolved action intents.
+   - Subsequent provider actions (`attachReference`, `generateOnce`, `verifyAttachedReference`) read `rebound = queue?.executionDocumentRebind` and validate target against `expectedDocumentId = rebound?.toDocumentId ?? batch.target.documentId`.
+3. **Phase 3 — Strict Integrity Preservation**:
+   - Retains gallery representation fallback ONLY when fetched bytes match saved SHA-256.
+   - Zero relaxation of exact byte hashes, provider media IDs, or ASB tokens.
+   - Never accepts visual similarity, unverified bytes, or different ASB tokens.
+   - Zero duplicate Add/Generate replays.
+4. **Phase 4 — Dedicated Regression Suite (`tests/integration/flowVideoRebind.test.ts`)**:
+   - Added 11 focused test scenarios covering:
+     1. Same project and tab after page reload: allows inspection, requires confirmSameAccount, rebinds cleanly.
+     2. Read-only inspection on newly verified document without mutating batch target or queue.
+     3. Explicit pre-intent action rebind: subsequent actions use the rebound document.
+     4. Different project denied.
+     5. Different tab denied.
+     6. New document becoming stale again after rebind.
+     7. Uncertain Add/Generate outcome denies rebind.
+     8. Same provider asset with exact saved SHA passes (`matches: true`).
+     9. Different bytes fail closed (`matches: false` / `candidate_bytes_mismatch`).
+     10. Existing no-replay guarantees remain intact: dispatched items are preserved and never re-dispatched.
+     11. References, image queues, and Vids remain unaffected.
+5. **Dashboard UI Support (`src/app/features/video-batch/FlowPreparedBatchReview.tsx`)**:
+   - Added same-account confirmation checkbox and state.
+   - Gated "Recheck & Resume", "Resume", "Retry Add", and "Verify & Continue" buttons when confirmation is required until the user checks the confirmation.
+   - Passes `confirmSameAccount: true` in the message payload.
+
+Checks:
+- Dedicated rebind regression suite: `tests/integration/flowVideoRebind.test.ts` **11/11 PASS**.
+- Flow video reference attachment integration: `tests/integration/flowVideoReferenceAttachment.test.ts` **44/44 PASS**.
+- Flow video queue integration: `tests/integration/flowVideoQueue.test.ts` **40/40 PASS**.
+- Reference picker presentation: `tests/unit/referencePickerPresentation.test.tsx` **25/25 PASS**.
+- Core Flow video test bundle: **120/120 PASS**.
+- Full test suite: **83 files / 1071 tests PASS**.
+- Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
+- Production build: **PASS**, package ID **`automat-faceless-0.1.0-mwlu2065`** (4 JavaScript bundles in `dist/`).
+- Live browser verification: **NOT_RUN**; no live Add, Generate, or resume action performed.
+
 ## References preview /asb/ origin support and in-page transport — 18 November 2026
 
 User report: In References → Browse Flow images for Shot 1, candidate cards are discovered but several display `Preview failed`, `Thumbnail could not load. No substitute image was used`, and disabled `Choose for Shot 1` buttons. Preceding References state was: `"The verified Flow document cannot provide image candidates in this worker context."`
@@ -2790,3 +2846,19 @@ The resolver now scrolls the uniquely matched tile into view, activates its nest
 Read-only `inspectReferenceBytes` now accepts the closed pre-intent reference reason set. `candidate_bytes_mismatch` keeps its dedicated recheck path, and a plain Resume never replays a known-different candidate.
 
 Verification: **82 files / 1046 tests PASS** including 7 new resolver regressions; `tsc --noEmit` PASS; scoped ESLint reports only the pre-existing `no-empty` injected blocks in `flowVideoAttachment.ts`. Production build PASS, ID **`automat-faceless-0.1.0-mwllz62t`** (4 validated JavaScript bundles; existing chunk-size / `inlineDynamicImports` advisories). No extension reload, live queue mutation, retry, or provider action occurred. The live branch remains **NOT_READ** until the rebuilt extension is reloaded and Shot 1 is retried.
+
+## Flow reference representation alignment and inspection gate repair — 18 November 2026
+
+The retried live comparison moved Shot 1 from `reference_original_unavailable` to `candidate_bytes_mismatch`, proving acquisition and hashing now succeed. The saved diagnostic showed identical `image/jpeg`, identical `1376×768` dimensions, saved bytes `271916` (SHA-256 `cf9948f4…118b2b`), and fetched candidate bytes `337688` (SHA-256 `2fefe141…2c24b18`). Same pixels, different ASB size suffix/encode: the save path stores the gallery-card representation, while the attach path fetched the detail original.
+
+Byte acquisition now carries the prepared reference SHA-256. After the detail-original bytes fail the pin hash, the handler tries the pinned gallery URL through the same read-only in-page capture and accepts it only on an exact SHA-256 match. The verification gate, media-ID binding, ASB token equality, target/document checks, no-replay guards, and Add activation ordering are unchanged; no mismatch bypass was added. The detail diagnostic is retained when neither representation matches.
+
+The read-only inspector no longer requires the saved reference's original `pinned.documentId` to equal the current binding document. The real attachment path already documents that a pin may predate a Flow reload; tab, project, canonical target, build, protocol, live route, and media identity remain enforced. This removes a false `target_changed` on Inspect without weakening the action path.
+
+Verification: **82 files / 1049 tests PASS**, including the pinned-document reload regression and new detail-mismatch/gallery-match regressions for both Inspect and attach; `tsc --noEmit` PASS; scoped ESLint reports only the pre-existing `no-empty` injected blocks. Production build PASS, ID **`automat-faceless-0.1.0-mwlmusym`** (4 validated JavaScript bundles; existing chunk-size / `inlineDynamicImports` advisories). No extension reload, live queue mutation, retry, or provider action occurred.
+
+### Read-only gate diagnostics
+
+The next live Inspect still returned the umbrella `target_changed`, so the exact failing guard remained unknown. `inspectReferenceBytes` now returns a distinct code per gate while enforcing the same conditions: `inspection_target_unverified`, `inspection_selection_changed`, `inspection_project_changed`, `inspection_document_changed`, `inspection_extension_build_changed`, `inspection_connector_build_changed`, `inspection_pin_binding_changed`, `inspection_route_changed`, `inspection_candidate_document_changed`, and `inspection_reference_document_changed`. No check was removed or relaxed; this is observability only.
+
+Verification: **82 files / 1050 tests PASS**, including the new exact-gate regressions; typecheck PASS. Production build PASS, ID **`automat-faceless-0.1.0-mwln1zgr`**. No extension reload, live queue mutation, retry, or provider action occurred.

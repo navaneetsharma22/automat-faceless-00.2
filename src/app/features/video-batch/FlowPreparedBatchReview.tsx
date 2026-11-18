@@ -141,6 +141,7 @@ export function FlowPreparedBatchReview({
   const [videoQueueError, setVideoQueueError] = useState<string | null>(null);
   const [videoQueueErrorStage, setVideoQueueErrorStage] = useState<string | null>(null);
   const [videoQueueNotice, setVideoQueueNotice] = useState<string | null>(null);
+  const [sameAccountConfirmed, setSameAccountConfirmed] = useState(false);
   const toast = useOptionalToast();
   const previousAllSent = useRef<{ queueId: string; allSent: boolean } | null>(null);
   const [referenceInspection, setReferenceInspection] = useState<Record<string, ReferenceByteInspection>>({});
@@ -213,7 +214,11 @@ export function FlowPreparedBatchReview({
     const type = `flow.videoQueue.${action}` as const;
     const payload = action === "start"
       ? { preparedBatchId: preparedBatch.id }
-      : { preparedBatchId: preparedBatch.id, expectedRevision: videoQueue?.revision ?? -1 };
+      : {
+          preparedBatchId: preparedBatch.id,
+          expectedRevision: videoQueue?.revision ?? -1,
+          ...((action === "recheckAndResume" || action === "resume" || action === "retryPreAddPickerFailure" || action === "verifyAttachedReferenceAndContinue") && sameAccountConfirmed ? { confirmSameAccount: true } : {}),
+        };
     try {
       const result = await persistenceClient.request(type, payload);
       if (result) {
@@ -400,27 +405,27 @@ export function FlowPreparedBatchReview({
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : videoQueue && (videoQueue.state === "paused" || videoQueue.state === "blocked") && recheckableFailure ? (
-                <Button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null} loading={videoQueueAction === "recheckAndResume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</Button>
+                <Button type="button" disabled={videoQueueBusy || referenceInspectionBusy !== null || (videoQueueError === "flow_same_account_confirmation_required" && !sameAccountConfirmed)} loading={videoQueueAction === "recheckAndResume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("recheckAndResume")}>Recheck &amp; Resume</Button>
               ) : videoQueue && (videoQueue.state === "paused" || videoQueue.state === "blocked") && reconcilablePreAddFailure ? (
                 <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "reconcilePreAddFailure"} loadingLabel="Reconciling" onClick={() => void runVideoQueue("reconcilePreAddFailure")}>Reconcile Shot 2 pre-Add failure</Button>
               ) : retryablePickerFailure ? (
                 <div className={styles.videoQueueActions}>
-                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "retryPreAddPickerFailure"} loadingLabel="Retrying" onClick={() => void runVideoQueue("retryPreAddPickerFailure")}>Retry Shot {pickerBlockedItem?.shotId}</Button>
+                  <Button type="button" disabled={videoQueueBusy || (videoQueueError === "flow_same_account_confirmation_required" && !sameAccountConfirmed)} loading={videoQueueAction === "retryPreAddPickerFailure"} loadingLabel="Retrying" onClick={() => void runVideoQueue("retryPreAddPickerFailure")}>Retry Shot {pickerBlockedItem?.shotId}</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : retryableVerificationFailure ? (
                 <div className={styles.videoQueueActions}>
-                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "verifyAttachedReferenceAndContinue"} loadingLabel="Verifying" onClick={() => void runVideoQueue("verifyAttachedReferenceAndContinue")}>Verify Shot {verificationBlockedItem?.shotId} &amp; Continue</Button>
+                  <Button type="button" disabled={videoQueueBusy || (videoQueueError === "flow_same_account_confirmation_required" && !sameAccountConfirmed)} loading={videoQueueAction === "verifyAttachedReferenceAndContinue"} loadingLabel="Verifying" onClick={() => void runVideoQueue("verifyAttachedReferenceAndContinue")}>Verify Shot {verificationBlockedItem?.shotId} &amp; Continue</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : recoverablePreIntentResolutionFailure ? (
                 <div className={styles.videoQueueActions}>
-                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("resume")}>Resume</Button>
+                  <Button type="button" disabled={videoQueueBusy || (videoQueueError === "flow_same_account_confirmation_required" && !sameAccountConfirmed)} loading={videoQueueAction === "resume"} loadingLabel="Rechecking" onClick={() => void runVideoQueue("resume")}>Resume</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : videoQueue?.state === "paused" && !videoQueue.items.some((item) => item.state === "uncertain" || item.state === "failed") ? (
                 <div className={styles.videoQueueActions}>
-                  <Button type="button" disabled={videoQueueBusy} loading={videoQueueAction === "resume"} loadingLabel="Resuming" onClick={() => void runVideoQueue("resume")}>Resume</Button>
+                  <Button type="button" disabled={videoQueueBusy || (videoQueueError === "flow_same_account_confirmation_required" && !sameAccountConfirmed)} loading={videoQueueAction === "resume"} loadingLabel="Resuming" onClick={() => void runVideoQueue("resume")}>Resume</Button>
                   <Button type="button" variant="secondary" disabled={videoQueueBusy} onClick={() => void runVideoQueue("stop")}>Stop queue</Button>
                 </div>
               ) : null}
@@ -437,7 +442,24 @@ export function FlowPreparedBatchReview({
             {videoQueue ? (
               <>
                 {videoQueueNotice ? <p role="status">{videoQueueNotice}</p> : null}
-                {videoQueueError ? <p role="alert">Queue action failed{videoQueueErrorStage ? ` at ${videoQueueErrorStage}` : ""}: {videoQueueError}</p> : null}
+                {videoQueueError ? (
+                  <p role="alert">
+                    Queue action failed{videoQueueErrorStage ? ` at ${videoQueueErrorStage}` : ""}: {videoQueueError}
+                    {videoQueueError === "flow_same_account_confirmation_required"
+                      ? " — after reloading or reconnecting Flow, verify the same authorized Google account is open below before rebinding future work."
+                      : ""}
+                  </p>
+                ) : null}
+                {videoQueueError === "flow_same_account_confirmation_required" ? (
+                  <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.5rem" }}>
+                    <input
+                      type="checkbox"
+                      checked={sameAccountConfirmed}
+                      onChange={(event) => setSameAccountConfirmed(event.currentTarget.checked)}
+                    />
+                    I verified the same authorized Google account is open in this Flow project.
+                  </label>
+                ) : null}
                 <div className={styles.queueOverview}>
                   <div className={styles.queueOverviewState}>
                     <span className={`${styles.stateBadge} ${styles[`state${videoQueueStatus.replace(/[^a-zA-Z0-9]/g, "")}`] ?? ""}`}>

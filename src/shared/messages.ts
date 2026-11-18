@@ -202,10 +202,10 @@ export type RequestPayloads = {
   "flow.videoQueue.get": { preparedBatchId: string };
   "flow.videoQueue.start": { preparedBatchId: string };
   "flow.videoQueue.pause": { preparedBatchId: string; expectedRevision: number };
-  "flow.videoQueue.resume": { preparedBatchId: string; expectedRevision: number };
-  "flow.videoQueue.recheckAndResume": { preparedBatchId: string; expectedRevision: number };
-  "flow.videoQueue.retryPreAddPickerFailure": { preparedBatchId: string; expectedRevision: number };
-  "flow.videoQueue.verifyAttachedReferenceAndContinue": { preparedBatchId: string; expectedRevision: number };
+  "flow.videoQueue.resume": { preparedBatchId: string; expectedRevision: number; confirmSameAccount?: boolean };
+  "flow.videoQueue.recheckAndResume": { preparedBatchId: string; expectedRevision: number; confirmSameAccount?: boolean };
+  "flow.videoQueue.retryPreAddPickerFailure": { preparedBatchId: string; expectedRevision: number; confirmSameAccount?: boolean };
+  "flow.videoQueue.verifyAttachedReferenceAndContinue": { preparedBatchId: string; expectedRevision: number; confirmSameAccount?: boolean };
   "flow.videoQueue.reconcilePreAddFailure": { preparedBatchId: "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179"; expectedRevision: number };
   "flow.videoQueue.stop": { preparedBatchId: string; expectedRevision: number };
   "flow.video.reconcilePreClickFailure": {

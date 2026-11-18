@@ -223,9 +223,18 @@ const flowVideoQueue = createFlowVideoQueueHandler({
     const batch = await repositories.getPreparedVideoBatchById(preparedBatchId);
     const selected = await repositories.getSelectedTarget("Flow");
     const binding = selected?.verificationBinding;
+    const queue = await repositories.getFlowVideoQueue(`flow-video:${preparedBatchId}`);
+    const rebound = queue?.executionDocumentRebind;
+    const expectedTabId = rebound?.toTabId ?? batch?.target.tabId;
+    const isPausedOrBlocked = queue && (queue.state === "paused" || queue.state === "blocked");
+    const documentMatches = rebound
+      ? binding?.documentId === rebound.toDocumentId
+      : isPausedOrBlocked
+      ? Boolean(binding?.documentId)
+      : binding?.documentId === batch?.target.documentId;
     if (!batch || !selected || selected.verification !== "verified" || !binding ||
-      selected.tabId !== batch.target.tabId || selected.canonicalTarget !== batch.target.canonicalTarget ||
-      binding.projectId !== batch.target.projectId || binding.documentId !== batch.target.documentId)
+      selected.tabId !== expectedTabId || selected.canonicalTarget !== batch.target.canonicalTarget ||
+      binding.projectId !== batch.target.projectId || !documentMatches)
       return "selected_flow_target_changed";
     try {
       const tab = await chrome.tabs.get(selected.tabId);

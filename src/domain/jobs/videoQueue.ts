@@ -263,6 +263,18 @@ export type FlowVideoQueueItem = {
   pickerDiagnostic?: FlowVideoPickerDiagnostic;
 };
 
+export const FlowVideoExecutionRebindSchema = z.object({
+  fromTabId: z.number().int().nonnegative().optional(),
+  toTabId: z.number().int().nonnegative().optional(),
+  fromDocumentId: z.string().min(1).max(256),
+  toDocumentId: z.string().min(1).max(256),
+  projectId: z.string().min(1).max(512),
+  canonicalTarget: z.string().min(1).max(2048),
+  verifiedAt: z.number().finite().nonnegative(),
+  sameAccountConfirmedAt: z.number().finite().nonnegative(),
+}).strict();
+export type FlowVideoExecutionRebind = z.infer<typeof FlowVideoExecutionRebindSchema>;
+
 export type FlowVideoQueueRecord = {
   queueId: string;
   preparedBatchId: string;
@@ -274,6 +286,7 @@ export type FlowVideoQueueRecord = {
   revision: number;
   createdAt: number;
   updatedAt: number;
+  executionDocumentRebind?: FlowVideoExecutionRebind;
 };
 
 const itemSchema = z.object({
@@ -308,6 +321,7 @@ export const FlowVideoQueueRecordSchema = z.object({
   revision: z.number().int().nonnegative(),
   createdAt: z.number().finite().nonnegative(),
   updatedAt: z.number().finite().nonnegative(),
+  executionDocumentRebind: FlowVideoExecutionRebindSchema.optional(),
 }).strict().refine((record) => record.items.every((item, index) => item.order === index));
 
 export function nextVideoReadinessDeadline(at: number): number {
