@@ -6,6 +6,7 @@ import type {
 } from "../../domain/jobs/videoQueue";
 import type { ReferenceByteComparisonDiagnostic } from "../../domain/media/references";
 import {
+  FLOW_VIDEO_PRE_INTENT_REFERENCE_REASONS,
   isFlowVideoPickerPreAddReason,
   isFlowVideoPreAddRetryReason,
   isFlowVideoPostAddAttachmentReason,
@@ -24,14 +25,14 @@ import { FlowVideoStartupReconciliationError } from "../flowVideoAlarmLifecycle"
 
 export const FLOW_VIDEO_QUEUE_ALARM_PREFIX = "automat-flow-video-queue:";
 const PRE_INTENT_RECOVERY_REASONS = new Set([
+  // Byte mismatches keep their dedicated read-only recheck path; a plain
+  // Resume must not replay a known-different candidate.
+  ...FLOW_VIDEO_PRE_INTENT_REFERENCE_REASONS.filter(
+    (reason) => reason !== "candidate_bytes_mismatch",
+  ),
   "target_changed",
   "candidate_missing",
   "candidate_search_incomplete",
-  "reference_origin_unsupported",
-  "reference_original_unavailable",
-  "reference_asb_token_missing",
-  "reference_asb_token_mismatch",
-  "candidate_capture_failed",
 ]);
 const HISTORIC_SHOT_ONE_BATCH = "prepared:default:1235934d-8b2d-43b9-990c-8e103413d179";
 const HISTORIC_SHOT_ONE_ITEM = "import:default:video:item:0";

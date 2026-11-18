@@ -331,6 +331,112 @@ describe("Flow original reference source resolution (Section 9.B)", () => {
     sizeElements(doc);
     expect(await flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl: "https://flow.google.com/asb/token_a" })).toMatchObject({ ok: false, code: "candidate_ambiguous" });
   });
+
+  it("opens the viewer when Flow binds the handler to a nested button instead of the tile host", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "nested_button_token";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const detailUrl = `https://flow.google.com/asb/${token}=s0`;
+    const doc = install(`<flow-image-tile><button aria-label="Open"><img data-media-id="${id}" src="${galleryUrl}"></button></flow-image-tile>`);
+    doc.querySelector("flow-image-tile button")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = detailUrl;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    await expect(flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl })).resolves.toMatchObject({ ok: true, url: detailUrl });
+  });
+
+  it("finds the detail image structurally when the viewer alt text changes", async () => {
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "localized_alt_token";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const detailUrl = `https://flow.google.com/asb/${token}=s0`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const dialog = doc.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      const image = doc.createElement("img");
+      image.alt = "Visualizzazione immagine in sola lettura";
+      image.src = detailUrl;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      dialog.append(image);
+      doc.body.append(dialog);
+      sizeElements(doc);
+    });
+    await expect(flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl })).resolves.toMatchObject({ ok: true, url: detailUrl });
+  });
+
+  it("never treats the gallery tile itself as the detail image", async () => {
+    vi.useFakeTimers();
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "empty_viewer_token";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const dialog = doc.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      doc.body.append(dialog);
+      sizeElements(doc);
+    });
+    const pending = flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    await vi.advanceTimersByTimeAsync(13_000);
+    await expect(pending).resolves.toMatchObject({ ok: false });
+    vi.useRealTimers();
+  });
+
+  it("reports an unclassified detail host instead of the opaque umbrella code", async () => {
+    vi.useFakeTimers();
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "unclassified_host_token";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = "https://lh4.googleusercontent.com/unclassified-sample";
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1376 }, naturalHeight: { value: 768 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    const pending = flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    await vi.advanceTimersByTimeAsync(13_000);
+    await expect(pending).resolves.toMatchObject({ ok: false, opened: true, code: "reference_detail_url_unclassified" });
+    vi.useRealTimers();
+  });
+
+  it("reports a detail image that never finishes loading", async () => {
+    vi.useFakeTimers();
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const token = "incomplete_image_token";
+    const galleryUrl = `https://flow.google.com/asb/${token}=s1600-rw`;
+    const doc = install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    doc.querySelector("flow-image-tile")!.addEventListener("click", () => {
+      const image = doc.createElement("img");
+      image.alt = "Read-only image view";
+      image.src = `https://flow.google.com/asb/${token}=s0`;
+      Object.defineProperties(image, { complete: { value: false }, naturalWidth: { value: 0 }, naturalHeight: { value: 0 } });
+      doc.body.append(image);
+      sizeElements(doc);
+    });
+    const pending = flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    await vi.advanceTimersByTimeAsync(13_000);
+    await expect(pending).resolves.toMatchObject({ ok: false, opened: true, code: "reference_detail_image_incomplete" });
+    vi.useRealTimers();
+  });
+
+  it("reports reference_detail_not_opened with opened=false when no overlay ever appears", async () => {
+    vi.useFakeTimers();
+    const id = "66c14f25-59b9-42ea-a6f7-8eeb627dcf87";
+    const galleryUrl = "https://flow.google.com/asb/silent_tile_token=s1600-rw";
+    install(`<flow-image-tile><img data-media-id="${id}" src="${galleryUrl}"></flow-image-tile>`);
+    const pending = flowResolveOriginalImageUrlInPage({ mediaId: id, galleryUrl });
+    await vi.advanceTimersByTimeAsync(6_000);
+    await expect(pending).resolves.toMatchObject({ ok: false, opened: false, code: "reference_detail_not_opened" });
+    vi.useRealTimers();
+  });
 });
 
 describe("production Flow video attachment picker action", () => {

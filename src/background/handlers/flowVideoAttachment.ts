@@ -31,6 +31,7 @@ import {
   FlowVideoPickerDiagnosticSchema,
   FlowVideoQueueRecordSchema,
   isFlowVideoPickerPreAddReason,
+  isFlowVideoPreIntentReferenceReason,
   type FlowVideoExistingChipDiagnostic,
   type FlowVideoPickerDiagnostic,
 } from "../../domain/jobs/videoQueue";
@@ -1363,7 +1364,7 @@ export function createFlowVideoAttachmentHandler(deps: {
     const queueItem = queue.success ? queue.data.items.find((entry) => entry.itemId === itemId) : undefined;
     if (
       !queue.success || queue.data.preparedBatchId !== preparedBatchId ||
-      !queueItem || queueItem.state !== "failed" || queueItem.reason !== "candidate_bytes_mismatch"
+      !queueItem || queueItem.state !== "failed" || !isFlowVideoPreIntentReferenceReason(queueItem.reason)
     ) return { status: "blocked", reason: "candidate_mismatch_queue_item_required" };
 
     const batchResult = PreparedVideoBatchRecordSchema.safeParse(
@@ -1450,7 +1451,7 @@ export function createFlowVideoAttachmentHandler(deps: {
     const latestRoute = flowTabFromUrl(selected.tabId, "Flow", latestTab.url);
     if (
       !latestQueue.success || latestQueue.data.revision !== queue.data.revision || !latestItem ||
-      latestItem.state !== "failed" || latestItem.reason !== "candidate_bytes_mismatch" ||
+      latestItem.state !== "failed" || !isFlowVideoPreIntentReferenceReason(latestItem.reason) ||
       latestItem.referenceId !== item.reference.referenceId || latestItem.promptHash !== item.contentHash ||
       latestTarget?.verification !== "verified" || latestTarget.tabId !== selected.tabId ||
       latestTarget.canonicalTarget !== selected.canonicalTarget || !latestBinding || latestBinding.provider !== "Flow" ||

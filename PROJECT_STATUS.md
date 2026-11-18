@@ -56,6 +56,37 @@ Checks:
 - Build: **PASS**, package ID **`automat-faceless-0.1.0-mwlkbvtq`** (4 JavaScript bundles in `dist/`).
 - Live verification is **NOT_RUN** / pending user action in browser.
 
+## References capture resolver /asb/ canonical representation fix — 18 November 2026
+
+Confirmed live evidence: In References → Flow images, candidate discovery works and previews load successfully. "Choose for Shot 1" accepts a candidate, but "Save reference" fails with `capture_candidate_missing_or_changed`.
+
+Root Cause:
+1. When candidate selection is accepted, `handleCandidateSelected` canonicalizes `candidate.sourceUrl` to `https://${url.hostname}/asb/${asbToken}`, stripping `=s...` size suffixes and multi-account prefixes (e.g. `https://flow.google.com/asb/token-dunes`).
+2. During `captureReference`, `resolveCaptureCandidateInDocument` executes `flowReferenceCaptureResolver` in the Flow document.
+3. `flowReferenceCaptureResolver` used `stableSourceKey`, which only stripped search and hash. In the Flow page, `image.currentSrc` is `https://flow.google.com/asb/<token>=s1600-rw` (or `/u/0/asb/<token>=s1600-rw`).
+4. Comparing `stableSourceKey(candidate.sourceUrl) === expectedSourceKey` compared `"https://flow.google.com/asb/<token>=s1600-rw" === "https://flow.google.com/asb/<token>"`, which evaluated to `false` for 100% of cards in the gallery. Zero matches were collected, throwing `capture_candidate_missing_or_changed`.
+
+Implementation:
+1. `src/platforms/flow/references.ts`:
+   - Inlined `parseAsbToken` and `parseMediaUuid` inside `flowReferenceCaptureResolver` to canonicalize `/asb/<token>` (normalizing allowed `/u/\d+/` account prefixes and `=s...` size suffixes) and `/image/<uuid>` media paths with exact token/UUID equality.
+   - Added `isSameSource` helper: matches same ASB tokens across any size suffix / account prefix; matches same media UUID for `flow-content.google`; falls back to `stableSourceKey` for other formats.
+   - Added `card.getAttribute("data-media-id")` lookup and case-insensitive UUID matching in `isSameAssetId`.
+   - Prevented false rejection when `naturalWidth`/`naturalHeight` were 0 at discovery time (image loading in DOM).
+   - Added bounded diagnostic object capturing `expectedIdentityKind`, `observedIdentityKind`, `sameCanonicalAsbToken`, `sameMediaUuid`, `cardCount`, `visibleCandidateCount`, `sameCardTag`, `candidateVisible`, `dimensionsKnown`, `dimensionsMatch`, and `sourceNormalizedEquivalent` without raw tokens or URLs.
+   - Updated `collectPickerCandidates` to check `card.getAttribute("data-media-id")`.
+2. `src/background/handlers/references.ts`:
+   - Attached `captureDiagnostic` to `ReferenceSelectionError` and tracked it in `captureDiagnostics` map.
+   - Enforced case-insensitive provider asset ID checks in `captureReference`.
+   - Exposed `diagnostic` in `getCaptureStatus`.
+3. `tests/unit/flowReferenceCaptureResolver.test.ts`:
+   - Added 11 focused tests covering same asset across ASB size suffixes, account prefixes, rejection of different tokens/UUIDs, missing/ambiguous cards, metadata stability, and diagnostic structure.
+
+Checks:
+- Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
+- Full Vitest suite (`vitest run --passWithNoTests`): **82 files / 1040 tests PASS** (exit code 0).
+- Production build: **PASS**, package ID **`automat-faceless-0.1.0-mwll8sap`** (4 JavaScript bundles in `dist/`).
+- Live verification is **NOT_RUN** / pending user action in browser.
+
 ## Flow picker row resolution and multi-account /asb token fix — 18 November 2026
 
 Confirmed live diagnostic evidence on Shot 1 `picker_selected_preview_mismatch`:
@@ -2750,3 +2781,12 @@ The resolver now waits for a loaded URL on an existing supported original host/f
 
 Explicit Resume recognizes only `reference_origin_unsupported` and `reference_original_unavailable` among original-resource failures, and only when durable operation checks prove the failed item has no attachment/Generate intent, other pending/sent records remain consistent, Sent receipts match dispatched generations, and queue/target/snapshots revalidate. Regression preserves a prior receipt and refuses a failed item with an action-intent record. Focused checks: **4 files / 100 tests PASS**; typecheck and scoped ESLint PASS. Build verification pending. No extension reload, live queue mutation, or live generation occurred. Details: [Flow attachment evidence](docs/evidence/flow-video-attachment.md).
 Build verification: production build PASS, ID **`automat-faceless-0.1.0-mwk7p239`** (4 validated JavaScript bundles; existing chunk-size / `inlineDynamicImports` advisories). `git diff --check` PASS.
+## Flow original detail resolver activation and observation repair — 18 November 2026
+
+The live queue showed Shot 1 blocked at `reference_original_unavailable` with 0/5 sent and no attachment operation. The injected `flowResolveOriginalImageUrlInPage` clicked only the `flow-image-tile` host, matched the viewer solely through `img[alt="Read-only image view"]`, and bounded the entire wait at 80 × 50 ms. A missed activation, a changed or localized alt, an unclassified URL, or a slow full-size load therefore all collapsed into the same opaque code.
+
+The resolver now scrolls the uniquely matched tile into view, activates its nested `button`/`img` first with the host as a bounded fallback, observes the overlay structurally (largest identity-proven image inside a visible dialog/overlay), waits up to 240 × 50 ms with early exit on every definitive answer, and reports `reference_detail_not_opened`, `reference_detail_url_unclassified`, or `reference_detail_image_incomplete` instead of the umbrella code. `opened` now means an overlay was actually observed, so the Escape restore cannot fire after a silent click failure. URL acceptance is unchanged: exact `lh3.googleusercontent.com`, exact `flow-content.google/image/<UUID>` equality, or exact `/asb` token equality; gallery tiles, composer surfaces, and listbox rows are never treated as the detail image.
+
+Read-only `inspectReferenceBytes` now accepts the closed pre-intent reference reason set. `candidate_bytes_mismatch` keeps its dedicated recheck path, and a plain Resume never replays a known-different candidate.
+
+Verification: **82 files / 1046 tests PASS** including 7 new resolver regressions; `tsc --noEmit` PASS; scoped ESLint reports only the pre-existing `no-empty` injected blocks in `flowVideoAttachment.ts`. Production build PASS, ID **`automat-faceless-0.1.0-mwllz62t`** (4 validated JavaScript bundles; existing chunk-size / `inlineDynamicImports` advisories). No extension reload, live queue mutation, retry, or provider action occurred. The live branch remains **NOT_READ** until the rebuilt extension is reloaded and Shot 1 is retried.

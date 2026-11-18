@@ -95,6 +95,7 @@ export class ReferenceSelectionError extends Error {
       | "not_found"
       | "unauthorized_sender"
       | "context_invalidated" = "invalid_request",
+    readonly diagnostic?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ReferenceSelectionError";
@@ -179,6 +180,7 @@ export function createFlowReferenceHandler(
   const captureClaims = new Set<string>();
   const activeCaptures = new Map<string, ActiveReferenceSelectionSession>();
   const captureControllers = new Map<string, AbortController>();
+  const captureDiagnostics = new Map<string, Record<string, unknown>>();
   const shotLocks = new Map<string, Promise<void>>();
 
   const withShotLock = async <T>(
@@ -616,6 +618,18 @@ export function createFlowReferenceHandler(
         },
       }),
     );
+    const resultObj =
+      result?.result && typeof result.result === "object"
+        ? (result.result as Record<string, unknown>)
+        : undefined;
+    const diagnostic = (resultObj?.diagnostic ?? {}) as Record<string, unknown>;
+    const captureDiagnostic = {
+      ...diagnostic,
+      documentValid: result?.documentId === session.documentId,
+      targetValid: true,
+      captureAcquisitionStarted: true,
+      commitStarted: false,
+    };
     if (
       result?.documentId !== session.documentId ||
       result.frameId !== 0 ||
@@ -637,9 +651,14 @@ export function createFlowReferenceHandler(
       throw new ReferenceSelectionError(
         code,
         "The exact accepted image is missing, changed, or ambiguous in the verified Flow document. Refresh Flow images and select it again.",
+        "invalid_request",
+        captureDiagnostic,
       );
     }
-    return result.result.candidate as Record<string, unknown>;
+    return {
+      candidate: result.result.candidate as Record<string, unknown>,
+      diagnostic: captureDiagnostic,
+    };
   };
   const cancelCaptureInPage = async (captureOperationId: string) => {
     captureControllers.get(captureOperationId)?.abort();
@@ -814,10 +833,9 @@ export function createFlowReferenceHandler(
         shotId: input.shotId,
         stage: "capturing",
       });
-      const resolved = await resolveCaptureCandidateInDocument(
-        flowSession,
-        candidate,
-      );
+      const { candidate: resolved, diagnostic: captureDiagnostic } =
+        await resolveCaptureCandidateInDocument(flowSession, candidate);
+      captureDiagnostics.set(input.captureOperationId, captureDiagnostic);
       if (
         !sameFlowReferenceResource(
           resolved.sourceUrl as string,
@@ -825,17 +843,26 @@ export function createFlowReferenceHandler(
           candidate.providerAssetId,
         ) ||
         (candidate.cardTag !== "context-menu-image" &&
-          resolved.providerAssetId !== candidate.providerAssetId) ||
+          candidate.providerAssetId !== undefined &&
+          typeof resolved.providerAssetId === "string" &&
+          resolved.providerAssetId.toLowerCase() !==
+            candidate.providerAssetId.toLowerCase()) ||
         (candidate.cardTag !== "context-menu-image" &&
           resolved.cardTag !== candidate.cardTag) ||
         (candidate.naturalWidth > 0 &&
+          resolved.naturalWidth !== undefined &&
+          Number(resolved.naturalWidth) > 0 &&
           resolved.naturalWidth !== candidate.naturalWidth) ||
         (candidate.naturalHeight > 0 &&
+          resolved.naturalHeight !== undefined &&
+          Number(resolved.naturalHeight) > 0 &&
           resolved.naturalHeight !== candidate.naturalHeight)
       )
         throw new ReferenceSelectionError(
           "capture_candidate_changed",
           "The accepted image no longer matches the selected Flow card. Select it again.",
+          "invalid_request",
+          captureDiagnostic,
         );
       const controller = new AbortController();
       captureControllers.set(input.captureOperationId, controller);
@@ -1054,10 +1081,13 @@ export function createFlowReferenceHandler(
         captureShotKey(input.workspaceId, input.batchId, candidate.batchSourceHash!, input.shotId),
         async () => {
           const latest = await validateCaptureContext(input);
-          const current = await resolveCaptureCandidateInDocument(
-            flowSession!,
-            latest.candidate,
-          );
+          const { candidate: current, diagnostic: commitDiag } =
+            await resolveCaptureCandidateInDocument(
+              flowSession!,
+              latest.candidate,
+            );
+          commitDiag.commitStarted = true;
+          captureDiagnostics.set(input.captureOperationId, commitDiag);
           if (
             latest.candidate.selectionVersion !== input.selectionVersion ||
             !sameFlowReferenceResource(
@@ -1066,13 +1096,18 @@ export function createFlowReferenceHandler(
               candidate.providerAssetId,
             ) ||
             (candidate.cardTag !== "context-menu-image" &&
-              current.providerAssetId !== candidate.providerAssetId) ||
+              candidate.providerAssetId !== undefined &&
+              typeof current.providerAssetId === "string" &&
+              current.providerAssetId.toLowerCase() !==
+                candidate.providerAssetId.toLowerCase()) ||
             (candidate.cardTag !== "context-menu-image" &&
               current.cardTag !== candidate.cardTag)
           )
             throw new ReferenceSelectionError(
               "candidate_replaced_or_missing",
               "The selected image changed during capture; the previous saved reference was kept.",
+              "invalid_request",
+              commitDiag,
             );
           return dependencies.repositories.commitReferenceCapture({
             assignment,
@@ -1130,8 +1165,13 @@ export function createFlowReferenceHandler(
       await dependencies.repositories.getReferenceCaptureOperation(
         captureOperationId,
       );
+    const diagnostic = captureDiagnostics.get(captureOperationId);
     return operation
-      ? { status: operation.status, reason: operation.reason }
+      ? {
+          status: operation.status,
+          reason: operation.reason,
+          ...(diagnostic ? { diagnostic } : {}),
+        }
       : { status: "not_found" };
   };
 

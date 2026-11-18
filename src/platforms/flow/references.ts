@@ -41,7 +41,10 @@ export function flowReferenceCaptureResolver(expected: {
   naturalWidth: number;
   naturalHeight: number;
 }): Record<string, unknown> {
-  if (window.top !== window || !document.body)
+  if (
+    (typeof window !== "undefined" && window.top && window.top !== window) ||
+    !document.body
+  )
     return { ok: false, code: "capture_wrong_frame" };
   const projects = Array.from(document.querySelectorAll("flow-project-page"));
   if (projects.length !== 1)
@@ -89,6 +92,59 @@ export function flowReferenceCaptureResolver(expected: {
     return null;
   };
   const cards = Array.from(project.querySelectorAll("*")).filter(eligible);
+
+  const parseAsbToken = (raw: string | undefined): string | undefined => {
+    if (!raw || raw.length > 4096) return undefined;
+    try {
+      const url = new URL(raw);
+      if (
+        url.protocol !== "https:" ||
+        !["flow.google.com", "labs.google"].includes(url.hostname) ||
+        url.username ||
+        url.password ||
+        (url.port && url.port !== "443")
+      )
+        return undefined;
+      let pathname = url.pathname;
+      const acctMatch = /^\/u\/\d+(\/.*)$/.exec(pathname);
+      if (acctMatch) pathname = acctMatch[1]!;
+      if (!pathname.startsWith("/asb/")) return undefined;
+      const rest = pathname.slice("/asb/".length);
+      if (!rest || rest.includes("/")) return undefined;
+      const eqIndex = rest.indexOf("=");
+      const token = eqIndex === -1 ? rest : rest.slice(0, eqIndex);
+      const suffix = eqIndex === -1 ? "" : rest.slice(eqIndex);
+      if (!token || token.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(token))
+        return undefined;
+      if (suffix && !/^=s\d+(-rw)?$/.test(suffix)) return undefined;
+      return token;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const parseMediaUuid = (raw: string | undefined): string | undefined => {
+    if (!raw || raw.length > 4096) return undefined;
+    try {
+      const url = new URL(raw);
+      if (
+        url.protocol !== "https:" ||
+        url.hostname !== "flow-content.google" ||
+        url.username ||
+        url.password ||
+        (url.port && url.port !== "443")
+      )
+        return undefined;
+      const match =
+        /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
+          url.pathname,
+        );
+      return match?.[1]?.toLowerCase();
+    } catch {
+      return undefined;
+    }
+  };
+
   const stableSourceKey = (value: string) => {
     try {
       const url = new URL(value);
@@ -99,32 +155,71 @@ export function flowReferenceCaptureResolver(expected: {
       return "";
     }
   };
-  const expectedSourceKey = stableSourceKey(expected.sourceUrl);
+
+  const isSameSource = (a: string, b: string): boolean => {
+    const asbA = parseAsbToken(a);
+    const asbB = parseAsbToken(b);
+    if (asbA || asbB) {
+      return Boolean(asbA && asbB && asbA === asbB);
+    }
+    const mediaA = parseMediaUuid(a);
+    const mediaB = parseMediaUuid(b);
+    if (mediaA || mediaB) {
+      return Boolean(mediaA && mediaB && mediaA === mediaB);
+    }
+    const keyA = stableSourceKey(a);
+    const keyB = stableSourceKey(b);
+    return Boolean(keyA && keyA === keyB);
+  };
+
+  const expectedAsb = parseAsbToken(expected.sourceUrl);
+  const expectedMedia = parseMediaUuid(expected.sourceUrl);
+  const expectedIdentityKind: "asb" | "media" | "other" = expectedAsb
+    ? "asb"
+    : expectedMedia
+      ? "media"
+      : "other";
+
+  let observedIdentityKind: "asb" | "media" | "other" | "missing" = "missing";
+  let sameCanonicalAsbToken = false;
+  let sameMediaUuid = false;
+  let sourceNormalizedEquivalent = false;
+  let sameCardTag = false;
+  let candidateVisible = false;
+  let dimensionsKnown = false;
+  let dimensionsMatch = false;
+  let visibleCardsWithSingleImage = 0;
+
   const matches: Array<Record<string, unknown>> = [];
   let ambiguous = false;
+
   for (const card of cards) {
     const images = Array.from(card.querySelectorAll("img")).filter(
       (image) => !excluded(image) && nearestEligibleCard(image) === card,
     );
     if (images.length !== 1) {
       if (
-        images.some(
-          (image) =>
-            stableSourceKey(image.currentSrc || image.src) ===
-            expectedSourceKey,
+        images.some((image) =>
+          isSameSource(image.currentSrc || image.src, expected.sourceUrl),
         )
-      )
+      ) {
         ambiguous = true;
+      }
       continue;
     }
     const image = images[0]!;
-    if (!visible(image)) continue;
+    const isImageVisible = visible(image);
+    if (isImageVisible) {
+      visibleCardsWithSingleImage += 1;
+    }
     const sourceUrl = image.currentSrc || image.src;
     const providerAssetId =
       image.getAttribute("data-media-id")?.trim() ||
+      card.getAttribute("data-media-id")?.trim() ||
       card.getAttribute("data-asset-id")?.trim() ||
       image.getAttribute("data-asset-id")?.trim() ||
       undefined;
+
     const candidate = {
       sourceUrl,
       ...(providerAssetId ? { providerAssetId } : {}),
@@ -132,24 +227,93 @@ export function flowReferenceCaptureResolver(expected: {
       naturalWidth: image.naturalWidth || 0,
       naturalHeight: image.naturalHeight || 0,
     };
+
+    const candAsb = parseAsbToken(sourceUrl);
+    const candMedia = parseMediaUuid(sourceUrl);
+    const candKind = candAsb ? "asb" : candMedia ? "media" : "other";
+
+    const isSourceSame = isSameSource(candidate.sourceUrl, expected.sourceUrl);
+    if (isSourceSame) {
+      observedIdentityKind = candKind;
+      sourceNormalizedEquivalent = true;
+      if (expectedAsb && candAsb && expectedAsb === candAsb) {
+        sameCanonicalAsbToken = true;
+      }
+      if (expectedMedia && candMedia && expectedMedia === candMedia) {
+        sameMediaUuid = true;
+      }
+    }
+
     const contextMenuIdentity = expected.cardTag === "context-menu-image";
+    const isSameAssetId =
+      contextMenuIdentity ||
+      (!expected.providerAssetId && !candidate.providerAssetId) ||
+      (expected.providerAssetId !== undefined &&
+        candidate.providerAssetId !== undefined &&
+        expected.providerAssetId.toLowerCase() ===
+          candidate.providerAssetId.toLowerCase());
+
+    const isTagSame =
+      contextMenuIdentity || candidate.cardTag === expected.cardTag;
+    if (isTagSame && isSourceSame) {
+      sameCardTag = true;
+    }
+
+    const dimsKnown =
+      expected.naturalWidth > 0 &&
+      expected.naturalHeight > 0 &&
+      candidate.naturalWidth > 0 &&
+      candidate.naturalHeight > 0;
+    const isDimsSame =
+      contextMenuIdentity ||
+      !dimsKnown ||
+      (candidate.naturalWidth === expected.naturalWidth &&
+        candidate.naturalHeight === expected.naturalHeight);
+
+    if (isSourceSame) {
+      candidateVisible = isImageVisible;
+      if (dimsKnown) {
+        dimensionsKnown = true;
+        dimensionsMatch =
+          candidate.naturalWidth === expected.naturalWidth &&
+          candidate.naturalHeight === expected.naturalHeight;
+      }
+    }
+
     if (
-      stableSourceKey(candidate.sourceUrl) === expectedSourceKey &&
-      (contextMenuIdentity ||
-        candidate.providerAssetId === expected.providerAssetId) &&
-      (contextMenuIdentity || candidate.cardTag === expected.cardTag) &&
-      (contextMenuIdentity ||
-        candidate.naturalWidth === expected.naturalWidth) &&
-      (contextMenuIdentity ||
-        candidate.naturalHeight === expected.naturalHeight)
-    )
+      isImageVisible &&
+      isSourceSame &&
+      isSameAssetId &&
+      isTagSame &&
+      isDimsSame
+    ) {
       matches.push(candidate);
+    }
   }
+
+  const diagnostic = {
+    expectedIdentityKind,
+    observedIdentityKind,
+    sameCanonicalAsbToken,
+    sameMediaUuid,
+    cardCount: cards.length,
+    visibleCandidateCount: visibleCardsWithSingleImage,
+    sameCardTag,
+    dimensionsKnown,
+    dimensionsMatch,
+    sourceNormalizedEquivalent,
+    candidateVisible,
+  };
+
   if (ambiguous || matches.length > 1)
-    return { ok: false, code: "capture_candidate_ambiguous" };
+    return { ok: false, code: "capture_candidate_ambiguous", diagnostic };
   if (matches.length !== 1)
-    return { ok: false, code: "capture_candidate_missing_or_changed" };
-  return { ok: true, candidate: matches[0] };
+    return {
+      ok: false,
+      code: "capture_candidate_missing_or_changed",
+      diagnostic,
+    };
+  return { ok: true, candidate: matches[0], diagnostic };
 }
 
 /** Reads exact observed image bytes in the verified Flow document for durable capture. */
@@ -408,8 +572,78 @@ export async function flowResolveOriginalImageUrlInPage(input: {
     return { ok: false, opened: false, href: location.href, code: "reference_asb_token_missing" };
   }
 
-  const detailImages = () => [...document.querySelectorAll<HTMLImageElement>('img[alt="Read-only image view"]')].filter(visible);
-  if (detailImages().length) return { ok: false, opened: false, href: location.href, code: "reference_detail_already_open" };
+  const imageUrl = (element: HTMLImageElement) => element.currentSrc || element.src || "";
+  const isLh3Detail = (raw: string): boolean => {
+    try {
+      return new URL(raw, location.href).hostname === "lh3.googleusercontent.com";
+    } catch {
+      return false;
+    }
+  };
+  type DetailIdentity =
+    | "accepted"
+    | "wrong_media_id"
+    | "wrong_asb_token"
+    | "asb_token_missing"
+    | "unclassified";
+  const classifyDetail = (raw: string): DetailIdentity => {
+    let u: URL;
+    try {
+      u = new URL(raw, location.href);
+    } catch {
+      return "unclassified";
+    }
+    if (
+      u.protocol !== "https:" ||
+      u.username ||
+      u.password ||
+      (u.port && u.port !== "443")
+    )
+      return "unclassified";
+    if (u.hostname === "lh3.googleusercontent.com") return "accepted";
+    if (u.hostname === "flow-content.google") {
+      const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(u.pathname)?.[1];
+      if (!id) return "unclassified";
+      return id.toLowerCase() === input.mediaId.toLowerCase() ? "accepted" : "wrong_media_id";
+    }
+    if (u.hostname === "flow.google.com" && isAsbUrl(raw)) {
+      const detailToken = parseAsbToken(raw);
+      if (!detailToken) return "asb_token_missing";
+      return expectedAsbToken && detailToken === expectedAsbToken ? "accepted" : "wrong_asb_token";
+    }
+    return "unclassified";
+  };
+
+  const altDetailImages = () => [...document.querySelectorAll<HTMLImageElement>('img[alt="Read-only image view"]')].filter(visible);
+  const overlayRoots = () => [...document.querySelectorAll<HTMLElement>(
+    '[role="dialog"], dialog, [aria-modal="true"], [class*="overlay" i], [class*="modal" i], [class*="viewer" i], [class*="lightbox" i]',
+  )].filter(visible);
+  /**
+   * Flow's detail viewer can change or localize its alt text. When it does,
+   * fall back to the largest visible image inside a visible overlay whose URL
+   * proves the pinned identity (exact /asb token or exact content UUID). Host,
+   * UUID, and token equality are unchanged, and plain lh3 URLs are not used
+   * here because they carry no identity to verify against.
+   */
+  const structuralDetailImage = (roots: HTMLElement[]): HTMLImageElement | undefined => {
+    if (!roots.length) return undefined;
+    return roots
+      .flatMap((root) => [...root.querySelectorAll<HTMLImageElement>("img")])
+      .filter((candidate) =>
+        visible(candidate) &&
+        !candidate.closest("flow-image-tile") &&
+        !candidate.closest("flow-base-prompt-box") &&
+        !candidate.closest('[role="listbox"]') &&
+        !isLh3Detail(imageUrl(candidate)) &&
+        classifyDetail(imageUrl(candidate)) === "accepted",
+      )
+      .sort(
+        (left, right) =>
+          right.naturalWidth * right.naturalHeight - left.naturalWidth * left.naturalHeight,
+      )[0];
+  };
+
+  if (altDetailImages().length) return { ok: false, opened: false, href: location.href, code: "reference_detail_already_open" };
   const matches = [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
     .filter((image) => image.dataset.mediaId === input.mediaId && visible(image));
   if (matches.length !== 1) return { ok: false, opened: false, href: location.href, code: matches.length ? "candidate_ambiguous" : "candidate_missing" };
@@ -425,11 +659,34 @@ export async function flowResolveOriginalImageUrlInPage(input: {
   }
   const tile = image.closest<HTMLElement>("flow-image-tile");
   if (!tile || !visible(tile)) return { ok: false, opened: false, href: location.href, code: "candidate_missing" };
-  tile.click();
+
+  // Most specific activation target first: the tile's own image/button, then
+  // the host. A dispatched click bubbles to a handler bound on either one.
+  const activationTargets: HTMLElement[] = [];
+  const nested = tile.querySelector<HTMLElement>('button, [role="button"], img');
+  if (nested && nested !== tile) activationTargets.push(nested);
+  activationTargets.push(tile);
+  const activate = (target: HTMLElement) => {
+    if (typeof target.scrollIntoView === "function")
+      target.scrollIntoView({ block: "center", inline: "center" });
+    for (const type of ["pointerdown", "pointerup"]) {
+      target.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }),
+      );
+    }
+    target.click();
+  };
 
   let observedWrongAsbToken = false;
   let lastPinnedTileCount = 0;
-  for (let attempt = 0; attempt < 80; attempt++) {
+  let overlayObserved = false;
+  let sawAcceptedIncomplete = false;
+  let sawUnclassified = false;
+  let activationIndex = 0;
+  let nextActivationAt = 0;
+  // 240 x 50 ms bounds the wait for the overlay and its full-size image. Every
+  // definitive identity answer still exits on its first matching tick.
+  for (let attempt = 0; attempt < 240; attempt++) {
     const liveTiles = [...document.querySelectorAll<HTMLImageElement>("flow-image-tile img[data-media-id]")]
       .filter((candidate) => candidate.isConnected && candidate.dataset.mediaId === input.mediaId && visible(candidate));
     lastPinnedTileCount = liveTiles.length;
@@ -438,65 +695,62 @@ export async function flowResolveOriginalImageUrlInPage(input: {
     }
     if (liveTiles.length === 1) {
       const pinnedImg = liveTiles[0]!;
-      if (pinnedImg.dataset.mediaId !== input.mediaId) {
-        return { ok: false, opened: true, href: location.href, code: "candidate_changed" };
-      }
       if (expectedAsbToken) {
-        const liveToken = parseAsbToken(pinnedImg.currentSrc || pinnedImg.src);
+        const liveToken = parseAsbToken(imageUrl(pinnedImg));
         if (liveToken !== expectedAsbToken) {
           return { ok: false, opened: true, href: location.href, code: "candidate_changed" };
         }
       }
     }
-    const detail = detailImages();
-    if (detail.length > 1) return { ok: false, opened: true, href: location.href, code: "reference_detail_ambiguous" };
-    const current = detail[0];
-    const url = current?.currentSrc || current?.src;
 
-    if (current && url) {
-      let accepted = false;
-      let wrongMediaId = false;
-      try {
-        const u = new URL(url);
-        if (u.protocol === "https:" && !u.username && !u.password && (!u.port || u.port === "443")) {
-          if (u.hostname === "lh3.googleusercontent.com") {
-            accepted = true;
-          } else if (u.hostname === "flow-content.google") {
-            const id = /^\/image\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(u.pathname)?.[1];
-            if (id) {
-              if (id.toLowerCase() === input.mediaId.toLowerCase()) accepted = true;
-              else wrongMediaId = true;
-            }
-          } else if (u.hostname === "flow.google.com" && isAsbUrl(url)) {
-            const detailToken = parseAsbToken(url);
-            if (!detailToken) {
-              return { ok: false, opened: true, href: location.href, code: "reference_asb_token_missing" };
-            }
-            if (expectedAsbToken && detailToken === expectedAsbToken) {
-              accepted = true;
-            } else {
-              observedWrongAsbToken = true;
-            }
-          }
-        }
-      } catch {
-        /* rejected url */
-      }
+    // Overlay roots only count after an activation attempt, so an unrelated
+    // dialog already on the page cannot suppress the tile click.
+    const roots = activationIndex > 0 ? overlayRoots() : [];
+    if (roots.length) overlayObserved = true;
+    const altImages = altDetailImages();
+    if (altImages.length > 1) return { ok: false, opened: true, href: location.href, code: "reference_detail_ambiguous" };
+    if (altImages.length) overlayObserved = true;
+    const current = altImages[0] ?? structuralDetailImage(roots);
 
-      if (wrongMediaId) {
+    if (current) {
+      overlayObserved = true;
+      const url = imageUrl(current);
+      const identity = classifyDetail(url);
+      if (identity === "asb_token_missing")
+        return { ok: false, opened: true, href: location.href, code: "reference_asb_token_missing" };
+      if (identity === "wrong_media_id")
         return { ok: false, opened: true, href: location.href, code: "reference_media_id_mismatch" };
-      }
-      if (accepted && (liveTiles.length === 0 || liveTiles.length === 1) && current.complete && current.naturalWidth > 0 && current.naturalHeight > 0) {
+      if (identity === "wrong_asb_token") observedWrongAsbToken = true;
+      if (identity === "unclassified") sawUnclassified = true;
+      if (
+        identity === "accepted" &&
+        (liveTiles.length === 0 || liveTiles.length === 1) &&
+        current.complete &&
+        current.naturalWidth > 0 &&
+        current.naturalHeight > 0
+      ) {
         return { ok: true, opened: true, url, href: location.href };
       }
+      if (identity === "accepted") sawAcceptedIncomplete = true;
     }
+
+    if (!overlayObserved && activationIndex < activationTargets.length && attempt >= nextActivationAt) {
+      activate(activationTargets[activationIndex++]!);
+      nextActivationAt = attempt + 24;
+    }
+    if (!overlayObserved && activationIndex >= activationTargets.length && attempt >= nextActivationAt + 20) break;
 
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
-  if (observedWrongAsbToken) {
+  if (!overlayObserved)
+    return { ok: false, opened: false, href: location.href, code: lastPinnedTileCount > 1 ? "candidate_ambiguous" : "reference_detail_not_opened" };
+  if (observedWrongAsbToken)
     return { ok: false, opened: true, href: location.href, code: "reference_asb_token_mismatch" };
-  }
+  if (sawAcceptedIncomplete)
+    return { ok: false, opened: true, href: location.href, code: "reference_detail_image_incomplete" };
+  if (sawUnclassified)
+    return { ok: false, opened: true, href: location.href, code: "reference_detail_url_unclassified" };
   return { ok: false, opened: true, href: location.href, code: lastPinnedTileCount > 1 ? "candidate_ambiguous" : "reference_original_unavailable" };
 }
 
@@ -1234,6 +1488,7 @@ export async function flowReferenceSelectionProducer(
       }
       const providerAssetId =
         img.getAttribute("data-media-id")?.trim() ||
+        card.getAttribute("data-media-id")?.trim() ||
         card.getAttribute("data-asset-id")?.trim() ||
         img.getAttribute("data-asset-id")?.trim() ||
         undefined;

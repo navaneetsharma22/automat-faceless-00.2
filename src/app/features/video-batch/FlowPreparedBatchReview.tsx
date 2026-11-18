@@ -4,6 +4,7 @@ import {
   VIDEO_QUEUE_DISPATCH_GAP_MS,
   isFlowVideoPreAddRetryReason,
   isFlowVideoPostAddRecoveryReason,
+  isFlowVideoPreIntentReferenceReason,
 } from "../../../domain/jobs/videoQueue";
 import {
   FoundationClientError,
@@ -521,7 +522,7 @@ export function FlowPreparedBatchReview({
                           </ol>
                         </details>
                       ) : null}
-                      {item.state === "failed" && item.reason === "candidate_bytes_mismatch" ? (
+                      {item.state === "failed" && isFlowVideoPreIntentReferenceReason(item.reason) ? (
                         <div>
                           <Button size="compact" variant="secondary" type="button" disabled={referenceInspectionBusy !== null} loading={referenceInspectionBusy === item.itemId} loadingLabel="Inspecting" onClick={() => void inspectReferenceBytes(item.itemId)}>
                             {referenceInspectionBusy === item.itemId ? "Inspecting reference bytes…" : "Inspect reference bytes"}

@@ -422,3 +422,36 @@ An audit of git commit history confirmed this was an **unresolved pre-existing R
 - Production build: **PASS**, package ID **`automat-faceless-0.1.0-mwlkbvtq`** (4 JavaScript bundles in `dist/`).
 - Flow video queue, Vids queue, and image queue functionality remain intact and unaffected.
 - Live browser verification: **NOT_RUN** / pending user verification in the browser.
+
+## References capture resolver /asb/ canonical representation fix — 18 November 2026
+
+User report: Following the preview transport fix, candidate discovery and previews load successfully. "Choose for Shot 1" accepts a candidate, but "Save reference" fails with `capture_candidate_missing_or_changed`.
+
+### Root Cause Analysis
+1. When candidate selection is accepted, `handleCandidateSelected` canonicalizes `candidate.sourceUrl` to `https://${url.hostname}/asb/${asbToken}`, stripping `=s...` size suffixes and multi-account prefixes (e.g. `https://flow.google.com/asb/token-dunes`).
+2. During `captureReference`, `resolveCaptureCandidateInDocument` executes `flowReferenceCaptureResolver` in the Flow document.
+3. `flowReferenceCaptureResolver` used `stableSourceKey`, which only stripped search and hash. In the Flow page, `image.currentSrc` is `https://flow.google.com/asb/<token>=s1600-rw` (or `/u/0/asb/<token>=s1600-rw`).
+4. Comparing `stableSourceKey(candidate.sourceUrl) === expectedSourceKey` compared `"https://flow.google.com/asb/<token>=s1600-rw" === "https://flow.google.com/asb/<token>"`, which evaluated to `false` for 100% of cards in the gallery. Zero matches were collected (`matches.length === 0`), causing `flowReferenceCaptureResolver` to return `{ ok: false, code: "capture_candidate_missing_or_changed" }`.
+
+### Implementation: Canonical Source Matching & Bounded Diagnostics
+1. **Canonical source matching (`src/platforms/flow/references.ts`)**:
+   - Inlined `parseAsbToken` and `parseMediaUuid` inside `flowReferenceCaptureResolver` to canonicalize `/asb/<token>` (normalizing allowed `/u/\d+/` account prefixes and `=s...` size suffixes) and `/image/<uuid>` media paths with exact token/UUID equality.
+   - Added `isSameSource` helper: matches same ASB tokens across any size suffix / account prefix; matches same media UUID for `flow-content.google`; falls back to `stableSourceKey` for other formats.
+   - Added `card.getAttribute("data-media-id")` lookup and case-insensitive UUID matching in `isSameAssetId`.
+   - Prevented false rejection when `naturalWidth`/`naturalHeight` were 0 at discovery time (image loading in DOM).
+   - Added bounded diagnostic object capturing `expectedIdentityKind`, `observedIdentityKind`, `sameCanonicalAsbToken`, `sameMediaUuid`, `cardCount`, `visibleCandidateCount`, `sameCardTag`, `candidateVisible`, `dimensionsKnown`, `dimensionsMatch`, and `sourceNormalizedEquivalent` without raw tokens or URLs.
+   - Updated `collectPickerCandidates` to check `card.getAttribute("data-media-id")`.
+2. **Background handler diagnostic propagation (`src/background/handlers/references.ts`)**:
+   - Attached `captureDiagnostic` to `ReferenceSelectionError` and tracked it in `captureDiagnostics` map.
+   - Enforced case-insensitive provider asset ID checks in `captureReference`.
+   - Exposed `diagnostic` in `getCaptureStatus`.
+3. **Comprehensive unit testing (`tests/unit/flowReferenceCaptureResolver.test.ts`)**:
+   - Added 11 focused tests covering same asset across ASB size suffixes, account prefixes, rejection of different tokens/UUIDs, missing/ambiguous cards, metadata stability, and diagnostic structure.
+
+### Verification
+- Unit regressions: **6 files / 106 tests PASS** (`flowReferenceCaptureResolver.test.ts`, `flowReferenceResource.test.ts`, `flowReferencePreview.test.ts`, `referenceCapture.test.ts`, `referenceSelection.test.ts`, `referencePickerPresentation.test.tsx`).
+- Full Vitest suite: **82 files / 1040 tests PASS** (exit code 0).
+- Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
+- Production build: **PASS**, package ID **`automat-faceless-0.1.0-mwll8sap`** (4 JavaScript bundles in `dist/`).
+- Flow video queue, Vids queue, and image queue functionality remain intact and unaffected.
+- Live browser verification: **NOT_RUN** / pending user verification in the browser.

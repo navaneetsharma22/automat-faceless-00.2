@@ -112,6 +112,36 @@ export function isFlowVideoPickerPreAddReason(
 }
 
 /**
+ * Reference-resolution outcomes produced before resource acquisition or the
+ * sole attachment action intent. A read-only byte inspection may re-resolve
+ * these through the exact-document resolver without any replay risk.
+ */
+export const FLOW_VIDEO_PRE_INTENT_REFERENCE_REASONS = [
+  "candidate_bytes_mismatch",
+  "reference_original_unavailable",
+  "reference_detail_not_opened",
+  "reference_detail_url_unclassified",
+  "reference_detail_image_incomplete",
+  "reference_asb_token_missing",
+  "reference_asb_token_mismatch",
+  "reference_origin_unsupported",
+  "candidate_capture_failed",
+] as const;
+export type FlowVideoPreIntentReferenceReason =
+  (typeof FLOW_VIDEO_PRE_INTENT_REFERENCE_REASONS)[number];
+
+export function isFlowVideoPreIntentReferenceReason(
+  reason: string | undefined,
+): reason is FlowVideoPreIntentReferenceReason {
+  return (
+    reason !== undefined &&
+    (FLOW_VIDEO_PRE_INTENT_REFERENCE_REASONS as readonly string[]).includes(
+      reason,
+    )
+  );
+}
+
+/**
  * The existing-composer chip gate runs before the picker opens and before the
  * sole Add click. A conflict there is therefore replayable as a fresh
  * attachment attempt once the user removes the offending chip: no Add, no
