@@ -1,4 +1,9 @@
-import type { FlowVideoExistingChipDiagnostic, FlowVideoQueueItem, FlowVideoQueueRecord } from "../../domain/jobs/videoQueue";
+import type {
+  FlowVideoExistingChipDiagnostic,
+  FlowVideoPickerDiagnostic,
+  FlowVideoQueueItem,
+  FlowVideoQueueRecord,
+} from "../../domain/jobs/videoQueue";
 import type { ReferenceByteComparisonDiagnostic } from "../../domain/media/references";
 import {
   isFlowVideoPickerPreAddReason,
@@ -45,6 +50,7 @@ export function createFlowVideoQueueHandler(input: {
     reason?: string;
     diagnostic?: ReferenceByteComparisonDiagnostic;
     existingChipDiagnostic?: FlowVideoExistingChipDiagnostic;
+    pickerDiagnostic?: FlowVideoPickerDiagnostic;
   }>;
   generateOnce: (preparedBatchId: string, itemId: string) => Promise<{ status: string; reason?: string; attemptId?: string }>;
   revalidate?: (preparedBatchId: string) => Promise<string | undefined>;
@@ -106,11 +112,30 @@ export function createFlowVideoQueueHandler(input: {
   const schedule = (queue: FlowVideoQueueRecord) => alarms.schedule(queue.queueId,
     ["paused", "blocked", "stopped", "sent"].includes(queue.state) ? null : queue.nextActionAt);
 
-  async function fail(queue: FlowVideoQueueRecord, item: FlowVideoQueueItem, reason: string, uncertain: boolean, byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic, existingChipDiagnostic?: FlowVideoExistingChipDiagnostic) {
-    const latest = await input.repositories.getFlowVideoQueue(queue.queueId) ?? queue;
+  async function fail(
+    queue: FlowVideoQueueRecord,
+    item: FlowVideoQueueItem,
+    reason: string,
+    uncertain: boolean,
+    byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic,
+    existingChipDiagnostic?: FlowVideoExistingChipDiagnostic,
+    pickerDiagnostic?: FlowVideoPickerDiagnostic,
+  ) {
+    const latest = (await input.repositories.getFlowVideoQueue(queue.queueId)) ?? queue;
     const preserveControl = latest.state === "paused" || latest.state === "stopped";
     const saved = await save(latest, {
-      items: latest.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: uncertain ? "uncertain" as const : "failed" as const, reason, ...(byteMismatchDiagnostic ? { byteMismatchDiagnostic } : {}), ...(existingChipDiagnostic ? { existingChipDiagnostic } : {}) } : entry),
+      items: latest.items.map((entry) =>
+        entry.itemId === item.itemId
+          ? {
+              ...entry,
+              state: uncertain ? ("uncertain" as const) : ("failed" as const),
+              reason,
+              ...(byteMismatchDiagnostic ? { byteMismatchDiagnostic } : {}),
+              ...(existingChipDiagnostic ? { existingChipDiagnostic } : {}),
+              ...(pickerDiagnostic ? { pickerDiagnostic } : {}),
+            }
+          : entry,
+      ),
       state: preserveControl ? latest.state : "paused",
       pauseReason: preserveControl ? latest.pauseReason : reason,
       nextActionAt: null,
@@ -679,7 +704,16 @@ export function createFlowVideoQueueHandler(input: {
     if (item.state === "pending") {
       queue = await save(queue, { state: "waiting", nextActionAt: null, items: queue.items.map((entry) => entry.itemId === item.itemId ? { ...entry, state: "attaching" as const, reason: undefined } : entry) });
       const attachment = await input.attachReference(queue.preparedBatchId, item.itemId).catch((): Awaited<ReturnType<typeof input.attachReference>> => ({ status: "uncertain", reason: "attachment_response_lost" }));
-      if (attachment.status !== "attached" && attachment.status !== "already_attached") return fail(queue, item, attachment.reason ?? "attachment_blocked", attachment.status === "uncertain", attachment.diagnostic, attachment.existingChipDiagnostic);
+      if (attachment.status !== "attached" && attachment.status !== "already_attached")
+        return fail(
+          queue,
+          item,
+          attachment.reason ?? "attachment_blocked",
+          attachment.status === "uncertain",
+          attachment.diagnostic,
+          attachment.existingChipDiagnostic,
+          attachment.pickerDiagnostic,
+        );
       const operation = await input.repositories.getFlowVideoAttachmentOperation(`${queue.preparedBatchId}:${item.itemId}`);
       if (operation?.videoGeneration) {
         if (operation.videoGeneration.state === "dispatched") return persistReceipt(queue, item, operation.videoGeneration.attemptId, operation.videoGeneration.updatedAt);

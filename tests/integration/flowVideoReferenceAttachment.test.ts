@@ -88,7 +88,7 @@ async function fixture(
     galleryCandidateHref?: string;
     changeOperationDuringVerification?: boolean;
     injectedDocumentId?: string;
-    pageResult?: { ok: boolean; already?: boolean; reason?: string };
+    pageResult?: { ok: boolean; already?: boolean; reason?: string; diagnostic?: unknown };
     actionError?: Error;
     delayAction?: boolean;
   } = {},
@@ -500,6 +500,68 @@ describe("Flow video reference attachment request-to-handler integration (offlin
         addClickAttempted: false,
       },
     });
+  });
+
+  it("records bounded existing-chip conflict evidence and returns it without activating Add", async () => {
+    const diagnostic = {
+      producer: "existing_composer_chip_check_before_picker",
+      chipCount: 1,
+      visibleChipCount: 1,
+      candidateCount: 0,
+      chips: [{
+        visible: true,
+        busy: "false",
+        imageCount: 1,
+        mediaIds: ["77777777-7777-4777-8777-777777777777"],
+        asbTokens: [],
+        asbSuffixes: [],
+        expectedKeyMatches: 0,
+        unexpectedKeyCount: 1,
+      }],
+    };
+    const f = await fixture({
+      pageResult: { ok: false, reason: "existing_chip_conflict", diagnostic },
+    });
+    await expect(f.client.request("flow.video.attachReference", {
+      preparedBatchId: batchId,
+      itemId,
+    })).resolves.toMatchObject({
+      status: "uncertain",
+      reason: "existing_chip_conflict",
+      existingChipDiagnostic: diagnostic,
+    });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    expect(await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`)).toMatchObject({
+      status: "uncertain",
+      reason: "existing_chip_conflict",
+      existingChipPreAddEvidence: {
+        reason: "existing_chip_conflict",
+        producer: "existing_composer_chip_check_before_picker",
+        addClickAttempted: false,
+        diagnostic,
+      },
+    });
+  });
+
+  it("drops an out-of-shape existing-chip diagnostic while keeping the conflict fail-closed", async () => {
+    const f = await fixture({
+      pageResult: {
+        ok: false,
+        reason: "existing_chip_conflict",
+        diagnostic: { producer: "existing_composer_chip_check_before_picker", chipCount: -1 },
+      },
+    });
+    await expect(f.client.request("flow.video.attachReference", {
+      preparedBatchId: batchId,
+      itemId,
+    })).resolves.toMatchObject({ status: "uncertain", reason: "existing_chip_conflict" });
+    expect(f.addActivation).not.toHaveBeenCalled();
+    const operation = await f.repositories.getFlowVideoAttachmentOperation(`${batchId}:${itemId}`);
+    expect(operation?.existingChipPreAddEvidence).toMatchObject({
+      reason: "existing_chip_conflict",
+      addClickAttempted: false,
+    });
+    expect(operation?.existingChipPreAddEvidence?.diagnostic).toBeUndefined();
   });
 
   it("accepts a pinned reference from an older document in the same tab/project after a Flow reload", async () => {

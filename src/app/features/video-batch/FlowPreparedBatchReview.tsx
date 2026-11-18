@@ -62,6 +62,11 @@ type VideoQueueSnapshot = {
       chipCount: number;
       visibleChipCount: number;
       candidateCount: number;
+      totalRealChipCount?: number;
+      frameChipCount?: number;
+      hiddenChipCount?: number;
+      recognizedIdentityCount?: number;
+      documentTargetValidation?: string;
       chips: Array<{
         visible: boolean;
         busy: string | null;
@@ -71,7 +76,26 @@ type VideoQueueSnapshot = {
         asbSuffixes: string[];
         expectedKeyMatches: number;
         unexpectedKeyCount: number;
+        identityKinds?: Array<"uuid" | "asb">;
+        hasSizeSuffix?: boolean;
+        hasExtraIdentities?: boolean;
+        matchesExpected?: boolean;
+        chipReadiness?: string;
       }>;
+    };
+    pickerDiagnostic?: {
+      producer: "picker_selected_preview_check_before_add";
+      expectedHasMediaUuid: boolean; expectedHasAsbToken: boolean;
+      rowCount: number; matchingRowCount: number; activeRowCount: number;
+      matchingRowActive: boolean; matchingRowMediaId: "expected" | "different" | "missing";
+      matchingRowExpectedKeys: number; matchingRowUnexpectedKeys: number;
+      previewCandidateCount: number; visiblePreviewCount: number;
+      previewPresent: boolean; previewVisible: boolean;
+      previewComplete: boolean; previewNaturalWidth: number;
+      previewIdentityKind: "asb" | "media" | "unrecognized" | "missing";
+      previewHasSizeSuffix: boolean; previewExpectedKeys: number;
+      previewUnexpectedKeys: number; previewMatchesExpected: boolean;
+      addButtonCount: number;
     };
   }>;
 };
@@ -461,7 +485,25 @@ export function FlowPreparedBatchReview({
                           </dl>
                         </details>
                       ) : null}
-                      {item.existingChipDiagnostic ? (
+                      {item.pickerDiagnostic ? (
+                        <details open>
+                          <summary>Picker selection / preview mismatch (no Add was activated)</summary>
+                          <dl>
+                            <dt>Expected identity</dt><dd>Media UUID: {String(item.pickerDiagnostic.expectedHasMediaUuid)}; /asb token: {String(item.pickerDiagnostic.expectedHasAsbToken)}</dd>
+                            <dt>Rows total / matching / active</dt><dd>{item.pickerDiagnostic.rowCount} / {item.pickerDiagnostic.matchingRowCount} / {item.pickerDiagnostic.activeRowCount}</dd>
+                            <dt>Expected row active</dt><dd>{String(item.pickerDiagnostic.matchingRowActive)}</dd>
+                            <dt>Expected row media ID</dt><dd>{item.pickerDiagnostic.matchingRowMediaId}</dd>
+                            <dt>Row keys: expected / unexpected</dt><dd>{item.pickerDiagnostic.matchingRowExpectedKeys} / {item.pickerDiagnostic.matchingRowUnexpectedKeys}</dd>
+                            <dt>Preview candidates / visible</dt><dd>{item.pickerDiagnostic.previewCandidateCount} / {item.pickerDiagnostic.visiblePreviewCount}</dd>
+                            <dt>Preview present / visible / loaded</dt><dd>{String(item.pickerDiagnostic.previewPresent)} / {String(item.pickerDiagnostic.previewVisible)} / {String(item.pickerDiagnostic.previewComplete && item.pickerDiagnostic.previewNaturalWidth > 0)}</dd>
+                            <dt>Preview identity</dt><dd>{item.pickerDiagnostic.previewIdentityKind}{item.pickerDiagnostic.previewHasSizeSuffix ? " (size suffix)" : ""}</dd>
+                            <dt>Preview keys: expected / unexpected</dt><dd>{item.pickerDiagnostic.previewExpectedKeys} / {item.pickerDiagnostic.previewUnexpectedKeys}</dd>
+                            <dt>Preview exact match</dt><dd>{String(item.pickerDiagnostic.previewMatchesExpected)}</dd>
+                            <dt>Add buttons found (not clicked)</dt><dd>{item.pickerDiagnostic.addButtonCount}</dd>
+                          </dl>
+                        </details>
+                      ) : null}
+                      {item.existingChipDiagnostic && ["existing_chip_conflict", "existing_chip_identity_unreadable", "existing_chip_not_ready"].includes(item.reason ?? "") ? (
                         <details>
                           <summary>Existing composer chip evidence (no Add was activated)</summary>
                           <dl>

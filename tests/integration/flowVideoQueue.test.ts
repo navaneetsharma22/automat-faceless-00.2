@@ -751,6 +751,73 @@ describe("P09.3 Flow video timed submission", () => {
     expect(changedTarget.generate).not.toHaveBeenCalled();
   });
 
+  it("retries a guarded legacy existing_chip_conflict failure without prior evidence and continues", async () => {
+    const f = await setup();
+    await seedPausedPickerQueue(f, { reason: "existing_chip_conflict" });
+    const retried = await f.handler.retryPreAddPickerFailure(batchId, 0);
+    expect(retried).toMatchObject({
+      state: "waiting",
+      items: [
+        {
+          state: "sent",
+          priorReason: "existing_chip_conflict",
+          attemptId: "attempt-1",
+        },
+        { state: "pending" },
+      ],
+    });
+    expect(retried.pauseReason).toBeUndefined();
+    expect(f.revalidate).toHaveBeenCalled();
+    expect(f.attach).toHaveBeenCalledTimes(1);
+    expect(f.generate).toHaveBeenCalledTimes(1);
+    const operation = await f.repositories.getFlowVideoAttachmentOperation(
+      `${batchId}:item-1`,
+    );
+    expect(operation?.videoGeneration?.state).toBe("dispatched");
+  });
+
+  it("refuses existing_chip_conflict retry if verified attachment or videoGeneration exists", async () => {
+    const withAttachment = await setup();
+    await seedPausedPickerQueue(withAttachment, {
+      reason: "existing_chip_conflict",
+      verifiedAttachment: true,
+    });
+    await expect(
+      withAttachment.handler.retryPreAddPickerFailure(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_picker_not_recoverable");
+    expect(withAttachment.attach).not.toHaveBeenCalled();
+    expect(withAttachment.generate).not.toHaveBeenCalled();
+
+    const withGeneration = await setup();
+    await seedPausedPickerQueue(withGeneration, {
+      reason: "existing_chip_conflict",
+    });
+    const op = await withGeneration.repositories.getFlowVideoAttachmentOperation(`${batchId}:item-1`);
+    await withGeneration.repositories.putFlowVideoAttachmentOperation({
+      ...op!,
+      videoGeneration: {
+        attemptId: "prior-attempt",
+        preparedBatchId: batchId,
+        itemId: "item-1",
+        canonicalShotId: "1",
+        promptHash: "a".repeat(64),
+        referenceId: withGeneration.batch.items[0]!.reference.referenceId,
+        tabId: 1,
+        projectId: "proj-1",
+        canonicalTarget: "https://flow.google.com/project/proj-1",
+        documentId: "doc-1",
+        state: "dispatched",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+    await expect(
+      withGeneration.handler.retryPreAddPickerFailure(batchId, 0),
+    ).rejects.toThrow("flow_video_queue_picker_not_recoverable");
+    expect(withGeneration.attach).not.toHaveBeenCalled();
+    expect(withGeneration.generate).not.toHaveBeenCalled();
+  });
+
   it("verifies one post-Add unreadable chip without replaying Add and continues Generate", async () => {
     const f = await setup();
     await seedPausedPostAddQueue(f);

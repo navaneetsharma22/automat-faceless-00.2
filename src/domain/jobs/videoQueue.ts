@@ -21,6 +21,11 @@ export const FlowVideoExistingChipDiagnosticSchema = z
     chipCount: z.number().int().nonnegative().max(32),
     visibleChipCount: z.number().int().nonnegative().max(32),
     candidateCount: z.number().int().nonnegative().max(32),
+    totalRealChipCount: z.number().int().nonnegative().max(32).optional(),
+    frameChipCount: z.number().int().nonnegative().max(32).optional(),
+    hiddenChipCount: z.number().int().nonnegative().max(32).optional(),
+    recognizedIdentityCount: z.number().int().nonnegative().max(32).optional(),
+    documentTargetValidation: z.string().max(64).optional(),
     chips: z
       .array(
         z
@@ -33,6 +38,11 @@ export const FlowVideoExistingChipDiagnosticSchema = z
             asbSuffixes: z.array(z.string().regex(FLOW_ASB_SUFFIX)).max(4),
             expectedKeyMatches: z.number().int().nonnegative().max(32),
             unexpectedKeyCount: z.number().int().nonnegative().max(32),
+            identityKinds: z.array(z.enum(["uuid", "asb"])).max(8).optional(),
+            hasSizeSuffix: z.boolean().optional(),
+            hasExtraIdentities: z.boolean().optional(),
+            matchesExpected: z.boolean().optional(),
+            chipReadiness: z.string().max(32).optional(),
           })
           .strict(),
       )
@@ -41,6 +51,39 @@ export const FlowVideoExistingChipDiagnosticSchema = z
   .strict();
 export type FlowVideoExistingChipDiagnostic = z.infer<
   typeof FlowVideoExistingChipDiagnosticSchema
+>;
+
+/** Evidence collected before Add when the intended picker row and its preview disagree.
+ * No URLs, raw /asb tokens, image bytes, or media UUIDs are stored here.
+ */
+export const FlowVideoPickerDiagnosticSchema = z
+  .object({
+    producer: z.literal("picker_selected_preview_check_before_add"),
+    expectedHasMediaUuid: z.boolean(),
+    expectedHasAsbToken: z.boolean(),
+    rowCount: z.number().int().nonnegative().max(128),
+    matchingRowCount: z.number().int().nonnegative().max(128),
+    activeRowCount: z.number().int().nonnegative().max(128),
+    matchingRowActive: z.boolean(),
+    matchingRowMediaId: z.enum(["expected", "different", "missing"]),
+    matchingRowExpectedKeys: z.number().int().nonnegative().max(16),
+    matchingRowUnexpectedKeys: z.number().int().nonnegative().max(16),
+    previewCandidateCount: z.number().int().nonnegative().max(32),
+    visiblePreviewCount: z.number().int().nonnegative().max(32),
+    previewPresent: z.boolean(),
+    previewVisible: z.boolean(),
+    previewComplete: z.boolean(),
+    previewNaturalWidth: z.number().int().nonnegative().max(100000),
+    previewIdentityKind: z.enum(["asb", "media", "unrecognized", "missing"]),
+    previewHasSizeSuffix: z.boolean(),
+    previewExpectedKeys: z.number().int().nonnegative().max(16),
+    previewUnexpectedKeys: z.number().int().nonnegative().max(16),
+    previewMatchesExpected: z.boolean(),
+    addButtonCount: z.number().int().nonnegative().max(16),
+  })
+  .strict();
+export type FlowVideoPickerDiagnostic = z.infer<
+  typeof FlowVideoPickerDiagnosticSchema
 >;
 
 /**
@@ -187,6 +230,7 @@ export type FlowVideoQueueItem = {
   priorReason?: string;
   byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic;
   existingChipDiagnostic?: FlowVideoExistingChipDiagnostic;
+  pickerDiagnostic?: FlowVideoPickerDiagnostic;
 };
 
 export type FlowVideoQueueRecord = {
@@ -220,6 +264,7 @@ const itemSchema = z.object({
   priorReason: z.string().min(1).max(64).optional(),
   byteMismatchDiagnostic: ReferenceByteComparisonDiagnosticSchema.optional(),
   existingChipDiagnostic: FlowVideoExistingChipDiagnosticSchema.optional(),
+  pickerDiagnostic: FlowVideoPickerDiagnosticSchema.optional(),
 }).strict();
 
 export const FlowVideoQueueRecordSchema = z.object({

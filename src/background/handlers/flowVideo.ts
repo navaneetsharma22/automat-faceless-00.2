@@ -78,21 +78,27 @@ export function inspectFlowVideoReferenceInPage(): {
     ...document.querySelectorAll<HTMLElement>("flow-base-prompt-box"),
   ].filter(visible);
   const root = roots.length === 1 ? roots[0] : undefined;
-  const components = root
-    ? [...root.querySelectorAll<HTMLElement>(
+  const bar = root ? (root.querySelector("flow-ingredient-bar") ?? root) : undefined;
+  const isFrameTrigger = (el: Element) =>
+    Boolean(el.closest(".frame-trigger, div.frame-trigger, [class*='frame-trigger']"));
+  const components = bar
+    ? [...bar.querySelectorAll<HTMLElement>(
         "flow-character-ingredient-chip, flow-video-ingredient-chip, flow-image-ingredient-chip",
-      )].filter((component) => !component.closest(".frame-trigger"))
+      )].filter((component) => !isFrameTrigger(component))
     : [];
-  const recognized = root
+  const recognized = bar
     ? components
-        .map((component) => component.querySelector<HTMLElement>("button.chip-container"))
+        .map((component) =>
+          component.querySelector<HTMLElement>("button.chip-container, button[aria-label='Ingredient'], button"),
+        )
         .filter((button): button is HTMLElement => Boolean(button))
+        .filter((button) => !isFrameTrigger(button))
     : [];
   const chipButtons = recognized.length > 0
     ? recognized
-    : root
-      ? [...root.querySelectorAll<HTMLElement>("button[aria-label='Ingredient']")]
-        .filter((button) => !button.closest(".frame-trigger"))
+    : bar
+      ? [...bar.querySelectorAll<HTMLElement>("button.chip-container, button[aria-label='Ingredient']")]
+        .filter((button) => !isFrameTrigger(button))
       : [];
   const chips = chipButtons
     .filter(visible)

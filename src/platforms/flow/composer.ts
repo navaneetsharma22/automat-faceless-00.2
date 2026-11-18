@@ -243,19 +243,34 @@ export function flowComposerRuntime(
   const mediaElements = Array.from(
     boundary.querySelectorAll("img, video, audio, canvas, iframe, object, embed"),
   ).filter((element) => !element.closest(".frame-trigger"));
-  const ingredientChips = (scope: ParentNode) =>
-    [...scope.querySelectorAll<HTMLButtonElement>("button[aria-label='Ingredient']")]
-      .filter((chip) => !chip.closest(".frame-trigger"));
+  const ingredientChips = (scope: ParentNode) => {
+    const el = scope as Element;
+    const bar = el.querySelector?.("flow-ingredient-bar") ?? scope;
+    const isFrame = (target: Element) =>
+      Boolean(target.closest?.(".frame-trigger, div.frame-trigger, [class*='frame-trigger']"));
+    const components = [...bar.querySelectorAll<HTMLElement>(
+      "flow-character-ingredient-chip, flow-video-ingredient-chip, flow-image-ingredient-chip",
+    )].filter((component) => !isFrame(component));
+    const buttons = components
+      .map((c) =>
+        c.querySelector<HTMLButtonElement>("button.chip-container, button[aria-label='Ingredient'], button"),
+      )
+      .filter((b): b is HTMLButtonElement => Boolean(b))
+      .filter((b) => !isFrame(b));
+    if (buttons.length > 0) return buttons;
+    return [...bar.querySelectorAll<HTMLButtonElement>("button.chip-container, button[aria-label='Ingredient']")]
+      .filter((chip) => !isFrame(chip));
+  };
   const soleMatchingReadyReference = (element: Element) => {
     if ((!allowedReferenceMediaId && !allowedReferenceAsbToken) || element.tagName !== "IMG")
       return false;
     const image = element as HTMLImageElement;
     const chip = image.closest<HTMLButtonElement>(
-      "button[aria-label='Ingredient']",
+      "button[aria-label='Ingredient'], button.chip-container",
     );
     if (
       !chip ||
-      chip.closest(".frame-trigger") ||
+      chip.closest(".frame-trigger, div.frame-trigger, [class*='frame-trigger']") ||
       chip.getAttribute("aria-busy") !== "false" ||
       !chip.isConnected ||
       chip.getClientRects().length === 0 ||

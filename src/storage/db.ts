@@ -9,7 +9,11 @@ import type { JsonSpan } from "../domain/batches/jsonSpanScanner";
 import type { FlowImageAttemptRecord } from "../domain/jobs/attempt";
 import type { FlowImagePromptSnapshotRecord } from "../domain/batches/flowImagePromptSnapshot";
 import type { ImageSubmissionQueueRecord } from "../domain/jobs/queue";
-import type { FlowVideoQueueRecord, FlowVideoExistingChipDiagnostic } from "../domain/jobs/videoQueue";
+import type {
+  FlowVideoQueueRecord,
+  FlowVideoExistingChipDiagnostic,
+  FlowVideoPickerDiagnostic,
+} from "../domain/jobs/videoQueue";
 import type { VidsVideoAttachmentOperation } from "../domain/jobs/vidsVideoAttachment";
 import type { VidsVideoGenerationOperation } from "../domain/jobs/vidsVideoGeneration";
 import type { VidsVideoQueueRecord } from "../domain/jobs/vidsVideoQueue";
@@ -89,6 +93,7 @@ export type FlowVideoAttachmentOperation = {
     updatedAt: number;
     producer: "picker_failure_before_add_activation";
     addClickAttempted: false;
+    diagnostic?: FlowVideoPickerDiagnostic;
   };
   existingChipPreAddEvidence?: {
     reason:

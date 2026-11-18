@@ -28,9 +28,11 @@ import {
 } from "../../platforms/flow/mediaIdentity";
 import {
   FlowVideoExistingChipDiagnosticSchema,
+  FlowVideoPickerDiagnosticSchema,
   FlowVideoQueueRecordSchema,
   isFlowVideoPickerPreAddReason,
   type FlowVideoExistingChipDiagnostic,
+  type FlowVideoPickerDiagnostic,
 } from "../../domain/jobs/videoQueue";
 
 type Script = {
@@ -221,7 +223,7 @@ export async function flowVideoAttachmentActionInPage(
   ok: boolean;
   already?: boolean;
   reason?: string;
-  diagnostic?: FlowVideoExistingChipDiagnostic;
+  diagnostic?: FlowVideoExistingChipDiagnostic | FlowVideoPickerDiagnostic;
 }> {
   const visible = (el: Element) => {
     const r = el.getBoundingClientRect();
@@ -230,26 +232,44 @@ export async function flowVideoAttachmentActionInPage(
       style.display !== "none" && style.visibility !== "hidden";
   };
   const roots = () => [...document.querySelectorAll("flow-base-prompt-box")].filter(visible);
-  // Flow renders ingredients as flow-*-ingredient-chip custom elements. The
-  // ingredient bar also hosts frame slots that reuse flow-image-ingredient-chip
-  // under .frame-trigger; those are not prompt ingredients and must never be
-  // counted as an existing chip (or as a duplicate) here.
-  const chipComponents = (root: Element): HTMLElement[] =>
-    [...root.querySelectorAll<HTMLElement>(
+  // Flow renders ingredients as flow-*-ingredient-chip custom elements in
+  // flow-ingredient-bar. The ingredient bar or prompt box also hosts frame
+  // slots under div.frame-trigger; those are not prompt ingredients and must
+  // never be counted as an existing chip (or as a duplicate) here.
+  const isFrameTriggerDescendant = (el: Element): boolean =>
+    Boolean(el.closest(".frame-trigger, div.frame-trigger, [class*='frame-trigger']"));
+  const ingredientBar = (root: Element): Element =>
+    root.querySelector("flow-ingredient-bar") ?? root;
+  const chipComponents = (root: Element): HTMLElement[] => {
+    const scope = ingredientBar(root);
+    return [...scope.querySelectorAll<HTMLElement>(
       "flow-character-ingredient-chip, flow-video-ingredient-chip, flow-image-ingredient-chip",
-    )].filter((component) => !component.closest(".frame-trigger"));
+    )].filter((component) => !isFrameTriggerDescendant(component));
+  };
   const chipButtons = (root: Element): HTMLElement[] => {
-    const components = chipComponents(root);
+    const scope = ingredientBar(root);
+    const components = chipComponents(scope);
     const buttons = components
-      .map((component) => component.querySelector<HTMLElement>("button.chip-container"))
+      .map((component) =>
+        component.querySelector<HTMLElement>("button.chip-container, button[aria-label='Ingredient'], button"),
+      )
       .filter((button): button is HTMLElement => Boolean(button))
-      .filter((button) => !button.closest(".frame-trigger"));
+      .filter((button) => !isFrameTriggerDescendant(button));
     if (buttons.length > 0) return buttons;
     // Older composer markup renders the chip button without the custom
     // element wrapper; keep reading it, still excluding frame slots.
-    return [...root.querySelectorAll<HTMLElement>("button[aria-label='Ingredient']")]
-      .filter((button) => !button.closest(".frame-trigger"));
+    return [...scope.querySelectorAll<HTMLElement>("button.chip-container, button[aria-label='Ingredient']")]
+      .filter((button) => !isFrameTriggerDescendant(button));
   };
+  const frameChipCount = (root: Element): number =>
+    [...root.querySelectorAll<HTMLElement>(
+      ".frame-trigger, div.frame-trigger, [class*='frame-trigger']",
+    )].reduce((count, trigger) => {
+      const frameChips = trigger.querySelectorAll(
+        "flow-character-ingredient-chip, flow-video-ingredient-chip, flow-image-ingredient-chip, button.chip-container, button[aria-label='Ingredient']",
+      );
+      return count + (frameChips.length > 0 ? frameChips.length : 1);
+    }, 0);
   const chips = (root?: Element): HTMLElement[] => {
     const liveRoot = root ?? roots()[0];
     return liveRoot?.isConnected ? chipButtons(liveRoot) : [];
@@ -340,27 +360,40 @@ export async function flowVideoAttachmentActionInPage(
     const mediaIds = new Set<string>();
     const asbTokens = new Set<string>();
     const asbSuffixes = new Set<string>();
+    const identityKinds: Array<"uuid" | "asb"> = [];
     for (const url of urls) {
       const mid = mediaIdFromImageUrl(url);
-      if (mid) mediaIds.add(mid);
+      if (mid) {
+        mediaIds.add(mid);
+        identityKinds.push("uuid");
+      }
       const parts = asbParts(url);
       if (parts) {
         asbTokens.add(parts.token);
+        identityKinds.push("asb");
         if (parts.suffix) asbSuffixes.add(parts.suffix);
       }
     }
     const keys = keysFor(chip);
     let unexpected = 0;
     for (const key of keys) if (!expectedKeys.has(key)) unexpected++;
+    const isVis = visible(chip);
+    const busyVal = chip.getAttribute("aria-busy");
+    const matches = keys.size > 0 && unexpected === 0;
     return {
-      visible: visible(chip),
-      busy: chip.getAttribute("aria-busy"),
+      visible: isVis,
+      busy: busyVal,
       imageCount: Math.min(urls.length, 16),
       mediaIds: [...mediaIds].slice(0, 4),
       asbTokens: [...asbTokens].slice(0, 4),
       asbSuffixes: [...asbSuffixes].slice(0, 4),
       expectedKeyMatches: keys.size - unexpected,
       unexpectedKeyCount: unexpected,
+      identityKinds: identityKinds.slice(0, 8),
+      hasSizeSuffix: asbSuffixes.size > 0,
+      hasExtraIdentities: unexpected > 0,
+      matchesExpected: matches,
+      chipReadiness: busyVal === "false" ? "ready" : busyVal === "true" ? "busy" : "unset",
     };
   };
 
@@ -370,12 +403,24 @@ export async function flowVideoAttachmentActionInPage(
     if (!liveRoot?.isConnected) return undefined;
     const buttons = chipButtons(liveRoot);
     const components = chipComponents(liveRoot);
+    const visibleCount = buttons.filter(visible).length;
+    const hiddenCount = buttons.length - visibleCount;
+    const describedChips = buttons.slice(0, 8).map(describeChip);
+    const recognizedCount = describedChips.reduce(
+      (sum, c) => sum + c.mediaIds.length + c.asbTokens.length,
+      0,
+    );
     return {
       producer: "existing_composer_chip_check_before_picker",
       chipCount: Math.min(buttons.length, 32),
-      visibleChipCount: Math.min(buttons.filter(visible).length, 32),
+      visibleChipCount: Math.min(visibleCount, 32),
       candidateCount: Math.min(components.length, 32),
-      chips: buttons.slice(0, 8).map(describeChip),
+      totalRealChipCount: Math.min(buttons.length, 32),
+      frameChipCount: Math.min(frameChipCount(liveRoot), 32),
+      hiddenChipCount: Math.min(hiddenCount, 32),
+      recognizedIdentityCount: Math.min(recognizedCount, 32),
+      documentTargetValidation: "verified_bound_document",
+      chips: describedChips,
     };
   };
 
@@ -403,6 +448,32 @@ export async function flowVideoAttachmentActionInPage(
     return matchesExpected(keys);
   };
 
+  const selectRow = (row: HTMLElement) => {
+    try {
+      row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    } catch {}
+    const target =
+      row.querySelector<HTMLElement>(
+        "button, [role=button], .asset-item, flow-image-tile",
+      ) ?? row;
+    const opts = { bubbles: true, cancelable: true, view: window };
+    try {
+      target.dispatchEvent(new PointerEvent("pointerdown", opts));
+    } catch {}
+    try {
+      target.dispatchEvent(new MouseEvent("mousedown", opts));
+    } catch {}
+    try {
+      target.dispatchEvent(new PointerEvent("pointerup", opts));
+    } catch {}
+    try {
+      target.dispatchEvent(new MouseEvent("mouseup", opts));
+    } catch {}
+    try {
+      target.click();
+    } catch {}
+  };
+
   const anyListbox = () =>
     document.querySelector<HTMLElement>("[role=listbox][aria-label='Asset list']");
   const visibleListbox = () =>
@@ -410,17 +481,81 @@ export async function flowVideoAttachmentActionInPage(
       .filter(visible)[0];
   const read = () => {
     const list = visibleListbox();
-    const preview = document.querySelector<HTMLImageElement>("img.detail-preview-image[alt^='Preview of']");
+    // A hidden, stale detail panel may remain mounted after picker transitions.
+    // Never treat the first global preview as the selected visible preview.
+    const previews = [...document.querySelectorAll<HTMLImageElement>("img.detail-preview-image[alt^='Preview of']")];
+    const visiblePreviews = previews.filter(visible);
+    const preview = visiblePreviews.length === 1 ? visiblePreviews[0] : undefined;
     const panel = preview?.parentElement?.closest("section,[data-picker-detail-scope]") ?? preview?.parentElement?.parentElement;
     const rows = [...(list?.querySelectorAll<HTMLElement>("[role=option]") ?? [])];
     const matches = rows.filter(rowMatches);
     const action = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .filter((b) => b.textContent?.trim().toLowerCase() === "add to prompt" && visible(b));
     return {
-      list, preview, rows, matches,
+      list,
+      preview,
+      previews,
+      visiblePreviews,
+      rows,
+      matches,
       row: matches.length === 1 ? matches[0] : undefined,
       ambiguous: matches.length > 1,
       action,
+    };
+  };
+  const pickerDiagnostic = (state: ReturnType<typeof read>): FlowVideoPickerDiagnostic => {
+    const isActive = (row: Element): boolean =>
+      row.getAttribute("aria-selected") === "true" ||
+      row.getAttribute("aria-current") === "true" ||
+      row.getAttribute("data-selected") === "true" ||
+      row.classList.contains("asset-item-active") ||
+      Boolean(row.querySelector(".asset-item-active"));
+    const row = state.row;
+    const rowKeys = row ? keysFor(row) : new Set<string>();
+    const rowMediaId = row && (
+      row.getAttribute("data-media-id") ??
+      row.querySelector("[data-media-id]")?.getAttribute("data-media-id")
+    );
+    // For a stale/multiple visible preview, report the first candidate's
+    // properties but never grant an Add from it.
+    const preview = state.preview ?? state.visiblePreviews[0] ?? state.previews[0];
+    const previewUrl = preview?.currentSrc || preview?.src || undefined;
+    // querySelectorAll("img") excludes the root when it is already <img>.
+    // Derive preview keys from the preview URL directly.
+    const previewKeys = new Set<string>();
+    const previewMediaId = mediaIdFromImageUrl(previewUrl);
+    const previewAsbToken = asbToken(previewUrl);
+    if (previewMediaId) previewKeys.add("media:" + previewMediaId);
+    if (previewAsbToken) previewKeys.add("asb:" + previewAsbToken);
+    const keyCounts = (keys: Set<string>) => ({
+      expected: Math.min(16, [...keys].filter((key) => expectedKeys.has(key)).length),
+      unexpected: Math.min(16, [...keys].filter((key) => !expectedKeys.has(key)).length),
+    });
+    const rowCounts = keyCounts(rowKeys);
+    const previewCounts = keyCounts(previewKeys);
+    return {
+      producer: "picker_selected_preview_check_before_add",
+      expectedHasMediaUuid: expectedKeys.has("media:" + expectedMediaId),
+      expectedHasAsbToken: Boolean(expectedAsbToken),
+      rowCount: Math.min(128, state.rows.length),
+      matchingRowCount: Math.min(128, state.matches.length),
+      activeRowCount: Math.min(128, state.rows.filter(isActive).length),
+      matchingRowActive: Boolean(row && isActive(row)),
+      matchingRowMediaId: !rowMediaId ? "missing" : rowMediaId.trim().toLowerCase() === expectedMediaId ? "expected" : "different",
+      matchingRowExpectedKeys: rowCounts.expected,
+      matchingRowUnexpectedKeys: rowCounts.unexpected,
+      previewCandidateCount: Math.min(32, state.previews.length),
+      visiblePreviewCount: Math.min(32, state.visiblePreviews.length),
+      previewPresent: Boolean(preview),
+      previewVisible: Boolean(preview && visible(preview)),
+      previewComplete: Boolean(preview?.complete),
+      previewNaturalWidth: Math.min(100000, Math.max(0, preview?.naturalWidth || 0)),
+      previewIdentityKind: !previewUrl ? "missing" : asbToken(previewUrl) ? "asb" : mediaIdFromImageUrl(previewUrl) ? "media" : "unrecognized",
+      previewHasSizeSuffix: Boolean(asbParts(previewUrl)?.suffix),
+      previewExpectedKeys: previewCounts.expected,
+      previewUnexpectedKeys: previewCounts.unexpected,
+      previewMatchesExpected: Boolean(state.preview && sameAssetUrl(previewUrl)),
+      addButtonCount: Math.min(16, state.action.length),
     };
   };
   const scrolls = (element: Element | null | undefined): boolean => {
@@ -605,22 +740,38 @@ export async function flowVideoAttachmentActionInPage(
   const found = await findExactRowAcrossTabs();
   if (found.ambiguous) return { ok: false, reason: "picker_exact_row_ambiguous" };
   if (!found.row) return { ok: false, reason: "picker_exact_row_missing" };
-  found.row.click();
+
+  // Explicit selection action on found.row (scrolling into view, pointer/mouse events, inner clickable)
+  selectRow(found.row);
 
   let selected = read();
   for (let i = 0; i < 40; i++) {
     selected = read();
-    if (selected.row && selected.preview &&
-        sameAssetUrl(selected.preview.currentSrc || selected.preview.src || undefined) &&
-        selected.action.length === 1) break;
+    if (
+      (selected.row || rowMatches(found.row)) &&
+      selected.preview &&
+      sameAssetUrl(selected.preview.currentSrc || selected.preview.src || undefined) &&
+      selected.action.length === 1 &&
+      !selected.action[0]!.disabled &&
+      selected.action[0]!.getAttribute("aria-disabled") !== "true"
+    ) {
+      break;
+    }
     await wait(50);
   }
-  if (!selected.preview ||
-      !sameAssetUrl(selected.preview.currentSrc || selected.preview.src || undefined))
-    return { ok: false, reason: "picker_selected_preview_mismatch" };
-  if (selected.action.length !== 1 || selected.action[0]!.disabled || selected.action[0]!.getAttribute("aria-disabled") === "true")
+
+  if (
+    !selected.preview ||
+    !sameAssetUrl(selected.preview.currentSrc || selected.preview.src || undefined)
+  )
+    return { ok: false, reason: "picker_selected_preview_mismatch", diagnostic: pickerDiagnostic(selected) };
+  if (
+    selected.action.length !== 1 ||
+    selected.action[0]!.disabled ||
+    selected.action[0]!.getAttribute("aria-disabled") === "true"
+  )
     return { ok: false, reason: "picker_add_not_ready" };
-  if (!selected.row) return { ok: false, reason: "picker_exact_row_missing" };
+  if (!selected.row && !rowMatches(found.row)) return { ok: false, reason: "picker_exact_row_missing" };
   existing = chips();
   if (existing.length) return { ok: false, reason: "chip_conflict_before_add" };
   selected.action[0]!.click();
@@ -951,16 +1102,22 @@ export function createFlowVideoAttachmentHandler(deps: {
           const roots = [...document.querySelectorAll<HTMLElement>("flow-base-prompt-box")].filter(visible);
           if (roots.length !== 1) return { ok: false, reason: "composer_unavailable" };
           const root = roots[0]!;
-          const components = [...root.querySelectorAll<HTMLElement>(
+          const bar = root.querySelector("flow-ingredient-bar") ?? root;
+          const isFrameTrigger = (el: Element) =>
+            Boolean(el.closest(".frame-trigger, div.frame-trigger, [class*='frame-trigger']"));
+          const components = [...bar.querySelectorAll<HTMLElement>(
             "flow-character-ingredient-chip, flow-video-ingredient-chip, flow-image-ingredient-chip",
-          )].filter((component) => !component.closest(".frame-trigger"));
+          )].filter((component) => !isFrameTrigger(component));
           const chipButtons = components
-            .map((component) => component.querySelector<HTMLElement>("button.chip-container"))
-            .filter((button): button is HTMLElement => Boolean(button));
+            .map((component) =>
+              component.querySelector<HTMLElement>("button.chip-container, button[aria-label='Ingredient'], button"),
+            )
+            .filter((button): button is HTMLElement => Boolean(button))
+            .filter((button) => !isFrameTrigger(button));
           const recognized = chipButtons.length > 0
             ? chipButtons
-            : [...root.querySelectorAll<HTMLElement>("button[aria-label='Ingredient']")]
-              .filter((button) => !button.closest(".frame-trigger"));
+            : [...bar.querySelectorAll<HTMLElement>("button.chip-container, button[aria-label='Ingredient']")]
+              .filter((button) => !isFrameTrigger(button));
           const chips = recognized.filter(visible);
           const images = chips.map((chip) => ({
             busy: chip.getAttribute("aria-busy"),
@@ -1483,7 +1640,13 @@ export function createFlowVideoAttachmentHandler(deps: {
       args: [pinned.providerAssetId ?? "", candidate.url],
     });
     const outcome = action[0]?.result as
-      | { ok?: boolean; already?: boolean; reason?: string; diagnostic?: unknown }
+      | {
+          ok?: boolean;
+          already?: boolean;
+          reason?: string;
+          diagnostic?: unknown;
+          pickerDiagnostic?: unknown;
+        }
       | undefined;
     if (action[0]?.documentId !== binding.documentId) {
       await deps.repositories.putFlowVideoAttachmentOperation({
@@ -1524,6 +1687,15 @@ export function createFlowVideoAttachmentHandler(deps: {
         failureReason === "existing_chip_conflict")
         ? parsedDiagnostic.data
         : undefined;
+    const rawPickerDiag = outcome?.diagnostic ?? outcome?.pickerDiagnostic;
+    const parsedPickerDiagnostic =
+      rawPickerDiag === undefined
+        ? undefined
+        : FlowVideoPickerDiagnosticSchema.safeParse(rawPickerDiag);
+    const pickerDiagnostic =
+      failureReason === "picker_selected_preview_mismatch" && parsedPickerDiagnostic?.success
+        ? parsedPickerDiagnostic.data
+        : undefined;
     await deps.repositories.putFlowVideoAttachmentOperation({
       ...op,
       status: "uncertain",
@@ -1539,6 +1711,7 @@ export function createFlowVideoAttachmentHandler(deps: {
               updatedAt: failedAt,
               producer: "picker_failure_before_add_activation" as const,
               addClickAttempted: false as const,
+              ...(pickerDiagnostic ? { diagnostic: pickerDiagnostic } : {}),
             },
           }
         : {}),
@@ -1560,6 +1733,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       status: "uncertain",
       reason: failureReason,
       ...(existingChipDiagnostic ? { existingChipDiagnostic } : {}),
+      ...(pickerDiagnostic ? { pickerDiagnostic } : {}),
     };
   }
   return { attach, inspectReferenceBytes, status, verifyAttachedReference, reconcilePreClickFailure };

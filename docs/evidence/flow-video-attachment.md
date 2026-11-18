@@ -292,3 +292,55 @@ Offline verification:
 - Typecheck: `tsc --noEmit` **PASS** (0 errors).
 - Build: `npm run build` **PASS**, package ID **`automat-faceless-0.1.0-mwkgpw47`** (4 JavaScript bundles).
 - Live verification: **NOT_RUN** / pending user action in browser.
+
+## Flow video existing_chip_conflict safe fix — 17 November 2026
+
+Confirmed live blocker: Flow video batch paused at Shot 1 with `existing_chip_conflict` before opening picker and before Add.
+
+Root cause:
+1. Chip queries in `flowVideoAttachmentActionInPage`, `verifyAttachedReference`, and `inspectFlowVideoReferenceInPage` operated over the full `flow-base-prompt-box` rather than scoping to `flow-ingredient-bar`, causing frame slots (`div.frame-trigger` or `.frame-trigger`) or extra chip elements outside the bar to be counted as ingredient chips (`visibleChips.length > 1`), resulting in `conflict`.
+2. `composer.ts` ingredient chip collection lacked scoping to `flow-ingredient-bar` and did not recognize `button.chip-container` custom element buttons.
+3. Pre-Add diagnostic evidence for `existing_chip_conflict` did not provide the structured breakdown of real, visible, frame, and hidden chips.
+
+Implementation:
+1. Scoped chip collection to `flow-ingredient-bar` across all attachment, verification, inspection, and composer runtime routines, strictly excluding any descendants of `.frame-trigger`, `div.frame-trigger`, and `[class*='frame-trigger']`.
+2. Maintained strict fail-closed guards: if real ingredient chips exist in the ingredient bar but none are visible, fails closed (`existing_chip_not_ready`) without Add.
+3. Extended `FlowVideoExistingChipDiagnosticSchema` with bounded URL-free fields (`totalRealChipCount`, `frameChipCount`, `hiddenChipCount`, `recognizedIdentityCount`, `documentTargetValidation`, `identityKinds`, `hasSizeSuffix`, `hasExtraIdentities`, `matchesExpected`, `chipReadiness`) and surfaced them in the UI.
+4. Validated safe guarded retry in `flowVideoQueue.ts`: `retryPreAddPickerFailure` reconciles pre-Add `existing_chip_conflict` operations to pending, refusing retry if verified attachment or video generation exists.
+
+Offline verification:
+- Focused suites (`flowVideoReference.test.ts`, `flowVideoReferenceAttachment.test.ts`, `flowVideoQueue.test.ts`, `flowVideoGenerate.test.ts`): **4 files / 136 tests PASS**.
+- Full Vitest suite: **81 files / 1016 tests PASS**.
+- Typecheck (`tsc --noEmit`): **PASS** (0 errors).
+- Build (`node init; tsc -b; node tools/build.mjs`): **PASS**, package ID **`automat-faceless-0.1.0-mwkiww12`** (4 JavaScript bundles).
+- Live verification: **NOT_RUN** / pending user browser execution.
+
+## Flow picker preview scoping and selection diagnostic patch reconciliation — 17 November 2026
+
+Confirmed live blocker: After clearing the conflicting composer chip and performing ONE guarded retry, the Flow video batch failed at Shot 1 with `picker_selected_preview_mismatch` before Add.
+
+Root cause & findings (`flow_picker_findings.md`):
+1. `flowVideoAttachmentActionInPage` preview reader previously used the first global `document.querySelector` match. A hidden, stale detail panel from a previous picker transition could remain mounted in the DOM and be mistakenly read even when a single visible detail preview was present.
+2. In-page action returned `picker_selected_preview_mismatch` without persisting structured, URL-free diagnostic evidence to determine whether the mismatch was due to a stale preview, delayed update, wrong picker row, or genuinely different `/asb` asset token.
+3. Review UI displayed existing composer-chip diagnostics even when the queue failure reason had transitioned to a picker-related failure.
+
+Implementation (`flow_picker_diagnostic.patch` safe reconciliation):
+1. **Single Visible Preview Scoping**:
+   - `read()` in `flowVideoAttachmentActionInPage` queries all `img.detail-preview-image[alt^='Preview of']` elements and filters by visibility.
+   - Accepts the preview strictly if `visiblePreviews.length === 1`. If 0 or >1 visible previews are found, `preview` is `undefined` and Add is never activated.
+2. **URL-Free / ID-Free Diagnostic Schema**:
+   - Integrated `FlowVideoPickerDiagnosticSchema` (`producer: "picker_selected_preview_check_before_add"`): captures `expectedHasMediaUuid`, `expectedHasAsbToken`, `rowCount`, `matchingRowCount`, `activeRowCount`, `matchingRowActive`, `matchingRowMediaId`, `matchingRowExpectedKeys`, `matchingRowUnexpectedKeys`, `previewCandidateCount`, `visiblePreviewCount`, `previewPresent`, `previewVisible`, `previewComplete`, `previewNaturalWidth`, `previewIdentityKind`, `previewHasSizeSuffix`, `previewExpectedKeys`, `previewUnexpectedKeys`, `previewMatchesExpected`, `addButtonCount`.
+   - Persists validated diagnostics to `pickerPreAddEvidence.diagnostic` in the attachment operation, forwards through `flowVideoQueue.ts`, and displays in `FlowPreparedBatchReview.tsx` under `<details open><summary>Picker selection / preview mismatch (no Add was activated)</summary>`.
+3. **UI Diagnostic Scoping**:
+   - In `FlowPreparedBatchReview.tsx`, `existingChipDiagnostic` is guarded to only show for relevant chip reasons (`existing_chip_conflict`, `existing_chip_identity_unreadable`, `existing_chip_not_ready`).
+4. **Safety & Zero-Replay Guarantees**:
+   - Sole Add click remains strictly below all preview and row validation guards.
+   - Pinned reference identity, `/asb` token normalization, SHA-256 byte checks, and document/target bindings remain untouched.
+   - No automatic Add or Generate activations.
+
+Offline verification:
+- Targeted Flow video suites (`flowVideoReference.test.ts`, `flowVideoReferenceAttachment.test.ts`, `flowVideoQueue.test.ts`, `flowVideoGenerate.test.ts`): **4 files / 143 tests PASS**.
+- Full test suite: **81 files / 1023 tests PASS**.
+- Typecheck (`tsc --noEmit` and `tsc -b`): **PASS** (0 errors).
+- Build (`node init; tsc -b; node tools/build.mjs`): **PASS**, package ID **`automat-faceless-0.1.0-mwklajdh`** (4 JavaScript bundles).
+- Live verification: **NOT_RUN** / pending user browser execution.
