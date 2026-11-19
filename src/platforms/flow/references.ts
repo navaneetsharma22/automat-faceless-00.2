@@ -384,10 +384,16 @@ export async function flowReferenceCaptureInPage(input: {
       }),
       aborted,
     ]);
+    const redirectOriginValid = new URL(response.url).origin === location.origin;
+    if (!redirectOriginValid)
+      return { ok: false, code: "capture_redirect_origin", redirectOriginValid: false, httpStatus: response.status };
     if (!response.ok)
-      return { ok: false, code: `capture_http_${response.status}` };
-    if (new URL(response.url).origin !== location.origin)
-      return { ok: false, code: "capture_redirect_origin" };
+      return {
+        ok: false,
+        code: `capture_http_${response.status}`,
+        httpStatus: response.status,
+        redirectOriginValid: true,
+      };
     const mimeType = (response.headers.get("content-type") ?? "")
       .split(";", 1)[0]!
       .trim()
@@ -400,7 +406,12 @@ export async function flowReferenceCaptureInPage(input: {
       "image/gif",
     ];
     if (!supported.includes(mimeType))
-      return { ok: false, code: "capture_format_unsupported" };
+      return {
+        ok: false,
+        code: "capture_format_unsupported",
+        mimeType,
+        redirectOriginValid: true,
+      };
     const declared = Number(response.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > 12 * 1024 * 1024) {
       await response.body?.cancel().catch(() => undefined);
@@ -489,6 +500,7 @@ export async function flowReferenceCaptureInPage(input: {
         height: bitmap.height,
         byteLength: bytes.length,
         data: btoa(binary),
+        redirectOriginValid: true,
       };
     } finally {
       bitmap.close();
@@ -509,12 +521,27 @@ export async function flowReferenceCaptureInPage(input: {
   }
 }
 
+export type FlowObservedCandidate = {
+  url: string;
+  sourceKind: "observed_detail_image" | "observed_gallery_tile" | "observed_srcset" | "observed_detail_link";
+  width?: number;
+  height?: number;
+};
+
 /** Opens the uniquely pinned gallery tile and returns only its observed detail-image URL.
  * The caller must close the detail view with flowRestoreGalleryAfterOriginalResolutionInPage. */
 export async function flowResolveOriginalImageUrlInPage(input: {
   mediaId: string;
   galleryUrl: string;
-}): Promise<{ ok: boolean; opened: boolean; url?: string; href: string; code?: string }> {
+}): Promise<{
+  ok: boolean;
+  opened: boolean;
+  url?: string;
+  href: string;
+  code?: string;
+  observedUrls?: string[];
+  observedCandidates?: FlowObservedCandidate[];
+}> {
   const visible = (element: Element) => {
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
@@ -729,7 +756,73 @@ export async function flowResolveOriginalImageUrlInPage(input: {
         current.naturalWidth > 0 &&
         current.naturalHeight > 0
       ) {
-        return { ok: true, opened: true, url, href: location.href };
+        const foundUrls: string[] = [];
+        const foundCandidates: FlowObservedCandidate[] = [];
+        const addCandidate = (
+          raw: string | null | undefined,
+          sourceKind: FlowObservedCandidate["sourceKind"],
+          width?: number,
+          height?: number,
+        ) => {
+          if (!raw) return;
+          const clean = raw.trim();
+          if (clean && !foundUrls.includes(clean)) {
+            if (classifyDetail(clean) === "accepted") {
+              foundUrls.push(clean);
+              foundCandidates.push({
+                url: clean,
+                sourceKind,
+                ...(width && width > 0 ? { width } : {}),
+                ...(height && height > 0 ? { height } : {}),
+              });
+            }
+          }
+        };
+        const parseSrcset = (
+          srcset: string | null | undefined,
+          sourceKind: FlowObservedCandidate["sourceKind"] = "observed_srcset",
+        ) => {
+          if (!srcset) return;
+          for (const part of srcset.split(",")) {
+            const u = part.trim().split(/\s+/, 1)[0];
+            if (u) addCandidate(u, sourceKind);
+          }
+        };
+        addCandidate(url, "observed_detail_image", current.naturalWidth, current.naturalHeight);
+        addCandidate(current.currentSrc, "observed_detail_image", current.naturalWidth, current.naturalHeight);
+        addCandidate(current.src, "observed_detail_image", current.naturalWidth, current.naturalHeight);
+        parseSrcset(current.srcset);
+        for (const sibling of current.parentElement?.querySelectorAll<HTMLSourceElement>("source") ?? []) {
+          parseSrcset(sibling.srcset);
+        }
+        const overlayAncestor = current.closest("dialog, [role='dialog'], [aria-modal='true'], [class*='overlay' i], [class*='viewer' i], [class*='lightbox' i]");
+        if (overlayAncestor) {
+          for (const img of overlayAncestor.querySelectorAll<HTMLImageElement>("img")) {
+            addCandidate(img.currentSrc, "observed_detail_image", img.naturalWidth, img.naturalHeight);
+            addCandidate(img.src, "observed_detail_image", img.naturalWidth, img.naturalHeight);
+            parseSrcset(img.srcset);
+          }
+          for (const source of overlayAncestor.querySelectorAll<HTMLSourceElement>("source")) {
+            parseSrcset(source.srcset);
+          }
+          for (const a of overlayAncestor.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+            addCandidate(a.href, "observed_detail_link");
+          }
+        }
+        if (tile) {
+          for (const img of tile.querySelectorAll<HTMLImageElement>("img")) {
+            addCandidate(img.currentSrc, "observed_gallery_tile", img.naturalWidth, img.naturalHeight);
+            addCandidate(img.src, "observed_gallery_tile", img.naturalWidth, img.naturalHeight);
+          }
+        }
+        return {
+          ok: true,
+          opened: true,
+          url,
+          href: location.href,
+          observedUrls: foundUrls,
+          observedCandidates: foundCandidates,
+        };
       }
       if (identity === "accepted") sawAcceptedIncomplete = true;
     }

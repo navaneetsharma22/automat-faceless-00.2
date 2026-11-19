@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PreparedVideoBatchRecord } from "../../../domain/batches/types";
+import type { ReferenceByteComparisonDiagnostic } from "../../../domain/media/references";
 import {
   VIDEO_QUEUE_DISPATCH_GAP_MS,
   isFlowVideoPreAddRetryReason,
@@ -52,12 +53,7 @@ type VideoQueueSnapshot = {
     itemId: string; order: number; shotId: string; referenceId: string; promptHash: string; state: string; reason?: string; priorReason?: string; attemptId?: string;
     readinessStartedAt?: number; readinessDeadlineAt?: number;
     dispatchReceipt?: { attemptId: string; storedAt: number };
-    byteMismatchDiagnostic?: {
-      stage: "candidate_byte_verification" | "read_only_reference_inspection"; acquisitionRoute: "verified_document_same_origin" | "scoped_extension_fetch" | "verified_detail_original_extension_fetch"; preparedSha256: string; metadataSha256: string; savedBytesSha256: string;
-      candidateBytesSha256: string; candidateMediaId: string; mimeType: string;
-      preparedByteSize: number; savedByteSize: number; candidateByteSize: number;
-      preparedWidth: number; preparedHeight: number; candidateWidth?: number; candidateHeight?: number;
-    };
+    byteMismatchDiagnostic?: ReferenceByteComparisonDiagnostic;
     existingChipDiagnostic?: {
       producer: "existing_composer_chip_check_before_picker";
       chipCount: number;
@@ -105,7 +101,7 @@ type ReferenceByteInspection = {
   status: string;
   reason?: string;
   matches?: boolean;
-  diagnostic?: NonNullable<VideoQueueSnapshot["items"][number]["byteMismatchDiagnostic"]>;
+  diagnostic?: ReferenceByteComparisonDiagnostic;
 };
 
 const RECONCILABLE_PRECLICK_RECORD = {
@@ -505,6 +501,42 @@ export function FlowPreparedBatchReview({
                             <dt>SHA-256: saved bytes</dt><dd>{item.byteMismatchDiagnostic.savedBytesSha256}</dd>
                             <dt>SHA-256: fetched candidate</dt><dd>{item.byteMismatchDiagnostic.candidateBytesSha256}</dd>
                             {item.byteMismatchDiagnostic.candidateWidth && item.byteMismatchDiagnostic.candidateHeight ? <><dt>Dimensions: prepared / candidate</dt><dd>{item.byteMismatchDiagnostic.preparedWidth}×{item.byteMismatchDiagnostic.preparedHeight} / {item.byteMismatchDiagnostic.candidateWidth}×{item.byteMismatchDiagnostic.candidateHeight}</dd></> : null}
+                            {item.byteMismatchDiagnostic.attemptedRepresentation ? <><dt>Attempted representation</dt><dd>{item.byteMismatchDiagnostic.attemptedRepresentation}</dd></> : null}
+                            {item.byteMismatchDiagnostic.representationFailureReason ? <><dt>Representation failure reason</dt><dd>{item.byteMismatchDiagnostic.representationFailureReason}</dd></> : null}
+                            {item.byteMismatchDiagnostic.fallbackDiagnostic ? (
+                              <>
+                                <dt>Fallback representation</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.attemptedRepresentation}</dd>
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.sourceProvenance ? <><dt>Fallback source provenance</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.sourceProvenance}</dd></> : null}
+                                <dt>Fallback fetch succeeded</dt><dd>{String(item.byteMismatchDiagnostic.fallbackDiagnostic.fetchSucceeded)}</dd>
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.httpStatus !== undefined ? <><dt>Fallback HTTP status</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.httpStatus}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.failureReason ? <><dt>Fallback failure reason</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.failureReason}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.mimeType ? <><dt>Fallback MIME</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.mimeType}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.byteLength !== undefined ? <><dt>Fallback byte length</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.byteLength}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.width && item.byteMismatchDiagnostic.fallbackDiagnostic.height ? <><dt>Fallback dimensions</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.width}×{item.byteMismatchDiagnostic.fallbackDiagnostic.height}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.sha256 ? <><dt>Fallback SHA-256</dt><dd>{item.byteMismatchDiagnostic.fallbackDiagnostic.sha256}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.sha256Matches !== undefined ? <><dt>Fallback SHA-256 matches</dt><dd>{String(item.byteMismatchDiagnostic.fallbackDiagnostic.sha256Matches)}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.redirectOriginValid !== undefined ? <><dt>Fallback redirect origin valid</dt><dd>{String(item.byteMismatchDiagnostic.fallbackDiagnostic.redirectOriginValid)}</dd></> : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.observedRepresentations?.length ? (
+                                  <>
+                                    <dt>Observed representations</dt>
+                                    <dd>
+                                      <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                                        {item.byteMismatchDiagnostic.fallbackDiagnostic.observedRepresentations.map((rep, idx) => (
+                                          <li key={`persisted-rep-${idx}`}>
+                                            {rep.sourceKind} ({rep.suffixCategory}): fetch {String(rep.fetchSucceeded)}{rep.httpStatus ? ` (HTTP ${rep.httpStatus})` : ""}{rep.mimeType ? `, ${rep.mimeType}` : ""}{rep.byteLength ? `, ${rep.byteLength} B` : ""}{rep.width && rep.height ? `, ${rep.width}×${rep.height}` : ""}, hash matches: {String(rep.sha256Matches ?? false)}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </dd>
+                                  </>
+                                ) : null}
+                                {item.byteMismatchDiagnostic.fallbackDiagnostic.httpStatus === 403 || item.byteMismatchDiagnostic.fallbackDiagnostic.failureReason === "capture_http_403" ? (
+                                  <div role="note" style={{ marginTop: "0.5rem", padding: "0.5rem", background: "rgba(220, 38, 38, 0.1)", borderRadius: "4px" }}>
+                                    <strong>Recovery guidance:</strong> Google Flow rejected the synthesized WebP representation (HTTP 403 Forbidden). Speculative URL synthesis is not authorized. To resolve this mismatch without bypassing security, open References → Flow images and save Shot {item.shotId}&apos;s reference again to capture Flow&apos;s current representation.
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : null}
                           </dl>
                         </details>
                       ) : null}
@@ -563,6 +595,42 @@ export function FlowPreparedBatchReview({
                                   <dt>SHA-256: saved bytes</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.savedBytesSha256}</dd>
                                   <dt>SHA-256: actual candidate</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.candidateBytesSha256}</dd>
                                   {referenceInspection[item.itemId]!.diagnostic!.candidateWidth && referenceInspection[item.itemId]!.diagnostic!.candidateHeight ? <><dt>Dimensions: expected / actual</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.preparedWidth}×{referenceInspection[item.itemId]!.diagnostic!.preparedHeight} / {referenceInspection[item.itemId]!.diagnostic!.candidateWidth}×{referenceInspection[item.itemId]!.diagnostic!.candidateHeight}</dd></> : null}
+                                  {referenceInspection[item.itemId]!.diagnostic!.attemptedRepresentation ? <><dt>Attempted representation</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.attemptedRepresentation}</dd></> : null}
+                                  {referenceInspection[item.itemId]!.diagnostic!.representationFailureReason ? <><dt>Representation failure reason</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.representationFailureReason}</dd></> : null}
+                                  {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic ? (
+                                    <>
+                                      <dt>Fallback representation</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.attemptedRepresentation}</dd>
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.sourceProvenance ? <><dt>Fallback source provenance</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.sourceProvenance}</dd></> : null}
+                                      <dt>Fallback fetch succeeded</dt><dd>{String(referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.fetchSucceeded)}</dd>
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.httpStatus !== undefined ? <><dt>Fallback HTTP status</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.httpStatus}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.failureReason ? <><dt>Fallback failure reason</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.failureReason}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.mimeType ? <><dt>Fallback MIME</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.mimeType}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.byteLength !== undefined ? <><dt>Fallback byte length</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.byteLength}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.width && referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.height ? <><dt>Fallback dimensions</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.width}×{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.height}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.sha256 ? <><dt>Fallback SHA-256</dt><dd>{referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.sha256}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.sha256Matches !== undefined ? <><dt>Fallback SHA-256 matches</dt><dd>{String(referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.sha256Matches)}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.redirectOriginValid !== undefined ? <><dt>Fallback redirect origin valid</dt><dd>{String(referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.redirectOriginValid)}</dd></> : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.observedRepresentations?.length ? (
+                                        <>
+                                          <dt>Observed representations</dt>
+                                          <dd>
+                                            <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                                              {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.observedRepresentations!.map((rep, idx) => (
+                                                <li key={`fresh-rep-${idx}`}>
+                                                  {rep.sourceKind} ({rep.suffixCategory}): fetch {String(rep.fetchSucceeded)}{rep.httpStatus ? ` (HTTP ${rep.httpStatus})` : ""}{rep.mimeType ? `, ${rep.mimeType}` : ""}{rep.byteLength ? `, ${rep.byteLength} B` : ""}{rep.width && rep.height ? `, ${rep.width}×${rep.height}` : ""}, hash matches: {String(rep.sha256Matches ?? false)}
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </dd>
+                                        </>
+                                      ) : null}
+                                      {referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.httpStatus === 403 || referenceInspection[item.itemId]!.diagnostic!.fallbackDiagnostic!.failureReason === "capture_http_403" ? (
+                                        <div role="note" style={{ marginTop: "0.5rem", padding: "0.5rem", background: "rgba(220, 38, 38, 0.1)", borderRadius: "4px" }}>
+                                          <strong>Recovery guidance:</strong> Google Flow rejected the synthesized WebP representation (HTTP 403 Forbidden). Speculative URL synthesis is not authorized. To resolve this mismatch without bypassing security, open References → Flow images and save Shot {item.shotId}&apos;s reference again to capture Flow&apos;s current representation.
+                                        </div>
+                                      ) : null}
+                                    </>
+                                  ) : null}
                                 </dl>
                               </details>
                             ) : <p role="status">Reference inspection: {referenceInspection[item.itemId]!.reason ?? referenceInspection[item.itemId]!.status}. No attachment action was taken.</p>

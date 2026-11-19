@@ -3,6 +3,8 @@ import {
   ReferenceAssignmentRecordSchema,
   ReferenceByteComparisonDiagnosticSchema,
   sha256Bytes,
+  type FlowFallbackDiagnostic,
+  type FlowObservedRepresentation,
 } from "../../domain/media/references";
 import {
   PreparedVideoBatchRecordSchema,
@@ -15,6 +17,7 @@ import {
   flowReferenceCaptureInPage,
   flowResolveOriginalImageUrlInPage,
   flowRestoreGalleryAfterOriginalResolutionInPage,
+  type FlowObservedCandidate,
 } from "../../platforms/flow/references";
 import {
   fetchFlowReferenceBytes,
@@ -878,6 +881,34 @@ export async function flowVideoAttachmentActionInPage(
   return { ok: false, reason: unreadable ? "chip_identity_unreadable_after_add" : "attachment_uncertain" };
 }
 
+export function categorizeAsbSuffix(
+  rawUrl: string,
+): "s0" | "s1600_rw" | "s1600" | "s320" | "none" | "other" {
+  try {
+    const u = new URL(rawUrl);
+    const eqIdx = u.pathname.lastIndexOf("=");
+    if (eqIdx === -1) return "none";
+    const suffix = u.pathname.slice(eqIdx + 1);
+    if (suffix === "s0") return "s0";
+    if (suffix === "s1600-rw") return "s1600_rw";
+    if (suffix === "s1600") return "s1600";
+    if (suffix === "s320") return "s320";
+    return "other";
+  } catch {
+    return "other";
+  }
+}
+
+export function categorizeRepresentationKind(
+  suffixCategory: "s0" | "s1600_rw" | "s1600" | "s320" | "none" | "other",
+  width?: number,
+): "thumbnail" | "full_resolution" | "dynamic_derivative" | "synthesized" | "other" {
+  if (suffixCategory === "s320" || (width !== undefined && width <= 400)) return "thumbnail";
+  if (suffixCategory === "s0" || suffixCategory === "s1600" || (width !== undefined && width >= 1200)) return "full_resolution";
+  if (suffixCategory === "s1600_rw") return "dynamic_derivative";
+  return "other";
+}
+
 /** Worker-owned attachment caller. The page DOM is accessed only through exact document-targeted script injections. */
 export function createFlowVideoAttachmentHandler(deps: {
   repositories: ExtensionRepositories;
@@ -894,8 +925,9 @@ export function createFlowVideoAttachmentHandler(deps: {
     width?: number;
     height?: number;
     route: "verified_document_same_origin" | "scoped_extension_fetch" | "verified_detail_original_extension_fetch";
-    attemptedRepresentation?: "detail_original" | "asb_webp_s1600_rw" | "gallery_tile";
+    attemptedRepresentation?: "detail_original" | "asb_webp_s1600_rw" | "gallery_tile" | "observed_dom_candidate";
     representationFailureReason?: string;
+    fallbackDiagnostic?: FlowFallbackDiagnostic;
   };
   async function acquireCandidateBytes(input: {
     tabId: number;
@@ -942,7 +974,17 @@ export function createFlowVideoAttachmentHandler(deps: {
     };
 
     if (isAsbRepresentation) {
-      let resolution: { ok?: boolean; opened?: boolean; url?: string; href?: string; code?: string } | undefined;
+      let resolution:
+        | {
+            ok?: boolean;
+            opened?: boolean;
+            url?: string;
+            href?: string;
+            code?: string;
+            observedUrls?: string[];
+            observedCandidates?: FlowObservedCandidate[];
+          }
+        | undefined;
       let acquired: CandidateAcquisition | undefined;
       let failure: string | undefined;
       let verifiedAsbToken: string | undefined;
@@ -1023,63 +1065,413 @@ export function createFlowVideoAttachmentHandler(deps: {
       }
       if (failure) throw new Error(failure);
       // When the detail original bytes differ (e.g. dynamic JPEG without -rw vs saved WebP with -rw),
-      // attempt the evidenced =s1600-rw WebP representation for the verified same-origin ASB token
-      // before attempting the gallery URL. The hash gate is strictly enforced; only an exact match is accepted.
+      // first inspect all genuinely observed DOM candidate URLs for the asset. If an observed candidate matches,
+      // accept it immediately with sourceProvenance "observed_dom". Only if no observed candidate matches,
+      // evaluate the synthesized =s1600-rw representation to record bounded evidence (e.g. HTTP 403) with
+      // sourceProvenance "synthesized", remaining safely fail-closed without activating Add.
       if (!failure && acquired && (await sha256Bytes(acquired.bytes)) !== input.expectedSha256) {
         let fallbackFailureReason: string | undefined;
+        let fallbackDiagnostic: FlowFallbackDiagnostic | undefined;
+        const observedRepresentations: FlowObservedRepresentation[] = [];
+
+        // 1. Record the detail original (already captured, failed hash check)
+        const detailUrl = resolution?.url;
+        if (detailUrl) {
+          const detailSha = await sha256Bytes(acquired.bytes);
+          const detailSuffix = categorizeAsbSuffix(detailUrl);
+          const detailHasAcct = /^\/u\/\d+/.test(new URL(detailUrl).pathname);
+          observedRepresentations.push({
+            sourceKind: "observed_detail_image",
+            suffixCategory: detailSuffix,
+            representationKind: categorizeRepresentationKind(detailSuffix, acquired.width),
+            identityVerified: true,
+            hasAccountPrefix: detailHasAcct,
+            matchingAsbToken: true,
+            matchingMediaUuid: true,
+            fetchSucceeded: true,
+            httpStatus: 200,
+            mimeType: acquired.mimeType,
+            byteLength: acquired.bytes.byteLength,
+            ...(acquired.width ? { width: acquired.width } : {}),
+            ...(acquired.height ? { height: acquired.height } : {}),
+            sha256: detailSha,
+            sha256Matches: false,
+          });
+        }
+
+        // 2. Test any genuinely observed DOM candidate URLs for this asset (srcset, picture sources, etc.)
+        const candidateDomUrls: Array<{
+          url: string;
+          kind: FlowObservedRepresentation["sourceKind"];
+          width?: number;
+          height?: number;
+        }> = [];
+        const seenUrls = new Set<string>();
+        if (detailUrl) seenUrls.add(detailUrl);
+        seenUrls.add(input.galleryUrl);
+
+        if (resolution?.observedCandidates && resolution.observedCandidates.length > 0) {
+          for (const cand of resolution.observedCandidates) {
+            if (!seenUrls.has(cand.url)) {
+              seenUrls.add(cand.url);
+              candidateDomUrls.push({
+                url: cand.url,
+                kind: cand.sourceKind,
+                width: cand.width,
+                height: cand.height,
+              });
+            }
+          }
+        } else if (resolution?.observedUrls) {
+          for (const raw of resolution.observedUrls) {
+            if (!seenUrls.has(raw)) {
+              seenUrls.add(raw);
+              candidateDomUrls.push({
+                url: raw,
+                kind: "observed_detail_image",
+              });
+            }
+          }
+        }
+
+        const expectedGalleryAsbToken = flowAsbTokenFromImageUrl(input.galleryUrl);
+        const allowedAsbToken = verifiedAsbToken ?? expectedGalleryAsbToken;
+
+        for (const candidate of candidateDomUrls) {
+          try {
+            const candUrlObj = new URL(candidate.url);
+            if (candUrlObj.origin !== documentOrigin) continue;
+            const candToken = flowAsbTokenFromImageUrl(candidate.url);
+            if (candToken) {
+              if (allowedAsbToken && candToken !== allowedAsbToken) continue;
+            } else {
+              continue;
+            }
+
+            const captured = await deps.scripting.executeScript({
+              target,
+              world: "MAIN",
+              func: flowReferenceCaptureInPage,
+              args: [{
+                action: "fetch",
+                captureOperationId: crypto.randomUUID(),
+                sourceUrl: candidate.url,
+                expectedOrigin: documentOrigin,
+              }],
+            });
+            if (captured[0]?.documentId !== input.documentId) throw new Error("target_changed");
+            const payload = captured[0]?.result as {
+              ok?: boolean;
+              data?: string;
+              code?: string;
+              mimeType?: string;
+              width?: number;
+              height?: number;
+              byteLength?: number;
+              httpStatus?: number;
+              redirectOriginValid?: boolean;
+            } | undefined;
+
+            const candSuffix = categorizeAsbSuffix(candidate.url);
+            if (payload?.ok && payload.data && payload.mimeType) {
+              const binary = atob(payload.data);
+              const candBytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+              const candSha = await sha256Bytes(candBytes);
+              const matches = candSha === input.expectedSha256;
+              const candWidth = payload.width ?? candidate.width;
+              const candHeight = payload.height ?? candidate.height;
+              observedRepresentations.push({
+                sourceKind: candidate.kind,
+                suffixCategory: candSuffix,
+                representationKind: categorizeRepresentationKind(candSuffix, candWidth),
+                identityVerified: true,
+                hasAccountPrefix: /^\/u\/\d+/.test(candUrlObj.pathname),
+                matchingAsbToken: true,
+                matchingMediaUuid: true,
+                fetchSucceeded: true,
+                httpStatus: payload.httpStatus ?? 200,
+                mimeType: payload.mimeType,
+                byteLength: candBytes.byteLength,
+                ...(candWidth ? { width: candWidth } : {}),
+                ...(candHeight ? { height: candHeight } : {}),
+                sha256: candSha,
+                sha256Matches: matches,
+              });
+              if (matches) {
+                acquired = {
+                  bytes: candBytes,
+                  mimeType: payload.mimeType,
+                  width: payload.width,
+                  height: payload.height,
+                  route: "verified_document_same_origin",
+                  attemptedRepresentation: "observed_dom_candidate",
+                };
+                fallbackDiagnostic = {
+                  attemptedRepresentation: "observed_dom_candidate",
+                  sourceProvenance: "observed_dom",
+                  fetchSucceeded: true,
+                  mimeType: payload.mimeType,
+                  byteLength: candBytes.byteLength,
+                  sha256: candSha,
+                  sha256Matches: true,
+                  observedRepresentations: observedRepresentations.slice(0, 10),
+                  ...(payload.width ? { width: payload.width } : {}),
+                  ...(payload.height ? { height: payload.height } : {}),
+                  ...(payload.redirectOriginValid !== undefined ? { redirectOriginValid: payload.redirectOriginValid } : {}),
+                };
+                break;
+              }
+            } else {
+              const reason = payload?.code && /^[a-z0-9_]{1,64}$/.test(payload.code) ? payload.code : "candidate_capture_failed";
+              observedRepresentations.push({
+                sourceKind: candidate.kind,
+                suffixCategory: candSuffix,
+                representationKind: categorizeRepresentationKind(candSuffix, candidate.width),
+                identityVerified: true,
+                hasAccountPrefix: /^\/u\/\d+/.test(candUrlObj.pathname),
+                matchingAsbToken: true,
+                matchingMediaUuid: true,
+                fetchSucceeded: false,
+                httpStatus: payload?.httpStatus,
+                failureReason: reason,
+                mimeType: payload?.mimeType,
+                byteLength: payload?.byteLength,
+                ...(candidate.width ? { width: candidate.width } : {}),
+                ...(candidate.height ? { height: candidate.height } : {}),
+                sha256Matches: false,
+              });
+            }
+          } catch (error) {
+            if (error instanceof Error && error.message === "target_changed") throw error;
+          }
+        }
+
+        // 3. If DOM-observed candidates did not match, test synthesized fallback to document bounded evidence
         let webpUrl: string | undefined;
-        if (verifiedAsbToken && documentOrigin === "https://flow.google.com") {
+        if ((await sha256Bytes(acquired.bytes)) !== input.expectedSha256 && verifiedAsbToken && documentOrigin === "https://flow.google.com") {
           try {
             const acctPrefix = /^\/u\/\d+/.exec(new URL(input.galleryUrl).pathname)?.[0] ?? "";
             webpUrl = `${documentOrigin}${acctPrefix}/asb/${verifiedAsbToken}=s1600-rw`;
             const tokenCheck = flowAsbTokenFromImageUrl(webpUrl);
             if (tokenCheck === verifiedAsbToken) {
-              const webpCandidate = await captureSameOrigin(webpUrl);
-              const webpSha = await sha256Bytes(webpCandidate.bytes);
-              if (webpSha === input.expectedSha256) {
-                acquired = {
-                  ...webpCandidate,
+              const captured = await deps.scripting.executeScript({
+                target,
+                world: "MAIN",
+                func: flowReferenceCaptureInPage,
+                args: [{
+                  action: "fetch",
+                  captureOperationId: crypto.randomUUID(),
+                  sourceUrl: webpUrl,
+                  expectedOrigin: documentOrigin,
+                }],
+              });
+              if (captured[0]?.documentId !== input.documentId) throw new Error("target_changed");
+              const payload = captured[0]?.result as {
+                ok?: boolean;
+                data?: string;
+                code?: string;
+                mimeType?: string;
+                width?: number;
+                height?: number;
+                byteLength?: number;
+                httpStatus?: number;
+                redirectOriginValid?: boolean;
+              } | undefined;
+              if (payload?.ok && payload.data && payload.mimeType) {
+                const binary = atob(payload.data);
+                const webpBytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+                const webpSha = await sha256Bytes(webpBytes);
+                const matches = webpSha === input.expectedSha256;
+                observedRepresentations.push({
+                  sourceKind: "synthesized_fallback",
+                  suffixCategory: "s1600_rw",
+                  representationKind: "synthesized",
+                  identityVerified: true,
+                  hasAccountPrefix: Boolean(acctPrefix),
+                  matchingAsbToken: true,
+                  matchingMediaUuid: true,
+                  fetchSucceeded: true,
+                  httpStatus: payload.httpStatus ?? 200,
+                  mimeType: payload.mimeType,
+                  byteLength: webpBytes.byteLength,
+                  ...(payload.width ? { width: payload.width } : {}),
+                  ...(payload.height ? { height: payload.height } : {}),
+                  sha256: webpSha,
+                  sha256Matches: matches,
+                });
+                fallbackDiagnostic = {
                   attemptedRepresentation: "asb_webp_s1600_rw",
+                  sourceProvenance: "synthesized",
+                  fetchSucceeded: true,
+                  mimeType: payload.mimeType,
+                  byteLength: webpBytes.byteLength,
+                  sha256: webpSha,
+                  sha256Matches: matches,
+                  observedRepresentations: observedRepresentations.slice(0, 10),
+                  ...(payload.width ? { width: payload.width } : {}),
+                  ...(payload.height ? { height: payload.height } : {}),
+                  ...(payload.redirectOriginValid !== undefined ? { redirectOriginValid: payload.redirectOriginValid } : {}),
                 };
+                if (matches) {
+                  acquired = {
+                    bytes: webpBytes,
+                    mimeType: payload.mimeType,
+                    width: payload.width,
+                    height: payload.height,
+                    route: "verified_document_same_origin",
+                    attemptedRepresentation: "asb_webp_s1600_rw",
+                  };
+                } else {
+                  fallbackFailureReason = "webp_sha256_mismatch";
+                }
               } else {
-                fallbackFailureReason = "webp_sha256_mismatch";
+                const code = payload?.code;
+                const reason = code && /^[a-z0-9_]{1,64}$/.test(code) ? code : "candidate_capture_failed";
+                fallbackFailureReason = reason;
+                observedRepresentations.push({
+                  sourceKind: "synthesized_fallback",
+                  suffixCategory: "s1600_rw",
+                  representationKind: "synthesized",
+                  identityVerified: true,
+                  hasAccountPrefix: Boolean(acctPrefix),
+                  matchingAsbToken: true,
+                  matchingMediaUuid: true,
+                  fetchSucceeded: false,
+                  failureReason: reason,
+                  ...(typeof payload?.httpStatus === "number" ? { httpStatus: payload.httpStatus } : {}),
+                  ...(payload?.mimeType ? { mimeType: payload.mimeType } : {}),
+                  ...(payload?.byteLength !== undefined ? { byteLength: payload.byteLength } : {}),
+                  sha256Matches: false,
+                });
+                fallbackDiagnostic = {
+                  attemptedRepresentation: "asb_webp_s1600_rw",
+                  sourceProvenance: "synthesized",
+                  fetchSucceeded: false,
+                  failureReason: reason,
+                  observedRepresentations: observedRepresentations.slice(0, 10),
+                  ...(typeof payload?.httpStatus === "number" ? { httpStatus: payload.httpStatus } : {}),
+                  ...(payload?.mimeType ? { mimeType: payload.mimeType } : {}),
+                  ...(payload?.redirectOriginValid !== undefined ? { redirectOriginValid: payload.redirectOriginValid } : {}),
+                };
               }
             } else {
               fallbackFailureReason = "candidate_url_token_invalid";
+              observedRepresentations.push({
+                sourceKind: "synthesized_fallback",
+                suffixCategory: "s1600_rw",
+                representationKind: "synthesized",
+                identityVerified: false,
+                hasAccountPrefix: Boolean(acctPrefix),
+                matchingAsbToken: false,
+                matchingMediaUuid: true,
+                fetchSucceeded: false,
+                failureReason: "candidate_url_token_invalid",
+                sha256Matches: false,
+              });
+              fallbackDiagnostic = {
+                attemptedRepresentation: "asb_webp_s1600_rw",
+                sourceProvenance: "synthesized",
+                fetchSucceeded: false,
+                failureReason: "candidate_url_token_invalid",
+                observedRepresentations: observedRepresentations.slice(0, 10),
+              };
             }
           } catch (error) {
             if (error instanceof Error && error.message === "target_changed") throw error;
-            fallbackFailureReason =
+            const reason =
               error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message)
                 ? error.message
                 : "webp_fetch_failed";
-          }
-        }
-        if ((await sha256Bytes(acquired.bytes)) !== input.expectedSha256) {
-          if (input.galleryUrl !== webpUrl) {
-            try {
-              const gallery = await captureSameOrigin(input.galleryUrl);
-              if ((await sha256Bytes(gallery.bytes)) === input.expectedSha256) {
-                acquired = {
-                  ...gallery,
-                  attemptedRepresentation: "gallery_tile",
-                };
-              } else if (!fallbackFailureReason) {
-                fallbackFailureReason = "gallery_sha256_mismatch";
-              }
-            } catch (error) {
-              if (error instanceof Error && error.message === "target_changed") throw error;
-              if (!fallbackFailureReason) {
-                fallbackFailureReason =
-                  error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message)
-                    ? error.message
-                    : "gallery_fetch_failed";
-              }
+            fallbackFailureReason = reason;
+            if (!fallbackDiagnostic) {
+              fallbackDiagnostic = {
+                attemptedRepresentation: "asb_webp_s1600_rw",
+                sourceProvenance: "synthesized",
+                fetchSucceeded: false,
+                failureReason: reason,
+                observedRepresentations: observedRepresentations.slice(0, 10),
+              };
             }
           }
         }
-        if ((await sha256Bytes(acquired.bytes)) !== input.expectedSha256 && fallbackFailureReason) {
-          acquired.representationFailureReason = fallbackFailureReason;
+
+        // 4. If still mismatched, test the pinned gallery URL representation
+        if ((await sha256Bytes(acquired.bytes)) !== input.expectedSha256 && input.galleryUrl !== webpUrl) {
+          try {
+            const gallery = await captureSameOrigin(input.galleryUrl);
+            const gallerySha = await sha256Bytes(gallery.bytes);
+            const matches = gallerySha === input.expectedSha256;
+            const gallerySuffix = categorizeAsbSuffix(input.galleryUrl);
+            observedRepresentations.push({
+              sourceKind: "observed_gallery_tile",
+              suffixCategory: gallerySuffix,
+              representationKind: categorizeRepresentationKind(gallerySuffix, gallery.width),
+              identityVerified: true,
+              hasAccountPrefix: /^\/u\/\d+/.test(new URL(input.galleryUrl).pathname),
+              matchingAsbToken: true,
+              matchingMediaUuid: true,
+              fetchSucceeded: true,
+              httpStatus: 200,
+              mimeType: gallery.mimeType,
+              byteLength: gallery.bytes.byteLength,
+              ...(gallery.width ? { width: gallery.width } : {}),
+              ...(gallery.height ? { height: gallery.height } : {}),
+              sha256: gallerySha,
+              sha256Matches: matches,
+            });
+            if (matches) {
+              acquired = {
+                ...gallery,
+                attemptedRepresentation: "gallery_tile",
+              };
+              fallbackDiagnostic = {
+                attemptedRepresentation: "gallery_tile",
+                sourceProvenance: "observed_dom",
+                fetchSucceeded: true,
+                mimeType: gallery.mimeType,
+                byteLength: gallery.bytes.byteLength,
+                sha256: gallerySha,
+                sha256Matches: true,
+                observedRepresentations: observedRepresentations.slice(0, 10),
+                ...(gallery.width ? { width: gallery.width } : {}),
+                ...(gallery.height ? { height: gallery.height } : {}),
+              };
+            } else if (!fallbackFailureReason) {
+              fallbackFailureReason = "gallery_sha256_mismatch";
+            }
+          } catch (error) {
+            if (error instanceof Error && error.message === "target_changed") throw error;
+            if (!fallbackFailureReason) {
+              fallbackFailureReason =
+                error instanceof Error && /^[a-z0-9_]{1,64}$/.test(error.message)
+                  ? error.message
+                  : "gallery_fetch_failed";
+            }
+            observedRepresentations.push({
+              sourceKind: "observed_gallery_tile",
+              suffixCategory: categorizeAsbSuffix(input.galleryUrl),
+              representationKind: "thumbnail",
+              identityVerified: true,
+              hasAccountPrefix: /^\/u\/\d+/.test(new URL(input.galleryUrl).pathname),
+              matchingAsbToken: true,
+              matchingMediaUuid: true,
+              fetchSucceeded: false,
+              failureReason: fallbackFailureReason,
+              sha256Matches: false,
+            });
+          }
+        }
+
+        if ((await sha256Bytes(acquired.bytes)) !== input.expectedSha256) {
+          if (fallbackFailureReason) {
+            acquired.representationFailureReason = fallbackFailureReason;
+          }
+          if (fallbackDiagnostic) {
+            fallbackDiagnostic.observedRepresentations = observedRepresentations.slice(0, 10);
+            acquired.fallbackDiagnostic = fallbackDiagnostic;
+          }
+        } else if (fallbackDiagnostic) {
+          acquired.fallbackDiagnostic = fallbackDiagnostic;
         }
       }
       if (!acquired) throw new Error("reference_resource_failed");
@@ -1572,6 +1964,7 @@ export function createFlowVideoAttachmentHandler(deps: {
       ...(width ? { candidateWidth: width } : {}), ...(height ? { candidateHeight: height } : {}),
       ...(acquired.attemptedRepresentation ? { attemptedRepresentation: acquired.attemptedRepresentation } : {}),
       ...(acquired.representationFailureReason ? { representationFailureReason: acquired.representationFailureReason } : {}),
+      ...(acquired.fallbackDiagnostic ? { fallbackDiagnostic: acquired.fallbackDiagnostic } : {}),
     });
     if (!diagnostic.success) return { status: "blocked", reason: "inspection_diagnostic_invalid" };
     return { status: "inspected", matches: item.reference.sha256 === actualSha256, diagnostic: diagnostic.data };
@@ -1737,6 +2130,7 @@ export function createFlowVideoAttachmentHandler(deps: {
         ...(acquired.height ? { candidateHeight: acquired.height } : {}),
         ...(acquired.attemptedRepresentation ? { attemptedRepresentation: acquired.attemptedRepresentation } : {}),
         ...(acquired.representationFailureReason ? { representationFailureReason: acquired.representationFailureReason } : {}),
+        ...(acquired.fallbackDiagnostic ? { fallbackDiagnostic: acquired.fallbackDiagnostic } : {}),
       });
       return {
         status: "blocked",

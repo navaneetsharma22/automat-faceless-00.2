@@ -29,7 +29,64 @@ The application includes the dashboard, bounded read-only provider connections, 
 
 P05 count-mode recovery is implemented as an explicit no-Generate ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“Rebaseline for a new promptÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â� action. The known user-supplied interrupted attempt is `86e721b7-7cc9-4c1d-a476-f2fc2d30f9ec`; its live acceptance limitations and offline evidence are recorded in the P05 evidence below. This count-mode path remains separate from revised timed image submission. P05 remains INCOMPLETE; its original automatic provider attribution/result verification and terminal acceptance remain deferred and NOT_PASSED. No further P05 counting implementation is planned.
 
-Connection lifecycle changes are verified offline for worker-owned revalidation, readiness preservation, stale saved-binding recovery, guarded stale live-connector replacement, and non-navigation recovery. The reported readiness-triggered disconnect and Vids automatic refresh were not reproduced from the current extension paths; their historical triggers remain unknown. The current package is `automat-faceless-0.1.0-mvur6htk`; the connection/readiness live retest remains **NOT_RUN**.
+Connection lifecycle changes are verified offline for worker-owned revalidation, readiness preservation, stale saved-binding recovery, guarded stale live-connector replacement, and non-navigation recovery. The reported readiness-triggered disconnect and Vids automatic refresh were not reproduced from the current extension paths; their historical triggers remain unknown. The current package is `automat-faceless-0.1.0-mwlylv6a`; the connection/readiness live retest remains **NOT_RUN**.
+
+## Flow Shot 1 Observed-Source Diagnostics & Bounded Representation Inspection — 18 November 2026
+
+Confirmed live evidence:
+- Saved reference: 271,916 bytes, WebP (`cf9948f46b596329f7f7829829fca4096af23a257b3d36011af6876795118b2b`, 1376x768), `providerAssetId`: `a22f6884-eb16-46ec-a49d-3b99aa713782`.
+- Detail original: 337,691 bytes, JPEG (`e7d89cf28c51990f698f98456c4c0f4285a6627ac843ba7b444386ad3e6f9769`, 1376x768, `=s0`).
+- Synthesized WebP fallback (`=s1600-rw`): returned HTTP 403 Forbidden because Google Flow HMAC/signature policies reject unauthenticated client-constructed transform suffixes.
+- Queue status: Shot 1 blocked with `candidate_bytes_mismatch`, 0/5 prompts sent.
+
+Implementation:
+1. **Domain Schema (`src/domain/media/references.ts`)**:
+   - Added `FlowObservedRepresentationSchema` and exported `FlowObservedRepresentation`: captures `sourceKind`, `suffixCategory`, `representationKind`, `identityVerified`, `hasAccountPrefix`, `matchingAsbToken`, `matchingMediaUuid`, `fetchSucceeded`, `httpStatus`, `failureReason`, `mimeType`, `byteLength`, `width`, `height`, `sha256`, and `sha256Matches`.
+   - Updated `FlowFallbackDiagnosticSchema` with `sourceProvenance: "observed_dom" | "synthesized"` and `observedRepresentations: FlowObservedRepresentation[]`.
+   - Added `"observed_dom_candidate"` to `attemptedRepresentation` across diagnostic schemas.
+2. **In-Page Observed Candidates Collection (`src/platforms/flow/references.ts`)**:
+   - Enhanced `flowResolveOriginalImageUrlInPage` to collect all genuinely observed DOM candidate image URLs (`current.currentSrc`, `current.src`, `current.srcset`, `<source>` elements, ancestor overlay dialogs, and gallery tile `img.currentSrc` / `img.src`).
+   - Verified that every candidate URL conforms to acceptable Flow origins and tokens (`classifyDetail(clean) === "accepted"`).
+   - Strictly avoided synthesizing unobserved ASB URLs.
+3. **Candidate Acquisition & Diagnostic Reporting (`src/background/handlers/flowVideoAttachment.ts`)**:
+   - Enhanced `acquireCandidateBytes`:
+     1. Records detail original in `observedRepresentations`.
+     2. Enumerates observed DOM candidates and fetches them via the verified same-origin document acquisition path.
+     3. Checks raw-byte SHA-256 against the saved reference hash; accepts only if raw-byte SHA-256 matches exactly (`sourceProvenance: "observed_dom"`).
+     4. If no observed candidate matches, tests synthesized fallback (`=s1600-rw`), recording HTTP 403 Forbidden in `observedRepresentations` with `sourceProvenance: "synthesized"`.
+     5. If all candidates fail hash verification or fetch, records all bounded diagnostics, preserves the blocked state, and fails closed with `candidate_bytes_mismatch`.
+   - Never activates Add, Generate, Resume, or Upload.
+4. **Dashboard Presentation (`src/app/features/video-batch/FlowPreparedBatchReview.tsx`)**:
+   - Rendered `sourceProvenance`, structured table/list of `observedRepresentations`, and recovery notice (distinguishing HTTP 403 forbidden fallback from genuine DOM options) in both persisted queue diagnostics and fresh read-only reference inspection.
+5. **Checks**:
+   - Unit tests: `tests/unit/flowPreparedBatchReviewDiagnostics.test.tsx` (2/2 PASS).
+   - Integration tests: `tests/integration/flowVideoReferenceAttachment.test.ts` (54/54 PASS).
+   - Full regression suite: 84 test files / 1073 tests PASS.
+   - Typecheck (`tsc --noEmit`): PASS (0 errors).
+   - Production build: `automat-faceless-0.1.0-mwlylv6a` (4 JavaScript bundles in `dist/`).
+   - Live browser verification: NOT_RUN.
+
+## Granular WebP Fallback Diagnostics Visibility — 18 November 2026
+
+Confirmed live blocker: Build `mwlv8pep` reported `candidate_bytes_mismatch` on Shot 1 with a 337,691-byte JPEG and SHA-256 mismatch, while the dashboard UI showed only the final acquired JPEG candidate metadata and did not display whether the `=s1600-rw` WebP fallback executed or why it failed.
+
+Implementation:
+1. **Diagnostic Domain Schema (`src/domain/media/references.ts`)**:
+   - Added `FlowFallbackDiagnosticSchema` with bounded fields: `attemptedRepresentation`, `fetchSucceeded`, `failureReason`, `httpStatus`, `mimeType`, `byteLength`, `sha256`, `sha256Matches`, `width`, `height`, and `redirectOriginValid`.
+   - Added optional `fallbackDiagnostic: FlowFallbackDiagnosticSchema.optional()` to `ReferenceByteComparisonDiagnosticSchema`.
+2. **In-Page Capture Status & HTTP Code Capture (`src/platforms/flow/references.ts`)**:
+   - Enhanced `flowReferenceCaptureInPage` to return granular HTTP status (`code: capture_http_${response.status}`, `httpStatus: response.status`), format support, and redirect origin validity without throwing or losing metadata.
+3. **Handler Diagnostic Propagation (`src/background/handlers/flowVideoAttachment.ts`)**:
+   - Enhanced `acquireCandidateBytes` to capture granular fallback evidence during the `=s1600-rw` WebP attempt.
+   - Populates `fallbackDiagnostic` for both fetch failure (e.g. HTTP 404, capture format unsupported) and byte mismatch (capturing actual fetched byte length, SHA-256, MIME, dimensions, and match status).
+   - Propagates `attemptedRepresentation`, `representationFailureReason`, and `fallbackDiagnostic` to `ReferenceByteComparisonDiagnostic` in both read-only reference inspection (`inspectReferenceBytes`) and candidate verification (`attachReference`).
+4. **Dashboard Diagnostic Presentation (`src/app/features/video-batch/FlowPreparedBatchReview.tsx`)**:
+   - Replaced duplicate inline types with `ReferenceByteComparisonDiagnostic`.
+   - Rendered `attemptedRepresentation`, `representationFailureReason`, and all `fallbackDiagnostic` properties in both the fresh read-only reference inspection result and the persisted queue mismatch diagnostic.
+5. **Validation & Checks**:
+   - Added unit test `tests/unit/flowPreparedBatchReviewDiagnostics.test.tsx` verifying UI rendering of fresh inspection and persisted diagnostics.
+   - Added integration tests in `tests/integration/flowVideoReferenceAttachment.test.ts` verifying fallback diagnostics for HTTP 404 and mismatched WebP hashes.
+   - Verified 84 test suites (1,071 tests) passed; typecheck passed; packaged build `automat-faceless-0.1.0-mwlweg5u` generated.
 
 ## Safe Flow document rebinding after page reload — 18 November 2026
 

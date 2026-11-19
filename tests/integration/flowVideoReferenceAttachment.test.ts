@@ -96,8 +96,18 @@ async function fixture(
     asbWebpMimeType?: string;
     asbWebpFails?: boolean;
     asbWebpCode?: string;
+    asbWebpHttpStatus?: number;
+    asbWebpRedirectOriginValid?: boolean;
     asbWebpDocumentId?: string;
     detailCaptureBytes?: Uint8Array;
+    observedCandidates?: Array<{
+      url: string;
+      sourceKind: "observed_detail_image" | "observed_gallery_tile" | "observed_srcset" | "observed_detail_link";
+      width?: number;
+      height?: number;
+    }>;
+    observedUrls?: string[];
+    observedCandidateCaptureBytes?: Record<string, Uint8Array>;
   } = {},
 ) {
   const database = createMemoryRepositoryDatabase();
@@ -265,6 +275,8 @@ async function fixture(
         opened: true,
         url: observedOriginalUrl,
         href: `${canonicalTarget}/edit/268e65f5-7fd4-4918-9e9e-6744371d16a8`,
+        ...(overrides.observedCandidates ? { observedCandidates: overrides.observedCandidates } : {}),
+        ...(overrides.observedUrls ? { observedUrls: overrides.observedUrls } : {}),
         ...(overrides.detailResolveFailure ? { code: overrides.detailResolveCode ?? "reference_detail_unavailable" } : {}),
       } }];
     }
@@ -323,9 +335,13 @@ async function fixture(
         | { sourceUrl?: string; expectedOrigin?: string }
         | undefined;
       const asbWebpUrl = `https://flow.google.com/asb/pinned-fixture=s1600-rw`;
-      expect([observedOriginalUrl, observedCandidateUrl, asbWebpUrl]).toContain(
-        captureInput?.sourceUrl,
-      );
+      const allowedCaptureUrls = [
+        observedOriginalUrl,
+        observedCandidateUrl,
+        asbWebpUrl,
+        ...Object.keys(overrides.observedCandidateCaptureBytes ?? {}),
+      ];
+      expect(allowedCaptureUrls).toContain(captureInput?.sourceUrl);
       expect(captureInput).toMatchObject({
         expectedOrigin: "https://flow.google.com",
       });
@@ -337,6 +353,8 @@ async function fixture(
               result: {
                 ok: false,
                 code: overrides.asbWebpCode ?? "candidate_capture_failed",
+                httpStatus: overrides.asbWebpHttpStatus,
+                redirectOriginValid: overrides.asbWebpRedirectOriginValid,
               },
             },
           ];
@@ -352,6 +370,7 @@ async function fixture(
               width: 1376,
               height: 768,
               byteLength: webpData.byteLength,
+              redirectOriginValid: overrides.asbWebpRedirectOriginValid ?? true,
             },
           },
         ];
@@ -367,10 +386,12 @@ async function fixture(
           },
         ];
       }
-      const captureData =
-        captureInput?.sourceUrl === observedOriginalUrl && overrides.detailCaptureBytes
-          ? overrides.detailCaptureBytes
-          : (overrides.captureBytes ?? overrides.candidateBytes ?? bytes);
+      let captureData = overrides.captureBytes ?? overrides.candidateBytes ?? bytes;
+      if (captureInput?.sourceUrl === observedOriginalUrl && overrides.detailCaptureBytes) {
+        captureData = overrides.detailCaptureBytes;
+      } else if (captureInput?.sourceUrl && overrides.observedCandidateCaptureBytes?.[captureInput.sourceUrl]) {
+        captureData = overrides.observedCandidateCaptureBytes[captureInput.sourceUrl]!;
+      }
       return [
         {
           documentId: activeDocId,
@@ -2002,6 +2023,7 @@ describe("Flow video reference attachment request-to-handler integration (offlin
         asbWebpBytes: wrongWebpBytes,
         asbWebpMimeType: "image/webp",
       });
+      const wrongSha = await sha256Bytes(wrongWebpBytes);
 
       const result = await f.client.request("flow.video.attachReference", {
         preparedBatchId: batchId,
@@ -2015,6 +2037,112 @@ describe("Flow video reference attachment request-to-handler integration (offlin
         diagnostic: expect.objectContaining({
           attemptedRepresentation: "detail_original",
           representationFailureReason: "webp_sha256_mismatch",
+          fallbackDiagnostic: expect.objectContaining({
+            attemptedRepresentation: "asb_webp_s1600_rw",
+            fetchSucceeded: true,
+            mimeType: "image/webp",
+            byteLength: wrongWebpBytes.byteLength,
+            sha256: wrongSha,
+            sha256Matches: false,
+            width: 1376,
+            height: 768,
+            redirectOriginValid: true,
+          }),
+        }),
+      });
+      expect(f.addActivation).not.toHaveBeenCalled();
+    });
+
+    it("captures detailed fallback diagnostic when WebP fetch fails with HTTP status (e.g. 404)", async () => {
+      const f = await fixture({
+        savedReferenceBytes: webpBytes,
+        candidateMimeType: "image/webp",
+        originalSourceUrl: asbDetailUrl,
+        detailCaptureBytes: dynamicJpegBytes,
+        asbWebpFails: true,
+        asbWebpCode: "capture_http_404",
+        asbWebpHttpStatus: 404,
+        asbWebpRedirectOriginValid: true,
+      });
+
+      const result = await f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      });
+
+      expect(result).toMatchObject({
+        status: "blocked",
+        stage: "candidate_byte_verification",
+        reason: "candidate_bytes_mismatch",
+        diagnostic: expect.objectContaining({
+          attemptedRepresentation: "detail_original",
+          representationFailureReason: "capture_http_404",
+          fallbackDiagnostic: expect.objectContaining({
+            attemptedRepresentation: "asb_webp_s1600_rw",
+            fetchSucceeded: false,
+            failureReason: "capture_http_404",
+            httpStatus: 404,
+            redirectOriginValid: true,
+          }),
+        }),
+      });
+      expect(f.addActivation).not.toHaveBeenCalled();
+    });
+
+    it("reports fallback diagnostic in read-only inspection when WebP fetch fails", async () => {
+      const f = await fixture({
+        savedReferenceBytes: webpBytes,
+        candidateMimeType: "image/webp",
+        originalSourceUrl: asbDetailUrl,
+        detailCaptureBytes: dynamicJpegBytes,
+        asbWebpFails: true,
+        asbWebpCode: "capture_http_404",
+        asbWebpHttpStatus: 404,
+        asbWebpRedirectOriginValid: true,
+      });
+
+      const queueId = `flow-video:${batchId}`;
+      await f.repositories.createFlowVideoQueue({
+        queueId,
+        preparedBatchId: batchId,
+        state: "paused" as const,
+        pauseReason: "candidate_bytes_mismatch",
+        items: [
+          {
+            itemId,
+            order: 0,
+            shotId: "1",
+            referenceId,
+            promptHash: f.item.contentHash,
+            state: "failed" as const,
+            reason: "candidate_bytes_mismatch",
+          },
+        ],
+        lastDispatchAt: null,
+        nextActionAt: null,
+        revision: 4,
+        createdAt: 1,
+        updatedAt: 2,
+      });
+
+      const inspectResult = await f.client.request("flow.video.inspectReferenceBytes", {
+        preparedBatchId: batchId,
+        itemId,
+      });
+
+      expect(inspectResult).toMatchObject({
+        status: "inspected",
+        matches: false,
+        diagnostic: expect.objectContaining({
+          attemptedRepresentation: "detail_original",
+          representationFailureReason: "capture_http_404",
+          fallbackDiagnostic: expect.objectContaining({
+            attemptedRepresentation: "asb_webp_s1600_rw",
+            fetchSucceeded: false,
+            failureReason: "capture_http_404",
+            httpStatus: 404,
+            redirectOriginValid: true,
+          }),
         }),
       });
       expect(f.addActivation).not.toHaveBeenCalled();
@@ -2093,6 +2221,169 @@ describe("Flow video reference attachment request-to-handler integration (offlin
         status: "blocked",
         stage: "reference_byte_acquisition",
         reason: "target_changed",
+      });
+      expect(f.addActivation).not.toHaveBeenCalled();
+    });
+
+    it("accepts an actually observed DOM WebP candidate URL when detail original is dynamic JPEG with mismatched hash", async () => {
+      const observedWebpUrl = "https://flow.google.com/asb/pinned-fixture=s1600-rw";
+      const f = await fixture({
+        savedReferenceBytes: webpBytes,
+        candidateMimeType: "image/webp",
+        originalSourceUrl: asbDetailUrl,
+        detailCaptureBytes: dynamicJpegBytes,
+        asbWebpBytes: webpBytes,
+        observedCandidates: [
+          { url: observedWebpUrl, sourceKind: "observed_srcset", width: 1376, height: 768 },
+        ],
+        observedCandidateCaptureBytes: {
+          [observedWebpUrl]: webpBytes,
+        },
+      });
+
+      const result = await f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      });
+
+      expect(result).toEqual({ status: "attached" });
+      expect(f.addActivation).toHaveBeenCalledTimes(1);
+
+      const queueId = `flow-video:${batchId}`;
+      await f.repositories.createFlowVideoQueue({
+        queueId,
+        preparedBatchId: batchId,
+        state: "paused" as const,
+        pauseReason: "candidate_bytes_mismatch",
+        items: [
+          {
+            itemId,
+            order: 0,
+            shotId: "1",
+            referenceId,
+            promptHash: f.item.contentHash,
+            state: "failed" as const,
+            reason: "candidate_bytes_mismatch",
+          },
+        ],
+        lastDispatchAt: null,
+        nextActionAt: null,
+        revision: 4,
+        createdAt: 1,
+        updatedAt: 2,
+      });
+
+      const inspectResult = await f.client.request("flow.video.inspectReferenceBytes", {
+        preparedBatchId: batchId,
+        itemId,
+      });
+
+      expect(inspectResult).toMatchObject({
+        status: "inspected",
+        matches: true,
+        diagnostic: expect.objectContaining({
+          attemptedRepresentation: "observed_dom_candidate",
+          fallbackDiagnostic: expect.objectContaining({
+            attemptedRepresentation: "observed_dom_candidate",
+            sourceProvenance: "observed_dom",
+            sha256Matches: true,
+          }),
+        }),
+      });
+    });
+
+    it("captures detailed bounded diagnostics with observedRepresentations when synthesized fallback returns HTTP 403", async () => {
+      const f = await fixture({
+        savedReferenceBytes: webpBytes,
+        candidateMimeType: "image/webp",
+        originalSourceUrl: asbDetailUrl,
+        detailCaptureBytes: dynamicJpegBytes,
+        asbWebpFails: true,
+        asbWebpCode: "capture_http_403",
+        asbWebpHttpStatus: 403,
+        asbWebpRedirectOriginValid: true,
+      });
+
+      const result = await f.client.request("flow.video.attachReference", {
+        preparedBatchId: batchId,
+        itemId,
+      });
+
+      expect(result).toMatchObject({
+        status: "blocked",
+        stage: "candidate_byte_verification",
+        reason: "candidate_bytes_mismatch",
+        diagnostic: expect.objectContaining({
+          attemptedRepresentation: "detail_original",
+          representationFailureReason: "capture_http_403",
+          fallbackDiagnostic: expect.objectContaining({
+            attemptedRepresentation: "asb_webp_s1600_rw",
+            sourceProvenance: "synthesized",
+            fetchSucceeded: false,
+            failureReason: "capture_http_403",
+            httpStatus: 403,
+            observedRepresentations: expect.arrayContaining([
+              expect.objectContaining({
+                sourceKind: "observed_detail_image",
+                suffixCategory: "s1600",
+                identityVerified: true,
+                sha256Matches: false,
+              }),
+              expect.objectContaining({
+                sourceKind: "synthesized_fallback",
+                suffixCategory: "s1600_rw",
+                identityVerified: true,
+                fetchSucceeded: false,
+                httpStatus: 403,
+                failureReason: "capture_http_403",
+              }),
+            ]),
+          }),
+        }),
+      });
+      expect(f.addActivation).not.toHaveBeenCalled();
+
+      const queueId = `flow-video:${batchId}`;
+      await f.repositories.createFlowVideoQueue({
+        queueId,
+        preparedBatchId: batchId,
+        state: "paused" as const,
+        pauseReason: "candidate_bytes_mismatch",
+        items: [
+          {
+            itemId,
+            order: 0,
+            shotId: "1",
+            referenceId,
+            promptHash: f.item.contentHash,
+            state: "failed" as const,
+            reason: "candidate_bytes_mismatch",
+          },
+        ],
+        lastDispatchAt: null,
+        nextActionAt: null,
+        revision: 4,
+        createdAt: 1,
+        updatedAt: 2,
+      });
+
+      const inspectResult = await f.client.request("flow.video.inspectReferenceBytes", {
+        preparedBatchId: batchId,
+        itemId,
+      });
+
+      expect(inspectResult).toMatchObject({
+        status: "inspected",
+        matches: false,
+        diagnostic: expect.objectContaining({
+          attemptedRepresentation: "detail_original",
+          representationFailureReason: "capture_http_403",
+          fallbackDiagnostic: expect.objectContaining({
+            attemptedRepresentation: "asb_webp_s1600_rw",
+            sourceProvenance: "synthesized",
+            httpStatus: 403,
+          }),
+        }),
       });
       expect(f.addActivation).not.toHaveBeenCalled();
     });
